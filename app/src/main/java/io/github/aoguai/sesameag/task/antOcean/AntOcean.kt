@@ -466,11 +466,18 @@ class AntOcean : ModelTask() {
         return taskType == "CLEAN_RUBBISH_2_EVERY_DAY" || taskTitle.contains("清理自己垃圾")
     }
 
+    private fun isHelpFriendCleanTask(taskType: String, taskTitle: String): Boolean {
+        return taskType.contains("HELP_CLEAN") ||
+            taskTitle.contains("帮好友清理") ||
+            taskTitle.contains("帮助好友清理")
+    }
+
     private fun isOceanActionTask(taskType: String, taskTitle: String): Boolean {
-        return isSelfCleanTask(taskType, taskTitle) ||
-            taskType.startsWith("CLEAN_") ||
-            taskTitle.contains("清理好友") ||
-            taskTitle.contains("清理海域")
+        return !isHelpFriendCleanTask(taskType, taskTitle) &&
+            (isSelfCleanTask(taskType, taskTitle) ||
+                taskType.startsWith("CLEAN_") ||
+                taskTitle.contains("清理好友") ||
+                taskTitle.contains("清理海域"))
     }
 
     private fun resolveOceanTaskFinishSource(taskType: String, taskTitle: String, bizInfo: JSONObject): String {
@@ -1276,6 +1283,7 @@ class AntOcean : ModelTask() {
                     val taskType = task.getString("taskType")
                     val taskStatus = task.getString("taskStatus")
                     val bizKey = buildOceanTaskBizKey(sceneCode, taskType, taskTitle)
+                    val helpFriendCleanTask = isHelpFriendCleanTask(taskType, taskTitle)
 
                     if (isRewardReceivedStatus(taskStatus)) {
                         continue
@@ -1301,11 +1309,12 @@ class AntOcean : ModelTask() {
                         continue
                     }
 
-                    // 奖励分支必须先于次数限制和黑名单判断，避免“已完成待领奖”被提前挡住。
+                    // 奖励分支必须先于次数限制和黑名单判断；上限只阻止继续清理，不阻止 TODO 补完成。
                     if (Status.hasFlagToday(StatusFlags.FLAG_ANTOCEAN_HELP_CLEAN_ALL_FRIEND_LIMIT) &&
-                        (taskTitle.contains("帮好友清理") || taskType.contains("HELP_CLEAN"))
+                        helpFriendCleanTask &&
+                        taskStatus != TaskStatus.TODO.name
                     ) {
-                        val msg = "海洋任务🌊[$taskTitle]帮助清理次数已达上限，跳过处理"
+                        val msg = "海洋任务🌊[$taskTitle]帮助清理次数已达上限，当前状态[$taskStatus]不可补完成"
                         if (loggedMessages.add(msg)) {
                             Log.ocean(TAG, msg)
                         }
