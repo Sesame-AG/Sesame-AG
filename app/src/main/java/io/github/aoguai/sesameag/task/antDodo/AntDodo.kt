@@ -128,7 +128,12 @@ class AntDodo : ModelTask() {
             propList()
             collect()
             if (collectToFriend?.value == true) {
-                collectToFriend()
+                var friendCollectPasses = 0
+                while (friendCollectPasses < 2 && collectToFriend()) {
+                    friendCollectPasses++
+                    receiveTaskAward()
+                    propList()
+                }
             }
             if (autoGenerateBook?.value == true) {
                 autoGenerateBook()
@@ -243,7 +248,7 @@ class AntDodo : ModelTask() {
 
     private fun receiveTaskAward() {
         try {
-            val presetBad = LinkedHashSet(listOf("HELP_FRIEND_COLLECT"))
+            val businessDrivenTasks = LinkedHashSet(listOf("HELP_FRIEND_COLLECT"))
             while (!Thread.currentThread().isInterrupted) {
                 var doubleCheck = false
                 val response = AntDodoRpcCall.taskList()
@@ -293,8 +298,8 @@ class AntDodo : ModelTask() {
                                 }
                             }
                             TaskStatus.TODO.name == taskStatus -> {
-                                if (presetBad.contains(taskType)) {
-                                    TaskBlacklist.addToBlacklist(TASK_BLACKLIST_MODULE, taskType, taskTitle)
+                                if (businessDrivenTasks.contains(taskType)) {
+                                    Log.runtime(TAG, "任务等待业务动作完成[$taskTitle]")
                                     continue
                                 }
                                 if (TaskBlacklist.isTaskInBlacklist(TASK_BLACKLIST_MODULE, taskType) ||
@@ -861,22 +866,23 @@ class AntDodo : ModelTask() {
         }
     }
 
-    private fun collectToFriend() {
+    private fun collectToFriend(): Boolean {
         try {
             val queryResponse = AntDodoRpcCall.queryFriend()
             if (queryResponse.isNullOrEmpty()) {
                 Log.runtime(TAG, "queryFriend返回空")
-                return
+                return false
             }
             var jo = JSONObject(queryResponse)
             if (ResChecker.checkRes(TAG, jo)) {
+                var handled = false
                 var count = 0
                 val limitList = jo.getJSONObject("data").getJSONObject("extend").getJSONArray("limit")
                 for (i in 0 until limitList.length()) {
                     val limit = limitList.getJSONObject(i)
                     if (limit.getString("actionCode") == "COLLECT_TO_FRIEND") {
                         if (limit.getLong("startTime") > System.currentTimeMillis()) {
-                            return
+                            return false
                         }
                         count = limit.getInt("leftLimit")
                         break
@@ -912,6 +918,7 @@ class AntDodo : ModelTask() {
                         val userName = UserMap.getMaskName(useId)
                         Log.forest("神奇物种🦕帮好友[$userName]抽卡[$ecosystem]#$name")
                         count--
+                        handled = true
                     } else if (!ResChecker.isSilentFailure(jo)) {
                         val message = jo.optString("resultDesc").ifBlank {
                             jo.optString("desc", "帮好友抽卡失败")
@@ -919,6 +926,7 @@ class AntDodo : ModelTask() {
                         Log.runtime(TAG, message)
                     }
                 }
+                return handled
             } else if (!ResChecker.isSilentFailure(jo)) {
                 val message = jo.optString("resultDesc").ifBlank {
                     jo.optString("desc", "查询神奇物种好友列表失败")
@@ -929,6 +937,7 @@ class AntDodo : ModelTask() {
             Log.runtime(TAG, "AntDodo CollectHelpFriend err:")
             Log.printStackTrace(TAG, t)
         }
+        return false
     }
 
     private fun autoGenerateBook() {

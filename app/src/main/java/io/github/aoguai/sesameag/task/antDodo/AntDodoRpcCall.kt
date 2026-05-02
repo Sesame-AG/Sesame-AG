@@ -13,6 +13,8 @@ object AntDodoRpcCall {
     private const val METHOD_QUERY_ANIMAL_STATUS = "alipay.antdodo.rpc.h5.queryAnimalStatus"
     private const val METHOD_HOME_PAGE = "alipay.antdodo.rpc.h5.homePage"
     private const val METHOD_COLLECT = "alipay.antdodo.rpc.h5.collect"
+    private const val METHOD_TASK_ENTRANCE = "alipay.antdodo.rpc.h5.taskEntrance"
+    private const val METHOD_TASK_LIST = "alipay.antdodo.rpc.h5.taskList"
     private const val METHOD_PROP_LIST = "alipay.antdodo.rpc.h5.propList"
     private const val METHOD_CONSUME_PROP = "alipay.antdodo.rpc.h5.consumeProp"
     private const val METHOD_QUERY_BOOK_INFO = "alipay.antdodo.rpc.h5.queryBookInfo"
@@ -30,6 +32,8 @@ object AntDodoRpcCall {
     private val COLLECTION_CACHE_METHODS = arrayOf(
         METHOD_QUERY_ANIMAL_STATUS,
         METHOD_HOME_PAGE,
+        METHOD_TASK_ENTRANCE,
+        METHOD_TASK_LIST,
         METHOD_PROP_LIST,
         METHOD_QUERY_BOOK_INFO,
         METHOD_QUERY_BOOK_LIST,
@@ -48,6 +52,10 @@ object AntDodoRpcCall {
 
     private fun invalidateCollectionCache() {
         invalidateMethods(*COLLECTION_CACHE_METHODS)
+    }
+
+    private fun invalidateTaskCache() {
+        invalidateMethods(METHOD_TASK_ENTRANCE, METHOD_TASK_LIST)
     }
 
     /**
@@ -75,7 +83,7 @@ object AntDodoRpcCall {
     @JvmStatic
     fun taskEntrance(): String {
         return RequestManager.requestString(
-            "alipay.antdodo.rpc.h5.taskEntrance",
+            METHOD_TASK_ENTRANCE,
             "[{\"statusList\":[\"TODO\",\"FINISHED\"]}]"
         )
     }
@@ -95,7 +103,7 @@ object AntDodoRpcCall {
      */
     @JvmStatic
     fun taskList(): String {
-        return RequestManager.requestString("alipay.antdodo.rpc.h5.taskList", "[{\"version\":\"20241203\"}]")
+        return RequestManager.requestString(METHOD_TASK_LIST, "[{\"version\":\"20241203\"}]")
     }
 
     /**
@@ -108,12 +116,14 @@ object AntDodoRpcCall {
     @JvmOverloads
     fun finishTask(sceneCode: String?, taskType: String?, outBizNo: String? = null): String {
         val uniqueId = outBizNo ?: getUniqueId()
-        return RequestManager.requestString(
+        val response = RequestManager.requestString(
             "com.alipay.antiep.finishTask",
             ("[{\"outBizNo\":\"" + uniqueId + "\",\"requestType\":\"rpc\",\"sceneCode\":\""
                     + sceneCode + "\",\"source\":\"af-biodiversity\",\"taskType\":\""
                     + taskType + "\",\"uniqueId\":\"" + uniqueId + "\"}]")
         )
+        invalidateTaskCache()
+        return response
     }
 
     @JvmStatic
@@ -139,10 +149,12 @@ object AntDodoRpcCall {
      */
     @JvmStatic
     fun receiveTaskAward(sceneCode: String, taskType: String): String {
-        return RequestManager.requestString(
+        val response = RequestManager.requestString(
             "com.alipay.antiep.receiveTaskAward",
             "[{\"ignoreLimit\":0,\"requestType\":\"rpc\",\"sceneCode\":\"$sceneCode\",\"source\":\"af-biodiversity\",\"taskType\":\"$taskType\"}]"
         )
+        invalidateCollectionCache()
+        return response
     }
 
     /**
