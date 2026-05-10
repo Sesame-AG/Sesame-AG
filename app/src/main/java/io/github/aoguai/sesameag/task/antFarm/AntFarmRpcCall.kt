@@ -1,5 +1,6 @@
 package io.github.aoguai.sesameag.task.antFarm
 
+import io.github.aoguai.sesameag.hook.RequestManager
 import io.github.aoguai.sesameag.hook.RequestManager.requestString
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.RandomUtil.nextInt
@@ -1530,6 +1531,28 @@ object AntFarmRpcCall {
         val data =
             "[{\"foodType\":\"" + foodType + "\",\"giftIndex\":" + giftIndex + ",\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"ANTFOREST\",\"version\":\"" + VERSION + "\"}]"
         return requestString("com.alipay.antfarm.clickForGiftV2", data)
+    }
+
+    @JvmStatic
+    fun dadaDailyHome(activityId: String?): String {
+        val args = JSONObject().apply {
+            put("activityId", activityId?.toLongOrNull() ?: 0L)
+            put("dadaVersion", "1.3.0")
+            put("version", 1)
+        }
+        return requestString("com.alipay.reading.game.dadaDaily.home", "[$args]")
+    }
+
+    @JvmStatic
+    fun dadaDailySubmit(activityId: String?, answer: String?, questionId: Long?): String {
+        val args = JSONObject().apply {
+            put("activityId", activityId?.toLongOrNull() ?: 0L)
+            put("answer", answer ?: "")
+            put("dadaVersion", "1.3.0")
+            put("questionId", questionId ?: 0L)
+            put("version", 1)
+        }
+        return requestString("com.alipay.reading.game.dadaDaily.submit", "[$args]")
     }
 }
 

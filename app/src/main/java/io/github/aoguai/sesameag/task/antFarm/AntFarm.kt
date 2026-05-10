@@ -53,6 +53,8 @@ import io.github.aoguai.sesameag.util.maps.UserMap
 import io.github.aoguai.sesameag.util.maps.VipDataIdMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -1732,30 +1734,39 @@ class AntFarm : ModelTask() {
         return false
     }
 
-    @Suppress("SameParameterValue")
     private fun answerQuestion(activityId: String?) {
-        try {
-            val today = TimeUtil.getDateStr2()
+        try {val today = TimeUtil.getDateStr2()
             val tomorrow = TimeUtil.getDateStr2(1)
             val farmAnswerCache = DataStore.getOrCreate<MutableMap<String, String>>(FARM_ANSWER_CACHE_KEY) as MutableMap<String, String>
+
+            // 1. 定期清理过期缓存
             cleanOldAnswers(farmAnswerCache, today)
-            // 检查是否今天已经答过题
+
+            // 2. 获取答题首页原始数据
+            val res = AntFarmRpcCall.dadaDailyHome(activityId)
+            val jo = JSONObject(res)
+            if (!ResChecker.checkRes(TAG + "查询答题活动失败:", jo)) return
+
+            // 3. 只要拿到配置列表且今日还未缓存过，就先尝试“预存明日答案”
+            val operationConfigList = jo.optJSONArray("operationConfigList")
+            if (operationConfigList != null && !Status.hasFlagToday(StatusFlags.FLAG_FARM_QUESTION_CACHE)) {
+                updateTomorrowAnswerCache(operationConfigList, tomorrow)
+                Status.setFlagToday(StatusFlags.FLAG_FARM_QUESTION_CACHE)
+                Log.farm("明日小课堂答案已成功补取并预存")
+            }
+
             if (Status.hasFlagToday(StatusFlags.FLAG_FARM_QUESTION_ANSWERED)) {
-                if (!Status.hasFlagToday(StatusFlags.FLAG_FARM_QUESTION_CACHE)) {
-                    val jo = JSONObject(DadaDailyRpcCall.home(activityId))
-                    if (ResChecker.checkRes(TAG + "查询答题活动失败:", jo)) {
-                        val operationConfigList = jo.getJSONArray("operationConfigList")
-                        updateTomorrowAnswerCache(operationConfigList, tomorrow)
-                        Status.setFlagToday(StatusFlags.FLAG_FARM_QUESTION_CACHE)
-                    }
-                }
                 return
             }
 
-            // 获取题目信息
-            val jo = JSONObject(DadaDailyRpcCall.home(activityId))
-            if (!ResChecker.checkRes(TAG + "获取答题题目失败:", jo)) return
+            // 4. 校验今日题目字段是否存在
+            if (!jo.has("question")) {
+                Log.farm("今日答题已完成或题目暂未开放")
+                Status.setFlagToday(StatusFlags.FLAG_FARM_QUESTION_ANSWERED)
+                return
+            }
 
+            // 6. 解析题目详情
             val question = jo.getJSONObject("question")
             val questionId = question.getLong("questionId")
             val labels = question.getJSONArray("label")
@@ -1765,13 +1776,11 @@ class AntFarm : ModelTask() {
             var cacheHit = false
             val cacheKey = "$title|$today"
 
-            // 改进的缓存匹配逻辑
+            // 7. 缓存匹配逻辑：先尝试精确匹配，再尝试模糊匹配
             if (farmAnswerCache.containsKey(cacheKey)) {
                 val cachedAnswer = farmAnswerCache[cacheKey]
-                Log.farm("🎉 缓存[$cachedAnswer] 🎯 题目：$cacheKey")
-
-                // 1. 首先尝试精确匹配
-                for (i in 0..<labels.length()) {
+                // 精确匹配
+                for (i in 0 until labels.length()) {
                     val option = labels.getString(i)
                     if (option == cachedAnswer) {
                         answer = option
@@ -1779,43 +1788,122 @@ class AntFarm : ModelTask() {
                         break
                     }
                 }
-
-                // 2. 如果精确匹配失败，尝试模糊匹配
+                // 如果精确失败，尝试包含匹配
                 if (!cacheHit && cachedAnswer != null) {
-                    for (i in 0..<labels.length()) {
+                    for (i in 0 until labels.length()) {
                         val option = labels.getString(i)
                         if (option.contains(cachedAnswer) || cachedAnswer.contains(option)) {
                             answer = option
                             cacheHit = true
-                            Log.farm("⚠️ 缓存模糊匹配成功：$cachedAnswer → $option")
+                            Log.farm("🎉 缓存模糊命中：$cachedAnswer → $option")
                             break
                         }
                     }
                 }
             }
 
-            // 缓存未命中时调用AI
+            // 8. 缓存未命中时尝试从外部攻略网页获取
             if (!cacheHit) {
-                Log.farm("缓存未命中，尝试使用AI答题：$title")
-                answer = AnswerAI.getAnswer(title, JsonUtil.jsonArrayToList(labels), LogChannel.FARM.loggerName)
-                if (answer.isNullOrEmpty()) {
-                    answer = labels.getString(0) // 默认选择第一个选项
+                val calendar = Calendar.getInstance()
+                val month = calendar.get(Calendar.MONTH) + 1
+                val day = calendar.get(Calendar.DAY_OF_MONTH)
+                val targetDateStr = "${month}月${day}日"
+
+                Log.farm("小课堂缓存未命中，尝试从外部攻略网页匹配 ($targetDateStr)...")
+                val webAnswer = fetchAnswerFromExternalWeb(title, targetDateStr)
+                if (webAnswer != null) {
+                    // 同样需要匹配选项
+                    for (i in 0 until labels.length()) {
+                        val option = labels.getString(i)
+                        if (option == webAnswer || webAnswer.contains(option) || option.contains(webAnswer)) {
+                            answer = option
+                            cacheHit = true
+                            Log.farm("🎉 外部攻略匹配成功：$webAnswer → $option")
+                            break
+                        }
+                    }
                 }
             }
 
-            // 提交答案
-            val joDailySubmit = JSONObject(DadaDailyRpcCall.submit(activityId, answer, questionId))
-            Status.setFlagToday(StatusFlags.FLAG_FARM_QUESTION_ANSWERED)
-            if (ResChecker.checkRes(TAG + "提交答题答案失败:", joDailySubmit)) {
-                val extInfo = joDailySubmit.getJSONObject("extInfo")
-                val correct = joDailySubmit.getBoolean("correct")
-                Log.farm("饲料任务答题：" + (if (correct) "正确" else "错误") + "领取饲料［" + extInfo.getString("award") + "g］")
-                val operationConfigList = joDailySubmit.getJSONArray("operationConfigList")
-                updateTomorrowAnswerCache(operationConfigList, tomorrow)
-                Status.setFlagToday(StatusFlags.FLAG_FARM_QUESTION_CACHE)
+            // 9. 依然未命中时调用AI
+            if (!cacheHit) {
+                Log.farm("外部攻略未命中，正在请求AI协助...")
+                answer = AnswerAI.getAnswer(title, JsonUtil.jsonArrayToList(labels), LogChannel.FARM.loggerName)
+                if (answer.isEmpty()) {
+                    answer = labels.optString(0) // 最终兜底：选择第一个选项
+                }
+            }
+
+            // 10. 提交答案并处理结果
+            val submitRes = AntFarmRpcCall.dadaDailySubmit(activityId, answer, questionId)
+            val joSubmit = JSONObject(submitRes)
+
+            if (ResChecker.checkRes(TAG + "提交答题答案失败:", joSubmit)) {
+                Status.setFlagToday(StatusFlags.FLAG_FARM_QUESTION_ANSWERED)
+                val correct = joSubmit.optBoolean("correct", false)
+                Log.farm("饲料任务答题完成：${if (correct) "正确🏆" else "错误 ❌"}")
+
+                val correctAnswer = if (correct) answer else joSubmit.optString("correctAnswer", "未知")
+                Log.farm("今日题目：$title")
+                Log.farm("正确答案：$correctAnswer")
+
+                val resultConfigs = joSubmit.optJSONArray("operationConfigList")
+                if (resultConfigs != null && !Status.hasFlagToday(StatusFlags.FLAG_FARM_QUESTION_CACHE)) {
+                    updateTomorrowAnswerCache(resultConfigs, tomorrow)
+                    Status.setFlagToday(StatusFlags.FLAG_FARM_QUESTION_CACHE)
+                }
             }
         } catch (e: Exception) {
-            Log.printStackTrace(TAG, "答题出错", e)
+            Log.printStackTrace(TAG, "answerQuestion 执行异常:", e)
+        }
+    }
+    /**
+     * 从外部攻略网页获取答案
+     */
+    private fun fetchAnswerFromExternalWeb(targetTitle: String, targetDate: String): String? {
+        val url = "https://m.ali213.net/news/gl2102/562121.html"
+        val client = OkHttpClient()
+        val request = Request.Builder()
+            .url(url)
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+            .build()
+
+        return try {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return null
+                val html = response.body.string()
+
+                // 将HTML按行简单切分进行匹配
+                val lines = html.split("<br />", "<br>", "\n", "</p>", "<li>", "</div>")
+                for (line in lines) {
+                    // 1. 移除HTML标签并初步清理
+                    val cleanLine = line.replace(Regex("<[^>]*>"), "")
+                        .replace("&nbsp;", " ")
+                        .replace("&ldquo;", "“")
+                        .replace("&rdquo;", "”")
+                        .trim()
+
+                    // 2. 匹配日期
+                    if (cleanLine.contains(targetDate)) {
+                        // 3. 提取纯文字关键词进行匹配（去除引号、书名号等特殊字符干扰）
+                        val simplifiedLine = cleanLine.replace(Regex("[^\\u4e00-\\u9fa5a-zA-Z0-9]"), "")
+                        val simplifiedTitle = targetTitle.replace(Regex("[^\\u4e00-\\u9fa5a-zA-Z0-9]"), "")
+                        val titleKeyword = if (simplifiedTitle.length > 10) simplifiedTitle.substring(0, 10) else simplifiedTitle
+
+                        if (simplifiedLine.contains(titleKeyword)) {
+                            val parts = cleanLine.split("？", "?")
+                            if (parts.size >= 2) {
+                                val extracted = parts[1].trim()
+                                // 移除可能的标点结尾
+                                return extracted.replace(Regex("[。！!]$"), "")
+                            }
+                        }
+                    }
+                }
+                null
+            }
+        } catch (_: Exception) {
+            null
         }
     }
 
@@ -1852,66 +1940,36 @@ class AntFarm : ModelTask() {
         }
     }
 
-
     /**
-     * 清理缓存超过7天的B答案
+     * 清理过期答案缓存，仅保留今天和明天的内容
      */
     private fun cleanOldAnswers(farmAnswerCache: MutableMap<String, String>?, today: String?) {
         try {
             Log.farm("cleanOldAnswers 开始清理缓存")
-            if (farmAnswerCache == null || farmAnswerCache.isEmpty()) return
-            // 将今天日期转为数字格式：20250405
-            val todayInt = convertDateToInt(today) // 如 "2025-04-05" → 20250405
-            // 设置保留天数（例如7天）
-            val daysToKeep = 7
-            val cleanedMap: MutableMap<String?, String?> = HashMap()
-            for (entry in farmAnswerCache.entries) {
-                val key: String = entry.key
+            if (farmAnswerCache.isNullOrEmpty()) return
+
+            // 获取当前和明天的日期字符串。
+            val todayStr = today ?: TimeUtil.getDateStr2()
+            val tomorrowStr = TimeUtil.getDateStr2(1)
+
+            val cleanedMap: MutableMap<String, String> = HashMap()
+            for (entry in farmAnswerCache) {
+                val key = entry.key
                 if (key.contains("|")) {
-                    val parts: Array<String?> = key.split("\\|".toRegex(), limit = 2).toTypedArray()
-                    if (parts.size == 2) {
-                        val dateStr = parts[1] //获取日期部分 20
-                        val dateInt = convertDateToInt(dateStr)
-                        if (dateInt == -1) continue
-                        if (todayInt - dateInt <= daysToKeep) {
-                            cleanedMap[entry.key] = entry.value //保存7天内的答案
-                            Log.farm("保留 日期：" + todayInt + "缓存日期：" + dateInt + " 题目：" + parts[0])
+                    val dateStr = key.substringAfterLast("|")
+                    // 标准匹配：只保留今天和明天的缓存，其他全部清理掉
+                    if (dateStr == todayStr || dateStr == tomorrowStr) {
+                        cleanedMap[key] = entry.value
+                        if (dateStr == tomorrowStr) {
+                            Log.farm("缓存明日问题：${key.substringBeforeLast("|")} | 答案：${entry.value}")
                         }
                     }
                 }
             }
             DataStore.put(FARM_ANSWER_CACHE_KEY, cleanedMap)
-            Log.farm("cleanOldAnswers 清理缓存完毕")
+            Log.farm("cleanOldAnswers 清理完毕，当前缓存记录数：${cleanedMap.size}")
         } catch (e: Exception) {
             Log.printStackTrace(TAG, "cleanOldAnswers error:", e)
-        }
-    }
-
-
-    /**
-     * 将日期字符串转为数字格式
-     *
-     * @param dateStr 日期字符串，格式 "yyyy-MM-dd"
-     * @return 日期数字格式，如 "2025-04-05" → 20250405
-     */
-    private fun convertDateToInt(dateStr: String?): Int {
-        Log.farm("convertDateToInt 开始转换日期：$dateStr")
-        if (dateStr == null || dateStr.length != 10 || dateStr[4] != '-' || dateStr[7] != '-') {
-            Log.error("日期格式错误：$dateStr")
-            return -1 // 格式错误
-        }
-        try {
-            val year = dateStr.take(4).toInt()
-            val month = dateStr.substring(5, 7).toInt()
-            val day = dateStr.substring(8, 10).toInt()
-            if (month !in 1..12 || day < 1 || day > 31) {
-                Log.error("日期无效：$dateStr")
-                return -1 // 日期无效
-            }
-            return year * 10000 + month * 100 + day
-        } catch (e: NumberFormatException) {
-            Log.error(TAG, "日期转换失败：" + dateStr + e.message)
-            return -1
         }
     }
 
