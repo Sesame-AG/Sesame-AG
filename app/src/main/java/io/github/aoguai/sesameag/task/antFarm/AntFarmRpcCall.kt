@@ -1,5 +1,6 @@
 package io.github.aoguai.sesameag.task.antFarm
 
+import io.github.aoguai.sesameag.hook.RequestManager
 import io.github.aoguai.sesameag.hook.RequestManager.requestString
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.RandomUtil.nextInt
@@ -1530,6 +1531,66 @@ object AntFarmRpcCall {
         val data =
             "[{\"foodType\":\"" + foodType + "\",\"giftIndex\":" + giftIndex + ",\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"ANTFOREST\",\"version\":\"" + VERSION + "\"}]"
         return requestString("com.alipay.antfarm.clickForGiftV2", data)
+    }
+
+    /**
+     * 装扮币商城 - 查询物品列表
+     */
+    @JvmStatic
+    fun getOrnamentItemList(pageSize: Int, startIndex: Int): String {
+        val args = JSONObject().apply {
+            put("pageSize", pageSize)
+            put("requestType", "RPC")
+            put("sceneCode", "ANTFARM_DRESSUP_MALL")
+            put("source", "H5")
+            put("startIndex", startIndex)
+        }
+        return requestString("com.alipay.antiep.itemList", "[$args]")
+    }
+
+    /**
+     * 装扮币商城 - 查询装扮详情
+     */
+    @JvmStatic
+    fun getOrnamentItemDetail(spuId: String?): String {
+        val args = JSONObject().apply {
+            put("requestType", "RPC")
+            put("sceneCode", "ANTFARM_DRESSUP_MALL")
+            put("source", "H5")
+            put("spuId", spuId ?: "")
+        }
+        return requestString("com.alipay.antiep.itemDetail", "[$args]")
+    }
+
+    /**
+     * 装扮币商城 - 兑换装扮
+     */
+    @JvmStatic
+    fun exchangeOrnamentBenefit(spuId: String?, skuId: String?): String {
+        val requestId = generateRequestId()
+        val args = JSONObject().apply {
+            put("context", JSONObject())
+            put("requestId", requestId)
+            put("requestType", "RPC")
+            put("sceneCode", "ANTFARM_DRESSUP_MALL")
+            put("skuId", skuId ?: "")
+            put("source", "H5")
+            put("spuId", spuId ?: "")
+        }
+        return requestString("com.alipay.antcommonweal.exchange.h5.exchangeBenefit", "[$args]")
+    }
+
+    /**
+     * 同步装扮币
+     */
+    @JvmStatic
+    fun syncOrnamentCoin(): String {
+        val args = JSONObject().apply {
+            put("requestType", "RPC")
+            put("sceneCode", "ANTFARM")
+            put("source", "H5")
+        }
+        return requestString("com.alipay.antfarm.syncOrnamentCoin", "[$args]")
     }
 }
 
