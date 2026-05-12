@@ -201,6 +201,11 @@ internal suspend fun AntFarm.runFarmSocialWorkflow(
         paradiseCoinExchangeBenefit()
         tc.countDebug("小鸡乐园道具兑换")
     }
+
+    if (queryOrnamentMall?.value == true) {
+        handleOrnamentMall()
+        tc.countDebug("装扮商城")
+    }
 }
 
 internal suspend fun AntFarm.runFarmFinalizeWorkflow(tc: TimeCounter) {

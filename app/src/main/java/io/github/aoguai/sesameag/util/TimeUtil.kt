@@ -369,6 +369,13 @@ object TimeUtil {
         return sdf.format(calendar.time)
     }
 
+    @JvmStatic
+    fun getFormatTime(timestamp: Long, format: String): String {
+        val sdf = SimpleDateFormat(format, Locale.getDefault())
+        return sdf.format(Date(timestamp))
+    }
+
+
     // ==================== 日期比较 ====================
 
     /**

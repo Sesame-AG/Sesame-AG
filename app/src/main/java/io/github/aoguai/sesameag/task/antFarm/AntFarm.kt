@@ -267,6 +267,10 @@ class AntFarm : ModelTask() {
     internal var paradiseCoinExchangeBenefit: BooleanModelField? = null
     private var paradiseCoinExchangeBenefitList: SelectModelField? = null
 
+    internal var queryOrnamentMall: BooleanModelField? = null // 查询装扮商城开关
+    internal var autoExchangeOrnamentLevel: ChoiceModelField? = null // 自动兑换装扮等级
+    internal var onlyQueryNewOrnaments: BooleanModelField? = null // 仅查询未兑换装扮
+
     internal var visitAnimal: BooleanModelField? = null
     private var useSmartSchedulerManager: BooleanModelField? = null
     private var hasFence: Boolean = false       // 是否正在使用篱笆
@@ -702,6 +706,27 @@ class AntFarm : ModelTask() {
             })
         modelFields.addField(
             BooleanModelField(
+                "queryOrnamentMall",
+                "查询装扮商城",
+                false
+            ).withDesc("自动查询装扮币商城并根据配置执行兑换。").also { queryOrnamentMall = it })
+        modelFields.addField(
+            ChoiceModelField(
+                "autoExchangeOrnamentLevel",
+                "自动兑换等级",
+                OrnamentLevel.NONE,
+                OrnamentLevel.nickNames
+            ).withDesc("选择自动兑换的装扮等级。需开启“查询装扮商城”。").also { autoExchangeOrnamentLevel = it })
+        modelFields.addField(
+            BooleanModelField(
+                "onlyQueryNewOrnaments",
+                "仅查询新的未兑换",
+                false
+            ).withDesc("开启后不执行兑换，仅查询并提示商城中未拥有的装扮。需开启“查询装扮商城”。").also {
+                onlyQueryNewOrnaments = it
+            })
+        modelFields.addField(
+            BooleanModelField(
                 "visitAnimal",
                 "到访小鸡送礼",
                 false
@@ -865,6 +890,100 @@ class AntFarm : ModelTask() {
             Log.printStackTrace(TAG, "recallAnimal err:", e)
         }
     }
+
+    /**
+     * 处理装扮币商城逻辑
+     */
+    internal suspend fun handleOrnamentMall() {
+        try {
+            AntFarmRpcCall.syncOrnamentCoin()
+
+            val response = AntFarmRpcCall.getOrnamentItemList(10, 0)
+            val jo = JSONObject(response)
+            if (!ResChecker.checkRes(TAG, jo)) {
+                Log.farm("装扮商城💸[获取列表失败: ${jo.optString("desc")}]")
+                return
+            }
+
+            val accountInfo = jo.optJSONObject("mallAccountInfoVO")
+            val holdingCount = accountInfo?.optJSONObject("holdingCount")
+            var balance = holdingCount?.optDouble("amount", 0.0) ?: 0.0
+
+            val itemInfoVOList = jo.optJSONArray("itemInfoVOList") ?: return
+            val configLevelIdx = autoExchangeOrnamentLevel?.value ?: OrnamentLevel.NONE
+
+            val configLevelStr = OrnamentLevel.levels[configLevelIdx]
+            val isQueryOnly =
+                onlyQueryNewOrnaments?.value == true || configLevelIdx == OrnamentLevel.NONE
+
+            Log.farm("装扮商城💸[当前余额: $balance 装扮币 | 设定等级: ${OrnamentLevel.nickNames[configLevelIdx]}${if (configLevelIdx == OrnamentLevel.NONE) " (仅查询模式)" else ""}]")
+
+            var foundMatch = false
+            for (i in 0 until itemInfoVOList.length()) {
+                val itemJo = itemInfoVOList.getJSONObject(i)
+                val spuName = itemJo.optString("spuName")
+                val spuId = itemJo.optString("spuId")
+                val itemStatus = itemJo.optString("itemStatus")
+                val minPrice = itemJo.optJSONObject("minPrice")?.optDouble("amount", 0.0) ?: 0.0
+                val offlineTime = itemJo.optLong("offlineTime", 0L)
+
+                val spuExtendInfoStr = itemJo.optString("spuExtendInfo")
+                val spuExtendInfo =
+                    if (spuExtendInfoStr.isNotEmpty()) JSONObject(spuExtendInfoStr) else JSONObject()
+                val dressUpLevel = spuExtendInfo.optString("dressUpLevel", "UNKNOWN")
+
+                val isOwned = itemStatus == "REACH_USER_HOLD_LIMIT"
+
+                if (isQueryOnly) {
+                    if (!isOwned) {
+                        val expireStr = if (offlineTime > 0) TimeUtil.getFormatTime(
+                            offlineTime,
+                            "yyyy-MM-dd HH:mm:ss"
+                        ) else "无"
+                        Log.farm("装扮商城🔍[发现未拥有: $spuName | 等级: $dressUpLevel | 价格: $minPrice | 过期时间: $expireStr]")
+                    }
+                    continue
+                }
+
+                if (isOwned) continue
+
+                if (configLevelStr != "ALL" && configLevelStr != dressUpLevel) continue
+
+                foundMatch = true
+                if (balance < minPrice) {
+                    Log.farm("装扮商城💸[$spuName] 余额不足 (需要: $minPrice, 当前: $balance)"                    )
+                    continue
+                }
+
+                // 执行兑换
+                Log.farm("装扮商城💸[准备兑换 $spuName ($dressUpLevel), 价格: $minPrice]")
+
+                val skuModelList = itemJo.optJSONArray("skuModelList")
+                if (skuModelList == null || skuModelList.length() == 0) continue
+                val skuId = skuModelList.getJSONObject(0).optString("skuId")
+
+                AntFarmRpcCall.getOrnamentItemDetail(spuId)
+                delay(1000)
+
+                val exchangeRes = AntFarmRpcCall.exchangeOrnamentBenefit(spuId, skuId)
+                val resJo = JSONObject(exchangeRes)
+                if (resJo.optBoolean("success")) {
+                    Log.farm("装扮商城💸[兑换成功: $spuName]")
+                    balance -= minPrice
+                    delay(2000)
+                } else {
+                    Log.farm("装扮商城💸[兑换失败: $spuName, 原因: ${resJo.optString("resultDesc")}]")
+                }
+            }
+
+            if (onlyQueryNewOrnaments?.value != true && configLevelIdx != OrnamentLevel.NONE && !foundMatch) {
+                Log.farm("装扮商城💸[当前选择等级(${OrnamentLevel.nickNames[configLevelIdx]})中没有发现未兑换的装扮]")
+            }
+        } catch (t: Throwable) {
+            Log.printStackTrace(TAG, "handleOrnamentMall err:", t)
+        }
+    }
+
 
     internal suspend fun paradiseCoinExchangeBenefit() {
         try {
@@ -4694,6 +4813,19 @@ class AntFarm : ModelTask() {
             const val HIT: Int = 0
             const val NORMAL: Int = 1
             val nickNames: Array<String?> = arrayOf<String?>("攻击", "常规")
+        }
+    }
+
+    interface OrnamentLevel {
+        companion object {
+            const val NONE: Int = 0
+            const val DIANCANG: Int = 1
+            const val XIYOU: Int = 2
+            const val GAOJI: Int = 3
+            const val PUTONG: Int = 4
+            const val ALL: Int = 5
+            val nickNames: Array<String?> = arrayOf("不兑换", "典藏", "稀有", "高级", "普通", "全部")
+            val levels: Array<String> = arrayOf("NONE", "DIANCANG", "XIYOU", "GAOJI", "PUTONG", "ALL")
         }
     }
 
