@@ -115,6 +115,9 @@ internal suspend fun AntForest.runForestHomeFollowUpWorkflow(selfHomeObj: JSONOb
     handleUserProps(selfHomeObj)
     tc.countDebug("收取动物派遣能量")
 
+    handleEnergyPvpChallenge()
+    tc.countDebug("1V1能量挑战赛")
+
     collectEnergyBomb(selfHomeObj)
     tc.countDebug("收取炸弹卡能量")
 

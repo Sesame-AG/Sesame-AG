@@ -47,12 +47,18 @@ object StatusFlags {
     /** 健康岛：今日独立浏览任务是否已处理 */
     const val FLAG_NEVERLAND_LIGHT_FEEDS_DONE = "AntSports::neverlandLightFeedsDone"
 
+    /** 健康岛：按 mapId 维度记录今日奖励明确不可领取前缀 */
+    const val FLAG_NEVERLAND_REWARD_UNAVAILABLE_PREFIX = "AntSports::neverlandRewardUnavailable::"
+
     // ============================================================
     // AntForest（蚂蚁森林）
     // ============================================================
 
     /** 森林 PK：今日已判定无需处理（未加入/赛季未开启），用于避免重复请求触发风控 */
     const val FLAG_ANTFOREST_PK_SKIP_TODAY: String = "AntForest::pkSkipToday"
+
+    /** 森林 1V1 能量挑战赛：今日已查询并处理待领奖励 */
+    const val FLAG_ANTFOREST_ENERGY_PVP_CHALLENGE_DONE: String = "AntForest::energyPvpChallengeDone"
 
     /** 森林：光盘行动今日已完成 */
     const val FLAG_ANTFOREST_ECOLIFE_PHOTO_GUANGPAN = "EcoLife::photoGuangPan"

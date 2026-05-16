@@ -208,6 +208,62 @@ object AntForestRpcCall {
         }
     }
 
+    @JvmStatic
+    fun queryPvpHomeInfo(queryWaitToReceive: Boolean = true, source: String = DEFAULT_SOURCE): String {
+        return try {
+            val arg = JSONObject().apply {
+                put("queryWaitToReceive", queryWaitToReceive)
+                put("source", source)
+            }
+            RequestManager.requestString("alipay.antforest.forest.h5.queryPvpHomeInfo", JSONArray().put(arg).toString())
+        } catch (e: Exception) {
+            Log.printStackTrace(e)
+            ""
+        }
+    }
+
+    @JvmStatic
+    fun receivePvpRewards(source: String = DEFAULT_SOURCE): String {
+        return try {
+            val arg = JSONObject().apply {
+                put("source", source)
+            }
+            RequestManager.requestString("alipay.antforest.forest.h5.receivePvpRewards", JSONArray().put(arg).toString())
+        } catch (e: Exception) {
+            Log.printStackTrace(e)
+            ""
+        }
+    }
+
+    @JvmStatic
+    fun queryPvpBattleRecords(pageSize: Int = 5, source: String = DEFAULT_SOURCE): String {
+        return try {
+            val arg = JSONObject().apply {
+                put("pageSize", pageSize.coerceAtLeast(1))
+                put("source", source)
+            }
+            RequestManager.requestString("alipay.antforest.forest.h5.queryPvpBattleRecords", JSONArray().put(arg).toString())
+        } catch (e: Exception) {
+            Log.printStackTrace(e)
+            ""
+        }
+    }
+
+    @JvmStatic
+    fun queryEnergyPvpInfo(checkReward: Boolean = true, source: String = DEFAULT_SOURCE): String {
+        return try {
+            val arg = JSONObject().apply {
+                put("extInfo", JSONObject().put("checkReward", checkReward).toString())
+                put("queryBizType", "energyPvpInfo")
+                put("source", source)
+            }
+            RequestManager.requestString("alipay.antforest.forest.h5.queryMiscInfo", JSONArray().put(arg).toString())
+        } catch (e: Exception) {
+            Log.printStackTrace(e)
+            ""
+        }
+    }
+
     /**
      * 批量获取好友能量信息（标准版）
      */

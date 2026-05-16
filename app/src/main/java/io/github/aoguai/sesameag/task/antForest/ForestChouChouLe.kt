@@ -6,6 +6,7 @@ import io.github.aoguai.sesameag.task.TaskStatus
 import io.github.aoguai.sesameag.util.GlobalThreadPools.sleepCompat
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.ResChecker
+import io.github.aoguai.sesameag.util.RpcCache
 import io.github.aoguai.sesameag.util.TaskBlacklist
 import io.github.aoguai.sesameag.util.maps.UserMap
 import org.json.JSONObject
@@ -28,6 +29,9 @@ class ForestChouChouLe {
         private const val SCENE_ACTIVITY = "ANTFOREST_ACTIVITY_DRAW"
         private const val TASK_AWARD_ALREADY_FINISHED_CODE = "400000030"
         private const val TASK_ALREADY_FINISHED_CODE = "2600000016"
+        private const val TASK_RIGHTS_LIMIT_CODE = "400000012"
+        private const val RPC_UNSUPPORTED_CODE = "400000040"
+        private const val RPC_LIST_TASK_OPEN_GREEN = "com.alipay.antieptask.listTaskopengreen"
 
         /**
          * 抽奖场景数据类
@@ -44,14 +48,24 @@ class ForestChouChouLe {
         // 扩展函数：简化 JSON 解析和检查
         private fun String.toJson(): JSONObject? = runCatching { JSONObject(this) }.getOrNull()
         private fun JSONObject.check(): Boolean = ResChecker.checkRes(TAG, this)
+        private fun JSONObject.taskResultCode(): String = optString("code").ifBlank { optString("resultCode") }
+        private fun JSONObject.taskResultDesc(): String {
+            return sequenceOf(
+                optString("desc"),
+                optString("resultDesc"),
+                optString("resultMessage"),
+                optString("memo")
+            ).firstOrNull { it.isNotBlank() }.orEmpty()
+        }
+
         private fun JSONObject.isTaskAwardAlreadyFinished(): Boolean {
-            val code = optString("code").ifBlank { optString("resultCode") }
-            val desc = optString("desc")
+            val code = taskResultCode()
+            val desc = taskResultDesc()
             return code == TASK_AWARD_ALREADY_FINISHED_CODE || desc.contains("任务已完结")
         }
 
         private fun JSONObject.isTaskAlreadyFinished(): Boolean {
-            val code = optString("code").ifBlank { optString("resultCode") }
+            val code = taskResultCode()
             return code == TASK_ALREADY_FINISHED_CODE ||
                 listOf(
                     optString("desc"),
@@ -59,6 +73,16 @@ class ForestChouChouLe {
                     optString("resultMessage"),
                     optString("memo")
                 ).any { it.contains("任务已完成") || it.contains("任务已完结") }
+        }
+
+        private fun JSONObject.isTaskRightsLimitReached(): Boolean {
+            val desc = taskResultDesc()
+            return taskResultCode() == TASK_RIGHTS_LIMIT_CODE || desc.contains("权益获取次数超过上限")
+        }
+
+        private fun JSONObject.isRpcUnsupported(): Boolean {
+            val desc = taskResultDesc()
+            return taskResultCode() == RPC_UNSUPPORTED_CODE || desc.contains("不支持rpc调用", ignoreCase = true)
         }
 
         private fun extractTaskName(bizInfo: JSONObject, fallback: String): String {
@@ -115,11 +139,6 @@ class ForestChouChouLe {
     fun chouChouLe() {
         runCatching {
             val scenes = getScenes()
-            if (scenes.all { Status.hasFlagToday(it.flag) }) {
-                Log.forest("⏭️ 今天所有森林寻宝任务已完成, 跳过执行")
-                return
-            }
-
             Log.forest("开始处理森林寻宝, 共 ${scenes.size} 个场景")
             scenes.forEach {
                 processScene(it)
@@ -130,8 +149,11 @@ class ForestChouChouLe {
 
     private fun processScene(s: Scene) = runCatching {
         if (Status.hasFlagToday(s.flag)) {
-            Log.forest("⏭️ ${s.name} 今天已完成, 跳过")
-            return@runCatching
+            if (!hasActionableTaskAfterCompletionFlag(s)) {
+                Log.forest("⏭️ ${s.name} 今天已完成, 跳过")
+                return@runCatching
+            }
+            Status.removeFlag(s.flag)
         }
 
         rewardHandledTaskKeys.clear()
@@ -163,13 +185,48 @@ class ForestChouChouLe {
 
     }.onFailure { Log.printStackTrace(TAG, "${s.name} 处理异常", it) }
 
+    private fun fetchFreshTaskList(s: Scene): JSONObject? {
+        RpcCache.invalidate(RPC_LIST_TASK_OPEN_GREEN)
+        return AntForestRpcCall.listTaskopengreen(s.taskCode, SOURCE).toJson()
+    }
+
+    private fun hasActionableTaskAfterCompletionFlag(s: Scene): Boolean {
+        val resp = fetchFreshTaskList(s) ?: return false
+        if (!resp.check()) return false
+
+        val taskList = resp.optJSONArray("taskInfoList") ?: return false
+        for (i in 0 until taskList.length()) {
+            val task = taskList.optJSONObject(i) ?: continue
+            val baseInfo = task.optJSONObject("taskBaseInfo") ?: continue
+            val taskType = baseInfo.optString("taskType")
+            val taskStatus = baseInfo.optString("taskStatus")
+            if (taskStatus != TaskStatus.TODO.name &&
+                taskStatus != TaskStatus.FINISHED.name &&
+                taskStatus != "COMPLETE"
+            ) {
+                continue
+            }
+            if (taskStatus == TaskStatus.TODO.name && !isExecutableTodoTaskType(taskType)) {
+                continue
+            }
+
+            val bizInfo = baseInfo.optString("bizInfo").toJson() ?: JSONObject()
+            val taskName = extractTaskName(bizInfo, taskType.ifBlank { "未知任务" })
+            if (!isBlockedTask(taskType, taskName)) {
+                Log.forest("${s.name} 已有完成标记但发现待处理任务: $taskName [$taskStatus]")
+                return true
+            }
+        }
+        return false
+    }
+
     /**
      * 循环处理任务列表
      */
     private fun processTasksLoop(s: Scene) {
         repeat(3) { loop ->
             Log.forest("${s.name} 第 ${loop + 1} 轮任务检查")
-            val tasksResp = AntForestRpcCall.listTaskopengreen(s.taskCode, SOURCE).toJson() ?: return@repeat
+            val tasksResp = fetchFreshTaskList(s) ?: return@repeat
             if (!tasksResp.check()) return@repeat
 
             val taskList = tasksResp.optJSONArray("taskInfoList") ?: return@repeat
@@ -231,7 +288,7 @@ class ForestChouChouLe {
      * 检查是否所有任务都已完成，并设置 Flag
      */
     private fun checkCompletion(s: Scene) {
-        val resp = AntForestRpcCall.listTaskopengreen(s.taskCode, SOURCE).toJson() ?: return
+        val resp = fetchFreshTaskList(s) ?: return
         if (!resp.check()) return
 
         val taskList = resp.optJSONArray("taskInfoList") ?: return
@@ -308,6 +365,12 @@ class ForestChouChouLe {
         }
     }
 
+    private fun isExecutableTodoTaskType(type: String): Boolean {
+        return type == "NORMAL_DRAW_EXCHANGE_VITALITY" ||
+            type.startsWith("FOREST_NORMAL_DRAW") ||
+            type.startsWith("FOREST_ACTIVITY_DRAW")
+    }
+
     private fun handleTodoTask(s: Scene, name: String, code: String, type: String): Boolean {
         return if (type == "NORMAL_DRAW_EXCHANGE_VITALITY") {
             // 活力值兑换
@@ -320,7 +383,7 @@ class ForestChouChouLe {
                 Log.forest("${s.name} 🧾 $name 兑换成功")
                 true
             } else false
-        } else if (type.startsWith("FOREST_NORMAL_DRAW") || type.startsWith("FOREST_ACTIVITY_DRAW")) {
+        } else if (isExecutableTodoTaskType(type)) {
             // 普通任务
             Log.forest("${s.name} 执行任务(模拟耗时): $name")
             sleepCompat(100L) //
@@ -336,6 +399,15 @@ class ForestChouChouLe {
                 taskTryCount.remove(type)
                 Log.forest("${s.name} 任务已完成: $name")
                 true
+            } else if (resJson != null && resJson.isTaskRightsLimitReached()) {
+                taskTryCount.remove(type)
+                Log.forest("${s.name} 任务权益已达上限，按已处理跳过: $name")
+                true
+            } else if (resJson != null && resJson.isRpcUnsupported()) {
+                taskTryCount.remove(type)
+                TaskBlacklist.autoAddToBlacklist(FOREST_BLACKLIST_MODULE, type, name, RPC_UNSUPPORTED_CODE)
+                Log.forest("${s.name} 任务RPC不支持，已加入黑名单: $name")
+                false
             } else if (resJson != null && resJson.check()) {
                 taskTryCount.remove(type)
                 Log.forest("${s.name} 🧾 $name")

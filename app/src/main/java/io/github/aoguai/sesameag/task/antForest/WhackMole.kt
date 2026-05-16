@@ -31,7 +31,8 @@ object WhackMole {
     @Volatile
     private var moleCount = 15 // 兼容模式默认击打数
 
-    private const val GAME_DURATION_MS = 12000L
+    private const val GAME_DURATION_MS = 6000L
+    private const val SETTLEMENT_LEAD_MS = 500L
     private val globalScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val startTime = AtomicLong(0)
 
@@ -102,7 +103,7 @@ object WhackMole {
             }
             if (!response.optBoolean("canPlayToday", true)) {
                 Status.setFlagToday(StatusFlags.FLAG_ANTFOREST_WHACK_MOLE_EXECUTED)
-                Log.forest("🎮 拼手速今日次数已用尽，跳过")
+                logTodaySettleInfo(response)
                 return false
             }
 
@@ -179,19 +180,19 @@ object WhackMole {
 
                 if (roundNum < totalGames) {
                     val remaining = GAME_DURATION_MS - (System.currentTimeMillis() - startTime.get())
-                    delay(intervalCalculator.calculateNextDelay(dynamicInterval, roundNum, totalGames, remaining))
+                    val nextDelay = intervalCalculator.calculateNextDelay(dynamicInterval, roundNum, totalGames, remaining)
+                    delay(max(0L, nextDelay))
                 }
             }
         } catch (e: CancellationException) {
             return triggered
         }
 
-        val waitTime = max(0L, GAME_DURATION_MS - (System.currentTimeMillis() - startTime.get()))
+        val waitTime = max(0L, GAME_DURATION_MS - (System.currentTimeMillis() - startTime.get()) - SETTLEMENT_LEAD_MS)
         delay(waitTime)
 
         var totalEnergy = 0
         sessions.forEach { session ->
-            delay(200)
             totalEnergy += settleStandardRound(session)
         }
         Log.forest("森林能量⚡️[激进模式${sessions.size}局 总计${totalEnergy}g]")
@@ -205,6 +206,7 @@ object WhackMole {
                 null
             } else if (!startResp.optBoolean("canPlayToday", true)) {
                 Status.setFlagToday(StatusFlags.FLAG_ANTFOREST_WHACK_MOLE_EXECUTED)
+                logTodaySettleInfo(startResp)
                 throw CancellationException("Today limit reached")
             } else {
                 val token = startResp.optString("token")
@@ -235,6 +237,10 @@ object WhackMole {
     private suspend fun settleStandardRound(session: GameSession): Int {
         return try {
             val resp = JSONObject(AntForestRpcCall.settlementWhackMole(session.token, session.moleIdList, SOURCE))
+            if (resp.optString("resultCode") == "WHACK_MOLE_GAME_OVER") {
+                Log.forest("🎮 拼手速第${session.roundNumber}局结算已超过服务端窗口，跳过")
+                return 0
+            }
             if (ResChecker.checkRes(TAG, resp)) {
                 resp.optInt("totalEnergy", 0)
             } else {
@@ -242,6 +248,17 @@ object WhackMole {
             }
         } catch (e: Exception) {
             0
+        }
+    }
+
+    private fun logTodaySettleInfo(response: JSONObject) {
+        val settleInfo = response.optJSONObject("currentDaySettleInfoVO")
+        val totalEnergy = settleInfo?.optInt("totalEnergy", 0) ?: 0
+        val totalFriendNums = settleInfo?.optInt("totalFriendNums", 0) ?: 0
+        if (totalEnergy > 0 || totalFriendNums > 0) {
+            Log.forest("🎮 拼手速今日次数已用尽，今日已结算${totalFriendNums}个好友，总能量+${totalEnergy}g")
+        } else {
+            Log.forest("🎮 拼手速今日次数已用尽，跳过")
         }
     }
 }
