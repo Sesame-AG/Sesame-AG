@@ -1,10 +1,12 @@
 name: Release Build
 run-name: Release Build - ${{ github.ref_name }}
 
+# 👇 核心修改：新增 workflow_dispatch 手动触发，保留原Tag自动打包
 on:
   push:
     tags:
       - "[0-9]*-*"
+  workflow_dispatch:  # 新增：支持在Actions页面手动点击运行
 
 env:
   CI: "true"
@@ -117,8 +119,7 @@ jobs:
           VERSION_NAME: ${{ steps.meta.outputs.version_name }}
           VERSION_CODE: ${{ steps.meta.outputs.version_code }}
           XPOSED_TAG: ${{ steps.meta.outputs.xposed_tag }}
-          ANDROID_SIGNING_KEY: ${{ secrets.ANDROID_SIGNING_KEY }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_SIGNING_KEY: ${{ secrets.ANDROID_SIGNING_KEY }}          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           TARGET_REPO_PAT: ${{ secrets.TARGET_REPO_PAT }}
