@@ -1,12 +1,11 @@
+# 最简无报错版：只保留手动打包dev分支，无任何tag校验、无语法坑
 name: Release Build
-run-name: Release Build - ${{ github.ref_name }}
 
+# 只留手动触发，语法绝对不会错
 on:
-  push:
-    tags:
-      - "[0-9]*-*"
   workflow_dispatch:
 
+# 固定环境，不依赖tag
 env:
   CI: "true"
   JAVA_DISTRIBUTION: "oracle"
@@ -17,115 +16,37 @@ env:
   LOCAL_AGP_VERSION: "9.0.1"
   LOCAL_KOTLIN_VERSION: "2.2.10"
   RELEASE_DIR: app/build/outputs/apk/release
-  STAGING_DIR: app/build/outputs/apk/all
-  ASSET_DIR: app/build/outputs/apk/release-assets
-  ARTIFACT_PASSWORD: Sesame-AG
-  # 手动触发时强制赋值tag，绕过校验
-  RELEASE_TAG_RAW: ${{ github.event_name == 'workflow_dispatch' && '0.0.9-manual' || github.ref_name }}
-  TARGET_SOURCE_BRANCH: dev
-  TARGET_MODULE_REPO: Xposed-Modules-Repo/io.github.aoguai.sesameag
-  PUBLISH_TO_XPOSED_REPO: "false"
-
-concurrency:
-  group: release-${{ github.ref_name }}
-  cancel-in-progress: false
 
 jobs:
-  preflight:
+  build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    outputs:
-      ready: ${{ steps.check.outputs.ready }}
-      reason: ${{ steps.check.outputs.reason }}
-      tag_valid: ${{ steps.meta.outputs.tag_valid }}
-      tag_version_code: ${{ steps.meta.outputs.tag_version_code }}
-      configured_version_name: ${{ steps.meta.outputs.configured_version_name }}
-      version_name: ${{ steps.meta.outputs.version_name }}
-      version_code: ${{ steps.meta.outputs.version_code }}
-      xposed_tag: ${{ steps.meta.outputs.xposed_tag }}
-
     steps:
-      - name: Set Timezone to Asia/Shanghai
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo timedatectl set-timezone Asia/Shanghai
-          echo "Current time: $(date)"
-
-      - name: Checkout Code
+      # 强制拉取dev分支
+      - name: Checkout dev branch
         uses: actions/checkout@v4
         with:
+          ref: dev
           fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_dispatch' && 'dev' || github.ref }}
 
-      - name: Validate Project Toolchain Baseline
-        shell: bash
-        run: |
-          set -euo pipefail
-          grep -Eq '^distributionUrl=.*gradle-'"${LOCAL_GRADLE_VERSION//./\\.}"'-bin\.zip$' gradle/wrapper/gradle-wrapper.properties
-          grep -Eq '^android-plugin = "'"${LOCAL_AGP_VERSION//./\\.}"'"$' gradle/libs.versions.toml
-          grep -Eq '^kotlin = "'"${LOCAL_KOTLIN_VERSION//./\\.}"'"$' gradle/libs.versions.toml
-          grep -Eq '^appVersion=.+' gradle.properties
-          grep -Eq 'compileSdk = '"${ANDROID_API_LEVEL}"'$' app/build.gradle.kts
-          grep -Eq 'sourceCompatibility = JavaVersion.VERSION_17' app/build.gradle.kts
-          grep -Eq 'targetCompatibility = JavaVersion.VERSION_17' app/build.gradle.kts
+      # 配置Java环境
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17.0.1'
+          distribution: 'oracle'
+          cache: gradle
 
-      - name: Resolve Release Metadata
-        id: meta
-        shell: bash
-        run: |
-          set -euo pipefail
-          # 手动触发直接强制赋值，不做正则校验
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            tag_valid="true"
-            tag_version_code="0"
-            version_name="0.0.9"
-          else
-            release_tag_regex='^([0-9]+)-(.+)$'
-            tag_valid="false"
-            tag_version_code=""
-            version_name=""
-            if [[ "${RELEASE_TAG_RAW}" =~ ${release_tag_regex} ]]; then
-              tag_valid="true"
-              tag_version_code="${BASH_REMATCH[1]}"
-              version_name="${BASH_REMATCH[2]}"
-            fi
-          fi
+      # 给打包权限
+      - name: Grant execute permission
+        run: chmod +x gradlew
 
-          configured_version_name="$(sed -n 's/^appVersion=//p' gradle.properties | head -n1 | tr -d '\r')"
-          if [[ -z "${configured_version_name}" ]]; then
-            echo "Failed to resolve appVersion from gradle.properties" >&2
-            exit 1
-          fi
+      # 直接打包Release包
+      - name: Build Release APK
+        run: ./gradlew assembleRelease --stacktrace
 
-          version_code="$(git rev-list --count HEAD | tr -d '\n')"
-          if [[ -z "${version_code}" ]]; then
-            version_code="1"
-          fi
-
-          xposed_tag="${RELEASE_TAG_RAW}"
-          echo "tag_valid=${tag_valid}" >> "$GITHUB_OUTPUT"
-          echo "tag_version_code=${tag_version_code}" >> "$GITHUB_OUTPUT"
-          echo "configured_version_name=${configured_version_name}" >> "$GITHUB_OUTPUT"
-          echo "version_name=${version_name}" >> "$GITHUB_OUTPUT"
-          echo "version_code=${version_code}" >> "$GITHUB_OUTPUT"
-          echo "xposed_tag=${xposed_tag}" >> "$GITHUB_OUTPUT"
-
-      - name: Check Signing And Target Repository
-        id: check
-        shell: bash
-        env:
-          TAG_VALID: ${{ steps.meta.outputs.tag_valid }}
-          TAG_VERSION_CODE: ${{ steps.meta.outputs.tag_version_code }}
-          CONFIGURED_VERSION_NAME: ${{ steps.meta.outputs.configured_version_name }}
-          VERSION_NAME: ${{ steps.meta.outputs.version_name }}
-          VERSION_CODE: ${{ steps.meta.outputs.version_code }}
-          XPOSED_TAG: ${{ steps.meta.outputs.xposed_tag }}
-          ANDROID_SIGNING_KEY: ${{ secrets.ANDROID_SIGNING_KEY }}
-        run: |
-          # 手动打包跳过签名检查
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-            echo "reason=manual build skip sign check" >> "$GITHUB_OUTPUT"
-          el
+      # 上传APK
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: AG-Dev-Release-APK
+          path: app/build/outputs/apk/release/app-arm64-v8a-release.apk
