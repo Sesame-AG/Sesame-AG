@@ -2,6 +2,7 @@ package io.github.aoguai.sesameag.task.antMember
 
 import io.github.aoguai.sesameag.hook.RequestManager
 import io.github.aoguai.sesameag.util.RandomUtil
+import io.github.aoguai.sesameag.util.RpcCache
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -10,6 +11,10 @@ import java.util.UUID
 object AntMemberRpcCall {
 
     private const val GAME_CENTER_SOURCE = "ch_appcollect__chsub_my-recentlyUsed"
+    private const val METHOD_QUERY_MULTI_SCENE_WAIT_TO_GAIN_LIST =
+        "com.alipay.insgiftbff.insgiftMain.queryMultiSceneWaitToGainList"
+    private const val METHOD_GAIN_MY_AND_FAMILY_SUM_INSURED =
+        "com.alipay.insgiftbff.insgiftMain.gainMyAndFamilySumInsured"
     
     private fun getUniqueId(): String {
         return System.currentTimeMillis().toString() + RandomUtil.nextLong()
@@ -569,7 +574,7 @@ object AntMemberRpcCall {
     @JvmStatic
     fun queryAvailableCollectInsuredGold(): String {
         return RequestManager.requestString(
-            "com.alipay.insgiftbff.insgiftMain.queryMultiSceneWaitToGainList",
+            METHOD_QUERY_MULTI_SCENE_WAIT_TO_GAIN_LIST,
             """[{"entrance":"cfsy","eventToWaitParamDTO":{"giftProdCode":"GIFT_UNIVERSAL_COVERAGE","rightNoList":["UNIVERSAL_ACCIDENT","UNIVERSAL_HOSPITAL","UNIVERSAL_OUTPATIENT","UNIVERSAL_SERIOUSNESS","UNIVERSAL_WEALTH","UNIVERSAL_TRANS","UNIVERSAL_FRAUD_LIABILITY"]},"helpChildParamDTO":{"giftProdCode":"GIFT_HEALTH_GOLD_CHILD","rightNoList":["UNIVERSAL_ACCIDENT","UNIVERSAL_HOSPITAL","UNIVERSAL_OUTPATIENT","UNIVERSAL_SERIOUSNESS","UNIVERSAL_WEALTH","UNIVERSAL_TRANS","UNIVERSAL_FRAUD_LIABILITY"]},"priorityChannelParamDTO":{"giftProdCode":"GIFT_UNIVERSAL_COVERAGE","rightNoList":["UNIVERSAL_ACCIDENT","UNIVERSAL_HOSPITAL","UNIVERSAL_OUTPATIENT","UNIVERSAL_SERIOUSNESS","UNIVERSAL_WEALTH","UNIVERSAL_TRANS","UNIVERSAL_FRAUD_LIABILITY"]},"signInParamDTO":{"giftProdCode":"GIFT_UNIVERSAL_COVERAGE","rightNoList":["UNIVERSAL_ACCIDENT","UNIVERSAL_HOSPITAL","UNIVERSAL_OUTPATIENT","UNIVERSAL_SERIOUSNESS","UNIVERSAL_WEALTH","UNIVERSAL_TRANS","UNIVERSAL_FRAUD_LIABILITY"]}}]""",
             "insgiftbff", "queryMultiSceneWaitToGainList", "insgiftMain"
         )
@@ -645,10 +650,22 @@ object AntMemberRpcCall {
      */
     @JvmStatic
     fun collectInsuredGold(goldBallObj: JSONObject): String {
-        return RequestManager.requestString(
-            "com.alipay.insgiftbff.insgiftMain.gainMyAndFamilySumInsured",
+        val response = RequestManager.requestString(
+            METHOD_GAIN_MY_AND_FAMILY_SUM_INSURED,
             JSONArray().put(goldBallObj).toString(), "insgiftbff", "gainMyAndFamilySumInsured", "insgiftMain"
         )
+        invalidateInsuredGoldWaitListCacheIfSuccess(response)
+        return response
+    }
+
+    private fun invalidateInsuredGoldWaitListCacheIfSuccess(response: String) {
+        try {
+            val responseObject = JSONObject(response)
+            if (responseObject.optBoolean("success") || responseObject.optBoolean("isSuccess")) {
+                RpcCache.invalidate(METHOD_QUERY_MULTI_SCENE_WAIT_TO_GAIN_LIST)
+            }
+        } catch (_: Throwable) {
+        }
     }
 
     @JvmStatic
