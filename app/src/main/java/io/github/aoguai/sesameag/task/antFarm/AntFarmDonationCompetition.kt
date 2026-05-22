@@ -735,6 +735,12 @@ private fun AntFarm.donateForCompetition(count: Int): Boolean {
             }
         }
 
+        val endCal = TimeUtil.getTodayCalendarByTimeStr("2000")
+        if (endCal != null && System.currentTimeMillis() >= endCal.timeInMillis) {
+            Log.record(TAG, "⏰ 捐赠中止：当前已过 20:00 结算时间，放弃捐赠")
+            return false
+        }
+
         val s = AntFarmRpcCall.listActivityInfo()
         val jo = JSONObject(s)
         if (!ResChecker.checkRes(TAG, jo)) return false
