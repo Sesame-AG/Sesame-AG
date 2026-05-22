@@ -493,7 +493,13 @@ private fun AntFarm.scheduleDonationCompetitionTask(endTimeMs: Long) {
     }
 
     val now = System.currentTimeMillis()
-    if (execTime <= now) return
+    val finalExecTime = if (execTime <= now) {
+        if (now >= endTimeMs) return
+        Log.record(TAG, "⏰ 当前已过捐蛋排行榜预设启动时间，立即执行")
+        now
+    } else {
+        execTime
+    }
 
     val modeName = if (isPollingMode) "轮询蹲点" else "单次蹲点"
 
@@ -514,13 +520,18 @@ private fun AntFarm.scheduleDonationCompetitionTask(endTimeMs: Long) {
                     checkRankAndDonate(maxDonation - donationsMadeToday)
                 }
             }
+            printDonationReport()
         },
-        execTime = execTime,
+        execTime = finalExecTime,
         useSmartScheduler = useSmartSchedulerManager?.value == true
     )
 
     addChildTask(task)
-    Log.record(TAG, "✅ 已创建${modeName}任务，执行时间: ${TimeUtil.getCommonDate(execTime)}")
+    if (finalExecTime == now) {
+        Log.record(TAG, "✅ 已创建立即执行任务")
+    } else {
+        Log.record(TAG, "✅ 已创建${modeName}任务，执行时间: ${TimeUtil.getCommonDate(finalExecTime)}")
+    }
 }
 
 private suspend fun AntFarm.runDonationRankWatchLoop(endTimeMs: Long) {
@@ -826,6 +837,43 @@ private fun AntFarm.tryUseSpecialFoodForCompetition(requiredEggCount: Int): Bool
         syncAnimalStatus(ownerFarmId)
     }
     return true
+}
+
+/**
+ * 任务结束汇报：统计今日产出
+ */
+private fun printDonationReport() {
+    try {
+        val uid = UserMap.currentUid ?: return
+        val res = AntFarmRpcCall.enterDonationCompetitionRank()
+        val jo = JSONObject(res)
+        if (ResChecker.checkRes(TAG, jo)) {
+            val rankInfo = jo.optJSONObject("donationRankHomeInfo")
+            val rankList = rankInfo?.optJSONArray("userDonationRankList") ?: return
+
+            var myData: JSONObject? = null
+            for (i in 0 until rankList.length()) {
+                val user = rankList.getJSONObject(i)
+                if (user.getString("userId") == uid) {
+                    myData = user
+                    break
+                }
+            }
+
+            if (myData != null) {
+                val totalDonated = Status.getDailyDonationTotal(uid)
+                val finalRank = myData.optInt("rankOrder")
+                val earnedStars = myData.optInt("rewardStarNum", 0)
+
+                Log.record(TAG, "--- 📊 今日排位赛战报 ---")
+                Log.record(TAG, "🥚 今日累计捐赠：$totalDonated 枚")
+                Log.record(TAG, "🏆 最终预计排名：第 $finalRank 名")
+                Log.record(TAG, "🌟 今日预计获星：$earnedStars 颗")
+                Log.record(TAG, "-------------------------")
+            }
+        }
+    } catch (_: Exception) {
+    }
 }
 
 private fun AntFarm.fetchCuisineListForCompetition(): JSONArray? {
