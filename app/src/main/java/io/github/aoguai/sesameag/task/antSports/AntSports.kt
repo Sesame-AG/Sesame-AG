@@ -138,6 +138,21 @@ class AntSports : ModelTask() {
         var missingRecordIdCount: Int = 0
     )
 
+    private data class SportsPanelTaskSnapshot(
+        val totalTasks: Int,
+        val completedTasks: Int,
+        val availableTasks: Int
+    )
+
+    private data class SportsPanelRoundAction(
+        val action: String,
+        val taskName: String = ""
+    ) {
+        fun describe(): String {
+            return if (taskName.isBlank()) action else "$action：$taskName"
+        }
+    }
+
     private data class MotionQuizRewardCandidate(
         val creativityId: String,
         val objectId: String,
@@ -1343,12 +1358,11 @@ class AntSports : ModelTask() {
                     roundLimit = estimateSportsPanelTaskRoundLimit(taskList)
                 }
 
-                var totalTasks = 0
-                var completedTasks = 0
-                var availableTasks = 0
+                val taskSnapshot = buildSportsPanelTaskSnapshot(taskList)
                 var progressed = false
                 var stopCurrentRound = false
                 var shouldRequeryImmediately = false
+                var roundAction = SportsPanelRoundAction("无可执行动作")
 
                 taskLoop@ for (i in 0 until taskList.length()) {
                     val taskDetail = taskList.optJSONObject(i) ?: continue
@@ -1366,41 +1380,41 @@ class AntSports : ModelTask() {
                         continue
                     }
 
-                    totalTasks++
-
                     when (taskStatus) {
-                        "HAS_RECEIVED" -> {
-                            completedTasks++
-                        }
+                        "HAS_RECEIVED" -> Unit
                         "WAIT_RECEIVE" -> {
-                            availableTasks++
                             val receiveKey = buildSportsPanelReceiveKey(taskDetail, taskId)
                             if (receiveKey in failedReceiveTaskIds) {
                                 Log.sports("运动任务面板[本轮已跳过领取失败任务：$taskName]")
+                                roundAction = SportsPanelRoundAction("跳过已失败领取", taskName)
                                 continue@taskLoop
                             }
                             if (receiveTaskReward(taskDetail, taskName)) {
                                 progressed = true
                                 shouldRequeryImmediately = true
+                                roundAction = SportsPanelRoundAction("领取奖励后刷新", taskName)
                             } else {
                                 failedReceiveTaskIds.add(receiveKey)
+                                roundAction = SportsPanelRoundAction("领取失败", taskName)
                             }
                         }
                         "WAIT_COMPLETE" -> {
-                            availableTasks++
                             val completeKey = buildSportsPanelCompleteKey(taskDetail, taskId)
                             if (completeKey in failedCompleteTaskIds) {
                                 Log.sports("运动任务面板[本轮已跳过完成失败任务：$taskName]")
+                                roundAction = SportsPanelRoundAction("跳过已失败完成", taskName)
                                 continue@taskLoop
                             }
                             when (completeTask(taskDetail, taskName)) {
                                 SportsPanelTaskCompleteResult.SUCCESS -> {
                                     progressed = true
                                     shouldRequeryImmediately = true
+                                    roundAction = SportsPanelRoundAction("完成任务后刷新", taskName)
                                 }
 
                                 SportsPanelTaskCompleteResult.FAILED -> {
                                     failedCompleteTaskIds.add(completeKey)
+                                    roundAction = SportsPanelRoundAction("完成失败", taskName)
                                 }
 
                                 SportsPanelTaskCompleteResult.STOP_CURRENT_ROUND -> {
@@ -1409,11 +1423,13 @@ class AntSports : ModelTask() {
                                         Log.sports("运动任务面板[本轮止损：检测到离线/验证类错误，停止继续执行剩余浏览任务]")
                                     }
                                     stopCurrentRound = true
+                                    roundAction = SportsPanelRoundAction("止损停止", taskName)
                                 }
                             }
                         }
                         else -> {
                             Log.error(TAG, "做任务得能量🎈[未知状态：$taskName，状态：$taskStatus]")
+                            roundAction = SportsPanelRoundAction("未知状态", taskName)
                         }
                     }
 
@@ -1422,9 +1438,11 @@ class AntSports : ModelTask() {
                     }
                 }
 
-                Log.sports("运动任务完成情况：$completedTasks/$totalTasks，剩余待处理：$availableTasks，轮次：$round")
+                Log.sports(
+                    "运动任务面板刷新进度[轮次:$round/$roundLimit][处理前已领取:${taskSnapshot.completedTasks}/${taskSnapshot.totalTasks}][处理前待处理:${taskSnapshot.availableTasks}][本轮动作:${roundAction.describe()}][本轮有进展:$progressed]"
+                )
 
-                if (totalTasks > 0 && completedTasks >= totalTasks && availableTasks == 0) {
+                if (taskSnapshot.totalTasks > 0 && taskSnapshot.completedTasks >= taskSnapshot.totalTasks && taskSnapshot.availableTasks == 0) {
                     val today = TimeUtil.getDateStr2()
                     DataStore.put(SPORTS_TASKS_COMPLETED_DATE, today)
                     Status.setFlagToday(StatusFlags.FLAG_ANTSPORTS_DAILY_TASKS_DONE)
@@ -1751,6 +1769,34 @@ class AntSports : ModelTask() {
             }
         }
         return null
+    }
+
+    private fun buildSportsPanelTaskSnapshot(taskList: JSONArray): SportsPanelTaskSnapshot {
+        var totalTasks = 0
+        var completedTasks = 0
+        var availableTasks = 0
+        for (i in 0 until taskList.length()) {
+            val taskDetail = taskList.optJSONObject(i) ?: continue
+            val taskType = taskDetail.optString("taskType", "")
+            if (taskType == "SETTLEMENT") continue
+
+            val taskId = taskDetail.optString("taskId", "")
+            val taskName = taskDetail.optString("taskName", taskId)
+            val taskStatus = taskDetail.optString("taskStatus", "")
+            val isBlacklisted =
+                TaskBlacklist.isTaskInBlacklist(SPORTS_TASK_BLACKLIST_MODULE, taskId) ||
+                    TaskBlacklist.isTaskInBlacklist(SPORTS_TASK_BLACKLIST_MODULE, taskName)
+            if (isBlacklisted && taskStatus != "WAIT_RECEIVE") {
+                continue
+            }
+
+            totalTasks++
+            when (taskStatus) {
+                "HAS_RECEIVED" -> completedTasks++
+                "WAIT_RECEIVE", "WAIT_COMPLETE" -> availableTasks++
+            }
+        }
+        return SportsPanelTaskSnapshot(totalTasks, completedTasks, availableTasks)
     }
 
     private fun estimateSportsPanelTaskRoundLimit(taskList: JSONArray): Int {
