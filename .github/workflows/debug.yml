@@ -1,0 +1,105 @@
+name: 🐞 Build Debug APK
+run-name: 🐞 Debug Build - ${{ github.actor }}
+
+on:
+  push:
+    branches: [ "dev" ]
+  pull_request:
+    branches: [ "dev" ]
+  workflow_dispatch:
+
+jobs:
+  debug-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: ⏰ Set Timezone to Asia/Shanghai
+        run: |
+          sudo timedatectl set-timezone Asia/Shanghai
+          echo "Current time: $(date)"
+
+      - name: 👨🏻‍💻 Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.head_ref || github.ref_name }}
+
+      - name: ☕ Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "zulu"
+          cache: gradle
+
+      - name: 🤝 Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+          gradle-version: wrapper
+
+      - name: ☎️ Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: 🔥 Build Debug APK with Gradle
+        # 修改为 assembleDebug
+        run: ./gradlew assembleDebug -Pversion=${{ github.ref_name }}
+
+      - name: 📊 Locate Debug APKs
+        id: locate_apks
+        run: |
+          # 路径修改为 debug 目录
+          debug_dir="app/build/outputs/apk/debug"
+          
+          # 查找各个架构的包 (如果你的 debug 配置未开启分包，可能只有 universal)
+          arm64_apk=$(find "$debug_dir" -name "*-arm64-v8a-*.apk" | head -n 1)
+          armv7_apk=$(find "$debug_dir" -name "*-armeabi-v7a-*.apk" | head -n 1)
+          x86_apk=$(find "$debug_dir" -name "*-x86-*.apk" | head -n 1)
+          x86_64_apk=$(find "$debug_dir" -name "*-x86_64-*.apk" | head -n 1)
+          # 如果没有特定架构包，通常 debug 包名为 app-debug.apk，这里尝试作为 universal 捕获
+          universal_apk=$(find "$debug_dir" -name "*-universal-*.apk" | head -n 1)
+          if [ -z "$universal_apk" ]; then
+             universal_apk=$(find "$debug_dir" -name "*debug.apk" | head -n 1)
+          fi
+
+          echo "arm64_apk=$arm64_apk" >> $GITHUB_OUTPUT
+          echo "armv7_apk=$armv7_apk" >> $GITHUB_OUTPUT
+          echo "x86_apk=$x86_apk" >> $GITHUB_OUTPUT
+          echo "x86_64_apk=$x86_64_apk" >> $GITHUB_OUTPUT
+          echo "universal_apk=$universal_apk" >> $GITHUB_OUTPUT
+
+      # 直接上传 Artifacts，不再签名，不再发 TG
+
+      - name: 🚀 Upload Debug APK - arm64-v8a
+        if: steps.locate_apks.outputs.arm64_apk != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-apk-arm64-v8a
+          path: ${{ steps.locate_apks.outputs.arm64_apk }}
+
+      - name: 🚀 Upload Debug APK - armeabi-v7a
+        if: steps.locate_apks.outputs.armv7_apk != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-apk-armeabi-v7a
+          path: ${{ steps.locate_apks.outputs.armv7_apk }}
+
+      - name: 🚀 Upload Debug APK - x86
+        if: steps.locate_apks.outputs.x86_apk != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-apk-x86
+          path: ${{ steps.locate_apks.outputs.x86_apk }}
+
+      - name: 🚀 Upload Debug APK - x86_64
+        if: steps.locate_apks.outputs.x86_64_apk != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-apk-x86_64
+          path: ${{ steps.locate_apks.outputs.x86_64_apk }}
+
+      - name: 🚀 Upload Debug APK - Universal
+        if: steps.locate_apks.outputs.universal_apk != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-apk-universal
+          path: ${{ steps.locate_apks.outputs.universal_apk }}
