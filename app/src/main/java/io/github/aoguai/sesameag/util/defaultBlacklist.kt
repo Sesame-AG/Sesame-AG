@@ -63,6 +63,7 @@ private val orchardDefaultBlacklist = setOf(
     "ORCHARD_NORMAL_KUAISHOU_MAX",      // 逛一逛快手
     "ORCHARD_NORMAL_DIAOYU1",           // 钓鱼1次
     "ZHUFANG3IN1",                      // 添加农场小组件并访问
+    "12172|逛浙江农货得肥料",             // 任务全局配置不存在
     "12173",                            // 买好货
     "TOUTIAO|逛一逛今日头条",            // 精确匹配旧今日头条任务，避免误伤趣头条任务
     "ORCHARD_NORMAL_ZADAN10_3000",      // 砸蛋10次得3000肥料
@@ -76,6 +77,7 @@ private val orchardDefaultBlacklist = setOf(
     "babafarm_cjmk_xdujdd15",           // 去游戏中心玩游戏：不支持rpc调用
     "LINGHUOTIAOKONG",                  // 逛一逛新浪微博
     "ORCHARD_NORMAL_XIANYU_DUAN",       // 逛一逛闲鱼
+    "ORCHARD_NORMAL_TAOBAOTAOLIPAI_VISIT|逛一逛淘宝拍照", // 不支持rpc调用
     "ORCHARD_NORMAL_WAIMAIMIANDAN",     // 逛一逛闪购外卖
     "ORCHARD_NORMAL_BAIDU_DUO",         // 去百度浏览资讯
     "ORCHARD_NORMAL_XIANXIAZHIFU100",   // 到店支付1笔得100肥
@@ -114,6 +116,7 @@ private val oceanDefaultBlacklist = setOf(
     "玩一玩生存33天",
     "DAOLIU_SCSST_GAME_NEW",
     "LMCT_QDRW_HAIYANG",       // finishTask 返回 400000040，不支持rpc调用
+    "mokuai_senlin_hydrw|随机任务：玩一玩得拼图", // finishTask 返回 400000040，不支持rpc调用
     "随机任务：玩一玩浪漫餐厅"  // finishTask 返回 400000040，不支持rpc调用
 )
 
@@ -224,6 +227,17 @@ private val fishPondDefaultBlacklist = setOf(
     "浮球游戏广告"
 )
 
+private val stallDefaultBlacklist = setOf(
+    // 蚂蚁新村
+    "ANTSTALL_TASK_XCXYX_sanguobinghe|玩三冰历史最高战力提升1万",
+    "ANTSTALL_TASK_XCXYX_baoweixiangrikui|玩保卫向日葵通关1次",
+    "ANTSTALL_NORMAL_DAILY_DONATE_COUNT|助力就业岗位",
+    "ANTSTALL_TASK_xcjmjyjuankuan2026|帮乡村姐妹家乡就业",
+    "ANTSTALL_TASK_kuaishouhuanduan|去快手逛一逛",
+    "ANTSTALL_TASK_taojinbihuanduan|进入淘宝芭芭农场领免费水果",
+    "ANTSTALL_P2P_DAILY_SHARER|邀请好友助力"
+)
+
 private val yuebaoDefaultBlacklist = setOf(
     // 余额宝
     "余额宝体验金签到(10元)",
@@ -267,14 +281,28 @@ private val memberDefaultBlacklist = setOf(
     "逛一逛淘金币频道",
     "逛美团刷视频领现金",
     "逛一逛抖音极速版",
-    "玩向西冲冲冲升5级"
+    "玩向西冲冲冲升5级",
+    "SYH_RTB_SHOW_TASK_INDEX_2|去签名设计", // 304/TASK_NOT_FINISHED
+    "SYH_RTB_SHOW_TASK_INDEX_3|玩游戏通过1次游戏" // 001，系统异常
 )
 
 private val insuredDefaultBlacklist = emptySet<String>()
 
 private val sportsDefaultBlacklist = setOf(
     // 运动
-    "玩游戏"
+    "玩游戏",
+    // 签名/设计类广告任务：finishAdTask 返回 304/TASK_NOT_FINISHED
+    "AP17300472",
+    "AP14300572",
+    "AP18300607",
+    "AP13300544",
+    "AP19300555",
+    "AP18300546",
+    "AP10300545",
+    "AP16300608",
+    "AP12300554",
+    "AP13300501",
+    "AP16300571"
 )
 
 val DEFAULT_BLACKLIST: Map<String, Set<String>> = mapOf(
@@ -290,5 +318,6 @@ val DEFAULT_BLACKLIST: Map<String, Set<String>> = mapOf(
     "蚂蚁保" to insuredDefaultBlacklist,
     "运动" to sportsDefaultBlacklist,
     "神奇物种" to dodoDefaultBlacklist,
+    "蚂蚁新村" to stallDefaultBlacklist,
     "福气鱼池" to fishPondDefaultBlacklist
 )

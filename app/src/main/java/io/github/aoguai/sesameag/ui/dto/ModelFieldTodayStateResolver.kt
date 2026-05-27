@@ -100,7 +100,7 @@ object ModelFieldTodayStateResolver {
                         inactive("今日会员任务已止损")
 
                     Status.hasFlagToday(StatusFlags.FLAG_ANTMEMBER_MEMBER_TASK_EMPTY_TODAY) ->
-                        inactive("今日会员任务已无可执行项")
+                        inactive("今日会员任务已处理")
 
                     else -> ModelFieldTodayState()
                 }
@@ -126,6 +126,9 @@ object ModelFieldTodayStateResolver {
 
             "AntSesameCredit.sesameTask" ->
                 sesameTaskState()
+
+            "AntSesameCredit.enableZhimaTree" ->
+                flag(StatusFlags.FLAG_SESAME_ZHIMA_TREE_TASK_HANDLED_TODAY, "今日芝麻树任务奖励已处理")
 
             "AntSesameCredit.collectSesame",
             "AntSesameCredit.collectSesameWithOneClick" ->

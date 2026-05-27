@@ -64,11 +64,20 @@ data class TaskFlowActionResult(
     val detail: String = "",
     val stopCurrentRound: Boolean = false,
     // 默认批量处理当前查询快照，只有强依赖服务端新状态的动作才要求立即刷新。
-    val refreshAfterAction: Boolean = false
+    val refreshAfterAction: Boolean = false,
+    // RPC 成功不一定代表服务端任务状态已经推进；无进展成功不继续驱动刷新闭环。
+    val progressChanged: Boolean = true
 ) {
     companion object {
-        fun success(refreshAfterAction: Boolean = false): TaskFlowActionResult {
-            return TaskFlowActionResult(success = true, refreshAfterAction = refreshAfterAction)
+        fun success(
+            refreshAfterAction: Boolean = false,
+            progressChanged: Boolean = true
+        ): TaskFlowActionResult {
+            return TaskFlowActionResult(
+                success = true,
+                refreshAfterAction = refreshAfterAction,
+                progressChanged = progressChanged
+            )
         }
 
         fun failure(
@@ -113,7 +122,10 @@ data class TaskFlowRunResult(
     val completed: Boolean,
     val progressed: Boolean,
     val stopped: Boolean,
-    val rounds: Int
+    val rounds: Int,
+    val actionAttempted: Boolean = false,
+    val progressChanged: Boolean = progressed,
+    val noProgressSuccess: Boolean = false
 )
 
 private data class TaskFlowActionCandidate(
@@ -228,18 +240,34 @@ class TaskFlowEngine(
         var round = 1
         var roundLimit = 1
         var progressedAny = false
+        var actionAttemptedAny = false
+        var noProgressSuccessAny = false
 
         while (round <= roundLimit) {
             val response = try {
                 adapter.query()
             } catch (t: Throwable) {
                 adapter.logError("${adapter.flowName}[查询异常：${t.message}]")
-                return TaskFlowRunResult(completed = false, progressed = progressedAny, stopped = true, rounds = round)
+                return buildRunResult(
+                    completed = false,
+                    progressed = progressedAny,
+                    stopped = true,
+                    rounds = round,
+                    actionAttempted = actionAttemptedAny,
+                    noProgressSuccess = noProgressSuccessAny
+                )
             }
 
             if (!adapter.isQuerySuccess(response)) {
                 adapter.onQueryFailed(response)
-                return TaskFlowRunResult(completed = false, progressed = progressedAny, stopped = true, rounds = round)
+                return buildRunResult(
+                    completed = false,
+                    progressed = progressedAny,
+                    stopped = true,
+                    rounds = round,
+                    actionAttempted = actionAttemptedAny,
+                    noProgressSuccess = noProgressSuccessAny
+                )
             }
 
             val items = adapter.extractItems(response)
@@ -282,10 +310,15 @@ class TaskFlowEngine(
                 }
 
                 val result = executeAction(item, action)
+                actionAttemptedAny = true
                 if (result.success) {
                     adapter.afterSuccess(item, action, result)
-                    progressed = true
-                    progressedAny = true
+                    if (result.progressChanged) {
+                        progressed = true
+                        progressedAny = true
+                    } else {
+                        noProgressSuccessAny = true
+                    }
                     roundActions.add(TaskFlowRoundAction(successActionText(action), item.title))
                     if (result.refreshAfterAction) {
                         refreshRequested = true
@@ -334,11 +367,25 @@ class TaskFlowEngine(
                 snapshot.availableTasks == 0
             ) {
                 adapter.onAllTasksDone(snapshot)
-                return TaskFlowRunResult(completed = true, progressed = progressedAny, stopped = false, rounds = round)
+                return buildRunResult(
+                    completed = true,
+                    progressed = progressedAny,
+                    stopped = false,
+                    rounds = round,
+                    actionAttempted = actionAttemptedAny,
+                    noProgressSuccess = noProgressSuccessAny
+                )
             }
 
             if (stopCurrentRound || !progressed) {
-                return TaskFlowRunResult(completed = false, progressed = progressedAny, stopped = stopCurrentRound, rounds = round)
+                return buildRunResult(
+                    completed = false,
+                    progressed = progressedAny,
+                    stopped = stopCurrentRound,
+                    rounds = round,
+                    actionAttempted = actionAttemptedAny,
+                    noProgressSuccess = noProgressSuccessAny
+                )
             }
 
             GlobalThreadPools.sleepCompat(roundSleepMs)
@@ -346,7 +393,33 @@ class TaskFlowEngine(
         }
 
         adapter.onRoundLimit(roundLimit)
-        return TaskFlowRunResult(completed = false, progressed = progressedAny, stopped = true, rounds = roundLimit)
+        return buildRunResult(
+            completed = false,
+            progressed = progressedAny,
+            stopped = true,
+            rounds = roundLimit,
+            actionAttempted = actionAttemptedAny,
+            noProgressSuccess = noProgressSuccessAny
+        )
+    }
+
+    private fun buildRunResult(
+        completed: Boolean,
+        progressed: Boolean,
+        stopped: Boolean,
+        rounds: Int,
+        actionAttempted: Boolean,
+        noProgressSuccess: Boolean
+    ): TaskFlowRunResult {
+        return TaskFlowRunResult(
+            completed = completed,
+            progressed = progressed,
+            stopped = stopped,
+            rounds = rounds,
+            actionAttempted = actionAttempted,
+            progressChanged = progressed,
+            noProgressSuccess = noProgressSuccess
+        )
     }
 
     private fun buildSnapshot(items: List<TaskFlowItem>): TaskFlowSnapshot {

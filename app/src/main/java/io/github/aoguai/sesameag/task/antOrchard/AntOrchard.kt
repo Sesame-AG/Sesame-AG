@@ -56,6 +56,7 @@ class AntOrchard : ModelTask() {
         )
         private val ORCHARD_NON_RETRYABLE_INVALID_CODES = setOf(
             "20020012",
+            "400000001",
             "TASK_ID_INVALID",
             "ILLEGAL_ARGUMENT"
         )
@@ -1831,7 +1832,7 @@ class AntOrchard : ModelTask() {
                 TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE
 
             errorCode in ORCHARD_NON_RETRYABLE_INVALID_CODES ||
-                containsAny(message, "参数错误", "任务ID非法") ->
+                containsAny(message, "参数错误", "任务ID非法", "任务全局配置不存在") ->
                 TaskRpcFailureType.NON_RETRYABLE_INVALID
 
             errorCode in ORCHARD_RETRYABLE_RPC_CODES ||

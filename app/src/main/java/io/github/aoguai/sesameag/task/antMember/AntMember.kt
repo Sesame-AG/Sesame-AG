@@ -134,10 +134,11 @@ class AntMember : ModelTask() {
     }
 
     private enum class CurrentMemberTaskListProcessState {
-        PROCESSED,
-        PENDING,
+        COMPLETED,
+        HANDLED_PENDING_CONFIRM,
+        NO_ACTIONABLE_TASK,
+        RETRY_LATER,
         NO_TASK,
-        NO_SUPPORTED_TASK,
         UNKNOWN
     }
 
@@ -1304,20 +1305,28 @@ class AntMember : ModelTask() {
             }
 
             when (processCurrentMemberTaskListCompat()) {
-                CurrentMemberTaskListProcessState.PROCESSED -> Unit
-
-                CurrentMemberTaskListProcessState.PENDING -> {
-                    Log.member("会员任务#存在白名单任务但未确认完成，本轮结束，后续轮次继续查询")
+                CurrentMemberTaskListProcessState.COMPLETED -> {
+                    markMemberTaskDoneToday("会员任务#任务列表已处理完成，今日停止继续刷新")
                 }
 
-                CurrentMemberTaskListProcessState.NO_SUPPORTED_TASK -> {
-                    Log.member("会员任务#当前列表无白名单闭环任务，本轮结束，后续轮次继续查询")
+                CurrentMemberTaskListProcessState.HANDLED_PENDING_CONFIRM -> {
+                    markMemberTaskDoneToday("会员任务#今日已尝试可闭环任务，等待后续调度/明日刷新确认")
+                }
+
+                CurrentMemberTaskListProcessState.NO_ACTIONABLE_TASK -> {
+                    markMemberTaskDoneToday("会员任务#当前列表无可执行白名单任务，今日停止继续刷新")
                 }
 
                 CurrentMemberTaskListProcessState.NO_TASK -> {
                     if (!processedAnyTask) {
-                        markMemberTaskEmptyToday("会员任务#未发现可执行任务，今日停止继续刷新")
+                        markMemberTaskDoneToday("会员任务#未发现可执行任务，今日停止继续刷新")
+                    } else {
+                        markMemberTaskDoneToday("会员任务#浮球任务已处理且未发现更多任务，今日停止继续刷新")
                     }
+                }
+
+                CurrentMemberTaskListProcessState.RETRY_LATER -> {
+                    Log.member("会员任务#存在白名单任务但未确认完成，本轮结束，后续轮次继续查询")
                 }
 
                 CurrentMemberTaskListProcessState.UNKNOWN -> Unit
@@ -1333,13 +1342,18 @@ class AntMember : ModelTask() {
             val runResult = TaskFlowEngine(adapter, roundSleepMs = 500L).run()
             return@run when {
                 adapter.queryFailed -> CurrentMemberTaskListProcessState.UNKNOWN
-                adapter.supportedTaskCount == 0 && adapter.hasTaskSnapshot -> CurrentMemberTaskListProcessState.NO_SUPPORTED_TASK
-                adapter.supportedTaskCount == 0 -> CurrentMemberTaskListProcessState.NO_TASK
-                runResult.progressed -> CurrentMemberTaskListProcessState.PROCESSED
                 adapter.hasRetryableFailure || adapter.hasBlockingFailure || runResult.stopped ->
-                    CurrentMemberTaskListProcessState.PENDING
+                    CurrentMemberTaskListProcessState.RETRY_LATER
 
-                else -> CurrentMemberTaskListProcessState.PENDING
+                runResult.completed -> CurrentMemberTaskListProcessState.COMPLETED
+                adapter.supportedTaskCount == 0 && adapter.hasTaskSnapshot ->
+                    CurrentMemberTaskListProcessState.NO_ACTIONABLE_TASK
+
+                adapter.supportedTaskCount == 0 -> CurrentMemberTaskListProcessState.NO_TASK
+                runResult.progressChanged || runResult.noProgressSuccess || adapter.hasPendingConfirmation ->
+                    CurrentMemberTaskListProcessState.HANDLED_PENDING_CONFIRM
+
+                else -> CurrentMemberTaskListProcessState.RETRY_LATER
             }
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "processCurrentMemberTaskListCompat err:", t)
@@ -1361,9 +1375,12 @@ class AntMember : ModelTask() {
             private set
         var hasRetryableFailure: Boolean = false
             private set
+        var hasPendingConfirmation: Boolean = false
+            private set
 
         private val appliedMemberTasks = LinkedHashMap<String, CurrentMemberTask>()
         private val completedMemberTaskKeys = LinkedHashSet<String>()
+        private val pendingConfirmationTaskKeys = LinkedHashSet<String>()
         private val loggedSkipKeys = LinkedHashSet<String>()
 
         override fun query(): JSONObject {
@@ -1527,8 +1544,14 @@ class AntMember : ModelTask() {
         override fun afterSuccess(item: TaskFlowItem, action: TaskFlowAction, result: TaskFlowActionResult) {
             val task = currentMemberTaskFromFlowItem(item)
             val taskKey = buildCurrentMemberTaskFlowKey(task)
-            if (action == TaskFlowAction.COMPLETE && result.code != "VERIFY_PARTIAL") {
+            if (action == TaskFlowAction.COMPLETE && result.code == "CONFIRMED") {
                 completedMemberTaskKeys.add(taskKey)
+                pendingConfirmationTaskKeys.remove(taskKey)
+            } else if (action == TaskFlowAction.COMPLETE &&
+                (result.code == "VERIFY_PARTIAL" || result.code == "VERIFY_PENDING")
+            ) {
+                hasPendingConfirmation = true
+                pendingConfirmationTaskKeys.add(taskKey)
             }
         }
 
@@ -1961,7 +1984,7 @@ class AntMember : ModelTask() {
         }
     }
 
-    private fun markMemberTaskEmptyToday(message: String) {
+    private fun markMemberTaskDoneToday(message: String) {
         setFlagToday(StatusFlags.FLAG_ANTMEMBER_MEMBER_TASK_EMPTY_TODAY)
         Log.member(message)
     }
@@ -2227,8 +2250,12 @@ class AntMember : ModelTask() {
             }
 
             CurrentMemberTaskVerifyState.PARTIAL_REPEATABLE -> {
-                Log.member("会员任务[${task.title}]#本次完成但周期进度未满，刷新后继续补做")
-                TaskFlowActionResult(success = true, code = "VERIFY_PARTIAL")
+                Log.member("会员任务[${task.title}]#本次完成但周期进度未满，等待后续调度确认")
+                TaskFlowActionResult(
+                    success = true,
+                    code = "VERIFY_PARTIAL",
+                    progressChanged = false
+                )
             }
 
             CurrentMemberTaskVerifyState.UNCONFIRMED -> {
@@ -3744,7 +3771,11 @@ class AntMember : ModelTask() {
             return TaskFlowActionResult(success = true, code = "CONFIRMED")
         } else {
             Log.member("会员任务[$taskTitle]#广告任务上报成功，状态待后续页面确认")
-            return TaskFlowActionResult(success = true, code = "VERIFY_PENDING")
+            return TaskFlowActionResult(
+                success = true,
+                code = "VERIFY_PENDING",
+                progressChanged = false
+            )
         }
     }
 

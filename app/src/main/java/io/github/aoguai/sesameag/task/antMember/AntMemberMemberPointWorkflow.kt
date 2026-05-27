@@ -34,10 +34,9 @@ internal fun AntMember.prepareMemberPointWorkflows(
     if (memberTask?.value == true) {
         if (hasFlagToday(StatusFlags.FLAG_ANTMEMBER_MEMBER_TASK_RISK_STOP_TODAY)) {
             Log.member("⏭️ 今天会员任务已因风控/离线止损，停止执行")
+        } else if (hasFlagToday(StatusFlags.FLAG_ANTMEMBER_MEMBER_TASK_EMPTY_TODAY)) {
+            Log.member("⏭️ 今日会员任务已处理，跳过执行")
         } else {
-            if (hasFlagToday(StatusFlags.FLAG_ANTMEMBER_MEMBER_TASK_EMPTY_TODAY)) {
-                Log.member("ℹ️ 检测到会员任务空列表旧标记，继续按本轮查询")
-            }
             deferredTasks.add(scope.async(Dispatchers.IO) { doAllMemberAvailableTaskCompat() })
         }
     }

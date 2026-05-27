@@ -115,7 +115,7 @@ object StatusFlags {
     /** 今日是否已处理「会员签到」 */
     const val FLAG_ANTMEMBER_MEMBER_SIGN_DONE: String = "AntMember::memberSignDone"
 
-    /** 今日会员任务已判定无需继续刷新（列表为空/仅剩黑名单/仅剩暂不支持任务） */
+    /** 今日会员任务已处理到无需继续刷新 */
     const val FLAG_ANTMEMBER_MEMBER_TASK_EMPTY_TODAY: String = "AntMember::memberTaskEmptyToday"
 
     /** 今日会员任务因风控/离线止损，不再继续刷新 */
@@ -142,6 +142,10 @@ object StatusFlags {
 
     /** 芝麻信用：今日是否已处理全部可执行任务 */
     const val FLAG_SESAME_DO_ALL_AVAILABLE_TASK: String = "AntSesameCredit::doAllAvailableSesameTask"
+
+    /** 芝麻树：今日任务奖励已尝试领取，等待服务端刷新确认 */
+    const val FLAG_SESAME_ZHIMA_TREE_TASK_HANDLED_TODAY: String =
+        "AntSesameCredit::zhimaTreeTaskHandledToday"
 
     /** 芝麻信用：当日加入任务次数已达上限 */
     const val FLAG_SESAME_JOIN_LIMIT_REACHED: String = "AntSesameCredit::sesameJoinLimitReached"

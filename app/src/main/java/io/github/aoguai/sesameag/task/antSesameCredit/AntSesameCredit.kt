@@ -1523,7 +1523,11 @@ class AntSesameCredit : ModelTask() {
     internal suspend fun doZhimaTree(): Unit = CoroutineUtils.run {
         try {
             // 1. 执行首页和赚净化值列表任务，统一走 send -> refresh -> receive 闭环
-            doZhimaTreeTasks()
+            if (hasFlagToday(StatusFlags.FLAG_SESAME_ZHIMA_TREE_TASK_HANDLED_TODAY)) {
+                Log.sesame("芝麻树🌳[今日任务奖励已处理，跳过任务闭环]")
+            } else {
+                doZhimaTreeTasks()
+            }
 
             // 2. 消耗净化值进行净化
             doPurification()
@@ -1533,7 +1537,12 @@ class AntSesameCredit : ModelTask() {
     }
 
     private suspend fun doZhimaTreeTasks(): Unit = CoroutineUtils.run {
-        TaskFlowEngine(ZhimaTreeTaskFlowAdapter(), roundSleepMs = 800L).run()
+        val adapter = ZhimaTreeTaskFlowAdapter()
+        val runResult = TaskFlowEngine(adapter, roundSleepMs = 800L).run()
+        if (adapter.hasHandledReceiveTask && runResult.completed) {
+            setFlagToday(StatusFlags.FLAG_SESAME_ZHIMA_TREE_TASK_HANDLED_TODAY)
+            Log.sesame("芝麻树🌳[今日任务奖励已尝试领取，等待服务端刷新确认]")
+        }
     }
 
     private inner class ZhimaTreeTaskFlowAdapter : TaskFlowAdapter {
@@ -1541,8 +1550,11 @@ class AntSesameCredit : ModelTask() {
         override val flowName: String = "芝麻树任务"
 
         private val handledAdBizIds = mutableSetOf<String>()
+        private val handledReceiveTaskKeys = mutableSetOf<String>()
         private val pendingSentTaskRefs = linkedMapOf<String, ZhimaTreeTaskRef>()
         private val loggedSkipKeys = mutableSetOf<String>()
+        val hasHandledReceiveTask: Boolean
+            get() = handledReceiveTaskKeys.isNotEmpty()
 
         override fun query(): JSONObject {
             val result = JSONObject()
@@ -1675,6 +1687,10 @@ class AntSesameCredit : ModelTask() {
                 logZhimaTreeSkipOnce(item, "等待上次send回查")
                 return true
             }
+            if (phase == TaskFlowPhase.REWARD_READY && zhimaTreeTaskKey(item) in handledReceiveTaskKeys) {
+                logZhimaTreeSkipOnce(item, "本轮已领取，等待刷新确认")
+                return true
+            }
             return false
         }
 
@@ -1722,6 +1738,7 @@ class AntSesameCredit : ModelTask() {
             }
             val receiveResult = doTaskActionResult(taskId, "receive")
             if (receiveResult.success) {
+                handledReceiveTaskKeys.add(zhimaTreeTaskKey(item))
                 removePendingTaskRef(taskRef)
                 Log.sesame(buildZhimaTreeSuccessLog("领取奖励", taskRef))
                 return TaskFlowActionResult.success()

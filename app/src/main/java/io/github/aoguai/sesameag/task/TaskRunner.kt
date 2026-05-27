@@ -124,8 +124,8 @@ class CoroutineTaskRunner(allModels: List<Model>) {
             Log.printStackTrace(TAG, "任务流程异常", e)
         } finally {
             awaitLongRunningJobs()
-            printExecutionSummary(startTime, System.currentTimeMillis())
             scheduleNext()
+            printExecutionSummary(startTime, System.currentTimeMillis())
         }
     }
 
@@ -334,7 +334,7 @@ class CoroutineTaskRunner(allModels: List<Model>) {
 
     private fun scheduleNext() {
         try {
-            ApplicationHook.scheduleNextExecutionInternal(ApplicationHook.lastExecTime)
+            ApplicationHook.scheduleNextExecutionInternal(System.currentTimeMillis())
             updateRunningNextExec(ApplicationHook.nextExecutionTime)
             Log.record(TAG, "📅 已调度下次执行")
         } catch (e: Exception) {
