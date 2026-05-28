@@ -374,7 +374,8 @@ private fun selectAggressiveDonationTarget(
     myRank: Int,
     myStars: Int,
     serverDonationTotal: Int,
-    effectiveRemainingQuota: Int
+    effectiveRemainingQuota: Int,
+    overtakeAmount: Int
 ): DonationRankTarget? {
     var target: DonationRankTarget? = null
 
@@ -386,7 +387,7 @@ private fun selectAggressiveDonationTarget(
         val otherStars = other.optInt("rewardStarNum", 0)
         if (otherStars <= myStars) continue
 
-        val eggsNeeded = other.getInt("donationNum") - serverDonationTotal + 1
+        val eggsNeeded = other.getInt("donationNum") - serverDonationTotal + overtakeAmount
         if (eggsNeeded <= 0 || eggsNeeded > effectiveRemainingQuota) continue
 
         val currentTarget = target
@@ -406,7 +407,8 @@ private fun selectStableDonationTarget(
     myStars: Int,
     serverDonationTotal: Int,
     effectiveRemainingQuota: Int,
-    requiredStarsToday: Int
+    requiredStarsToday: Int,
+    overtakeAmount: Int
 ): DonationRankTarget? {
     var target: DonationRankTarget? = null
 
@@ -418,7 +420,7 @@ private fun selectStableDonationTarget(
         val otherStars = other.optInt("rewardStarNum", 0)
         if (otherStars <= myStars || otherStars < requiredStarsToday) continue
 
-        val eggsNeeded = other.getInt("donationNum") - serverDonationTotal + 1
+        val eggsNeeded = other.getInt("donationNum") - serverDonationTotal + overtakeAmount
         if (eggsNeeded <= 0 || eggsNeeded > effectiveRemainingQuota) continue
 
         val currentTarget = target
@@ -520,6 +522,12 @@ private fun AntFarm.scheduleDonationCompetitionTask(endTimeMs: Long) {
                     checkRankAndDonate(maxDonation - donationsMadeToday)
                 }
             }
+            val reportTime = endTimeMs + 10000L
+            val waitToReport = reportTime - System.currentTimeMillis()
+            if (waitToReport > 0) {
+                Log.record(TAG, "📊 等待结算完成，等待10s获取战报统计")
+                delay(waitToReport)
+            }
             printDonationReport()
         },
         execTime = finalExecTime,
@@ -536,9 +544,15 @@ private fun AntFarm.scheduleDonationCompetitionTask(endTimeMs: Long) {
 
 private suspend fun AntFarm.runDonationRankWatchLoop(endTimeMs: Long) {
     val refreshSec = watchDonationRefreshInterval?.value ?: 10
-    Log.record(TAG, "🚀 开始排位赛轮询蹲点，间隔 ${refreshSec}s")
+    val lastGapSec = watchDonationLastRefreshSecondsBeforeEnd?.value ?: 2
+    val lastRefreshTime = endTimeMs - lastGapSec * 1000L
 
-    while (System.currentTimeMillis() < endTimeMs) {
+    Log.record(TAG, "🚀 开始排位赛轮询蹲点，间隔 ${refreshSec}s，最后一次刷新时间点：${TimeUtil.getFormatTime(lastRefreshTime, "HH:mm:ss")}")
+
+    while (true) {
+        val now = System.currentTimeMillis()
+        if (now >= endTimeMs) break
+
         val uid = UserMap.currentUid ?: break
         val currentDonated = Status.getDailyDonationTotal(uid)
         val maxDonation = maxDailyDonationCompetitionCount?.value ?: -1
@@ -554,7 +568,31 @@ private suspend fun AntFarm.runDonationRankWatchLoop(endTimeMs: Long) {
             checkRankAndDonate(maxDonation - currentDonated)
         }
 
-        delay(refreshSec * 1000L)
+        val afterDonateNow = System.currentTimeMillis()
+        if (afterDonateNow >= endTimeMs) break
+
+        val nextNormalRefresh = afterDonateNow + refreshSec * 1000L
+
+        if (nextNormalRefresh >= lastRefreshTime) {
+            val waitToFinal = lastRefreshTime - System.currentTimeMillis()
+            if (waitToFinal > 0) {
+                Log.record(TAG, "⏳ 等待最后一次刷新 (距离结束 $lastGapSec 秒)")
+                delay(waitToFinal)
+
+                if (System.currentTimeMillis() < endTimeMs) {
+                    Log.record(TAG, "⚡ 执行最后一次刷新")
+                    val finalCurrentDonated = Status.getDailyDonationTotal(uid)
+                    if (maxDonation < 0) {
+                        checkRankAndDonate(Int.MAX_VALUE)
+                    } else if (finalCurrentDonated < maxDonation) {
+                        checkRankAndDonate(maxDonation - finalCurrentDonated)
+                    }
+                }
+            }
+            break // 执行完收官动作后退出循环
+        } else {
+            delay(refreshSec * 1000L)
+        }
     }
     Log.record(TAG, "🏁 轮询蹲点结束")
 }
@@ -607,6 +645,7 @@ private fun AntFarm.checkRankAndDonate(
 
                 val myRank = myData.getInt("rankOrder")
                 val myStars = myData.optInt("rewardStarNum", 0)
+                val overtakeAmount = donationCompetitionOvertakeAmount?.value ?: 1
 
                 // 如果已经是第一名，根据策略不做处理
                 if (myRank == 1) {
@@ -643,7 +682,8 @@ private fun AntFarm.checkRankAndDonate(
                         myStars,
                         serverDonationTotal,
                         effectiveRemainingQuota,
-                        stablePlan.requiredStarsToday
+                        stablePlan.requiredStarsToday,
+                        overtakeAmount
                     ) ?: run {
                         if (!allowAggressiveFallback) {
                             Log.record(
@@ -661,7 +701,8 @@ private fun AntFarm.checkRankAndDonate(
                             myRank,
                             myStars,
                             serverDonationTotal,
-                            effectiveRemainingQuota
+                            effectiveRemainingQuota,
+                            overtakeAmount
                         )
                     }
                 } else {
@@ -685,7 +726,8 @@ private fun AntFarm.checkRankAndDonate(
                         myRank,
                         myStars,
                         serverDonationTotal,
-                        effectiveRemainingQuota
+                        effectiveRemainingQuota,
+                        overtakeAmount
                     )
                 }
 

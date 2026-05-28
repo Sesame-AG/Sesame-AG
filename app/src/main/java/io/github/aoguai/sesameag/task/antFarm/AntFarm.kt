@@ -239,9 +239,11 @@ class AntFarm : ModelTask() {
     internal var donationCompetitionSpecialFoodCount: IntegerModelField? = null
     internal var stableDonationCompetitionAnytimeCheck: BooleanModelField? = null
     internal var donationCompetitionTime: StringModelField? = null
+    internal var donationCompetitionOvertakeAmount: IntegerModelField? = null
     internal var watchDonationRank: BooleanModelField? = null
     internal var watchDonationAdvanceTime: IntegerModelField? = null
     internal var watchDonationRefreshInterval: IntegerModelField? = null
+    internal var watchDonationLastRefreshSecondsBeforeEnd: IntegerModelField? = null
     internal var maxDailyDonationCompetitionCount: IntegerModelField? = null
 
     /**
@@ -716,6 +718,16 @@ class AntFarm : ModelTask() {
                 donationCompetitionTime = it
             })
         modelFields.addField(
+            IntegerModelField(
+                "donationCompetitionOvertakeAmount",
+                "捐蛋排位赛 | 超过前一名的捐蛋数",
+                1,
+                1,
+                10000
+            ).withDesc("在尝试反超前一名时，比对方多捐赠的爱心蛋数量。").also {
+                donationCompetitionOvertakeAmount = it
+            })
+        modelFields.addField(
             BooleanModelField(
                 "watchDonationRank",
                 "捐蛋排位赛 | 轮询蹲点",
@@ -737,6 +749,16 @@ class AntFarm : ModelTask() {
                 1,
                 60
             ).withDesc("高频轮询期间刷新排行榜的间隔时间。").also { watchDonationRefreshInterval = it })
+        modelFields.addField(
+            IntegerModelField(
+                "watchDonationLastRefreshSecondsBeforeEnd",
+                "捐蛋排位赛 | 轮询最后刷新距结束(秒)",
+                2,
+                0,
+                10
+            ).withDesc("控制轮询蹲点在结束前多少秒执行最后一次强制刷新，小于2秒意义不大，因为网络请求慢。").also {
+                watchDonationLastRefreshSecondsBeforeEnd = it
+            })
         modelFields.addField(
             BooleanModelField(
                 "useSpecialFood",
