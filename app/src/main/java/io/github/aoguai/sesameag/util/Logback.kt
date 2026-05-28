@@ -4,28 +4,27 @@ import android.content.Context
 import android.util.Log
 import ch.qos.logback.classic.AsyncAppender
 import ch.qos.logback.classic.Level
+import ch.qos.logback.classic.Logger
 import ch.qos.logback.classic.LoggerContext
 import ch.qos.logback.classic.android.LogcatAppender
 import ch.qos.logback.classic.encoder.PatternLayoutEncoder
 import ch.qos.logback.classic.spi.ILoggingEvent
-import ch.qos.logback.core.rolling.FixedWindowRollingPolicy
 import ch.qos.logback.core.rolling.RollingFileAppender
-import ch.qos.logback.core.rolling.SizeBasedTriggeringPolicy
+import ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy
 import ch.qos.logback.core.util.FileSize
-import io.github.aoguai.sesameag.data.General
 import org.slf4j.LoggerFactory
 import java.io.File
 import java.text.SimpleDateFormat
-import java.util.Date
+import java.util.Calendar
 import java.util.Locale
 
 object Logback {
     private var isFileInitialized = false
-    private var lastInitDate: String? = null
     private var appContext: Context? = null
+    private var nextMidnightMillis: Long = 0
 
     /**
-     * 阶段1：初始化 Logcat (保证控制台一定有日志)
+     * 初始化 Logcat (保证控制台一定有日志)
      * 在 Log 类的 init 块中自动调用
      */
     fun initLogcatOnly() {
@@ -33,10 +32,9 @@ object Logback {
             val lc = LoggerFactory.getILoggerFactory() as LoggerContext
             lc.reset() // 清除之前的配置
 
-            // 配置 Logcat Appender
             val encoder = PatternLayoutEncoder().apply {
                 context = lc
-                pattern = "[%thread] %logger{80} %msg%n" // 保持与 Java 版本一致
+                pattern = "[%thread] %logger{80} %msg%n"
                 start()
             }
 
@@ -47,9 +45,8 @@ object Logback {
                 start()
             }
 
-            // 为根 Logger 添加 Logcat 输出
-            lc.getLogger(ch.qos.logback.classic.Logger.ROOT_LOGGER_NAME).apply {
-                level = Level.DEBUG // 默认根级别
+            lc.getLogger(Logger.ROOT_LOGGER_NAME).apply {
+                level = Level.DEBUG // 确保 Logcat 能看到所有级别的日志
                 addAppender(logcatAppender)
             }
 
@@ -59,141 +56,140 @@ object Logback {
     }
 
     /**
-     * 阶段2：初始化文件日志 (有了 Context 之后调用)
+     * 初始化文件日志 (有了 Context 之后调用)
      * 这是一个“追加”操作，不会打断 Logcat 日志
      */
     @Synchronized
     fun initFileLogging(context: Context) {
+        val now = System.currentTimeMillis()
+        // 1. 如果已经初始化过，且还没到跨天刷新的时间，则直接跳过
+        if (isFileInitialized && now < nextMidnightMillis) return
+
+        // 记录本次初始化是否属于“跨天自动刷新”
+        val isTriggeredByCrossDay = isFileInitialized
+
+        // 2. 保存 Context 供后续跨天自动刷新使用
         this.appContext = context.applicationContext
-        val today = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
-        // 如果已初始化且日期未变，则无需重复执行
-        if (isFileInitialized && lastInitDate == today) return
+
+        // 3. 如果是触发了跨天刷新，需重置上下文以彻底清除旧的 Appender 句柄
+        if (isTriggeredByCrossDay) {
+            Log.i("SesameLog", "检测到跨天，正在刷新日志重定向...")
+            initLogcatOnly() // 内部执行 lc.reset()
+        }
 
         val logDir = resolveLogDir(context)
-        val isMainProcess = context.packageName == General.PACKAGE_NAME
 
         try {
             val lc = LoggerFactory.getILoggerFactory() as LoggerContext
 
-            if (isFileInitialized) {
-                lc.reset()
-                initLogcatOnly()
-            }
+            val fullTimestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(java.util.Date())
+            val allLogNames = (LogCatalog.loggerNames() + listOf("other", "captcha")).distinct()
 
-            LogCatalog.loggerNames().forEach { logName ->
-                // 抓包日志不执行跨天物理归档，而是持续追加，直到触发大小滚动限制
-                if (logName != LogChannel.CAPTURE.loggerName) {
-                    performManualRolling(logDir, logName, today)
+            allLogNames.forEach { logName ->
+                addFileAppender(lc, logName, logDir)
+
+                val logFile = File(logDir, "$logName.log")
+                val logger = lc.getLogger(logName)
+
+                if (!logFile.exists() || logFile.length() == 0L) {
+                    logger.info("=== $fullTimestamp ===")
+                } else if (isTriggeredByCrossDay) {
+                    val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(java.util.Date())
+                    logger.info("--- 日志重定向于 $time ---")
                 }
             }
 
-            // 为每个特定业务的 Logger 添加文件 Appender
-            LogCatalog.loggerNames().forEach { logName ->
-                addFileAppender(lc, logName, logDir, isMainProcess)
-            }
-
             isFileInitialized = true
-            lastInitDate = today
-            Log.i("SesameLog", "File logging initialized for $today at: $logDir (MainProcess: $isMainProcess)")
+            nextMidnightMillis = calculateNextMidnight(now)
+            Log.i("SesameLog", "文件日志初始化成功: $logDir, 下次刷新时间: ${java.util.Date(nextMidnightMillis)}")
         } catch (e: Exception) {
-            Log.e("SesameLog", "Logback initFileLogging failed", e)
+            Log.e("SesameLog", "Logback initFileLogging 失败", e)
         }
     }
 
     /**
-     * 供 Log.kt 每次写日志前调用，感应日期变化并自动重定向。
+     * 【联动刷新】供 Log.kt 每次写日志前调用，感应日期变化并自动重定向。
+     * 只有当跨天时，才会触发 initFileLogging 重新建立 Appender。
      */
     fun refreshIfCrossDay() {
-        appContext?.let { initFileLogging(it) }
-    }
-
-    /**
-     * 手动判断日期并滚动旧日志文件，解决多进程竞争导致的滚动逻辑混乱。
-     */
-    private fun performManualRolling(logDir: String, logName: String, today: String) {
-        val activeFile = File("$logDir$logName.log")
-        val bakDir = File(logDir, "bak")
-
-        // 1. 清理超过 3 天的历史归档
-        val threshold = System.currentTimeMillis() - 3 * 24 * 60 * 60 * 1000L
-        bakDir.listFiles { file ->
-            file.name.startsWith("$logName-") && file.name.endsWith(".log")
-        }?.forEach { file ->
-            if (file.lastModified() < threshold) {
-                file.delete()
-            }
-        }
-
-        // 2. 跨天滚动逻辑
-        if (!activeFile.exists()) return
-
-        val fileDay = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(activeFile.lastModified()))
-        if (today != fileDay) {
-            val target = File(bakDir, "$logName-$fileDay.log")
-            if (activeFile.renameTo(target)) {
-                Log.d("SesameLog", "Manual roll successful for $logName: $fileDay -> $today")
-            }
+        val now = System.currentTimeMillis()
+        if (isFileInitialized && now >= nextMidnightMillis) {
+            appContext?.let { initFileLogging(it) }
         }
     }
 
+    private fun calculateNextMidnight(now: Long): Long {
+        return Calendar.getInstance().apply {
+            timeInMillis = now
+            add(Calendar.DAY_OF_YEAR, 1)
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+    }
+
     /**
-     * 核心路径逻辑
+     * 优先 Files.LOG_DIR -> 失败则回退到 Context.external -> Context.files
      */
     private fun resolveLogDir(context: Context): String {
+        // 1. 尝试使用 Files 类中定义的路径
         var targetDir = Files.LOG_DIR
 
+        // 尝试创建目录，确保 exists() 判断准确
         if (!targetDir.exists()) {
             targetDir.mkdirs()
         }
 
+        // 2. 检查是否有权写入
         if (!targetDir.exists() || !targetDir.canWrite()) {
+            // 回退逻辑
             val fallbackDir = context.getExternalFilesDir("logs")
             targetDir = fallbackDir ?: File(context.filesDir, "logs")
         }
 
+        // 3. 确保目录结构完整 (创建 bak 子目录)
         File(targetDir, "bak").mkdirs()
 
         return targetDir.absolutePath + File.separator
     }
 
-    private fun addFileAppender(lc: LoggerContext, logName: String, logDir: String, isMainProcess: Boolean) {
+    private fun addFileAppender(lc: LoggerContext, logName: String, logDir: String) {
         val fileAppender = RollingFileAppender<ILoggingEvent>()
 
         fileAppender.apply {
             context = lc
-            name = if (isMainProcess) "FILE-HOOK-$logName" else "FILE-APP-$logName"
+            name = "FILE-$logName"
             file = "$logDir$logName.log"
             isAppend = true
 
-            rollingPolicy = FixedWindowRollingPolicy().apply {
+            val policy = SizeAndTimeBasedRollingPolicy<ILoggingEvent>().apply {
                 context = lc
-                fileNamePattern = "${logDir}bak/$logName.idx%i.log"
-                minIndex = 1
-                maxIndex = 3
+                fileNamePattern = "${logDir}bak/$logName-%d{yyyy-MM-dd}.%i.log"
+                setMaxFileSize(FileSize.valueOf("50MB"))
+                setTotalSizeCap(FileSize.valueOf("256MB"))
+                maxHistory = 3
+                isCleanHistoryOnStart = true
                 setParent(fileAppender)
                 start()
             }
-
-            triggeringPolicy = SizeBasedTriggeringPolicy<ILoggingEvent>().apply {
-                context = lc
-                maxFileSize = FileSize.valueOf("7MB")
-                start()
-            }
+            rollingPolicy = policy
 
             encoder = PatternLayoutEncoder().apply {
                 context = lc
-                pattern = "%d{dd日 HH:mm:ss.SS} %msg%n"
+                pattern = "%d{HH:mm:ss.SS}%msg%n"
                 start()
             }
 
             start()
         }
 
-        val finalAppender = AsyncAppender().apply {
+        val asyncAppender = AsyncAppender().apply {
             context = lc
-            name = "ASYNC-FILE-$logName"
-            queueSize = 512
-            discardingThreshold = 0
+            name = "ASYNC-$logName"
+            queueSize = 512       // 内存缓冲队列
+            discardingThreshold = 0 // 不丢弃任何等级的日志
+            isNeverBlock = false   // 极端情况下允许阻塞以确保日志不丢失
             addAppender(fileAppender)
             start()
         }
@@ -201,7 +197,7 @@ object Logback {
         lc.getLogger(logName).apply {
             level = Level.ALL
             isAdditive = true
-            addAppender(finalAppender)
+            addAppender(asyncAppender)
         }
     }
 }
