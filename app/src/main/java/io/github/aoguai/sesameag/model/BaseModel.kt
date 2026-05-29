@@ -171,7 +171,7 @@ class BaseModel : Model() {
             "定时任务模式",
             TimedTaskModel.Companion.SYSTEM,
             TimedTaskModel.Companion.nickNames
-        ).withDesc("控制子任务的延时等待策略：系统计时更省资源，程序计时会额外保持调度活性，适合卡时间任务。")
+        ).withDesc("控制长期定时/蹲点/唤醒/轮询任务的等待策略：系统计时使用普通协程等待；程序计时使用 SmartScheduler 保活调度，适合卡时间任务。")
 
         /**
          * 超时是否重启

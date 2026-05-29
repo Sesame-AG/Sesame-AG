@@ -2,7 +2,6 @@ package io.github.aoguai.sesameag.task.antDodo
 
 import io.github.aoguai.sesameag.hook.RequestManager
 import io.github.aoguai.sesameag.util.RandomUtil
-import io.github.aoguai.sesameag.util.RpcCache
 import org.json.JSONObject
 
 /**
@@ -22,41 +21,6 @@ object AntDodoRpcCall {
     private const val METHOD_QUERY_FRIEND = "alipay.antdodo.rpc.h5.queryFriend"
     private const val METHOD_QUERY_BOOK_LIST = "alipay.antdodo.rpc.h5.queryBookList"
     private const val METHOD_GENERATE_BOOK_MEDAL = "alipay.antdodo.rpc.h5.generateBookMedal"
-
-    private val BOOK_CACHE_METHODS = arrayOf(
-        METHOD_HOME_PAGE,
-        METHOD_QUERY_BOOK_INFO,
-        METHOD_QUERY_BOOK_LIST
-    )
-
-    private val COLLECTION_CACHE_METHODS = arrayOf(
-        METHOD_QUERY_ANIMAL_STATUS,
-        METHOD_HOME_PAGE,
-        METHOD_TASK_ENTRANCE,
-        METHOD_TASK_LIST,
-        METHOD_PROP_LIST,
-        METHOD_QUERY_BOOK_INFO,
-        METHOD_QUERY_BOOK_LIST,
-        METHOD_QUERY_FRIEND
-    )
-
-    private fun invalidateMethods(vararg methods: String) {
-        for (method in methods) {
-            RpcCache.invalidate(method)
-        }
-    }
-
-    fun invalidateBookCache() {
-        invalidateMethods(*BOOK_CACHE_METHODS)
-    }
-
-    private fun invalidateCollectionCache() {
-        invalidateMethods(*COLLECTION_CACHE_METHODS)
-    }
-
-    private fun invalidateTaskCache() {
-        invalidateMethods(METHOD_TASK_ENTRANCE, METHOD_TASK_LIST)
-    }
 
     /**
      * 查询动物状态
@@ -93,9 +57,7 @@ object AntDodoRpcCall {
      */
     @JvmStatic
     fun collect(): String {
-        val response = RequestManager.requestString(METHOD_COLLECT, "[{}]")
-        invalidateCollectionCache()
-        return response
+        return RequestManager.requestString(METHOD_COLLECT, "[{}]")
     }
 
     /**
@@ -122,7 +84,6 @@ object AntDodoRpcCall {
                     + sceneCode + "\",\"source\":\"af-biodiversity\",\"taskType\":\""
                     + taskType + "\",\"uniqueId\":\"" + uniqueId + "\"}]")
         )
-        invalidateTaskCache()
         return response
     }
 
@@ -153,7 +114,6 @@ object AntDodoRpcCall {
             "com.alipay.antiep.receiveTaskAward",
             "[{\"ignoreLimit\":0,\"requestType\":\"rpc\",\"sceneCode\":\"$sceneCode\",\"source\":\"af-biodiversity\",\"taskType\":\"$taskType\"}]"
         )
-        invalidateCollectionCache()
         return response
     }
 
@@ -183,7 +143,6 @@ object AntDodoRpcCall {
             METHOD_CONSUME_PROP,
             "[$args]"
         )
-        invalidateCollectionCache()
         return response
     }
 
@@ -212,7 +171,6 @@ object AntDodoRpcCall {
             METHOD_SOCIAL,
             "[{\"actionCode\":\"GIFT_TO_FRIEND\",\"source\":\"GIFT_TO_FRIEND_FROM_CC\",\"targetAnimalId\":\"$targetAnimalId\",\"targetUserId\":\"$targetUserId\",\"triggerTime\":\"${System.currentTimeMillis()}\"}]"
         )
-        invalidateCollectionCache()
         return response
     }
 
@@ -238,7 +196,6 @@ object AntDodoRpcCall {
             METHOD_COLLECT,
             "[{\"targetUserId\":$targetUserId}]"
         )
-        invalidateCollectionCache()
         return response
     }
 
@@ -262,9 +219,7 @@ object AntDodoRpcCall {
     @JvmStatic
     fun generateBookMedal(bookId: String): String {
         val args = "[{\"bookId\":\"$bookId\"}]"
-        val response = RequestManager.requestString(METHOD_GENERATE_BOOK_MEDAL, args)
-        invalidateBookCache()
-        return response
+        return RequestManager.requestString(METHOD_GENERATE_BOOK_MEDAL, args)
     }
 }
 

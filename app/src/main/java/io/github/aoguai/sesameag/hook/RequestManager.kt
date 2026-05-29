@@ -9,7 +9,6 @@ import io.github.aoguai.sesameag.util.CoroutineUtils
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.NetworkUtils
 import io.github.aoguai.sesameag.util.Notify
-import io.github.aoguai.sesameag.util.RpcCache
 import io.github.aoguai.sesameag.util.TimeUtil
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -36,12 +35,6 @@ object RequestManager {
     private val rpcRequestCount = AtomicLong(0)
     private val rpcBlockedCount = AtomicLong(0)
     private val rpcBridgeNullCount = AtomicLong(0)
-    private val inFlightCreatedCount = AtomicLong(0)
-    private val inFlightJoinedCount = AtomicLong(0)
-    private val rpcCacheHitCount = AtomicLong(0)
-    private val rpcCacheMissCount = AtomicLong(0)
-
-    private val inFlightRegistry = RpcInFlightRegistry()
 
     @Volatile
     private var lastOfflineRecoveryTime = 0L
@@ -196,65 +189,25 @@ object RequestManager {
             "requestCount" to rpcRequestCount.get(),
             "blockedCount" to rpcBlockedCount.get(),
             "bridgeNullCount" to rpcBridgeNullCount.get(),
-            "errorCount" to errorCount.get(),
-            "inFlightCurrent" to inFlightRegistry.size(),
-            "inFlightCreated" to inFlightCreatedCount.get(),
-            "inFlightJoined" to inFlightJoinedCount.get(),
-            "cacheHit" to rpcCacheHitCount.get(),
-            "cacheMiss" to rpcCacheMissCount.get()
+            "errorCount" to errorCount.get()
         )
     }
 
     private inline fun requestStringWithPolicy(
         method: String?,
-        cacheKeyData: String?,
         tryCount: Int,
         retryInterval: Int,
         crossinline block: (RpcBridge, Int, Int) -> String?
     ): String {
         rpcRequestCount.incrementAndGet()
 
-        // 离线优先：不允许 cache 绕过 offline（避免“脚本暂停”时仍继续执行业务）
+        // 离线优先：避免“脚本暂停”时仍继续执行业务
         val blocked = tryBlockByOffline(method)
         if (blocked != null) {
             return RpcFallbackJsonFactory.build(blocked.reason, method)
         }
 
         val normalizedTryCount = normalizeTryCount(tryCount)
-
-        if (RpcRequestPolicy.shouldUseCache(method) && cacheKeyData != null) {
-            val cached = RpcCache.get(method, cacheKeyData)
-            if (cached != null) {
-                rpcCacheHitCount.incrementAndGet()
-                Log.runtime(TAG, "rpc cache hit: method=$method")
-                return cached
-            }
-            rpcCacheMissCount.incrementAndGet()
-            Log.runtime(TAG, "rpc cache miss: method=$method")
-
-            val key = RpcRequestPolicy.generateKey(method, cacheKeyData)
-            if (key != null) {
-                val inFlightResult = inFlightRegistry.execute(
-                    tag = TAG,
-                    key = key,
-                    onCreate = { inFlightCreatedCount.incrementAndGet() },
-                    onJoin = { inFlightJoinedCount.incrementAndGet() }
-                ) {
-                    val outcome = executeRpcOnce(method) { bridge ->
-                        block(bridge, normalizedTryCount, retryInterval)
-                    }
-                    if (outcome is RpcRequestOutcome.Success) {
-                        RpcCache.put(method, cacheKeyData, outcome.body)
-                    }
-                    outcome
-                }
-
-                return when (inFlightResult) {
-                    is RpcRequestOutcome.Success -> inFlightResult.body
-                    is RpcRequestOutcome.Failure -> RpcFallbackJsonFactory.build(inFlightResult.reason, method)
-                }
-            }
-        }
 
         val result = executeRpcOnce(method) { bridge ->
             block(bridge, normalizedTryCount, retryInterval)
@@ -270,8 +223,7 @@ object RequestManager {
     @JvmStatic
     fun requestString(rpcEntity: RpcEntity): String {
         val method = rpcEntity.requestMethod
-        val cacheKeyData = RpcRequestPolicy.buildCacheKeyData(rpcEntity.requestData, rpcEntity.requestRelation)
-        return requestStringWithPolicy(method, cacheKeyData, RpcBridge.DEFAULT_TRY_COUNT, RpcBridge.DEFAULT_RETRY_INTERVAL) { bridge, tc, ri ->
+        return requestStringWithPolicy(method, RpcBridge.DEFAULT_TRY_COUNT, RpcBridge.DEFAULT_RETRY_INTERVAL) { bridge, tc, ri ->
             bridge.requestString(rpcEntity, tc, ri)
         }
     }
@@ -279,24 +231,21 @@ object RequestManager {
     @JvmStatic
     fun requestString(rpcEntity: RpcEntity, tryCount: Int, retryInterval: Int): String {
         val method = rpcEntity.requestMethod
-        val cacheKeyData = RpcRequestPolicy.buildCacheKeyData(rpcEntity.requestData, rpcEntity.requestRelation)
-        return requestStringWithPolicy(method, cacheKeyData, tryCount, retryInterval) { bridge, tc, ri ->
+        return requestStringWithPolicy(method, tryCount, retryInterval) { bridge, tc, ri ->
             bridge.requestString(rpcEntity, tc, ri)
         }
     }
 
     @JvmStatic
     fun requestString(method: String?, data: String?): String {
-        val cacheKeyData = RpcRequestPolicy.buildCacheKeyData(data, null)
-        return requestStringWithPolicy(method, cacheKeyData, RpcBridge.DEFAULT_TRY_COUNT, RpcBridge.DEFAULT_RETRY_INTERVAL) { bridge, tc, ri ->
+        return requestStringWithPolicy(method, RpcBridge.DEFAULT_TRY_COUNT, RpcBridge.DEFAULT_RETRY_INTERVAL) { bridge, tc, ri ->
             bridge.requestString(method, data, tc, ri)
         }
     }
 
     @JvmStatic
     fun requestString(method: String?, data: String?, relation: String?): String {
-        val cacheKeyData = RpcRequestPolicy.buildCacheKeyData(data, relation)
-        return requestStringWithPolicy(method, cacheKeyData, RpcBridge.DEFAULT_TRY_COUNT, RpcBridge.DEFAULT_RETRY_INTERVAL) { bridge, tc, ri ->
+        return requestStringWithPolicy(method, RpcBridge.DEFAULT_TRY_COUNT, RpcBridge.DEFAULT_RETRY_INTERVAL) { bridge, tc, ri ->
             bridge.requestString(method, data, relation, tc, ri)
         }
     }
@@ -309,16 +258,14 @@ object RequestManager {
         methodName: String?,
         facadeName: String?
     ): String {
-        val cacheKeyData = RpcRequestPolicy.buildCacheKeyData(data, null)
-        return requestStringWithPolicy(method, cacheKeyData, RpcBridge.DEFAULT_TRY_COUNT, RpcBridge.DEFAULT_RETRY_INTERVAL) { bridge, _, _ ->
+        return requestStringWithPolicy(method, RpcBridge.DEFAULT_TRY_COUNT, RpcBridge.DEFAULT_RETRY_INTERVAL) { bridge, _, _ ->
             bridge.requestString(method, data, appName, methodName, facadeName)
         }
     }
 
     @JvmStatic
     fun requestString(method: String?, data: String?, tryCount: Int, retryInterval: Int): String {
-        val cacheKeyData = RpcRequestPolicy.buildCacheKeyData(data, null)
-        return requestStringWithPolicy(method, cacheKeyData, tryCount, retryInterval) { bridge, tc, ri ->
+        return requestStringWithPolicy(method, tryCount, retryInterval) { bridge, tc, ri ->
             bridge.requestString(method, data, tc, ri)
         }
     }
@@ -331,8 +278,7 @@ object RequestManager {
         tryCount: Int,
         retryInterval: Int
     ): String {
-        val cacheKeyData = RpcRequestPolicy.buildCacheKeyData(data, relation)
-        return requestStringWithPolicy(method, cacheKeyData, tryCount, retryInterval) { bridge, tc, ri ->
+        return requestStringWithPolicy(method, tryCount, retryInterval) { bridge, tc, ri ->
             bridge.requestString(method, data, relation, tc, ri)
         }
     }

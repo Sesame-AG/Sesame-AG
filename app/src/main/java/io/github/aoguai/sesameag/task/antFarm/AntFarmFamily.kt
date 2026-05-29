@@ -13,7 +13,6 @@ import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.RandomUtil
 import io.github.aoguai.sesameag.util.ResChecker
-import io.github.aoguai.sesameag.util.RpcCache
 import io.github.aoguai.sesameag.util.friend.FriendSelectionResolver
 import io.github.aoguai.sesameag.util.maps.UserMap
 import org.json.JSONArray
@@ -229,7 +228,6 @@ data object AntFarmFamily {
 
     private fun queryDailyDonateTaskAfterPublicDonation(): JSONObject? {
         val taskLogName = "家庭任务🏠每日捐蛋"
-        RpcCache.invalidate("com.alipay.antfarm.listFamilyTask")
         val taskJo = JSONObject(AntFarmRpcCall.listFamilyTask())
         if (!ResChecker.checkRes(TAG, taskJo)) {
             Log.farm("$taskLogName#listFamilyTask 调用失败: ${formatFamilyTaskFailure(taskJo)}")

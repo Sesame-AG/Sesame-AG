@@ -1,6 +1,8 @@
 package io.github.aoguai.sesameag.task.antForest
 
 import android.annotation.SuppressLint
+import io.github.aoguai.sesameag.hook.keepalive.UnifiedScheduler
+import io.github.aoguai.sesameag.model.BaseModel
 import io.github.aoguai.sesameag.util.FriendGuard
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.TimeUtil
@@ -203,6 +205,7 @@ object EnergyWaitingManager {
 
     // 基础检查间隔（毫秒）
     private const val BASE_CHECK_INTERVAL_MS = 30000L // 30秒检查一次
+    private const val LONG_WAIT_SCHEDULE_THRESHOLD_MS = 2 * 60 * 1000L
 
     // 精确时机计算 - 能量成熟或保护结束后立即收取
     private fun calculatePreciseCollectTime(task: WaitingTask): Long {
@@ -391,11 +394,11 @@ object EnergyWaitingManager {
                     val twoMinutes = 2 * 60 * 1000L
                     var remainingWait = waitTime
 
-                    // 阶段1：如果等待时间>2分钟且是好友任务，先等到倒计时2分钟时验证
+                    // 阶段1：长等待先交给统一调度；最后2分钟保留原有短周期检查。
                     if (waitTime > twoMinutes && !task.isSelf()) {
                         val waitBeforeValidation = waitTime - twoMinutes
                          Log.forest("蹲点[${task.getUserTypeTag()}${task.userName}]将在${(waitBeforeValidation/1000/60).toInt()}分钟后验证")
-                        delay(waitBeforeValidation)
+                        scheduleWaitingDelay(waitBeforeValidation, "ForestWaitingValidate:${task.taskId}")
 
                         // 检查任务是否被移除
                         if (!waitingTasks.containsKey(task.taskId)) {
@@ -454,6 +457,14 @@ object EnergyWaitingManager {
                         }
 
                         // 更新剩余等待时间为2分钟
+                        remainingWait = twoMinutes
+                    } else if (waitTime > twoMinutes) {
+                        val waitBeforeFinalCheck = waitTime - twoMinutes
+                        scheduleWaitingDelay(waitBeforeFinalCheck, "ForestWaitingFinal:${task.taskId}")
+                        if (!waitingTasks.containsKey(task.taskId)) {
+                            Log.forest("⚠️ 蹲点[${task.getUserTypeTag()}${task.userName}]已被移除")
+                            return@launch
+                        }
                         remainingWait = twoMinutes
                     }
 
@@ -522,6 +533,26 @@ object EnergyWaitingManager {
                     EnergyWaitingPersistence.saveTasks(waitingTasks)
                 }
             }
+        }
+    }
+
+    private suspend fun scheduleWaitingDelay(delayMillis: Long, taskName: String) {
+        val finalDelay = delayMillis.coerceAtLeast(0L)
+        if (finalDelay < LONG_WAIT_SCHEDULE_THRESHOLD_MS) {
+            delay(finalDelay)
+            return
+        }
+
+        if (BaseModel.timedTaskModel.value != BaseModel.TimedTaskModel.PROGRAM) {
+            delay(finalDelay)
+            return
+        }
+
+        val schedulerId = UnifiedScheduler.scheduleKeepAlive(finalDelay, taskName)
+        try {
+            delay(finalDelay)
+        } finally {
+            UnifiedScheduler.cancelTask(schedulerId)
         }
     }
 

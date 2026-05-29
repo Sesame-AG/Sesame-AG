@@ -6,7 +6,6 @@ import io.github.aoguai.sesameag.task.TaskStatus
 import io.github.aoguai.sesameag.util.GameTask
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.ResChecker
-import io.github.aoguai.sesameag.util.RpcCache
 import io.github.aoguai.sesameag.util.TimeTriggerEvaluator
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -229,7 +228,6 @@ object FarmGame {
                 }
             }
             while (true) {
-                RpcCache.invalidate(QUERY_GAME_LIST_RPC)
                 val response = AntFarmRpcCall.queryGameList()
                 val responseJo = JSONObject(response)
                 val jo = responseJo.optJSONObject("resData") ?: responseJo
@@ -259,7 +257,6 @@ object FarmGame {
                         val drawResponse = JSONObject(AntFarmRpcCall.drawGameCenterAward(batchDrawCount))
                         val drawRes = drawResponse.optJSONObject("resData") ?: drawResponse
                         if (drawRes.optBoolean("success", drawResponse.optBoolean("success"))) {
-                            RpcCache.invalidate(QUERY_GAME_LIST_RPC)
                             quotaCanUse = (quotaCanUse - batchDrawCount).coerceAtLeast(0)
 
                             val awardList = findFirstArrayByKey(drawRes, "gameCenterDrawAwardList")
@@ -324,7 +321,6 @@ object FarmGame {
         try {
             val attemptedTaskTypes = mutableSetOf<String>()
             repeat(LEYUAN_LIMITED_TASK_TYPES.size + 1) {
-                RpcCache.invalidate(QUERY_OPTIONAL_PLAY_RPC)
                 val response = JSONObject(AntFarmRpcCall.queryOptionalPlay())
                 if (!ResChecker.checkRes(TAG, response)) {
                     Log.farm("小鸡乐园限时福利查询失败: $response")
@@ -361,7 +357,6 @@ object FarmGame {
                 )
                 if (ResChecker.checkRes(TAG, awardResp)) {
                     Log.farm("小鸡乐园限时福利🎁[$title]#${awardCount}乐园币")
-                    RpcCache.invalidate(QUERY_OPTIONAL_PLAY_RPC)
                 } else {
                     Log.farm("小鸡乐园限时福利[$title]领取失败: $awardResp")
                 }
@@ -398,7 +393,6 @@ object FarmGame {
 
     private fun queryGameCenterOpenedBoxCount(): Int? {
         return try {
-            RpcCache.invalidate(QUERY_GAME_LIST_RPC)
             val response = JSONObject(AntFarmRpcCall.queryGameList())
             val jo = response.optJSONObject("resData") ?: response
             if (!jo.optBoolean("success", response.optBoolean("success"))) {

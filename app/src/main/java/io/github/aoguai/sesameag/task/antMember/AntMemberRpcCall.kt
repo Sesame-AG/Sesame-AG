@@ -2,7 +2,6 @@ package io.github.aoguai.sesameag.task.antMember
 
 import io.github.aoguai.sesameag.hook.RequestManager
 import io.github.aoguai.sesameag.util.RandomUtil
-import io.github.aoguai.sesameag.util.RpcCache
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -675,22 +674,10 @@ object AntMemberRpcCall {
      */
     @JvmStatic
     fun collectInsuredGold(goldBallObj: JSONObject): String {
-        val response = RequestManager.requestString(
+        return RequestManager.requestString(
             METHOD_GAIN_MY_AND_FAMILY_SUM_INSURED,
             JSONArray().put(goldBallObj).toString(), "insgiftbff", "gainMyAndFamilySumInsured", "insgiftMain"
         )
-        invalidateInsuredGoldWaitListCacheIfSuccess(response)
-        return response
-    }
-
-    private fun invalidateInsuredGoldWaitListCacheIfSuccess(response: String) {
-        try {
-            val responseObject = JSONObject(response)
-            if (responseObject.optBoolean("success") || responseObject.optBoolean("isSuccess")) {
-                RpcCache.invalidate(METHOD_QUERY_MULTI_SCENE_WAIT_TO_GAIN_LIST)
-            }
-        } catch (_: Throwable) {
-        }
     }
 
     @JvmStatic

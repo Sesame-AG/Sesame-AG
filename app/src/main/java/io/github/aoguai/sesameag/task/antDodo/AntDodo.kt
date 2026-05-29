@@ -1132,10 +1132,8 @@ class AntDodo : ModelTask() {
 
     private fun autoGenerateBook() {
         try {
-            AntDodoRpcCall.invalidateBookCache()
             val generatedBookIds = LinkedHashSet<String>()
             generateCurrentBookIfReminded()?.let { generatedBookIds.add(it) }
-            AntDodoRpcCall.invalidateBookCache()
             var hasMore: Boolean
             var pageStart = 0
             do {

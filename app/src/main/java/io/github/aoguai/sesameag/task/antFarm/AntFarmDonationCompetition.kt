@@ -530,8 +530,7 @@ private fun AntFarm.scheduleDonationCompetitionTask(endTimeMs: Long) {
             }
             printDonationReport()
         },
-        execTime = finalExecTime,
-        useSmartScheduler = useSmartSchedulerManager?.value == true
+        execTime = finalExecTime
     )
 
     addChildTask(task)

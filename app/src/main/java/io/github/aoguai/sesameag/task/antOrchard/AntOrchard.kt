@@ -25,7 +25,6 @@ import io.github.aoguai.sesameag.util.FriendGuard
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.RandomUtil
 import io.github.aoguai.sesameag.util.ResChecker
-import io.github.aoguai.sesameag.util.RpcCache
 import io.github.aoguai.sesameag.util.TaskBlacklist
 import io.github.aoguai.sesameag.util.maps.UserMap
 import org.json.JSONArray
@@ -1348,7 +1347,6 @@ class AntOrchard : ModelTask() {
                     stopCurrentRound = true
                 )
             if (isOrchardRpcSuccessResponse(response)) {
-                invalidateOrchardListTaskCache()
                 val awardCount = task.optInt("awardCount", task.optInt("confAwardCount", 0))
                 val awardSuffix = if (awardCount > 0) "#${awardCount}g肥料" else ""
                 Log.orchard("领取奖励🎖️[${item.title}]$awardSuffix")
@@ -1522,7 +1520,6 @@ class AntOrchard : ModelTask() {
                 )
                 if (ResChecker.checkRes(TAG, awardResp)) {
                     Log.orchard("农场乐园🎮[$title]#${awardCount}g肥料")
-                    RpcCache.invalidate("com.alipay.charitygamecenter.queryOptionalPlay")
                 } else {
                     Log.orchard("农场乐园奖励领取失败[$title] ${awardResp.toString()}")
                 }
@@ -1643,7 +1640,6 @@ class AntOrchard : ModelTask() {
                 } else {
                     Log.orchard("庄园鸡屎💩任务：已触发收取，但本次为0g")
                 }
-                invalidateOrchardListTaskCache()
                 return TaskFlowActionResult.success()
             } else {
                 val resultCode = collectResp.optString("resultCode").ifBlank { collectResp.optString("code") }
@@ -1716,7 +1712,6 @@ class AntOrchard : ModelTask() {
             }
 
             if (finishedCount > 0) {
-                invalidateOrchardListTaskCache()
                 Log.orchard("农场浏览任务📺[$title] 完成${finishedCount}次浏览奖励")
                 return TaskFlowActionResult.success()
             }
@@ -1780,7 +1775,6 @@ class AntOrchard : ModelTask() {
         }
         val finishResponse = JSONObject(responseText)
         if (isOrchardRpcSuccessResponse(finishResponse)) {
-            invalidateOrchardListTaskCache()
             Log.orchard("农场任务🧾[$title]")
             return TaskFlowActionResult.success()
         }
@@ -1916,7 +1910,6 @@ class AntOrchard : ModelTask() {
     ): TaskFlowActionResult {
         val failureType = classifyOrchardTaskFailure(response)
         if (failureType == TaskRpcFailureType.TERMINAL_DONE) {
-            invalidateOrchardListTaskCache()
         }
         val rawTask = item?.raw ?: task
         val detail = buildString {
@@ -2092,7 +2085,6 @@ class AntOrchard : ModelTask() {
             )
         }
 
-        invalidateOrchardListTaskCache()
         val refreshedTask = queryOrchardTaskById(taskId)
         val taskStatus = refreshedTask?.optString("taskStatus").orEmpty()
         if (taskStatus == "FINISHED" || taskStatus == "RECEIVED") {
@@ -2133,10 +2125,6 @@ class AntOrchard : ModelTask() {
             }
         }
         return null
-    }
-
-    private fun invalidateOrchardListTaskCache() {
-        RpcCache.invalidate("com.alipay.antfarm.orchardListTask")
     }
 
     private fun executeOrchardBrowseRound(
@@ -2619,7 +2607,6 @@ class AntOrchard : ModelTask() {
             val response = JSONObject(AntOrchardRpcCall.triggerTbTask(taskId, taskPlantType, source))
             lastResponse = response
             if (response.optString("resultCode") == "100") {
-                invalidateOrchardListTaskCache()
                 return response
             }
         }
@@ -2957,4 +2944,3 @@ class AntOrchard : ModelTask() {
         )
     }
 }
-

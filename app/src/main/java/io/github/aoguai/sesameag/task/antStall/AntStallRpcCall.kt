@@ -1,7 +1,6 @@
 package io.github.aoguai.sesameag.task.antStall
 
 import io.github.aoguai.sesameag.hook.RequestManager
-import io.github.aoguai.sesameag.util.RpcCache
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -23,10 +22,6 @@ object AntStallRpcCall {
     private const val METHOD_RECEIVE_TASK_AWARD = "com.alipay.antiep.receiveTaskAward"
     private const val METHOD_TASK_FINISH = "com.alipay.antstall.task.finish"
     private const val METHOD_TASK_AWARD = "com.alipay.antstall.task.award"
-
-    private fun invalidateTaskCache() {
-        RpcCache.invalidate(METHOD_TASK_LIST)
-    }
 
     /**
      * @brief 获取个人主页数据
@@ -178,7 +173,6 @@ object AntStallRpcCall {
             METHOD_SIGN_TODAY,
             "[{\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
-        invalidateTaskCache()
         return response
     }
 
@@ -193,7 +187,6 @@ object AntStallRpcCall {
             METHOD_FINISH_TASK,
             "[{\"outBizNo\":\"$outBizNo\",\"requestType\":\"RPC\",\"sceneCode\":\"ANTSTALL_TASK\",\"source\":\"AST\",\"systemType\":\"android\",\"taskType\":\"$taskType\",\"version\":\"$VERSION\"}]"
         )
-        invalidateTaskCache()
         return response
     }
 
@@ -243,7 +236,6 @@ object AntStallRpcCall {
             METHOD_RECEIVE_TASK_AWARD,
             "[{\"ignoreLimit\":true,\"requestType\":\"RPC\",\"sceneCode\":\"ANTSTALL_TASK\",\"source\":\"AST\",\"systemType\":\"android\",\"taskType\":\"$taskType\",\"version\":\"$VERSION\"}]"
         )
-        invalidateTaskCache()
         return response
     }
 
@@ -257,7 +249,6 @@ object AntStallRpcCall {
             METHOD_TASK_FINISH,
             "[{\"source\":\"search\",\"systemType\":\"android\",\"taskType\":\"$taskType\",\"version\":\"$VERSION\"}]"
         )
-        invalidateTaskCache()
         return response
     }
 
@@ -273,7 +264,6 @@ object AntStallRpcCall {
             METHOD_TASK_AWARD,
             "[{\"amount\":$amount,\"prizeId\":\"$prizeId\",\"source\":\"search\",\"systemType\":\"android\",\"taskType\":\"$taskType\",\"version\":\"$VERSION\"}]"
         )
-        invalidateTaskCache()
         return response
     }
 

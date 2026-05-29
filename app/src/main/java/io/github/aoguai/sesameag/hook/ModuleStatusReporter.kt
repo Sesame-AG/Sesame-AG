@@ -1,7 +1,6 @@
 package io.github.aoguai.sesameag.hook
 
 import io.github.aoguai.sesameag.util.Log
-import io.github.aoguai.sesameag.util.RpcCache
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.max
 
@@ -11,7 +10,7 @@ import kotlin.math.max
  * 设计目标：
  * - 刷新频率可控（debounce）
  * - 输出字段向后兼容（保留 framework/timestamp/packageName）
- * - 可观测：offline / rpc / rpcCache
+ * - 可观测：offline / rpc
  */
 object ModuleStatusReporter {
 
@@ -108,8 +107,6 @@ object ModuleStatusReporter {
 
         val rpcSnapshot = RequestManager.getMetricsSnapshot()
 
-        val rpcCacheSnapshot = RpcCache.getMetricsSnapshot()
-
         return linkedMapOf(
             "framework" to framework,
             "timestamp" to nowMs,
@@ -119,7 +116,6 @@ object ModuleStatusReporter {
             "process" to ApplicationHook.finalProcessName,
             "offline" to offlineSnapshot,
             "rpc" to rpcSnapshot,
-            "rpcCache" to rpcCacheSnapshot,
             "meta" to linkedMapOf(
                 "process" to ApplicationHook.finalProcessName,
                 "lastWriteAtMs" to lastWriteAtMs.get()

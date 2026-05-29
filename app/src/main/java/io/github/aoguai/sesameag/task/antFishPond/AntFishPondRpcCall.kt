@@ -2,7 +2,6 @@ package io.github.aoguai.sesameag.task.antFishPond
 
 import io.github.aoguai.sesameag.hook.RequestManager
 import io.github.aoguai.sesameag.util.RandomUtil
-import io.github.aoguai.sesameag.util.RpcCache
 import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
@@ -33,13 +32,6 @@ object AntFishPondRpcCall {
     private const val METHOD_FINISH_TASK = "com.alipay.antiep.finishTask"
     private const val METHOD_RECEIVE_TASK_AWARD = "com.alipay.antiep.receiveTaskAward"
 
-    private val INDEX_CACHE_METHODS = arrayOf(
-        METHOD_INDEX,
-        METHOD_SYNC_INDEX,
-        METHOD_QUERY_SUBPLOTS,
-        METHOD_LIST_TASK
-    )
-
     private fun baseArgs(source: String = SOURCE_FARMPOOL): JSONObject {
         return JSONObject()
             .put("requestType", "NORMAL")
@@ -55,12 +47,6 @@ object AntFishPondRpcCall {
 
     private fun request(method: String, args: JSONObject): String {
         return RequestManager.requestString(method, JSONArray().put(args).toString())
-    }
-
-    private fun invalidateIndexCache() {
-        for (method in INDEX_CACHE_METHODS) {
-            RpcCache.invalidate(method)
-        }
     }
 
     @JvmStatic
@@ -98,7 +84,6 @@ object AntFishPondRpcCall {
                 .put("activityType", activityType)
                 .put("actionType", actionType)
         )
-        invalidateIndexCache()
         return response
     }
 
@@ -114,7 +99,6 @@ object AntFishPondRpcCall {
             baseArgs()
                 .put("signKey", signKey)
         )
-        invalidateIndexCache()
         return response
     }
 
@@ -140,7 +124,6 @@ object AntFishPondRpcCall {
                 .put("source", SOURCE_IEP_FINISH)
                 .put("taskType", taskType)
         )
-        invalidateIndexCache()
         return response
     }
 
@@ -156,7 +139,6 @@ object AntFishPondRpcCall {
                 .put("taskType", taskType)
                 .put("version", VERSION)
         )
-        invalidateIndexCache()
         return response
     }
 
@@ -168,7 +150,6 @@ object AntFishPondRpcCall {
                 .put("bizNo", "")
                 .put("riskToken", riskToken)
         )
-        invalidateIndexCache()
         return response
     }
 
@@ -180,7 +161,6 @@ object AntFishPondRpcCall {
                 .put("bizNo", bizNo)
                 .put("areaType", areaType)
         )
-        invalidateIndexCache()
         return response
     }
 

@@ -1,7 +1,6 @@
 package io.github.aoguai.sesameag.task.antSesameCredit
 
 import io.github.aoguai.sesameag.hook.RequestManager
-import io.github.aoguai.sesameag.util.RpcCache
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -47,24 +46,6 @@ object AntSesameCreditRpcCall {
         }
     }
 
-    private fun invalidateCreditAccumulateTaskListCacheIfSuccess(raw: String) {
-        if (isRpcSuccess(raw)) {
-            RpcCache.invalidate(METHOD_CREDIT_ACCUMULATE_QUERY_LIST_V3)
-        }
-    }
-
-    private fun invalidateLastOperateTaskCacheIfSuccess(raw: String) {
-        if (isRpcSuccess(raw)) {
-            RpcCache.invalidate(METHOD_QUERY_LAST_OPERATE_TASK)
-        }
-    }
-
-    private fun invalidateAlchemyHomeCacheIfSuccess(raw: String) {
-        if (isRpcSuccess(raw)) {
-            RpcCache.invalidate(METHOD_ALCHEMY_QUERY_HOME)
-        }
-    }
-
     @JvmStatic
     fun taskFinish(bizId: String, includeExtendInfo: Boolean = false): String {
         val args = JSONObject().apply {
@@ -77,8 +58,6 @@ object AntSesameCreditRpcCall {
             "com.alipay.adtask.biz.mobilegw.service.task.finish",
             JSONArray().put(args).toString()
         )
-        invalidateCreditAccumulateTaskListCacheIfSuccess(resp)
-        invalidateLastOperateTaskCacheIfSuccess(resp)
         return resp
     }
 
@@ -151,7 +130,6 @@ object AntSesameCreditRpcCall {
             "com.antgroup.zmxy.zmmemberop.biz.rpc.promise.PromiseRpcManager.joinActivity",
             JSONArray().put(args).toString()
         )
-        invalidateCreditAccumulateTaskListCacheIfSuccess(resp)
         return resp
     }
 
@@ -183,7 +161,6 @@ object AntSesameCreditRpcCall {
             JSONArray().put(args).toString(),
             "zmmemberop", "taskFeedback", "CreditAccumulateStrategyRpcManager"
         )
-        invalidateCreditAccumulateTaskListCacheIfSuccess(resp)
         return resp
     }
 
@@ -196,7 +173,6 @@ object AntSesameCreditRpcCall {
             "com.antgroup.zmxy.zmmemberop.biz.rpc.promise.PromiseRpcManager.pushActivity",
             """[{"recordId":"$recordId"}]"""
         )
-        invalidateCreditAccumulateTaskListCacheIfSuccess(resp)
         return resp
     }
 
@@ -206,9 +182,6 @@ object AntSesameCreditRpcCall {
             "com.antgroup.zmxy.zmmemberop.biz.rpc.promise.PromiseRpcManager.adRewardLjcs",
             """[{"adTaskBizId":"$adTaskBizId"}]"""
         )
-        invalidateCreditAccumulateTaskListCacheIfSuccess(resp)
-        invalidateLastOperateTaskCacheIfSuccess(resp)
-        invalidateAlchemyHomeCacheIfSuccess(resp)
         return resp
     }
 
@@ -232,9 +205,6 @@ object AntSesameCreditRpcCall {
             METHOD_COLLECT_CREDIT_FEEDBACK,
             """[{"collectAll":true,"status":"UNCLAIMED"}]"""
         )
-        if (isRpcSuccess(resp)) {
-            RpcCache.invalidate(METHOD_QUERY_CREDIT_FEEDBACK)
-        }
         return resp
     }
 
@@ -249,9 +219,6 @@ object AntSesameCreditRpcCall {
             METHOD_COLLECT_CREDIT_FEEDBACK,
             """[{"collectAll":false,"creditFeedbackId":"$creditFeedbackId","status":"UNCLAIMED"}]"""
         )
-        if (isRpcSuccess(resp)) {
-            RpcCache.invalidate(METHOD_QUERY_CREDIT_FEEDBACK)
-        }
         return resp
     }
 
@@ -565,12 +532,10 @@ object AntSesameCreditRpcCall {
 
             @JvmStatic
             fun alchemyExecute(): String {
-                val resp = RequestManager.requestString(
+                return RequestManager.requestString(
                     "com.antgroup.zmxy.zmmemberop.biz.rpc.AlchemyRpcManager.alchemy",
                     "[null]"
                 )
-                invalidateAlchemyHomeCacheIfSuccess(resp)
-                return resp
             }
 
             @JvmStatic

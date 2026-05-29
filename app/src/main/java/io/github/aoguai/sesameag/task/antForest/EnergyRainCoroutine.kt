@@ -6,7 +6,6 @@ import io.github.aoguai.sesameag.hook.Toast
 import io.github.aoguai.sesameag.util.GameTask
 import io.github.aoguai.sesameag.util.FriendGuard
 import io.github.aoguai.sesameag.util.Log
-import io.github.aoguai.sesameag.util.RpcCache
 import io.github.aoguai.sesameag.util.ResChecker
 import io.github.aoguai.sesameag.util.maps.UserMap
 import kotlinx.coroutines.delay
@@ -42,11 +41,6 @@ object EnergyRainCoroutine {
         delay(delayTime)
     }
 
-    private fun invalidateEnergyRainStatusCache() {
-        RpcCache.invalidate("alipay.antforest.forest.h5.queryEnergyRainHome")
-        RpcCache.invalidate("alipay.antforest.forest.h5.queryEnergyRainEndGameList")
-    }
-
     /**
      * 执行能量雨功能
      * @param isManual 是否为手动触发
@@ -63,7 +57,6 @@ object EnergyRainCoroutine {
                 delay(cooldownSeconds * 1000.toLong())
             }
 
-            invalidateEnergyRainStatusCache()
             val executed = energyRain(isManual)
 
             // 更新最后执行时间
@@ -109,7 +102,6 @@ object EnergyRainCoroutine {
                 // 1️⃣ 检查是否可以开始能量雨
                 if (canPlayToday) {
                     if (startEnergyRain()) {
-                        invalidateEnergyRainStatusCache()
                         playedCount++
                         randomDelay(3000, 5000) // 随机延迟3-5秒
                         shouldRunPostFlow = true
@@ -287,7 +279,6 @@ object EnergyRainCoroutine {
     private suspend fun checkAndDoEndGameTask(): TaskResult {
         try {
             // 1. 查询当前是否有可接或已接的游戏任务
-            invalidateEnergyRainStatusCache()
             var response = AntForestRpcCall.queryEnergyRainEndGameList()
             var jo = JSONObject(response)
             if (!ResChecker.checkRes(TAG, jo)) {
@@ -300,8 +291,7 @@ object EnergyRainCoroutine {
                 val initRes = JSONObject(AntForestRpcCall.initTask("GAME_DONE_SLJYD"))
                 if (ResChecker.checkRes(TAG, initRes)) {
                     randomDelay(1000, 2000)
-                    // 🚀 核心修复：初始化后必须刷新列表，否则下面的 Step 3 使用的是旧数据
-                    invalidateEnergyRainStatusCache()
+                    // 初始化后必须重新查询列表，否则下面的 Step 3 使用的是旧数据
                     response = AntForestRpcCall.queryEnergyRainEndGameList()
                     jo = JSONObject(response)
                     if (!ResChecker.checkRes(TAG, jo)) return TaskResult.NOT_FOUND
@@ -333,7 +323,6 @@ object EnergyRainCoroutine {
                             AntForestRpcCall.clickGame("2021005113684028")
                             randomDelay(2000, 3000)
                             if (GameTask.Forest_sljyd.report(1)) {
-                                invalidateEnergyRainStatusCache()
                                 Log.forest("森林能量雨机会任务[$taskTitle] 已完成")
                                 return TaskResult.SUCCESS
                             }

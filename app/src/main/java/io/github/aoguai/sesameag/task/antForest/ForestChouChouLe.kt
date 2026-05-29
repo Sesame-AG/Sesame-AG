@@ -6,7 +6,6 @@ import io.github.aoguai.sesameag.task.TaskStatus
 import io.github.aoguai.sesameag.util.GlobalThreadPools.sleepCompat
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.ResChecker
-import io.github.aoguai.sesameag.util.RpcCache
 import io.github.aoguai.sesameag.util.TaskBlacklist
 import io.github.aoguai.sesameag.util.maps.UserMap
 import org.json.JSONObject
@@ -186,7 +185,6 @@ class ForestChouChouLe {
     }.onFailure { Log.printStackTrace(TAG, "${s.name} 处理异常", it) }
 
     private fun fetchFreshTaskList(s: Scene): JSONObject? {
-        RpcCache.invalidate(RPC_LIST_TASK_OPEN_GREEN)
         return AntForestRpcCall.listTaskopengreen(s.taskCode, SOURCE).toJson()
     }
 

@@ -1,6 +1,6 @@
 package io.github.aoguai.sesameag.hook
 
-import io.github.aoguai.sesameag.hook.keepalive.SmartSchedulerManager
+import io.github.aoguai.sesameag.hook.keepalive.UnifiedScheduler
 import io.github.aoguai.sesameag.task.ModelTask.Companion.stopAllTask
 import io.github.aoguai.sesameag.util.Log.record
 import io.github.aoguai.sesameag.util.Notify.updateRunningStatus
@@ -99,7 +99,7 @@ internal object ApplicationResumeCoordinator {
 
         record(TAG, "检测到 ${reason ?: "unknown"} 离线状态，尝试在 $resumeSource 退出离线并恢复任务执行")
         ApplicationHookConstants.setOffline(false)
-        SmartSchedulerManager.cancelNamedTask("重新登录")
+        UnifiedScheduler.cancelNamedTask("重新登录")
         ApplicationHook.lastExecTime = 0
 
         val statusMsg = when (reason) {

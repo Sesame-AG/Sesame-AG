@@ -1155,7 +1155,6 @@ class AntSports : ModelTask() {
 
     private fun queryCurrentWalkStepCount(): Int? {
         return try {
-            RpcCache.invalidate(AntSportsRpcCall.QUERY_WALK_STEP_RPC)
             val response = JSONObject(AntSportsRpcCall.queryWalkStep())
             if (!ResChecker.checkRes(TAG, response)) {
                 Log.sports("查询当前步数失败，回退到 Hook 实时步数")
@@ -2964,7 +2963,6 @@ class AntSports : ModelTask() {
             @SuppressLint("SimpleDateFormat") val sdf = SimpleDateFormat("yyyy-MM-dd")
             val jo = JSONObject(AntSportsRpcCall.walkGo(sdf.format(date), pathId, useStepCount))
             if (isSportsRpcSuccess(jo)) {
-                invalidateRouteStateCache()
                 Log.sports("行走路线🚶🏻‍♂️路线[$pathName]#前进了${useStepCount}步")
                 processRouteEvents(jo.optJSONObject("data"))
                 val latestPath = queryPath(pathId)
@@ -2976,7 +2974,6 @@ class AntSports : ModelTask() {
             } else {
                 val errorCode = extractSportsRpcErrorCode(jo)
                 val errorMsg = extractSportsRpcErrorMessage(jo)
-                invalidateRouteStateCache()
                 Log.error(
                     TAG,
                     "walkGo失败[pathId=$pathId][useStepCount=$useStepCount][code=${errorCode.ifEmpty { "UNKNOWN" }}][msg=$errorMsg] raw=$jo"
@@ -3018,21 +3015,6 @@ class AntSports : ModelTask() {
             .map { it.trim() }
             .filter { it.isNotEmpty() }
             .distinct()
-    }
-
-    private fun invalidateRouteStateCache(includeRevive: Boolean = false) {
-        RpcCache.invalidate(RPC_WALK_QUERY_PATH)
-        RpcCache.invalidate(RPC_WALK_QUERY_USER)
-        RpcCache.invalidate(RPC_WALK_QUERY_WORLD_MAP)
-        RpcCache.invalidate(RPC_WALK_QUERY_CITY_PATH)
-        RpcCache.invalidate(RPC_WALK_QUERY_CITY_KNOWLEDGE_SUMMARY)
-        RpcCache.invalidate(RPC_WALK_QUERY_MEDAL_DETAIL)
-        RpcCache.invalidate(RPC_WALK_QUERY_RECOMMEND_PATH_LIST)
-        if (includeRevive) {
-            RpcCache.invalidate(RPC_WALK_REVIVE_QUERY_DETAIL)
-            RpcCache.invalidate(RPC_WALK_REVIVE_QUERY_TASK_LIST)
-            RpcCache.invalidate(RPC_WALK_REVIVE_QUERY_TASK_FINISH_STATUS)
-        }
     }
 
     private fun queryRouteUserData(): JSONObject? {
@@ -3465,7 +3447,6 @@ class AntSports : ModelTask() {
 
         if (config.reviveTask) {
             completeRouteReviveTasks()
-            invalidateRouteStateCache(includeRevive = true)
         }
 
         val reviveData = queryRouteReviveData()
@@ -3497,7 +3478,6 @@ class AntSports : ModelTask() {
             attempted++
             val resp = JSONObject(AntSportsRpcCall.reviveSteps(candidate.date))
             if (isSportsRpcSuccess(resp)) {
-                invalidateRouteStateCache(includeRevive = true)
                 val reviveCount = resp.optJSONObject("data")?.optInt("reviveCount", candidate.count) ?: candidate.count
                 Log.sports("行走路线复活步数成功[date=${candidate.date}, count=$reviveCount]")
                 return true
@@ -3531,7 +3511,6 @@ class AntSports : ModelTask() {
             return false
         }
 
-        invalidateRouteStateCache(includeRevive = true)
         val refreshedPathData = queryPath(pathId) ?: return false
         val refreshedStep = refreshedPathData.optJSONObject("userPathStep") ?: return false
         val refreshedRemainStepCount = refreshedStep.optInt("remainStepCount", 0)
@@ -3611,7 +3590,6 @@ class AntSports : ModelTask() {
             if (isAdTask) {
                 val adFinishResp = JSONObject(AntSportsRpcCall.finishAdTask(taskBizId))
                 if (isSportsRpcSuccess(adFinishResp)) {
-                    invalidateRouteStateCache(includeRevive = true)
                     Log.sports("行走路线复活广告任务完成[$taskName][taskId=$taskId][bizId=$taskBizId]")
                     GlobalThreadPools.sleepCompat(500)
                     refreshRouteReviveTaskFinishStatus(taskName, taskId)
@@ -3626,7 +3604,6 @@ class AntSports : ModelTask() {
             }
             val completeResp = JSONObject(AntSportsRpcCall.completeReviveTask(taskId))
             if (isSportsRpcSuccess(completeResp)) {
-                invalidateRouteStateCache(includeRevive = true)
                 Log.sports("行走路线复活任务完成[$taskName][taskId=$taskId]")
                 GlobalThreadPools.sleepCompat(500)
                 refreshRouteReviveTaskFinishStatus(taskName, taskId)
@@ -3650,7 +3627,6 @@ class AntSports : ModelTask() {
                 )
                 return
             }
-            invalidateRouteStateCache(includeRevive = true)
             val data = finishStatus.optJSONObject("data")
             if (data?.optBoolean("complete", false) == true) {
                 val confirmedTaskId = data.optString("taskId", taskId).ifBlank { taskId }
@@ -3835,7 +3811,6 @@ class AntSports : ModelTask() {
                 return
             }
 
-            invalidateRouteStateCache()
             val ja = jo.optJSONObject("data")?.optJSONArray("rewards")
             if (ja == null || ja.length() == 0) {
                 Log.sports("行走路线🎁事件领取成功[eventBillNo=$eventBillNo]")
@@ -3903,7 +3878,6 @@ class AntSports : ModelTask() {
         try {
             val jo = JSONObject(AntSportsRpcCall.joinPath(realPathId))
             if (isSportsRpcSuccess(jo)) {
-                invalidateRouteStateCache()
                 val path = queryPath(realPathId)
                 Log.sports("行走路线🚶🏻‍♂️路线[${path?.optJSONObject("path")?.optString("name", realPathId)}]已加入")
             } else {
@@ -4352,7 +4326,6 @@ class AntSports : ModelTask() {
                     )
                 )
                 if (isSportsRpcSuccess(res)) {
-                    invalidateTiyubizOnlineGameStateCache()
                     val data = unwrapSportsRpcPayload(res).optJSONObject("data")
                     val targetValue = data?.optDouble("totalProgressValue", event.progressValue) ?: event.progressValue
                     val targetUnit = data?.optString("userProgressGameUnit", event.progressUnit) ?: event.progressUnit
@@ -4367,7 +4340,6 @@ class AntSports : ModelTask() {
                     val errorCode = extractSportsRpcErrorCode(res)
                     val errorMsg = extractSportsRpcErrorMessage(res)
                     if (isWalkChallengeAlreadyJoinedError(errorCode, errorMsg)) {
-                        invalidateTiyubizOnlineGameStateCache()
                         Log.sports("走路挑战赛线上赛[已报名或不可重复][${game.name}][code=${errorCode.ifEmpty { "UNKNOWN" }}][msg=$errorMsg]"
                         )
                         joinedGame = queryJoinedWalkChallenge().game
@@ -4569,7 +4541,6 @@ class AntSports : ModelTask() {
             )
         }
 
-        invalidateTiyubizOnlineGameStateCache()
         val confirmed = confirmWalkChallengeProgressRecorded(latestGame, record)
         Status.setFlagToday(StatusFlags.FLAG_ANTSPORTS_WALK_CHALLENGE_PROGRESS_DONE)
         val confirmSuffix = if (confirmed) "已确认" else "已提交待回查"
@@ -5052,20 +5023,6 @@ class AntSports : ModelTask() {
         }
     }
 
-    private fun invalidateTiyubizPathStateCache() {
-        RpcCache.invalidate(RPC_TIYUBIZ_PATH_FEATURE_QUERY)
-        RpcCache.invalidate(RPC_TIYUBIZ_PATH_MAP_HOMEPAGE)
-        RpcCache.invalidate(RPC_TIYUBIZ_PATH_MAP_STEP_QUERY)
-    }
-
-    private fun invalidateTiyubizOnlineGameStateCache() {
-        RpcCache.invalidate(RPC_USER_ONLINE_GAME_LIST_QUERY)
-        RpcCache.invalidate(RPC_ONLINE_GAME_SPORTS_LIST_QUERY)
-        RpcCache.invalidate(RPC_ONLINE_GAME_EVENT_QUERY)
-        RpcCache.invalidate(RPC_USER_ONLINE_GAME_DETAIL_QUERY)
-        RpcCache.invalidate(RPC_USER_ONLINE_GAME_DATA_QUERY)
-    }
-
     /**
      * @brief 文体中心地图首页 & 奖励领取
      */
@@ -5092,7 +5049,6 @@ class AntSports : ModelTask() {
                                 .append(right.getInt("count"))
                         }
                         Log.sports("文体宝箱🎁[$award]")
-                        invalidateTiyubizPathStateCache()
                     } else {
                         Log.sports("文体中心开宝箱")
                         Log.sports(res.toString())
@@ -5115,14 +5071,12 @@ class AntSports : ModelTask() {
             val jo = JSONObject(AntSportsRpcCall.pathMapJoin(pathId))
             if (isSportsRpcSuccess(jo)) {
                 Log.sports("加入线路🚶🏻‍♂️[$title]")
-                invalidateTiyubizPathStateCache()
                 pathFeatureQuery()
             } else if (isSportsRouteBusinessTerminal(extractSportsRpcErrorCode(jo), extractSportsRpcErrorMessage(jo))) {
                 val errorCode = extractSportsRpcErrorCode(jo)
                 val errorMsg = extractSportsRpcErrorMessage(jo)
                 Log.sports("文体中心路线[业务终态：已参加][$title][code=${errorCode.ifEmpty { "UNKNOWN" }}][msg=$errorMsg]"
                 )
-                invalidateTiyubizPathStateCache()
             } else {
                 Log.error(TAG, "文体中心路线[加入失败][$title] raw=$jo")
             }
@@ -5150,7 +5104,6 @@ class AntSports : ModelTask() {
                     "行走线路🚶🏻‍♂️[$title]#前进了" +
                         jo.getInt("userPathRecordForwardStepCount") + "步"
                 )
-                invalidateTiyubizPathStateCache()
                 pathMapHomepage(pathId)
                 val completed = "COMPLETED" == jo.getString("userPathRecordStatus")
                 if (completed) {
@@ -5162,7 +5115,6 @@ class AntSports : ModelTask() {
                 val errorMsg = extractSportsRpcErrorMessage(jo)
                 Log.sports("文体中心路线[业务终态：已完成][$title][code=${errorCode.ifEmpty { "UNKNOWN" }}][msg=$errorMsg]"
                 )
-                invalidateTiyubizPathStateCache()
                 pathMapHomepage(pathId)
             } else {
                 Log.error(TAG, "文体中心路线[前进失败][$title] raw=$s")

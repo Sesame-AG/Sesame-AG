@@ -31,9 +31,7 @@ import io.github.aoguai.sesameag.hook.internal.AlipayMiniMarkHelper
 import io.github.aoguai.sesameag.hook.internal.LocationHelper
 import io.github.aoguai.sesameag.hook.internal.AuthCodeHelper
 import io.github.aoguai.sesameag.hook.internal.SecurityBodyHelper
-import io.github.aoguai.sesameag.hook.keepalive.SmartSchedulerManager
-import io.github.aoguai.sesameag.hook.keepalive.SmartSchedulerManager.cleanup
-import io.github.aoguai.sesameag.hook.keepalive.SmartSchedulerManager.schedule
+import io.github.aoguai.sesameag.hook.keepalive.UnifiedScheduler
 import io.github.aoguai.sesameag.hook.rpc.bridge.NewRpcBridge
 import io.github.aoguai.sesameag.hook.rpc.bridge.OldRpcBridge
 import io.github.aoguai.sesameag.hook.rpc.bridge.RpcBridge
@@ -560,7 +558,7 @@ class ApplicationHook {
                         record(TAG, "⚠️ 间隔过短，跳过")
                         // 间隔保护仅用于防抖，重试应尽快（补足到 2s），而不是跟随执行间隔（如 50min）
                         val retryDelayMs = (2000L - elapsedSinceLastExec).coerceAtLeast(200L)
-                        schedule(retryDelayMs, "间隔重试") {
+                        UnifiedScheduler.scheduleLongDelay(retryDelayMs, "间隔重试") {
                             ApplicationHookEntry.onIntervalRetry()
                         }
                         return@withContext
@@ -590,7 +588,7 @@ class ApplicationHook {
         // --- 辅助方法 ---
         private fun ensureScheduler() {
             if (appContext != null) {
-                SmartSchedulerManager.initialize(appContext!!)
+                UnifiedScheduler.initialize(appContext!!)
             }
         }
 
@@ -626,7 +624,7 @@ class ApplicationHook {
                 }
                 nextExecutionTime = if (targetTime > 0) targetTime else (baseTime + delayMillis)
                 ensureScheduler()
-                schedule(delayMillis, "轮询任务") {
+                UnifiedScheduler.scheduleLongDelay(delayMillis, "轮询任务") {
                     ApplicationHookEntry.onPollAlarm()
                 }
             } catch (e: Exception) {
@@ -779,7 +777,7 @@ class ApplicationHook {
                     UserMap.unload()
                 }
 
-                cleanup()
+                UnifiedScheduler.cleanup()
 
                 // 注销广播接收器
                 unregisterBroadcastReceiver(appContext)
@@ -911,7 +909,7 @@ class ApplicationHook {
 
         fun reOpenApp() {
             ensureScheduler()
-            schedule(20000L, "重新登录") {
+            UnifiedScheduler.scheduleLongDelay(20000L, "重新登录") {
                 try {
                     ApplicationResumeCoordinator.recordReOpenAppLaunch()
                     val intent = Intent(Intent.ACTION_VIEW)
@@ -931,8 +929,8 @@ class ApplicationHook {
 
             val wakeField = wakenAtTimeList
             if (wakeField.isDisabled()) {
-                SmartSchedulerManager.cancelNamedTask("每日0点任务")
-                SmartSchedulerManager.cancelNamedTask("自定义唤醒任务")
+                UnifiedScheduler.cancelNamedTask("每日0点任务")
+                UnifiedScheduler.cancelNamedTask("自定义唤醒任务")
                 return
             }
 
@@ -943,7 +941,7 @@ class ApplicationHook {
             val delayToMidnight = calendar.getTimeInMillis() - System.currentTimeMillis()
 
                 if (delayToMidnight > 0) {
-                    schedule(delayToMidnight, "每日0点任务") {
+                    UnifiedScheduler.scheduleLongDelay(delayToMidnight, "每日0点任务") {
                         record(TAG, "⏰ 0点任务触发")
                         updateDay()
                         ApplicationHookEntry.onWakeupMidnight()
@@ -952,7 +950,7 @@ class ApplicationHook {
                 }
 
             // 2. 下一次自定义唤醒（必要时跨日）
-            SmartSchedulerManager.cancelNamedTask("自定义唤醒任务")
+            UnifiedScheduler.cancelNamedTask("自定义唤醒任务")
             val nextWakeAt = wakeField.nextPointAt() ?: return
             val now = System.currentTimeMillis()
             val delay = nextWakeAt - now
@@ -966,7 +964,7 @@ class ApplicationHook {
                 secondOfDay,
                 useSeconds = targetCalendar.get(Calendar.SECOND) != 0
             )
-            schedule(delay, "自定义唤醒任务") {
+            UnifiedScheduler.scheduleLongDelay(delay, "自定义唤醒任务") {
                 record(TAG, "? 自定义触发: $timeToken")
                 ApplicationHookEntry.onWakeupCustom(timeToken)
                 setWakenAtTimeAlarm()

@@ -9,6 +9,7 @@ import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.ResChecker
+import io.github.aoguai.sesameag.util.TaskBlacklist
 import io.github.aoguai.sesameag.util.TimeTriggerEvaluator
 import io.github.aoguai.sesameag.util.maps.UserMap
 import org.json.JSONArray
@@ -23,6 +24,7 @@ class ChouChouLe {
 
     companion object {
         private val TAG = ChouChouLe::class.java.simpleName
+        private const val FARM_BLACKLIST_MODULE = "蚂蚁庄园"
         private const val DATA_FILE_NAME = "farmIPChouChouLeShop.json"
 
         /**
@@ -80,7 +82,10 @@ class ChouChouLe {
         var rightsTimesLimit: Int = 0,
         var awardType: String = "",
         var awardCount: Int = 0,
-        var targetUrl: String = ""
+        var targetUrl: String = "",
+        var desc: String = "",
+        var categorizationSecondLevel: String = "",
+        var categorizationThirdLevel: String = ""
     ) {
         /**
          * 获取剩余次数
@@ -209,9 +214,7 @@ class ChouChouLe {
                         if (shouldSkipLimitedTaskToday(task)) {
                             continue
                         }
-                        // 只要有剩余次数，且（不是捐赠任务 OR 开启了捐赠任务开关），就执行
-                        if (task.getRemainingTimes() > 0 &&
-                            (task.innerAction != "DONATION" || AntFarm.instance?.doChouChouLeDonationTask?.value == true)) {
+                        if (task.getRemainingTimes() > 0 && !isBlacklistedTask(task)) {
                             if (doChouTask(drawType, task)) {
                                 doubleCheck = true
                             }
@@ -255,9 +258,7 @@ class ChouChouLe {
                     if (shouldSkipLimitedTaskToday(task)) {
                         continue
                     }
-                    // 还有剩余次数且满足执行条件
-                    if (task.getRemainingTimes() > 0 &&
-                        (task.innerAction != "DONATION" || AntFarm.instance?.doChouChouLeDonationTask?.value == true)) {
+                    if (task.getRemainingTimes() > 0 && !isBlacklistedTask(task)) {
                         return false
                     }
                 }
@@ -285,6 +286,22 @@ class ChouChouLe {
 
     private fun shouldSkipLimitedTaskToday(task: TaskInfo): Boolean {
         return task.isLimitedTask() && Status.hasFlagToday(limitedTaskFlag(task.taskId))
+    }
+
+    private fun isBlacklistedTask(task: TaskInfo): Boolean {
+        return listOf(
+            task.innerAction.takeIf { it.isNotBlank() }?.let { "innerAction:$it" }.orEmpty(),
+            task.innerAction,
+            task.taskId,
+            task.title,
+            if (task.targetUrl.contains("donationSubject")) "targetUrl:donationSubject" else "",
+            task.desc.takeIf { it.isNotBlank() }?.let { "desc:$it" }.orEmpty(),
+            task.desc,
+            task.categorizationSecondLevel.takeIf { it.isNotBlank() }?.let { "categorizationSecondLevel:$it" }.orEmpty(),
+            task.categorizationThirdLevel.takeIf { it.isNotBlank() }?.let { "categorizationThirdLevel:$it" }.orEmpty()
+        )
+            .filter { it.isNotBlank() }
+            .any { TaskBlacklist.isTaskInBlacklist(FARM_BLACKLIST_MODULE, it) }
     }
 
     private fun markLimitedTaskEndedToday(task: TaskInfo, reason: String) {
@@ -376,7 +393,10 @@ class ChouChouLe {
                     item.optInt("awardCount", -1),
                     item.optInt("canReceiveAwardCount", -1)
                 ).firstOrNull { it >= 0 } ?: 0,
-                targetUrl = item.optString("targetUrl").ifBlank { item.optString("finishedUrl") }
+                targetUrl = item.optString("targetUrl").ifBlank { item.optString("finishedUrl") },
+                desc = item.optString("desc"),
+                categorizationSecondLevel = item.optString("categorizationSecondLevel"),
+                categorizationThirdLevel = item.optString("categorizationThirdLevel")
             )
             list.add(info)
         }
@@ -384,9 +404,6 @@ class ChouChouLe {
     }
 
     private fun isAdBrowseTask(task: TaskInfo): Boolean {
-        if (task.innerAction == "DONATION") {
-            return false
-        }
         val merged = listOf(task.taskId, task.title, task.targetUrl)
             .joinToString("|")
             .lowercase()

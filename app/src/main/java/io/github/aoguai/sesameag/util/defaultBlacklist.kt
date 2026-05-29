@@ -98,6 +98,12 @@ private val farmDefaultBlacklist = setOf(
     // 蚂蚁庄园
     "HEART_DONATION_ADVANCED_FOOD_V2", // 茉莉雪梨卷任务
     "HEART_DONATE",                    // 爱心捐赠
+    "20251118_chouchoulechoukuan2|伸出援手，点亮希望", // 装扮抽抽乐公益捐赠任务
+    "innerAction:DONATION",            // 装扮抽抽乐公益捐赠任务动作
+    "categorizationSecondLevel:Public_Welfare_Behavior", // 装扮抽抽乐公益行为分类
+    "categorizationThirdLevel:Public_Welfare_Behavior",  // 装扮抽抽乐公益行为分类
+    "desc:单笔捐赠",                    // 装扮抽抽乐捐赠换机会任务描述
+    "targetUrl:donationSubject",       // 装扮抽抽乐公益捐赠专题页
     "SHANGOU_xiadan",                  // 逛闪购外卖1元起吃
     "OFFLINE_PAY",                     // 到店付款
     "ONLINE_PAY",                      // 线上支付

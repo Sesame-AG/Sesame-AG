@@ -1,7 +1,7 @@
 package io.github.aoguai.sesameag.task
 
 import android.annotation.SuppressLint
-import io.github.aoguai.sesameag.hook.keepalive.SmartSchedulerManager
+import io.github.aoguai.sesameag.hook.keepalive.UnifiedScheduler
 import io.github.aoguai.sesameag.model.BaseModel
 import io.github.aoguai.sesameag.model.Model
 import io.github.aoguai.sesameag.model.ModelFields
@@ -454,8 +454,7 @@ abstract class ModelTask : Model() {
         private val suspendRunnable: (suspend () -> Unit)? = null,
         val execTime: Long = 0L,
         // 任务结束时的回调（isSuccess 代表是否正常执行完）
-        var onCompleted: ((isSuccess: Boolean) -> Unit)? = null,
-        var useSmartScheduler: Boolean = true
+        var onCompleted: ((isSuccess: Boolean) -> Unit)? = null
     ) {
         var modelTask: ModelTask? = null
         
@@ -467,7 +466,7 @@ abstract class ModelTask : Model() {
         var isCancelled: Boolean = false
             private set
 
-        /** 外部调度器ID (SmartSchedulerManager) */
+        /** 外部调度器ID */
         private var schedulerId: Int = -1
 
         companion object {
@@ -524,12 +523,8 @@ abstract class ModelTask : Model() {
                     waitingTasks[id] = this
                     isCounted = true
 
-                    // 程序计时模式下，注册一个空调度任务作为保活；系统计时模式只保留普通 delay 等待
-                    val shouldUseProgramTimer =
-                        useSmartScheduler && BaseModel.timedTaskModel.value == BaseModel.TimedTaskModel.PROGRAM
-                    if (shouldUseProgramTimer) {
-                        schedulerId = SmartSchedulerManager.schedule(delayTime, "WakeLock:$id") {}
-                    }
+                    // 程序计时模式下注册空调度任务作为保活；系统计时模式只保留普通 delay 等待。
+                    schedulerId = UnifiedScheduler.scheduleKeepAlive(delayTime, "WakeLock:$id")
 
                     delay(delayTime)
 
@@ -572,7 +567,7 @@ abstract class ModelTask : Model() {
                     waitingTasks.remove(id, this)
                 }
                 if (schedulerId != -1) {
-                    SmartSchedulerManager.cancelTask(schedulerId)
+                    UnifiedScheduler.cancelTask(schedulerId)
                     schedulerId = -1
                 }
                 // 仅在成功执行完或明确被取消时回调，失败时不提示“已取消”
@@ -616,7 +611,7 @@ abstract class ModelTask : Model() {
             job?.cancel()
             // 如果存在外部调度任务，一并取消
             if (schedulerId != -1) {
-                SmartSchedulerManager.cancelTask(schedulerId)
+                UnifiedScheduler.cancelTask(schedulerId)
                 schedulerId = -1
             }
         }

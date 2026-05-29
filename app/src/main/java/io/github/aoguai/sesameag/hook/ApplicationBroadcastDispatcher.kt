@@ -2,6 +2,7 @@ package io.github.aoguai.sesameag.hook
 
 import android.content.Context
 import android.content.Intent
+import io.github.aoguai.sesameag.hook.keepalive.UnifiedScheduler
 import io.github.aoguai.sesameag.model.Model
 import io.github.aoguai.sesameag.task.antFarm.AntFarm
 import io.github.aoguai.sesameag.task.antMember.AntMember
@@ -107,10 +108,10 @@ internal object ApplicationBroadcastDispatcher {
             dedupeKey = if (executionTimeMillis > 0) "prewakeup_$executionTimeMillis" else "prewakeup"
         )
 
-        io.github.aoguai.sesameag.hook.keepalive.SmartSchedulerManager.initialize(ctx)
+        UnifiedScheduler.initialize(ctx)
         if (executionTimeMillis > 0 && delayMillis > 0) {
             record(TAG, "收到 prewakeup，计划在 ${TimeUtil.getCommonDate(executionTimeMillis)} 执行 (delay=${TimeUtil.formatDuration(delayMillis)})")
-            io.github.aoguai.sesameag.hook.keepalive.SmartSchedulerManager.schedule(delayMillis, "prewakeup_execute") {
+            UnifiedScheduler.scheduleLongDelay(delayMillis, "prewakeup_execute") {
                 ApplicationHookCore.requestExecution(triggerAtExecTime)
             }
             return
