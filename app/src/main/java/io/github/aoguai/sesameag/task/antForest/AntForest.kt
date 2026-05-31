@@ -368,7 +368,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
     }
 
     internal fun isTakeLookEnergyEnabled(): Boolean {
-        return isCollectEnergyEnabled() && batchRobEnergy?.value == true
+        return isCollectEnergyEnabled()
     }
 
     private fun hasRebornProtectWorkEnabled(): Boolean {
@@ -401,7 +401,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 "batchRobEnergy",
                 "收集能量 | 一键收取",
                 false
-            ).withDesc("开启后在收集能量时优先使用官方“找能量”一键收取入口。").also { batchRobEnergy = it })
+            ).withDesc("开启后在好友、PK好友页面收取多个成熟能量球时优先使用一键收取 RPC。").also { batchRobEnergy = it })
         modelFields.addField(
             BooleanModelField(
                 "pkEnergy",
@@ -1008,13 +1008,13 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                         break
                     }
                     energyRound++
-                    Log.forest("⏸ 当前为只收能量时间【${BaseModel.energyTime.value}】，开始第${energyRound}轮完整能量收取链路")
-                    runForestPreparationAndCollectionWorkflow(tc)
+                    Log.forest("⏸ 当前为只收能量时间【${BaseModel.energyTime.value}】，开始第${energyRound}轮只收能量链路")
+                    runEnergyOnlyCollectionWorkflow(tc)
                     clearRoundCaches()
 
                     TaskCommon.update()
                     if (!TaskCommon.IS_ENERGY_TIME) {
-                        Log.forest("只收能量时间已结束，本轮完整能量收取链路完成后退出循环")
+                        Log.forest("只收能量时间已结束，本轮只收能量链路完成后退出循环")
                         break
                     }
 
@@ -2595,10 +2595,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             Log.forest("收集能量开关关闭，跳过找能量接口")
             return
         }
-        if (!isTakeLookEnergyEnabled()) {
-            Log.forest("一键收取开关关闭，跳过找能量接口")
-            return
-        }
+
         // 1. 冷却检查
         val currentTime = System.currentTimeMillis()
         if (currentTime < nextTakeLookTime) {
@@ -5687,20 +5684,79 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             }
             // 获取所有动物属性并选择可以派遣的伙伴
             val animalProps = jo.getJSONArray("animalProps")
-            var bestAnimalProp: JSONObject? = null
-            for (i in 0..<animalProps.length()) {
-                jo = animalProps.getJSONObject(i)
-                if (bestAnimalProp == null || jo.getJSONObject("main")
-                        .getInt("holdsNum") > bestAnimalProp.getJSONObject("main")
-                        .getInt("holdsNum")
-                ) {
-                    bestAnimalProp = jo // 默认选择最大数量的伙伴
-                }
-            }
+            val bestAnimalProp = selectBestAnimalProp(animalProps)
             // 派遣伙伴
             consumeAnimalProp(bestAnimalProp)
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "queryAnimalPropList err", t)
+        }
+    }
+
+    private fun selectBestAnimalProp(animalProps: JSONArray): JSONObject? {
+        var bestAnimalProp: JSONObject? = null
+        var bestHoldsNum = 0
+        var bestEstimatedEnergy = 0
+        for (i in 0 until animalProps.length()) {
+            val animalProp = animalProps.optJSONObject(i) ?: continue
+            val holdsNum = getAnimalPropHoldsNum(animalProp)
+            if (holdsNum <= 0) {
+                continue
+            }
+            val estimatedEnergy = estimateAnimalPropRobEnergy(animalProp)
+            if (bestAnimalProp == null ||
+                holdsNum > bestHoldsNum ||
+                holdsNum == bestHoldsNum && estimatedEnergy > bestEstimatedEnergy
+            ) {
+                bestAnimalProp = animalProp
+                bestHoldsNum = holdsNum
+                bestEstimatedEnergy = estimatedEnergy
+            }
+        }
+        return bestAnimalProp
+    }
+
+    private fun getAnimalPropHoldsNum(animalProp: JSONObject): Int {
+        return animalProp.optJSONObject("main")?.optInt("holdsNum", 0) ?: 0
+    }
+
+    private fun estimateAnimalPropRobEnergy(animalProp: JSONObject): Int {
+        val partner = animalProp.optJSONObject("partner")
+        val main = animalProp.optJSONObject("main")
+        return maxOf(
+            extractAnimalRobAbilityEnergy(partner),
+            extractAnimalRobAbilityEnergy(main),
+            extractAnimalRobAbilityEnergy(parseAnimalPropExtInfo(partner)),
+            extractAnimalRobAbilityEnergy(parseAnimalPropExtInfo(main))
+        )
+    }
+
+    private fun extractAnimalRobAbilityEnergy(container: JSONObject?): Int {
+        if (container == null) {
+            return 0
+        }
+        val robAbility = container.optJSONObject("robAbility")
+            ?: container.optJSONObject("animal")?.optJSONObject("robAbility")
+            ?: return 0
+        return maxOf(
+            robAbility.optInt("robEnergyInDaily", 0),
+            robAbility.optInt("robEnergyInRound", 0)
+        )
+    }
+
+    private fun parseAnimalPropExtInfo(container: JSONObject?): JSONObject? {
+        if (container == null || !container.has("extInfo")) {
+            return null
+        }
+        val extInfo = container.opt("extInfo")
+        return when (extInfo) {
+            is JSONObject -> extInfo
+            is String -> try {
+                if (extInfo.trim().startsWith("{")) JSONObject(extInfo) else null
+            } catch (_: JSONException) {
+                null
+            }
+
+            else -> null
         }
     }
 
@@ -5717,10 +5773,12 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             val propGroup = animalProp.getJSONObject("main").getString("propGroup")
             val propType = animalProp.getJSONObject("main").getString("propType")
             val name = animalProp.getJSONObject("partner").getString("name")
+            val holdsNum = getAnimalPropHoldsNum(animalProp)
+            val estimatedEnergy = estimateAnimalPropRobEnergy(animalProp)
             // 调用API进行伙伴派遣
             val jo = JSONObject(AntForestRpcCall.consumeProp(propGroup, "", propType, false))
             if (ResChecker.checkRes(TAG, "巡护派遣失败:", jo)) {
-                Log.forest("巡护派遣🐆[$name]")
+                Log.forest("巡护派遣🐆[$name]#持有${holdsNum}个，预计能量${estimatedEnergy}g")
             } else {
                 Log.forest(jo.getString("resultDesc"))
             }

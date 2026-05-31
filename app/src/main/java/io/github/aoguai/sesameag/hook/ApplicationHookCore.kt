@@ -21,18 +21,18 @@ object ApplicationHookCore {
         if (!ApplicationHookConstants.hasPendingTriggers()) return
 
         if (ApplicationHookConstants.isOffline()) {
-            record(TAG, "offline active, skip dispatch, pending=${ApplicationHookConstants.pendingTriggerCount()}")
+            record(TAG, "offline active, skip dispatch: ${ApplicationHook.readinessSummary()}")
             return
         }
 
         val mainTask = ApplicationHook.mainTask
         if (mainTask == null) {
-            record(TAG, "mainTask is null, pending=${ApplicationHookConstants.pendingTriggerCount()}")
+            record(TAG, "mainTask is null: ${ApplicationHook.readinessSummary()}")
             return
         }
 
         if (!ApplicationHook.isReadyForExec()) {
-            record(TAG, "not ready for exec, pending=${ApplicationHookConstants.pendingTriggerCount()}")
+            record(TAG, "not ready for exec: ${ApplicationHook.readinessSummary()}")
             return
         }
 

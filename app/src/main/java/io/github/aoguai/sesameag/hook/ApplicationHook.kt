@@ -435,6 +435,17 @@ class ApplicationHook {
 
         var mainTask: MainTask? = null
 
+        private data class ReloadResumeDecision(
+            val reason: String,
+            val shouldResume: Boolean,
+            val mainTaskRunning: Boolean,
+            val pendingTriggers: Int,
+            val schedulerTasks: Int
+        )
+
+        @Volatile
+        private var reloadResumeDecision: ReloadResumeDecision? = null
+
         private fun ensureMainTask() {
             if (mainTask == null) {
                 mainTask = MainTask("主任务") { runMainTaskLogic() }
@@ -450,7 +461,64 @@ class ApplicationHook {
         }
 
         internal fun readinessSummary(): String {
-            return "init=$init loaded=${Config.isLoaded()} service=${service != null}"
+            return "init=$init " +
+                "loaded=${Config.isLoaded()} " +
+                "legalAccepted=${Config.isLegalAcceptedForCurrentVersion()} " +
+                "service=${service != null} " +
+                "rootGranted=${WorkflowRootGuard.hasGrantedRoot()} " +
+                "mainTask=${mainTask != null} " +
+                "mainTaskRunning=${mainTask?.isRunning == true} " +
+                "offline=${ApplicationHookConstants.isOffline()} " +
+                "pending=${ApplicationHookConstants.pendingTriggerCount()} " +
+                "schedulerTasks=${UnifiedScheduler.activeTaskCount()}"
+        }
+
+        private fun shouldCaptureReloadState(reason: String): Boolean {
+            return reason == "config_reload" || reason == "broadcast_restart"
+        }
+
+        private fun captureReloadResumeDecision(reason: String) {
+            val running = mainTask?.isRunning == true
+            val pending = ApplicationHookConstants.pendingTriggerCount()
+            val scheduled = UnifiedScheduler.activeTaskCount()
+            val decision = ReloadResumeDecision(
+                reason = reason,
+                shouldResume = running || pending > 0 || scheduled > 0,
+                mainTaskRunning = running,
+                pendingTriggers = pending,
+                schedulerTasks = scheduled
+            )
+            reloadResumeDecision = decision
+            record(
+                TAG,
+                "reload snapshot: reason=$reason shouldResume=${decision.shouldResume} " +
+                    "mainTaskRunning=$running pending=$pending schedulerTasks=$scheduled"
+            )
+        }
+
+        internal fun consumeReloadResumeDecision(reason: String): Boolean {
+            val decision = reloadResumeDecision
+            if (decision == null || decision.reason != reason) {
+                if (shouldCaptureReloadState(reason)) {
+                    record(TAG, "reload completed without snapshot, keep idle: reason=$reason")
+                }
+                return false
+            }
+            reloadResumeDecision = null
+            if (!decision.shouldResume) {
+                record(
+                    TAG,
+                    "reload idle preserved: reason=$reason mainTaskRunning=${decision.mainTaskRunning} " +
+                        "pending=${decision.pendingTriggers} schedulerTasks=${decision.schedulerTasks}"
+                )
+                return false
+            }
+            record(
+                TAG,
+                "reload resume workflow: reason=$reason mainTaskRunning=${decision.mainTaskRunning} " +
+                    "pending=${decision.pendingTriggers} schedulerTasks=${decision.schedulerTasks}"
+            )
+            return true
         }
 
         internal fun restartWorkflow(reason: String): Boolean = initHandler(reason)
@@ -649,7 +717,14 @@ class ApplicationHook {
                     return true
                 }
 
-                if (init) destroyHandler()
+                if (init) {
+                    if (shouldCaptureReloadState(reason)) {
+                        captureReloadResumeDecision(reason)
+                    } else {
+                        reloadResumeDecision = null
+                    }
+                    destroyHandler()
+                }
 
                 // 初始化广播（RPC 调试 / 手动任务等功能依赖）
                 try {

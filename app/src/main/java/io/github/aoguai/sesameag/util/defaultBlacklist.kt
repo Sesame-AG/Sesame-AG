@@ -38,7 +38,9 @@ private val sesameCreditDefaultBlacklist = setOf(
     "领取任务去开通信用额度",   // 服务端模板不存在：PROMISE_TEMPLATE_NOT_EXIST
     "去租赁下单",              // 参数错误：promiseActivityExtCheck
     "zml_xiangjiangshikaipao_renwu", // 参数错误：promiseActivityExtCheck
-    "去玩向僵尸开炮"           // 参数错误：promiseActivityExtCheck
+    "去玩向僵尸开炮",          // 参数错误：promiseActivityExtCheck
+    "AP17345296|芝麻树-蚂蚁阿福逛一逛唤活任务", // 芝麻树 NONE_SIGNUP 未知状态
+    "zml_eleme_diaoyu_erfang|去淘宝闪购果园" // OP_REPEAT_CHECK 频控任务
 )
 
 private val sesameAlchemyDefaultBlacklist = setOf(
@@ -289,10 +291,11 @@ private val memberDefaultBlacklist = setOf(
     "逛一逛抖音极速版",
     "玩向西冲冲冲升5级",
     "SYH_RTB_SHOW_TASK_INDEX_2|去签名设计", // 304/TASK_NOT_FINISHED
-    "SYH_RTB_SHOW_TASK_INDEX_3|玩游戏通过1次游戏" // 001，系统异常
+    "SYH_RTB_SHOW_TASK_INDEX_3|玩游戏通过1次游戏", // 001，系统异常
+    "AP15353904|玩猪了个猪"
 )
 
-private val insuredDefaultBlacklist = emptySet<String>()
+private val insuredDefaultBlacklist = setOf("AP1835211|逛一逛冲鸭")
 
 private val sportsDefaultBlacklist = setOf(
     // 运动

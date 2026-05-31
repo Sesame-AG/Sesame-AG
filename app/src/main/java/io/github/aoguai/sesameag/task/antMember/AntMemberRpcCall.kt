@@ -826,6 +826,37 @@ object AntMemberRpcCall {
     }
 
     @JvmStatic
+    fun guardianAnswerConsult(consultScene: String = "ANXINDOU"): String {
+        val args = JSONObject().apply {
+            put("consultScene", consultScene)
+        }
+        return RequestManager.requestString(
+            "com.alipay.insmarketingbff.guardian.answerConsult",
+            JSONArray().put(args).toString()
+        )
+    }
+
+    @JvmStatic
+    fun beanTaskCenterConsult(
+        taskCenterId: String,
+        sceneCode: String,
+        entrance: String
+    ): String {
+        val args = JSONObject().apply {
+            put("bizData", JSONObject())
+            put("bizTaskSortParams", JSONObject())
+            put("displayTaskCount", 30)
+            put("entrance", entrance)
+            put("sceneCode", sceneCode)
+            put("taskCenterId", taskCenterId)
+        }
+        return RequestManager.requestString(
+            "com.alipay.insmarketingbff.bean.taskCenterConsult",
+            JSONArray().put(args).toString()
+        )
+    }
+
+    @JvmStatic
     fun queryUserAccountInfo(pointProdCode: String): String {
         return RequestManager.requestString(
             "com.alipay.insmarketingbff.point.queryUserAccountInfo",

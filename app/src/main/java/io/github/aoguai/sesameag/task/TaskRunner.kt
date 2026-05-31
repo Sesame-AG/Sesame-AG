@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.hook.ApplicationHook
+import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.hook.CustomRpcScheduler
 import io.github.aoguai.sesameag.model.BaseModel
 import io.github.aoguai.sesameag.model.CustomSettings
@@ -25,9 +26,12 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -66,6 +70,7 @@ class CoroutineTaskRunner(allModels: List<Model>) {
     private data class LongRunningJob(
         val taskId: String,
         val startTime: Long,
+        val task: ModelTask,
         val job: Job
     )
 
@@ -97,10 +102,18 @@ class CoroutineTaskRunner(allModels: List<Model>) {
             val status = CustomSettings.getOnceDailyStatus(enableLog = true)
 
             // 自定义 RPC（配置文件 + 定时执行）：每个调度周期执行一次（对每条最多执行 1 次）
-            CustomRpcScheduler.runIfEnabled()
+            if (ApplicationHookConstants.isOffline()) {
+                Log.record(TAG, "⏸ 检测到离线模式，跳过自定义 RPC 与后续任务流程")
+            } else {
+                CustomRpcScheduler.runIfEnabled()
+            }
 
             // 执行多轮任务
-            repeat(rounds) { roundIndex ->
+            for (roundIndex in 0 until rounds) {
+                if (ApplicationHookConstants.isOffline()) {
+                    Log.record(TAG, "⏸ 检测到离线模式，停止后续轮次")
+                    break
+                }
                 val round = roundIndex + 1
                 executeRound(round, rounds, status)
             }
@@ -110,7 +123,9 @@ class CoroutineTaskRunner(allModels: List<Model>) {
             if (CustomSettings.onlyOnceDaily.value == true) {
                 // 确保时间状态是最新的
                 TaskCommon.update()
-                if (TaskCommon.IS_MODULE_SLEEP_TIME) {
+                if (ApplicationHookConstants.isOffline()) {
+                    Log.record(TAG, "⏸ 检测到离线模式，不设置 ${StatusFlags.FLAG_ONCE_DAILY_FINISHED} 标记")
+                } else if (TaskCommon.IS_MODULE_SLEEP_TIME) {
                     Log.record(TAG, "💤 当前处于模块休眠时间，不设置 ${StatusFlags.FLAG_ONCE_DAILY_FINISHED} 标记")
                 } else {
                     Status.setFlagToday(StatusFlags.FLAG_ONCE_DAILY_FINISHED)
@@ -123,7 +138,9 @@ class CoroutineTaskRunner(allModels: List<Model>) {
         } catch (e: Exception) {
             Log.printStackTrace(TAG, "任务流程异常", e)
         } finally {
-            awaitLongRunningJobs()
+            withContext(NonCancellable) {
+                awaitLongRunningJobs()
+            }
             scheduleNext()
             printExecutionSummary(startTime, System.currentTimeMillis())
         }
@@ -134,6 +151,11 @@ class CoroutineTaskRunner(allModels: List<Model>) {
      */
     private suspend fun executeRound(round: Int, totalRounds: Int, status: CustomSettings.OnceDailyStatus) = coroutineScope {
         val roundStartTime = System.currentTimeMillis()
+        if (ApplicationHookConstants.isOffline()) {
+            Log.record(TAG, "⏸ [第 $round/$totalRounds 轮] 检测到离线模式，跳过本轮")
+            return@coroutineScope
+        }
+
         TaskCommon.update()
         val energyOnlyMode = TaskCommon.IS_ENERGY_TIME
 
@@ -155,7 +177,11 @@ class CoroutineTaskRunner(allModels: List<Model>) {
         Log.record(TAG, "🔄 [第 $round/$totalRounds 轮] 开始，共 ${tasksToRun.size} 个任务，分 ${taskBatches.size} 个批次")
 
         // 2. 分批执行，每批内部保留并发能力
-        taskBatches.forEachIndexed { batchIndex, batchTasks ->
+        for ((batchIndex, batchTasks) in taskBatches.withIndex()) {
+            if (ApplicationHookConstants.isOffline()) {
+                Log.record(TAG, "⏸ [第 $round/$totalRounds 轮] 检测到离线模式，停止后续批次")
+                break
+            }
             executeTaskBatch(round, totalRounds, batchIndex + 1, taskBatches.size, batchTasks)
         }
 
@@ -173,6 +199,11 @@ class CoroutineTaskRunner(allModels: List<Model>) {
         if (tasks.isEmpty()) {
             return@coroutineScope
         }
+        if (ApplicationHookConstants.isOffline()) {
+            skippedCount.addAndGet(tasks.size)
+            Log.record(TAG, "⏸ [第 $round/$totalRounds 轮][批次 $batchIndex/$totalBatches] 检测到离线模式，跳过批次")
+            return@coroutineScope
+        }
 
         Log.record(
             TAG,
@@ -187,6 +218,11 @@ class CoroutineTaskRunner(allModels: List<Model>) {
                     return@async
                 }
                 semaphore.withPermit {
+                    if (ApplicationHookConstants.isOffline()) {
+                        skippedCount.incrementAndGet()
+                        Log.record(TAG, "⏸ 任务 ${task.getName()} 因离线模式启动而中止")
+                        return@withPermit
+                    }
                     executeSingleTask(task, round)
                 }
             }
@@ -259,6 +295,12 @@ class CoroutineTaskRunner(allModels: List<Model>) {
         val taskId = "$taskName-R$round"
         val startTime = System.currentTimeMillis()
 
+        if (ApplicationHookConstants.isOffline()) {
+            skippedCount.incrementAndGet()
+            Log.record(TAG, "⏸ 检测到离线模式，跳过: $taskName")
+            return
+        }
+
         TaskCommon.update()
         if (TaskCommon.IS_ENERGY_TIME && task !is AntForest) {
             skippedCount.incrementAndGet()
@@ -276,7 +318,7 @@ class CoroutineTaskRunner(allModels: List<Model>) {
 
             val job = task.startTask(force = false, rounds = 1)
             if (isWhitelist) {
-                longRunningJobs.add(LongRunningJob(taskId, startTime, job))
+                longRunningJobs.add(LongRunningJob(taskId, startTime, task, job))
                 if (job.isActive) {
                     Log.record(TAG, "✨ $taskId 启动成功 (后台运行中)")
                 }
@@ -289,9 +331,14 @@ class CoroutineTaskRunner(allModels: List<Model>) {
 
             // 成功
             val time = System.currentTimeMillis() - startTime
-            successCount.incrementAndGet()
-            taskExecutionTimes[taskId] = time
-            Log.record(TAG, "✅ 完成: $taskId (耗时: ${time}ms)")
+            if (ApplicationHookConstants.isOffline()) {
+                skippedCount.incrementAndGet()
+                Log.record(TAG, "⏸ 离线模式中断: $taskId (耗时: ${time}ms)")
+            } else {
+                successCount.incrementAndGet()
+                taskExecutionTimes[taskId] = time
+                Log.record(TAG, "✅ 完成: $taskId (耗时: ${time}ms)")
+            }
 
         } catch (e: TimeoutCancellationException) {
             val time = System.currentTimeMillis() - startTime
@@ -312,6 +359,14 @@ class CoroutineTaskRunner(allModels: List<Model>) {
         var loggedWait = false
         while (true) {
             val longRunningJob = longRunningJobs.peek() ?: break
+            if (ApplicationHookConstants.isOffline()) {
+                Log.record(TAG, "⏸ 离线模式中断白名单长任务: ${longRunningJob.taskId}")
+                longRunningJob.task.stopTask()
+                longRunningJob.job.cancel()
+                longRunningJobs.remove(longRunningJob)
+                skippedCount.incrementAndGet()
+                continue
+            }
             if (!loggedWait) {
                 loggedWait = true
                 Log.record(TAG, "⏳ 等待白名单长任务完成后再调度下次执行")
@@ -319,9 +374,14 @@ class CoroutineTaskRunner(allModels: List<Model>) {
             longRunningJob.job.join()
             longRunningJobs.remove(longRunningJob)
             val time = System.currentTimeMillis() - longRunningJob.startTime
-            successCount.incrementAndGet()
-            taskExecutionTimes[longRunningJob.taskId] = time
-            Log.record(TAG, "✅ 完成: ${longRunningJob.taskId} (耗时: ${time}ms)")
+            if (ApplicationHookConstants.isOffline()) {
+                skippedCount.incrementAndGet()
+                Log.record(TAG, "⏸ 离线模式中断: ${longRunningJob.taskId} (耗时: ${time}ms)")
+            } else {
+                successCount.incrementAndGet()
+                taskExecutionTimes[longRunningJob.taskId] = time
+                Log.record(TAG, "✅ 完成: ${longRunningJob.taskId} (耗时: ${time}ms)")
+            }
         }
     }
 

@@ -166,7 +166,7 @@ object Logback {
             val policy = SizeAndTimeBasedRollingPolicy<ILoggingEvent>().apply {
                 context = lc
                 fileNamePattern = "${logDir}bak/$logName-%d{yyyy-MM-dd}.%i.log"
-                setMaxFileSize(FileSize.valueOf("50MB"))
+                setMaxFileSize(FileSize.valueOf("7MB"))
                 setTotalSizeCap(FileSize.valueOf("256MB"))
                 maxHistory = 3
                 isCleanHistoryOnStart = true
@@ -177,7 +177,7 @@ object Logback {
 
             encoder = PatternLayoutEncoder().apply {
                 context = lc
-                pattern = "%d{HH:mm:ss.SS}%msg%n"
+                pattern = "%d{dd日 HH:mm:ss.SS} %msg%n"
                 start()
             }
 

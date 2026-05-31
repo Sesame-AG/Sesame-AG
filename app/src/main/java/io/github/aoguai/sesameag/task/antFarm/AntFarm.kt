@@ -15,6 +15,7 @@ import io.github.aoguai.sesameag.entity.OtherEntityProvider.farmFamilyOption
 import io.github.aoguai.sesameag.entity.ParadiseCoinBenefit
 import io.github.aoguai.sesameag.hook.ExchangeOptionsRefreshBridge
 import io.github.aoguai.sesameag.hook.HookReadyChecker
+import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.hook.Toast
 import io.github.aoguai.sesameag.hook.rpc.intervallimit.RpcIntervalLimit.addIntervalLimit
 import io.github.aoguai.sesameag.model.BaseModel
@@ -79,6 +80,7 @@ import java.util.Calendar
 import java.util.Locale
 import java.util.Objects
 import java.util.Random
+import kotlin.math.abs
 import kotlin.math.min
 
 @Suppress("unused", "EnumEntryName", "EnumEntryName", "EnumEntryName", "EnumEntryName")
@@ -120,6 +122,7 @@ class AntFarm : ModelTask() {
         private set
     internal var lastDonationNoMoreActivities: Boolean = false
         private set
+    private val specialFoodUnitProduce: MutableMap<String, Double> = linkedMapOf()
 
     /**
      * 标记农场是否已满（用于雇佣小鸡逻辑）
@@ -980,7 +983,23 @@ class AntFarm : ModelTask() {
         if (Status.hasFlagToday(StatusFlags.FLAG_FARM_DAILY_DONATION_DONE_PREFIX + userId)) {
             return false
         }
-        return harvestBenevolenceScore >= amount
+        if (harvestBenevolenceScore >= amount) {
+            return true
+        }
+        if (benevolenceScore >= 1.0) {
+            return true
+        }
+        if (!isAutoUseSpecialFoodEnabled() || isOwnerAnimalSleeping() || !isOwnerAnimalAtHome()) {
+            return false
+        }
+        val specialFoodDailyLimit = useSpecialFoodCount?.value ?: -1
+        val specialFoodUsedToday = Status.getIntFlagToday(StatusFlags.FLAG_FARM_SPECIAL_FOOD_DAILY_COUNT) ?: 0
+        if (specialFoodDailyLimit > 0 &&
+            (Status.hasFlagToday(StatusFlags.FLAG_FARM_SPECIAL_FOOD_LIMIT) || specialFoodUsedToday >= specialFoodDailyLimit)
+        ) {
+            return false
+        }
+        return true
     }
 
     internal fun isAutoUseSpecialFoodEnabled(): Boolean {
@@ -2033,6 +2052,94 @@ class AntFarm : ModelTask() {
         }
     }
 
+    private fun tryUseSpecialFoodForDonation(requiredEggCount: Int): Boolean {
+        if (harvestBenevolenceScore >= requiredEggCount) {
+            return true
+        }
+        if (benevolenceScore >= 1.0) {
+            Log.farm("普通捐蛋前蛋数不足(当前:$harvestBenevolenceScore)，发现有待收取蛋($benevolenceScore)，尝试先收获")
+            harvestProduce(ownerFarmId)
+            if (harvestBenevolenceScore >= requiredEggCount) {
+                return true
+            }
+        }
+        if (!isAutoUseSpecialFoodEnabled()) {
+            Log.farm("普通捐蛋蛋数不足，未开启“使用特殊食品”，跳过特殊食品补蛋")
+            return false
+        }
+        if (isOwnerAnimalSleeping()) {
+            Log.farm("普通捐蛋蛋数不足，小鸡正在睡觉，无法通过特殊食品补蛋")
+            return false
+        }
+        if (!isOwnerAnimalAtHome()) {
+            Log.farm("普通捐蛋蛋数不足，小鸡不在庄园，暂不尝试特殊食品补蛋")
+            return false
+        }
+
+        val dailyLimit = useSpecialFoodCount?.value ?: -1
+        val usedToday = Status.getIntFlagToday(StatusFlags.FLAG_FARM_SPECIAL_FOOD_DAILY_COUNT) ?: 0
+        if (dailyLimit > 0 &&
+            (Status.hasFlagToday(StatusFlags.FLAG_FARM_SPECIAL_FOOD_LIMIT) || usedToday >= dailyLimit)
+        ) {
+            Status.setFlagToday(StatusFlags.FLAG_FARM_SPECIAL_FOOD_LIMIT)
+            Log.farm("特殊食品今日已使用${usedToday}个，达到每日上限${dailyLimit}个，停止普通捐蛋补蛋")
+            return false
+        }
+
+        val uid = UserMap.currentUid
+        if (uid.isNullOrBlank()) {
+            Log.farm("普通捐蛋读取特殊食品库存失败：当前用户ID为空")
+            return false
+        }
+        val jo = try {
+            JSONObject(AntFarmRpcCall.enterFarm(uid, uid))
+        } catch (t: Throwable) {
+            Log.printStackTrace(TAG, "普通捐蛋读取特殊食品库存异常:", t)
+            return false
+        }
+        if (!ResChecker.checkRes(TAG, jo)) {
+            Log.farm("普通捐蛋读取特殊食品库存失败: ${jo.optString("memo").ifBlank { jo.optString("resultDesc", jo.toString()) }}")
+            return false
+        }
+        jo.optJSONObject("farmVO")?.let { farmVO ->
+            harvestBenevolenceScore = farmVO.optDouble("harvestBenevolenceScore", harvestBenevolenceScore)
+            parseSyncAnimalStatusResponse(farmVO)
+        }
+        if (harvestBenevolenceScore >= requiredEggCount) {
+            return true
+        }
+
+        val cuisineList = jo.optJSONArray("cuisineList")
+        if (cuisineList == null) {
+            Log.farm("普通捐蛋读取特殊食品库存失败：cuisineList 为空")
+            return false
+        }
+
+        val remainingDailyQuota = if (dailyLimit > 0) dailyLimit - usedToday else -1
+        if (remainingDailyQuota == 0) {
+            Status.setFlagToday(StatusFlags.FLAG_FARM_SPECIAL_FOOD_LIMIT)
+            Log.farm("特殊食品今日已无剩余额度，停止普通捐蛋补蛋")
+            return false
+        }
+
+        val eggGap = (requiredEggCount - harvestBenevolenceScore).coerceAtLeast(0.0)
+        val usedCount = useSpecialFood(
+            cuisineList = cuisineList,
+            maxUsage = remainingDailyQuota,
+            targetEggGap = eggGap
+        )
+        if (usedCount <= 0) {
+            Log.farm("普通捐蛋蛋数不足，特殊食品调用未成功，停止补蛋")
+            return false
+        }
+
+        if (benevolenceScore >= 1.0) {
+            harvestProduce(ownerFarmId)
+        }
+        syncAnimalStatus(ownerFarmId)
+        return harvestBenevolenceScore >= requiredEggCount
+    }
+
     /* 捐赠爱心鸡蛋 */
     internal fun handleDonation(): Boolean {
         try {
@@ -2052,8 +2159,10 @@ class AntFarm : ModelTask() {
 
             val amount = donationAmount?.value ?: 1
             if (harvestBenevolenceScore < amount) {
-                Log.farm("可用爱心蛋不足，跳过普通每日捐蛋：当前${harvestBenevolenceScore}颗，需要${amount}颗")
-                return false
+                if (!tryUseSpecialFoodForDonation(amount)) {
+                    Log.farm("可用爱心蛋不足，跳过普通每日捐蛋：当前${harvestBenevolenceScore}颗，需要${amount}颗")
+                    return false
+                }
             }
 
             val donatedActivityIds = linkedSetOf<String>()
@@ -4028,6 +4137,10 @@ class AntFarm : ModelTask() {
                     .sortedByDescending { AntFarmFamily.isFamilyMember(it.key) }
             }
             for (entry in feedFriendEntries) {
+                if (ApplicationHookConstants.isOffline()) {
+                    Log.farm("帮好友喂鸡检测到离线模式，本轮中断")
+                    return
+                }
                 val userId = entry.key.trim()
                 val maxDailyCount = entry.value
                 if (userId.isBlank() || maxDailyCount <= 0) {
@@ -4078,6 +4191,10 @@ class AntFarm : ModelTask() {
                                 }
                                 val feedFriendAnimaljo =
                                     JSONObject(AntFarmRpcCall.feedFriendAnimal(friendFarmId))
+                                if (ApplicationHookConstants.isOffline()) {
+                                    Log.farm("帮好友喂鸡检测到离线模式，本轮中断")
+                                    return
+                                }
                                 val resultCode = feedFriendAnimaljo.optString("resultCode", "")
                                 val memo = feedFriendAnimaljo.optString("memo", "")
                                 if ("388" == resultCode || memo.contains("小鸡太小")) {
@@ -4506,10 +4623,38 @@ class AntFarm : ModelTask() {
         }
     }
 
+    private data class SpecialFoodStock(
+        val cookbookId: String,
+        val cuisineId: String,
+        val name: String,
+        var count: Int
+    )
+
+    private data class SpecialFoodUse(
+        val cookbookId: String,
+        val cuisineId: String,
+        val name: String,
+        val count: Int
+    )
+
+    private data class SpecialFoodPlan(
+        val uses: List<SpecialFoodUse>,
+        val estimatedProduce: Double?,
+        val reachesTarget: Boolean,
+        val unknownProbe: Boolean = false
+    )
+
+    private data class SpecialFoodBatchResult(
+        val success: Boolean,
+        val usedCount: Int = 0,
+        val deltaProduce: Double = 0.0
+    )
+
     /**
      * 使用特殊美食 - 批量模式（支持连吃10个）
      * @param cuisineList 待使用的美食列表
      * @param maxUsage 本次运行总计使用的美食数量。-1 为尝试吃完传入列表中的指定数量。
+     * @param targetEggGap 目标型补蛋差额。>0 时按已学习收益规划批次，未知收益先单个探测。
      */
     internal fun useSpecialFood(
         cuisineList: JSONArray,
@@ -4517,102 +4662,60 @@ class AntFarm : ModelTask() {
         usageCountFlag: String = StatusFlags.FLAG_FARM_SPECIAL_FOOD_DAILY_COUNT,
         usageLimitFlag: String = StatusFlags.FLAG_FARM_SPECIAL_FOOD_LIMIT,
         usageDailyLimit: Int = useSpecialFoodCount?.value ?: -1,
-        usageLabel: String = "特殊食品"
+        usageLabel: String = "特殊食品",
+        targetEggGap: Double = 0.0
     ): Int {
         var usedCount = 0
         try {
-            val foodList = mutableListOf<JSONObject>()
-            var totalInventory = 0 // 统计所有美食库存总和
-            var totalToEat = 0     // 本次任务待消耗的总量
-
-            for (i in 0 until cuisineList.length()) {
-                val item = cuisineList.getJSONObject(i)
-
-                val stock = if (item.has("stock")) item.getInt("stock") else item.optInt("count", 0)
-                totalInventory += stock
-
-                val count = item.optInt("count", 0)
-                if (count > 0) {
-                    foodList.add(item)
-                    totalToEat += count
-                }
-            }
-
-            Log.farm("美食处理：统计到美食库共有美食 $totalInventory 个")
-
-            // 2. 确定本次实际消耗量
-            var remainingToEat = if (maxUsage == -1) totalToEat else min(maxUsage, totalToEat)
+            val stockList = buildSpecialFoodStocks(cuisineList)
+            val totalInventory = totalSpecialFoodStock(stockList)
+            var remainingToEat = if (maxUsage == -1) totalInventory else min(maxUsage, totalInventory)
             if (remainingToEat <= 0) return 0
 
-            Log.farm("美食处理：待消耗总量 $remainingToEat")
+            val targetMode = targetEggGap > 0.0
+            var remainingTarget = targetEggGap.coerceAtLeast(0.0)
+            Log.farm("美食处理：统计到美食库共有美食 $totalInventory 个")
+            if (targetMode) {
+                Log.farm("${usageLabel}目标补蛋：目标差额${formatSpecialFoodProduce(remainingTarget)}颗，最多使用${remainingToEat}个")
+            } else {
+                Log.farm("美食处理：待消耗总量 $remainingToEat")
+            }
 
-            while (remainingToEat > 0 && foodList.isNotEmpty()) {
-                val batchTarget = min(remainingToEat, 10) // 每次最多吃10个
-                val currentBatchArray = JSONArray()
-                val usedNames = StringBuilder()
-                var currentBatchCount = 0
-
-                // 2. 策略判断：优先查找是否有单种食物满足本次 Batch 数量
-                val singleFood = foodList.find { it.optInt("count", 0) >= batchTarget }
-
-                if (singleFood != null) {
-                    // 情况 A: 单种食物充足
-                    val countToUse = batchTarget
-                    val snack = JSONObject()
-                    snack.put("cookbookId", singleFood.getString("cookbookId"))
-                    snack.put("cuisineId", singleFood.getString("cuisineId"))
-                    snack.put("count", countToUse)
-                    snack.put("useCuisine", true)
-                    currentBatchArray.put(snack)
-
-                    usedNames.append(singleFood.getString("name")).append("x").append(countToUse)
-                    currentBatchCount = countToUse
-
-                    // 更新状态
-                    val newCount = singleFood.getInt("count") - countToUse
-                    if (newCount <= 0) foodList.remove(singleFood) else singleFood.put("count", newCount)
-                    remainingToEat -= countToUse
-                } else {
-                    // 情况 B: 单种不足，进行多种混搭凑够 batchTarget
-                    var currentBatchSum = 0
-                    val iterator = foodList.iterator()
-                    while (iterator.hasNext() && currentBatchSum < batchTarget) {
-                        val food = iterator.next()
-                        val canTake = min(batchTarget - currentBatchSum, food.getInt("count"))
-
-                        val snack = JSONObject()
-                        snack.put("cookbookId", food.getString("cookbookId"))
-                        snack.put("cuisineId", food.getString("cuisineId"))
-                        snack.put("count", canTake)
-                        snack.put("useCuisine", true)
-                        currentBatchArray.put(snack)
-
-                        if (usedNames.isNotEmpty()) usedNames.append(" + ")
-                        usedNames.append(food.getString("name")).append("x").append(canTake)
-
-                        currentBatchSum += canTake
-                        val left = food.getInt("count") - canTake
-                        if (left <= 0) iterator.remove() else food.put("count", left)
-                    }
-                    currentBatchCount = currentBatchSum
-                    remainingToEat -= currentBatchSum
+            while (remainingToEat > 0 && stockList.isNotEmpty()) {
+                if (targetMode && remainingTarget <= SPECIAL_FOOD_PRODUCE_EPS) {
+                    break
                 }
 
-                // 3. 发送网络请求
-                if (currentBatchArray.length() > 0) {
-                    val res = AntFarmRpcCall.useFarmFood(currentBatchArray)
-                    val joRes = JSONObject(res)
-                    if (ResChecker.checkRes(TAG, joRes)) {
-                        val delta = joRes.optJSONObject("foodEffect")?.optDouble("deltaProduce", 0.0) ?: 0.0
-                        val formattedDelta = "%.2f".format(java.util.Locale.US, delta)
-                        Log.farm("批量使用美食🍱[$usedNames]#加速${formattedDelta}颗爱心鸡蛋")
-                        usedCount += currentBatchCount
-                    } else {
-                        Log.farm("美食使用失败，停止后续操作: ${joRes.optString("memo")}")
+                val plan = if (targetMode) {
+                    selectTargetSpecialFoodPlan(stockList, remainingTarget, remainingToEat)
+                } else {
+                    selectCountSpecialFoodPlan(stockList, remainingToEat)
+                } ?: break
+                if (plan.uses.isEmpty()) {
+                    break
+                }
+
+                val batchResult = executeSpecialFoodBatch(
+                    plan = plan,
+                    stockList = stockList,
+                    remainingTarget = if (targetMode) remainingTarget else null,
+                    usageLabel = usageLabel
+                )
+                if (!batchResult.success) {
+                    break
+                }
+
+                usedCount += batchResult.usedCount
+                remainingToEat -= batchResult.usedCount
+                if (targetMode) {
+                    remainingTarget = (remainingTarget - batchResult.deltaProduce).coerceAtLeast(0.0)
+                    Log.farm("${usageLabel}目标补蛋：剩余差额${formatSpecialFoodProduce(remainingTarget)}颗")
+                    if (batchResult.deltaProduce <= SPECIAL_FOOD_PRODUCE_EPS) {
+                        Log.farm("${usageLabel}目标补蛋：本批未产生有效进度，停止继续消耗美食")
                         break
                     }
-                    CoroutineUtils.sleepCompat(RandomUtil.nextInt(1000, 2000).toLong())
                 }
+                CoroutineUtils.sleepCompat(RandomUtil.nextInt(1000, 2000).toLong())
             }
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "useSpecialFood 批量模式 err:", t)
@@ -4628,6 +4731,420 @@ class AntFarm : ModelTask() {
             Log.farm("${usageLabel}今日已累计使用${newUsedToday}个")
         }
         return usedCount
+    }
+
+    private fun buildSpecialFoodStocks(cuisineList: JSONArray): MutableList<SpecialFoodStock> {
+        val stockList = mutableListOf<SpecialFoodStock>()
+        for (i in 0 until cuisineList.length()) {
+            val item = cuisineList.optJSONObject(i) ?: continue
+            val cookbookId = item.optString("cookbookId")
+            val cuisineId = item.optString("cuisineId")
+            if (cookbookId.isBlank() || cuisineId.isBlank()) {
+                continue
+            }
+            val count = when {
+                item.has("count") -> item.optInt("count", 0)
+                item.has("stock") -> item.optInt("stock", 0)
+                else -> 0
+            }
+            if (count <= 0) {
+                continue
+            }
+            stockList.add(
+                SpecialFoodStock(
+                    cookbookId = cookbookId,
+                    cuisineId = cuisineId,
+                    name = item.optString("name", cuisineId),
+                    count = count
+                )
+            )
+        }
+        return stockList
+    }
+
+    private fun totalSpecialFoodStock(stockList: List<SpecialFoodStock>): Int {
+        var total = 0
+        for (stock in stockList) {
+            total += stock.count
+        }
+        return total
+    }
+
+    private fun selectCountSpecialFoodPlan(
+        stockList: List<SpecialFoodStock>,
+        remainingToEat: Int
+    ): SpecialFoodPlan? {
+        val batchTarget = min(remainingToEat, SPECIAL_FOOD_BATCH_LIMIT)
+        if (batchTarget <= 0) {
+            return null
+        }
+        val singleFood = stockList.firstOrNull { it.count >= batchTarget }
+        if (singleFood != null) {
+            val uses = listOf(singleFood.toSpecialFoodUse(batchTarget))
+            return SpecialFoodPlan(uses, estimateSpecialFoodUses(uses), reachesTarget = false)
+        }
+
+        val uses = mutableListOf<SpecialFoodUse>()
+        var remaining = batchTarget
+        for (stock in stockList) {
+            if (remaining <= 0) {
+                break
+            }
+            val count = min(remaining, stock.count)
+            if (count > 0) {
+                uses.add(stock.toSpecialFoodUse(count))
+                remaining -= count
+            }
+        }
+        if (uses.isEmpty()) {
+            return null
+        }
+        return SpecialFoodPlan(uses, estimateSpecialFoodUses(uses), reachesTarget = false)
+    }
+
+    private fun selectTargetSpecialFoodPlan(
+        stockList: List<SpecialFoodStock>,
+        remainingTarget: Double,
+        remainingToEat: Int
+    ): SpecialFoodPlan? {
+        val knownPlan = selectKnownTargetSpecialFoodPlan(stockList, remainingTarget, remainingToEat)
+        if (knownPlan?.reachesTarget == true) {
+            return knownPlan
+        }
+        val unknownProbe = selectUnknownProbeSpecialFoodPlan(stockList)
+        if (unknownProbe != null) {
+            return unknownProbe
+        }
+        return knownPlan
+    }
+
+    private fun selectUnknownProbeSpecialFoodPlan(stockList: List<SpecialFoodStock>): SpecialFoodPlan? {
+        val stock = stockList.firstOrNull {
+            it.count > 0 && (specialFoodUnitProduce[it.cuisineId] ?: 0.0) <= SPECIAL_FOOD_PRODUCE_EPS
+        } ?: return null
+        val uses = listOf(stock.toSpecialFoodUse(1))
+        return SpecialFoodPlan(uses, estimatedProduce = null, reachesTarget = false, unknownProbe = true)
+    }
+
+    private fun selectKnownTargetSpecialFoodPlan(
+        stockList: List<SpecialFoodStock>,
+        remainingTarget: Double,
+        remainingToEat: Int
+    ): SpecialFoodPlan? {
+        val batchLimit = min(min(remainingToEat, SPECIAL_FOOD_BATCH_LIMIT), totalSpecialFoodStock(stockList))
+        if (batchLimit <= 0) {
+            return null
+        }
+
+        var states: MutableMap<Pair<Int, Int>, List<SpecialFoodUse>> = linkedMapOf()
+        states[Pair(0, 0)] = emptyList()
+        for (stock in stockList) {
+            val unitProduce = specialFoodUnitProduce[stock.cuisineId] ?: continue
+            if (unitProduce <= SPECIAL_FOOD_PRODUCE_EPS) {
+                continue
+            }
+            val nextStates: MutableMap<Pair<Int, Int>, List<SpecialFoodUse>> = linkedMapOf()
+            nextStates.putAll(states)
+            for ((key, uses) in states) {
+                val usedCount = key.first
+                val usedProduceKey = key.second
+                val maxCount = min(min(stock.count, batchLimit - usedCount), SPECIAL_FOOD_BATCH_LIMIT)
+                if (maxCount <= 0) {
+                    continue
+                }
+                for (count in 1..maxCount) {
+                    val produceKey = usedProduceKey + Math.round(unitProduce * count * SPECIAL_FOOD_PRODUCE_SCALE).toInt()
+                    val newKey = Pair(usedCount + count, produceKey)
+                    val newUses = uses + stock.toSpecialFoodUse(count)
+                    val currentUses = nextStates[newKey]
+                    if (currentUses == null || newUses.size < currentUses.size) {
+                        nextStates[newKey] = newUses
+                    }
+                }
+            }
+            states = nextStates
+        }
+
+        var bestReach: SpecialFoodPlan? = null
+        var bestBelow: SpecialFoodPlan? = null
+        for ((key, uses) in states) {
+            if (key.first <= 0 || uses.isEmpty()) {
+                continue
+            }
+            val estimatedProduce = key.second / SPECIAL_FOOD_PRODUCE_SCALE
+            val reachesTarget = estimatedProduce + SPECIAL_FOOD_PRODUCE_EPS >= remainingTarget
+            val plan = SpecialFoodPlan(uses, estimatedProduce, reachesTarget = reachesTarget)
+            if (reachesTarget) {
+                if (isBetterReachSpecialFoodPlan(plan, bestReach, remainingTarget)) {
+                    bestReach = plan
+                }
+            } else if (isBetterBelowTargetSpecialFoodPlan(plan, bestBelow)) {
+                bestBelow = plan
+            }
+        }
+        return bestReach ?: bestBelow
+    }
+
+    private fun isBetterReachSpecialFoodPlan(
+        candidate: SpecialFoodPlan,
+        current: SpecialFoodPlan?,
+        target: Double
+    ): Boolean {
+        if (current == null) {
+            return true
+        }
+        val candidateProduce = candidate.estimatedProduce ?: return false
+        val currentProduce = current.estimatedProduce ?: return true
+        val candidateOver = candidateProduce - target
+        val currentOver = currentProduce - target
+        if (abs(candidateOver - currentOver) > SPECIAL_FOOD_PRODUCE_EPS) {
+            return candidateOver < currentOver
+        }
+        val candidateCount = countSpecialFoodUses(candidate.uses)
+        val currentCount = countSpecialFoodUses(current.uses)
+        if (candidateCount != currentCount) {
+            return candidateCount < currentCount
+        }
+        return candidate.uses.size < current.uses.size
+    }
+
+    private fun isBetterBelowTargetSpecialFoodPlan(
+        candidate: SpecialFoodPlan,
+        current: SpecialFoodPlan?
+    ): Boolean {
+        if (current == null) {
+            return true
+        }
+        val candidateProduce = candidate.estimatedProduce ?: return false
+        val currentProduce = current.estimatedProduce ?: return true
+        if (abs(candidateProduce - currentProduce) > SPECIAL_FOOD_PRODUCE_EPS) {
+            return candidateProduce > currentProduce
+        }
+        val candidateCount = countSpecialFoodUses(candidate.uses)
+        val currentCount = countSpecialFoodUses(current.uses)
+        if (candidateCount != currentCount) {
+            return candidateCount < currentCount
+        }
+        return candidate.uses.size < current.uses.size
+    }
+
+    private fun executeSpecialFoodBatch(
+        plan: SpecialFoodPlan,
+        stockList: MutableList<SpecialFoodStock>,
+        remainingTarget: Double?,
+        usageLabel: String
+    ): SpecialFoodBatchResult {
+        val currentBatchArray = buildSpecialFoodRequest(plan.uses)
+        val usedNames = formatSpecialFoodUses(plan.uses)
+        val usedCount = countSpecialFoodUses(plan.uses)
+        val estimatedText = plan.estimatedProduce?.let { formatSpecialFoodProduce(it) } ?: "未知"
+        val targetText = remainingTarget?.let { "，目标差额${formatSpecialFoodProduce(it)}颗" } ?: ""
+        if (plan.unknownProbe) {
+            Log.farm("${usageLabel}目标补蛋：探测未知收益美食[$usedNames]")
+        } else if (remainingTarget != null) {
+            val reachText = if (plan.reachesTarget) "预计达标" else "预计未达标"
+            Log.farm("${usageLabel}目标补蛋：选择[$usedNames]#预估${estimatedText}颗，$reachText$targetText")
+        }
+
+        val res = AntFarmRpcCall.useFarmFood(currentBatchArray)
+        val joRes = JSONObject(res)
+        if (!ResChecker.checkRes(TAG, joRes)) {
+            val memo = joRes.optString("memo").ifBlank { joRes.optString("resultDesc", joRes.toString()) }
+            val resultCode = joRes.optString("resultCode")
+            val staleStock = resultCode == "A06" || memo.contains("高级饲料持有不足") || memo.contains("持有不足")
+            Log.farm("美食使用失败，停止后续操作: $memo")
+            if (staleStock) {
+                Log.farm("美食库存疑似已变化，放弃当前库存计划，避免重复请求")
+            }
+            return SpecialFoodBatchResult(success = false)
+        }
+
+        val foodEffect = joRes.optJSONObject("foodEffect")
+        val deltaProduce = foodEffect?.optDouble("deltaProduce", 0.0) ?: 0.0
+        val targetProduce = foodEffect?.optDouble("targetProduce", Double.NaN) ?: Double.NaN
+        if (!targetProduce.isNaN()) {
+            benevolenceScore = targetProduce
+        }
+        learnSpecialFoodProduce(plan.uses, deltaProduce)
+        updateSpecialFoodStockAfterUse(stockList, joRes, plan.uses)
+
+        val targetProduceText = if (targetProduce.isNaN()) "" else "，使用后进度${formatSpecialFoodProduce(targetProduce)}"
+        Log.farm(
+            "批量使用美食🍱[$usedNames]#预估${estimatedText}颗，实际加速${formatSpecialFoodProduce(deltaProduce)}颗爱心鸡蛋$targetProduceText"
+        )
+        return SpecialFoodBatchResult(
+            success = true,
+            usedCount = usedCount,
+            deltaProduce = deltaProduce
+        )
+    }
+
+    private fun buildSpecialFoodRequest(uses: List<SpecialFoodUse>): JSONArray {
+        val request = JSONArray()
+        for (use in uses) {
+            val snack = JSONObject()
+            snack.put("cookbookId", use.cookbookId)
+            snack.put("cuisineId", use.cuisineId)
+            snack.put("count", use.count)
+            snack.put("useCuisine", true)
+            request.put(snack)
+        }
+        return request
+    }
+
+    private fun learnSpecialFoodProduce(uses: List<SpecialFoodUse>, deltaProduce: Double) {
+        if (deltaProduce <= SPECIAL_FOOD_PRODUCE_EPS) {
+            return
+        }
+        val countByCuisine = linkedMapOf<String, Int>()
+        val nameByCuisine = linkedMapOf<String, String>()
+        for (use in uses) {
+            countByCuisine[use.cuisineId] = (countByCuisine[use.cuisineId] ?: 0) + use.count
+            nameByCuisine[use.cuisineId] = use.name
+        }
+        if (countByCuisine.size == 1) {
+            val cuisineId = countByCuisine.keys.first()
+            val count = countByCuisine[cuisineId] ?: return
+            val unitProduce = deltaProduce / count
+            if (unitProduce > SPECIAL_FOOD_PRODUCE_EPS) {
+                specialFoodUnitProduce[cuisineId] = unitProduce
+                Log.farm("美食收益学习🍱[${nameByCuisine[cuisineId] ?: cuisineId}]#单个${formatSpecialFoodProduce(unitProduce)}颗")
+            }
+            return
+        }
+
+        var knownProduce = 0.0
+        val unknownCuisineIds = mutableListOf<String>()
+        for ((cuisineId, count) in countByCuisine) {
+            val unitProduce = specialFoodUnitProduce[cuisineId]
+            if (unitProduce != null && unitProduce > SPECIAL_FOOD_PRODUCE_EPS) {
+                knownProduce += unitProduce * count
+            } else {
+                unknownCuisineIds.add(cuisineId)
+            }
+        }
+
+        if (unknownCuisineIds.isEmpty()) {
+            val diff = deltaProduce - knownProduce
+            val diffText = if (abs(diff) > 0.01) "，偏差${formatSpecialFoodProduce(diff)}" else ""
+            Log.farm("美食收益校验🍱[${formatSpecialFoodUses(uses)}]#预估${formatSpecialFoodProduce(knownProduce)}，实际${formatSpecialFoodProduce(deltaProduce)}$diffText")
+            return
+        }
+
+        if (unknownCuisineIds.size == 1) {
+            val cuisineId = unknownCuisineIds.first()
+            val unknownCount = countByCuisine[cuisineId] ?: return
+            val inferredProduce = (deltaProduce - knownProduce) / unknownCount
+            if (inferredProduce > SPECIAL_FOOD_PRODUCE_EPS) {
+                specialFoodUnitProduce[cuisineId] = inferredProduce
+                Log.farm("美食收益学习🍱[${nameByCuisine[cuisineId] ?: cuisineId}]#反推单个${formatSpecialFoodProduce(inferredProduce)}颗")
+            }
+            return
+        }
+
+        Log.farm("美食收益学习：本批混合多个未知美食，仅记录总增量${formatSpecialFoodProduce(deltaProduce)}颗，不反推单品收益")
+    }
+
+    private fun updateSpecialFoodStockAfterUse(
+        stockList: MutableList<SpecialFoodStock>,
+        response: JSONObject,
+        uses: List<SpecialFoodUse>
+    ) {
+        var updatedByServer = false
+        val foodEffect = response.optJSONObject("foodEffect")
+        val batchFoodInfos = response.optJSONArray("useBatchFoodInfoVos")
+            ?: foodEffect?.optJSONArray("useBatchFoodInfoVos")
+        if (batchFoodInfos != null) {
+            for (i in 0 until batchFoodInfos.length()) {
+                val item = batchFoodInfos.optJSONObject(i) ?: continue
+                val cuisineId = item.optString("cuisineId")
+                val cookbookId = item.optString("cookbookId")
+                val foodCount = when {
+                    item.has("foodCount") -> item.optInt("foodCount", -1)
+                    item.has("count") -> item.optInt("count", -1)
+                    else -> -1
+                }
+                if (foodCount < 0) {
+                    continue
+                }
+                val stock = findSpecialFoodStock(stockList, cookbookId, cuisineId) ?: continue
+                stock.count = foodCount.coerceAtLeast(0)
+                updatedByServer = true
+            }
+        }
+
+        if (!updatedByServer && uses.size == 1) {
+            val foodCount = when {
+                response.has("foodCount") -> response.optInt("foodCount", -1)
+                foodEffect?.has("foodCount") == true -> foodEffect.optInt("foodCount", -1)
+                response.has("count") -> response.optInt("count", -1)
+                foodEffect?.has("count") == true -> foodEffect.optInt("count", -1)
+                else -> -1
+            }
+            if (foodCount >= 0) {
+                val use = uses.first()
+                val stock = findSpecialFoodStock(stockList, use.cookbookId, use.cuisineId)
+                if (stock != null) {
+                    stock.count = foodCount.coerceAtLeast(0)
+                    updatedByServer = true
+                }
+            }
+        }
+
+        if (!updatedByServer) {
+            for (use in uses) {
+                val stock = findSpecialFoodStock(stockList, use.cookbookId, use.cuisineId) ?: continue
+                stock.count = (stock.count - use.count).coerceAtLeast(0)
+            }
+        }
+        stockList.removeAll { it.count <= 0 }
+    }
+
+    private fun findSpecialFoodStock(
+        stockList: List<SpecialFoodStock>,
+        cookbookId: String,
+        cuisineId: String
+    ): SpecialFoodStock? {
+        return stockList.firstOrNull {
+            it.cuisineId == cuisineId && (cookbookId.isBlank() || it.cookbookId == cookbookId)
+        }
+    }
+
+    private fun estimateSpecialFoodUses(uses: List<SpecialFoodUse>): Double? {
+        var estimatedProduce = 0.0
+        for (use in uses) {
+            val unitProduce = specialFoodUnitProduce[use.cuisineId]
+            if (unitProduce == null || unitProduce <= SPECIAL_FOOD_PRODUCE_EPS) {
+                return null
+            }
+            estimatedProduce += unitProduce * use.count
+        }
+        return estimatedProduce
+    }
+
+    private fun countSpecialFoodUses(uses: List<SpecialFoodUse>): Int {
+        var count = 0
+        for (use in uses) {
+            count += use.count
+        }
+        return count
+    }
+
+    private fun SpecialFoodStock.toSpecialFoodUse(count: Int): SpecialFoodUse {
+        return SpecialFoodUse(
+            cookbookId = cookbookId,
+            cuisineId = cuisineId,
+            name = name,
+            count = count
+        )
+    }
+
+    private fun formatSpecialFoodUses(uses: List<SpecialFoodUse>): String {
+        return uses.joinToString(" + ") { "${it.name}x${it.count}" }
+    }
+
+    private fun formatSpecialFoodProduce(value: Double): String {
+        return String.format(Locale.US, "%.2f", value)
     }
 
     private fun drawLotteryPlus(lotteryPlusInfo: JSONObject) {
@@ -4705,6 +5222,10 @@ class AntFarm : ModelTask() {
             return null
         }
         val jo = JSONObject(AntFarmRpcCall.enterFarm(safeUserId, safeUserId))
+        if (ApplicationHookConstants.isOffline()) {
+            Log.farm("$sceneName 检测到离线模式，停止继续访问好友庄园")
+            return null
+        }
         val memo = jo.optString("memo")
         if (jo.optString("resultCode") == "304" || memo.contains("查询庄园不存在")) {
             FriendCapabilityRecorder.record(
@@ -6367,6 +6888,9 @@ class AntFarm : ModelTask() {
     companion object {
         internal val TAG: String = AntFarm::class.java.getSimpleName()
         private val objectMapper = ObjectMapper()
+        private const val SPECIAL_FOOD_BATCH_LIMIT = 10
+        private const val SPECIAL_FOOD_PRODUCE_SCALE = 10000.0
+        private const val SPECIAL_FOOD_PRODUCE_EPS = 0.000001
 
         @JvmField
         var instance: AntFarm? = null

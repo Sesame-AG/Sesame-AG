@@ -571,7 +571,6 @@ object AntFarmRpcCall {
                 put("cuisineList", cuisineList ?: JSONArray())
                 put("requestType", "NORMAL")
                 put("sceneCode", "ANTFARM")
-                put("canMock", true)
                 put("source", "chInfo_ch_appcenter__chsub_9patch")
                 put("version", VERSION)
             }

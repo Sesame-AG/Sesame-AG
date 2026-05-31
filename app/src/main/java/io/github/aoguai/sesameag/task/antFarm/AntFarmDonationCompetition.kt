@@ -831,59 +831,56 @@ private fun AntFarm.tryUseSpecialFoodForCompetition(requiredEggCount: Int): Bool
     val usageLimitFlag = StatusFlags.FLAG_FARM_SPECIAL_FOOD_DONATION_COMPETITION_LIMIT
     val dailyLimit = donationCompetitionSpecialFoodCount?.value ?: -1
 
-    while (harvestBenevolenceScore < requiredEggCount) {
-        if (isOwnerAnimalSleeping()) {
-            Log.record(TAG, "排位反超蛋数不足，尝试补蛋过程中小鸡进入睡眠，停止特殊食品补蛋")
-            return false
-        }
-        if (!isOwnerAnimalAtHome()) {
-            Log.record(TAG, "排位反超蛋数不足，尝试补蛋过程中小鸡离开庄园，停止特殊食品补蛋")
-            return false
-        }
-
-        val usedToday = Status.getIntFlagToday(usageCountFlag) ?: 0
-        if (dailyLimit > 0 &&
-            (Status.hasFlagToday(usageLimitFlag) || usedToday >= dailyLimit)
-        ) {
-            Status.setFlagToday(usageLimitFlag)
-            Log.record(TAG, "排位赛特殊食品今日已使用${usedToday}个，达到上限${dailyLimit}个，停止补蛋")
-            return false
-        }
-
-        val cuisineList = fetchCuisineListForCompetition() ?: return false
-        val availableFoodCount = countAvailableSpecialFood(cuisineList)
-        if (availableFoodCount <= 0) {
-            Log.record(TAG, "排位反超蛋数不足，当前没有可用特殊食品，停止补蛋")
-            return false
-        }
-
-        val remainingDailyQuota = if (dailyLimit > 0) dailyLimit - usedToday else -1
-        val maxUsage = if (remainingDailyQuota < 0) 1 else minOf(1, remainingDailyQuota)
-        if (maxUsage <= 0) {
-            Status.setFlagToday(usageLimitFlag)
-            Log.record(TAG, "排位赛特殊食品今日已无剩余额度，停止补蛋")
-            return false
-        }
-
-        val usedThisRound = useSpecialFood(
-            cuisineList = cuisineList,
-            maxUsage = maxUsage,
-            usageCountFlag = usageCountFlag,
-            usageLimitFlag = usageLimitFlag,
-            usageDailyLimit = dailyLimit,
-            usageLabel = "排位赛特殊食品"
-        )
-        if (usedThisRound <= 0) {
-            Log.record(TAG, "排位反超蛋数不足，特殊食品调用未成功，停止补蛋")
-            return false
-        }
-
-        if (benevolenceScore >= 1.0) {
-            harvestProduce(ownerFarmId)
-        }
-        syncAnimalStatus(ownerFarmId)
+    val usedToday = Status.getIntFlagToday(usageCountFlag) ?: 0
+    if (dailyLimit > 0 &&
+        (Status.hasFlagToday(usageLimitFlag) || usedToday >= dailyLimit)
+    ) {
+        Status.setFlagToday(usageLimitFlag)
+        Log.record(TAG, "排位赛特殊食品今日已使用${usedToday}个，达到上限${dailyLimit}个，停止补蛋")
+        return false
     }
-    return true
+
+    val cuisineList = fetchCuisineListForCompetition() ?: return false
+    val remainingDailyQuota = if (dailyLimit > 0) dailyLimit - usedToday else -1
+    if (remainingDailyQuota == 0) {
+        Status.setFlagToday(usageLimitFlag)
+        Log.record(TAG, "排位赛特殊食品今日已无剩余额度，停止补蛋")
+        return false
+    }
+
+    val eggGap = (requiredEggCount - harvestBenevolenceScore).coerceAtLeast(0.0)
+    if (eggGap <= 0.0) {
+        return true
+    }
+
+    val usedCount = useSpecialFood(
+        cuisineList = cuisineList,
+        maxUsage = remainingDailyQuota,
+        usageCountFlag = usageCountFlag,
+        usageLimitFlag = usageLimitFlag,
+        usageDailyLimit = dailyLimit,
+        usageLabel = "排位赛特殊食品",
+        targetEggGap = eggGap
+    )
+    if (usedCount <= 0) {
+        Log.record(TAG, "排位反超蛋数不足，特殊食品调用未成功，停止补蛋")
+        return false
+    }
+
+    if (isOwnerAnimalSleeping()) {
+        Log.record(TAG, "排位反超蛋数不足，尝试补蛋后小鸡进入睡眠，停止继续补蛋")
+        return false
+    }
+    if (!isOwnerAnimalAtHome()) {
+        Log.record(TAG, "排位反超蛋数不足，尝试补蛋后小鸡离开庄园，停止继续补蛋")
+        return false
+    }
+
+    if (benevolenceScore >= 1.0) {
+        harvestProduce(ownerFarmId)
+    }
+    syncAnimalStatus(ownerFarmId)
+    return harvestBenevolenceScore >= requiredEggCount
 }
 
 /**
@@ -949,16 +946,4 @@ private fun AntFarm.fetchCuisineListForCompetition(): JSONArray? {
         Log.printStackTrace(TAG, "fetchCuisineListForCompetition err:", e)
         null
     }
-}
-
-private fun countAvailableSpecialFood(cuisineList: JSONArray): Int {
-    var available = 0
-    for (i in 0 until cuisineList.length()) {
-        val item = cuisineList.optJSONObject(i) ?: continue
-        val count = item.optInt("count", 0)
-        if (count > 0) {
-            available += count
-        }
-    }
-    return available
 }

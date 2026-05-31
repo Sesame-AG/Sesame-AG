@@ -1,6 +1,7 @@
 package io.github.aoguai.sesameag.data
 
 import com.fasterxml.jackson.databind.JsonMappingException
+import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.model.Model
 import io.github.aoguai.sesameag.task.antForest.AntForest
 import io.github.aoguai.sesameag.util.Files
@@ -13,6 +14,7 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.collections.component1
 import kotlin.collections.component2
 import kotlin.collections.get
@@ -159,6 +161,7 @@ class Status {
 
         private var lastModifiedTime: Long = 0L
         private var lastUid: String? = null
+        private val offlineSkippedTodayFlags = ConcurrentHashMap.newKeySet<String>()
 
         @JvmStatic
         val currentDayTimestamp: Long
@@ -865,6 +868,13 @@ class Status {
         @JvmStatic
         @JvmOverloads
         fun setFlagToday(flag: String, retryTimes: String? = null) {
+            if (ApplicationHookConstants.isOffline()) {
+                if (offlineSkippedTodayFlags.add(flag)) {
+                    Log.record(TAG, "离线模式跳过今日标识: $flag")
+                }
+                return
+            }
+
             val (module, name) = parseFlag(flag)
             val flags = INSTANCE.moduleFlags.getOrPut(module) { HashMap() }
             val oldCount = flags[name] ?: 0

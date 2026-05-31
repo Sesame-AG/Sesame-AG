@@ -271,6 +271,23 @@ class Config private constructor() {
             }
         }
 
+        @JvmStatic
+        @Synchronized
+        fun saveLegalAcceptedForUsers(userIds: Collection<String>, accepted: Boolean): Boolean {
+            val normalizedUserIds = userIds.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+            val defaultSaved = saveLegalAcceptedForCurrentVersion(null, accepted)
+            val userResults = normalizedUserIds.map { userId ->
+                userId to saveLegalAcceptedForCurrentVersion(userId, accepted)
+            }
+            val failedUsers = userResults.filterNot { it.second }.map { it.first }
+            if (!defaultSaved || failedUsers.isNotEmpty()) {
+                Log.runtime(TAG, "协议确认保存失败: defaultSaved=$defaultSaved failedUsers=$failedUsers")
+                return false
+            }
+            Log.runtime(TAG, "协议确认已保存: users=$normalizedUserIds defaultSaved=$defaultSaved")
+            return true
+        }
+
         /**
          * 加载配置文件
          *

@@ -1,27 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 白天模式 -->
-    <color name="background">#F4F4F4</color>
-    <color name="base_color">#2489FD</color>
-    <color name="colorPrimary">#2489FD</color>
-    <color name="textColorPrimary">#000000</color>
+    <!-- Light theme: aligned with Sesame-AG app icon and Material 3 semantic roles. -->
+    <color name="background">#F8F9FA</color>
+    <color name="base_color">#008B4F</color>
+    <color name="colorPrimary">#008B4F</color>
+    <color name="textColorPrimary">#1B1C1D</color>
 
-    <color name="selection_color">#2489FD</color>
+    <color name="selection_color">#008B4F</color>
 
-    <color name="main_button">#BCE1E9</color>
-    <color name="main_button_pressed">#2489FD</color>
+    <color name="main_button">#C7F0D8</color>
+    <color name="main_button_pressed">#008B4F</color>
 
-    <color name="orange">#E64000</color>
+    <color name="orange">#C24616</color>
 
-    <color name="not_active_text">#e10000</color>
-    <color name="active_text">#DCDCDC</color>
-    <color name="load_active_text">#999999</color>
+    <color name="not_active_text">#B3261E</color>
+    <color name="active_text">#FFFFFF</color>
+    <color name="load_active_text">#6F7971</color>
 
-    <color name="navigationBarColor">#AA000000</color>
+    <color name="navigationBarColor">#00000000</color>
 
-    <color name="toast_text_color">#090909</color>
+    <color name="toast_text_color">#1B1C1D</color>
 
     <color name="switch_white">#FFFFFF</color>
-    <color name="switch_off">#DFDFDF</color>
+    <color name="switch_off">#DEE2E6</color>
 
 </resources>
+

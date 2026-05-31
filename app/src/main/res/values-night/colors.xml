@@ -1,27 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 夜间模式 -->
-    <color name="background">#1A1A1A</color>
-    <color name="base_color">#4D4D4D</color>
-    <!-- theme-color -->
-    <color name="colorPrimary">#4D4D4D</color>
-    <color name="textColorPrimary">#FFFFFF</color>
+    <!-- Dark theme: muted green palette to avoid high-brightness accents at night. -->
+    <color name="background">#111315</color>
+    <color name="base_color">#4E8F68</color>
+    <color name="colorPrimary">#4E8F68</color>
+    <color name="textColorPrimary">#E2E3E5</color>
 
-    <color name="selection_color">#F87640</color>
+    <color name="selection_color">#6FA982</color>
 
-    <color name="main_button">#3A3A3A</color>
-    <color name="main_button_pressed">#FFEBCD</color>
+    <color name="main_button">#183624</color>
+    <color name="main_button_pressed">#6FA982</color>
 
-    <color name="orange">#F87640</color>
+    <color name="orange">#D99A75</color>
 
-    <color name="not_active_text">#F4D022</color>
-    <color name="active_text">#DEDBDB</color>
-    <color name="load_active_text">#C8B9B9</color>
+    <color name="not_active_text">#E08B83</color>
+    <color name="active_text">#F0F6EF</color>
+    <color name="load_active_text">#98A59A</color>
 
-    <color name="navigationBarColor">#AA000000</color>
+    <color name="navigationBarColor">#00000000</color>
 
-    <color name="toast_text_color">#FBFBFB</color>
+    <color name="toast_text_color">#E2E3E5</color>
 
     <color name="switch_white">#FFFFFF</color>
-    <color name="switch_off">#DFDFDF</color>
+    <color name="switch_off">#3F4448</color>
 </resources>
+

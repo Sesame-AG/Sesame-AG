@@ -1388,7 +1388,7 @@ class AntSports : ModelTask() {
             var visibleTaskCount = 0
             var pendingTransitions = 0
             for (item in items) {
-                if (shouldSkip(item)) continue
+                if (isBlacklisted(item) || shouldSkip(item)) continue
                 visibleTaskCount++
                 when (item.status) {
                     "WAIT_RECEIVE" -> pendingTransitions += 1
@@ -1413,6 +1413,10 @@ class AntSports : ModelTask() {
         }
 
         override fun onAllTasksDone(snapshot: TaskFlowSnapshot) {
+            if (ApplicationHookConstants.isOffline()) {
+                Log.sports("⏸ 检测到离线模式，不设置运动任务今日完成标识")
+                return
+            }
             val today = TimeUtil.getDateStr2()
             DataStore.put(SPORTS_TASKS_COMPLETED_DATE, today)
             Status.setFlagToday(StatusFlags.FLAG_ANTSPORTS_DAILY_TASKS_DONE)
@@ -2298,6 +2302,39 @@ class AntSports : ModelTask() {
             errorText.contains("訪問被拒絕")
     }
 
+    private fun buildSportsHomeBubbleCandidates(data: JSONObject): JSONArray {
+        val combined = JSONArray()
+        val seenTaskIds = LinkedHashSet<String>()
+        val recBubbleList = data.optJSONArray("recBubbleList") ?: JSONArray()
+        for (i in 0 until recBubbleList.length()) {
+            val bubble = recBubbleList.optJSONObject(i) ?: continue
+            combined.put(bubble)
+            val taskId = bubble.optJSONObject("task")?.optString("taskId").orEmpty()
+                .ifBlank { bubble.optString("channel") }
+            if (taskId.isNotBlank()) {
+                seenTaskIds.add(taskId)
+            }
+        }
+
+        val bigBubbleTask = data.optJSONObject("bigBubbleTaskVo")
+        if (bigBubbleTask != null) {
+            val taskId = bigBubbleTask.optString("taskId")
+            if (taskId.isNotBlank() && seenTaskIds.add(taskId)) {
+                combined.put(
+                    JSONObject()
+                        .put("bubbleType", "task_bubble")
+                        .put("simpleSourceName", bigBubbleTask.optString("taskName", "运动首页"))
+                        .put("channel", taskId)
+                        .put("coinAmount", bigBubbleTask.optInt("prizeAmount", 0))
+                        .put("assetId", bigBubbleTask.optString("assetId"))
+                        .put("medEnergyBallInfoRecordId", bigBubbleTask.optString("medEnergyBallInfoRecordId"))
+                        .put("task", bigBubbleTask)
+                )
+            }
+        }
+        return combined
+    }
+
     private fun collectSportsHomeRewardScanResult(recBubbleList: JSONArray): SportsHomeRewardScanResult {
         val scanResult = SportsHomeRewardScanResult()
         for (i in 0 until recBubbleList.length()) {
@@ -2366,8 +2403,31 @@ class AntSports : ModelTask() {
             Log.error(TAG, "运动首页任务[刷新奖励气泡失败] raw=$response")
             return null
         }
-        val recBubbleList = response.optJSONObject("data")?.optJSONArray("recBubbleList") ?: return SportsHomeRewardScanResult()
-        return collectSportsHomeRewardScanResult(recBubbleList)
+        val data = response.optJSONObject("data") ?: return SportsHomeRewardScanResult()
+        return collectSportsHomeRewardScanResult(buildSportsHomeBubbleCandidates(data))
+    }
+
+    private fun isManualSportsHomeBubbleTask(task: JSONObject, taskName: String): Boolean {
+        val taskText = listOf(
+            taskName,
+            task.optString("taskType"),
+            task.optString("taskBizType"),
+            task.optString("operationType"),
+            task.optString("actionType")
+        ).joinToString(" ")
+        return containsAnySports(
+            taskText,
+            "下单",
+            "购买",
+            "买入",
+            "支付",
+            "开通",
+            "订阅",
+            "ORDER",
+            "PURCHASE",
+            "BUY",
+            "SUBSCRIBE"
+        )
     }
 
     private fun receiveSportsHomeRewardCandidates(
@@ -2533,6 +2593,25 @@ class AntSports : ModelTask() {
         ).takeIf { it.itemType.isNotBlank() && it.itemName.isNotBlank() }
     }
 
+    private fun shouldSkipTrainTargetAfterFailure(result: JSONObject, errorCode: String, errorMsg: String): Boolean {
+        return classifySportsTaskFailure(result) in setOf(
+            TaskRpcFailureType.TERMINAL_DONE,
+            TaskRpcFailureType.BUSINESS_LIMIT,
+            TaskRpcFailureType.NON_RETRYABLE_INVALID
+        ) || containsAnySports(
+            "$errorCode $errorMsg",
+            "状态不错",
+            "暂时不需要提醒",
+            "不需要训练",
+            "没有在训练",
+            "目标已变化",
+            "成员已变化",
+            "STEP_ENOUGH",
+            "NOT_TRAINING",
+            "NO_NEED_TRAIN"
+        )
+    }
+
     private fun isSportsRouteBusinessTerminal(errorCode: String, errorMsg: String): Boolean {
         return errorCode == "AE950002" ||
             errorCode == "AE960231" ||
@@ -2552,9 +2631,7 @@ class AntSports : ModelTask() {
                 }
 
                 val data = jo.optJSONObject("data") ?: return
-                if (!data.has("recBubbleList")) return
-
-                val recBubbleList = data.optJSONArray("recBubbleList") ?: return
+                val recBubbleList = buildSportsHomeBubbleCandidates(data)
                 if (recBubbleList.length() == 0) return
 
                 var hasCompletedTask = false
@@ -2619,6 +2696,10 @@ class AntSports : ModelTask() {
                     }
                     if (taskStatus != "WAIT_COMPLETE") {
                         Log.sports("运动首页任务[状态跳过：$taskName，taskId=$taskId，status=$taskStatus]")
+                        continue
+                    }
+                    if (isManualSportsHomeBubbleTask(task, taskName)) {
+                        Log.sports("运动首页任务[人工动作跳过：$taskName，taskId=$taskId，taskType=${task.optString("taskType", "")}]")
                         continue
                     }
 
@@ -5302,7 +5383,11 @@ class AntSports : ModelTask() {
                     return
                 }
 
-                val trainItemSelection = queryBestTrainItemSelection() ?: return
+                val trainItemSelection = queryBestTrainItemSelection()
+                if (trainItemSelection == null) {
+                    Log.sports("训练好友🥋无可用训练道具或训练道具查询失败，停止本轮训练")
+                    return
+                }
                 val trainMemberJson = JSONObject(
                     AntSportsRpcCall.trainMember(
                         trainItemSelection.bizId,
@@ -5323,6 +5408,15 @@ class AntSports : ModelTask() {
                             Log.sports("训练好友[CLUB_MEMBER_CHANGED重试已达上限，结束本轮训练]")
                             return
                         }
+                        GlobalThreadPools.sleepCompat(500)
+                        continue
+                    }
+                    if (shouldSkipTrainTargetAfterFailure(trainMemberJson, errorCode, errorMsg)) {
+                        skippedOriginBossIds.add(trainTarget.originBossId)
+                        Log.sports(
+                            "训练好友[当前目标不可训练，跳过继续寻找][friend=${trainTarget.userName}]" +
+                                "[code=${errorCode.ifEmpty { "UNKNOWN" }}][msg=$errorMsg]"
+                        )
                         GlobalThreadPools.sleepCompat(500)
                         continue
                     }

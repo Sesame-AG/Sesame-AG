@@ -8,6 +8,62 @@
     <!-- 引入 Semi Design CSS -->
     <link rel="stylesheet" href="./css/semi.min.css" />
     <style>
+        :root {
+            --app-primary: #008b4f;
+            --app-primary-weak: rgba(0, 139, 79, 0.12);
+            --app-surface: #f8f9fa;
+            --app-surface-1: #ffffff;
+            --app-surface-2: #f2f3f4;
+            --app-surface-3: #e6e8ea;
+            --app-surface-inset: #eceeef;
+            --app-border: #d8dde0;
+            --app-text: #1b1c1d;
+            --app-text-muted: #6f7377;
+            --app-text-soft: #8d9194;
+            --app-danger: #b3261e;
+            --app-warning: #c24616;
+            --app-success: #2f7d4c;
+
+            --semi-color-primary: var(--app-primary);
+            --semi-color-primary-hover: #007a45;
+            --semi-color-primary-active: #00683b;
+            --semi-color-primary-light-default: var(--app-primary-weak);
+            --semi-color-bg-0: var(--app-surface);
+            --semi-color-bg-1: var(--app-surface-1);
+            --semi-color-bg-2: var(--app-surface-2);
+            --semi-color-bg-3: var(--app-surface-3);
+            --semi-color-fill-0: var(--app-surface-inset);
+            --semi-color-fill-1: var(--app-surface-2);
+            --semi-color-border: var(--app-border);
+            --semi-color-text-0: var(--app-text);
+            --semi-color-text-1: var(--app-text-muted);
+            --semi-color-text-2: var(--app-text-soft);
+            --semi-color-danger: var(--app-danger);
+            --semi-color-warning: var(--app-warning);
+            --semi-color-success: var(--app-success);
+        }
+
+        body[theme-mode='dark'] {
+            --app-primary: #6fa982;
+            --app-primary-weak: rgba(111, 169, 130, 0.18);
+            --app-surface: #111315;
+            --app-surface-1: #181b1d;
+            --app-surface-2: #1d2022;
+            --app-surface-3: #272b2e;
+            --app-surface-inset: #1a1d1f;
+            --app-border: #3f4448;
+            --app-text: #e2e3e5;
+            --app-text-muted: #b8bdc0;
+            --app-text-soft: #8d9194;
+            --app-danger: #e08b83;
+            --app-warning: #d99a75;
+            --app-success: #6fa982;
+
+            --semi-color-primary: var(--app-primary);
+            --semi-color-primary-hover: #7fb190;
+            --semi-color-primary-active: #5d9471;
+            --semi-color-primary-light-default: var(--app-primary-weak);
+        }
         html {
             font-size: 100%;
         }
@@ -17,6 +73,7 @@
             margin: 0;
             padding: 0;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            color: var(--semi-color-text-0);
         }
 
         .container {
@@ -36,11 +93,11 @@
             top: 0;
             z-index: 10;
             backdrop-filter: blur(0.625rem);
-            background-color: rgba(255, 255, 255, 0.8);
+            background-color: color-mix(in srgb, var(--app-surface-2) 88%, transparent);
         }
 
         body[theme-mode='dark'] .header {
-            background-color: rgba(22, 22, 26, 0.8);
+            background-color: color-mix(in srgb, var(--app-surface-2) 88%, transparent);
         }
 
         .field-row {
@@ -579,16 +636,6 @@
     </div>
 
     <script type="text/babel">
-        const switchMode = () => {
-            const body = document.body;
-            if (body.hasAttribute('theme-mode')) {
-                body.removeAttribute('theme-mode');
-                window.setMode('light');
-            } else {
-                body.setAttribute('theme-mode', 'dark');
-                window.setMode('dark');
-            }
-        };
         const { useState, useEffect, useRef } = React;
         const { Collapse, Switch, Input, RadioGroup, Radio, Button, Toast, SideSheet, Checkbox, InputNumber, Typography } = SemiUI;
         const { IconSearch, IconChevronDown, IconChevronUp, IconArrowUp, IconArrowDown } = SemiIcons;
@@ -1313,15 +1360,13 @@
                 let isDark = false;
                 if (window.HOOK && window.HOOK.isNightMode) {
                     try { isDark = window.HOOK.isNightMode(); } catch (e) { }
-                } else {
-                    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) isDark = true;
                 }
                 const body = document.body;
                 if (isDark) {
                     body.setAttribute('theme-mode', 'dark');
                     if (window.setMode) window.setMode('dark');
                 } else {
-                    if (body.hasAttribute('theme-mode')) body.removeAttribute('theme-mode');
+                    body.removeAttribute('theme-mode');
                     if (window.setMode) window.setMode('light');
                 }
             };
@@ -1741,7 +1786,7 @@
                 }
                 commitFieldChange(modelCode, fieldCode, newValueStr);
                 closeListSheet();
-                Toast.success("已保存列表设置");
+                Toast.success("已修改列表设置，退出时保存生效");
             };
 
             const toggleItem = (id, checked) => {
@@ -1882,7 +1927,7 @@
                 closeFriendSheet();
                 window.setTimeout(() => {
                     commitFieldChange(modelCode, fieldCode, JSON.stringify(newValue));
-                    Toast.success("已保存好友选择");
+                    Toast.success("已修改好友选择，退出时保存生效");
                 }, 0);
             };
 
@@ -1952,7 +1997,7 @@
                 }
                 const filtered = sheetList.filter(item => item.name.toLowerCase().includes(sheetSearch.toLowerCase()));
 
-                if (filtered.length === 0) return <div style={{ padding: '1.25rem', textAlign: 'center', color: '#999' }}>无数据</div>;
+                if (filtered.length === 0) return <div style={{ padding: '1.25rem', textAlign: 'center', color: 'var(--semi-color-text-2)' }}>无数据</div>;
 
                 const visible = filtered.slice(0, sheetVisibleLimit);
                 return (
@@ -2460,14 +2505,14 @@
                             {sectionTitle('groups', '选择分组', `${selectedGroupNames.length} 个已选`)}
                             {friendExpandedSections.groups ? (
                                 groups.length === 0
-                                    ? <div style={{ padding: '0.75rem 0', color: '#999' }}>暂无分组，请先到好友中心创建。</div>
+                                    ? <div style={{ padding: '0.75rem 0', color: 'var(--semi-color-text-2)' }}>暂无分组，请先到好友中心创建。</div>
                                     : groups.map(renderGroupRow)
                             ) : null}
                         </div>
                         <div className="friend-list-panel">
                             <Text strong>选择好友</Text>
                             {filteredItems.length === 0 ? (
-                                <div style={{ padding: '0.75rem 0', color: '#999' }}>无匹配好友</div>
+                                <div style={{ padding: '0.75rem 0', color: 'var(--semi-color-text-2)' }}>无匹配好友</div>
                             ) : (
                                 visibleItems.map(renderFriendRow)
                             )}
@@ -2658,7 +2703,6 @@
                         <Title heading={2} style={{ margin: 0 }}>Sesame-AG 设置</Title>
                         <Button disabled theme="borderless">项目仓库主页</Button>
                         <Text style={{ marginRight: '0.9375rem' }} link={{ href: 'https://github.com/Sesame-AG/Sesame-AG' }}> ➤GitHub </Text>
-                        <Button style={{}} onClick={switchMode} > 切换主题 </Button>
                     </div>
 
                     <div className="section-padding">
@@ -2722,9 +2766,9 @@
                         >
                             退出并保存
                         </Button>
-                        <Text style={{ marginTop: '0.9375rem', color: '#999', fontSize: '0.75rem' }}> GitHub </Text>
-                        <div style={{ marginTop: '0.3125rem', color: '#999', fontSize: '0.875rem' }}>Power by <Text link={{ href: 'https://semi.design/' }}>Semi.Design</Text></div>
-                        <div style={{ marginTop: '0.3125rem', color: '#999', fontSize: '0.875rem' }}>Ver: {window.HOOK.getBuildInfo()}</div>
+                        <Text style={{ marginTop: '0.9375rem', color: 'var(--semi-color-text-2)', fontSize: '0.75rem' }}> GitHub </Text>
+                        <div style={{ marginTop: '0.3125rem', color: 'var(--semi-color-text-2)', fontSize: '0.875rem' }}>Power by <Text link={{ href: 'https://semi.design/' }}>Semi.Design</Text></div>
+                        <div style={{ marginTop: '0.3125rem', color: 'var(--semi-color-text-2)', fontSize: '0.875rem' }}>Ver: {window.HOOK.getBuildInfo()}</div>
                     </div>
 
                     {/* 好友选择弹窗 */}

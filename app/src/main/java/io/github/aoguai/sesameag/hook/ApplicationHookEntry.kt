@@ -4,8 +4,21 @@ object ApplicationHookEntry {
 
     fun onInitCompleted(reason: String) {
         if (reason == "broadcast_restart" || reason == "config_reload") {
+            if (!ApplicationHook.consumeReloadResumeDecision(reason)) {
+                ApplicationHookCore.dispatchIfNeeded()
+                return
+            }
+            ApplicationHookCore.requestExecution(
+                ApplicationHookConstants.TriggerInfo(
+                    type = ApplicationHookConstants.TriggerType.INIT,
+                    priority = ApplicationHookConstants.TriggerPriority.HIGH,
+                    reason = reason,
+                    dedupeKey = "${reason}_resume"
+                )
+            )
             return
         }
+
         val type = when (reason) {
             "onResume", "user_switch" -> ApplicationHookConstants.TriggerType.ON_RESUME
             else -> ApplicationHookConstants.TriggerType.INIT

@@ -1320,7 +1320,7 @@ class AntOrchard : ModelTask() {
         override fun isBlacklisted(item: TaskFlowItem): Boolean {
             val blacklisted = super<TaskFlowAdapter>.isBlacklisted(item)
             if (blacklisted) {
-                logTaskSkipOnce(item, "已在黑名单中，跳过完成动作")
+                logTaskSkipOnce(item, "已在黑名单中，跳过处理")
             }
             return blacklisted
         }

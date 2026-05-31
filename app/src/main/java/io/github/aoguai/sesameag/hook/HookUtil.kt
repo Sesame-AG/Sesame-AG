@@ -254,6 +254,7 @@ object HookUtil {
                 emptyMap()
             }
             UserMap.setCurrentUserId(selfId)
+            UserMap.saveMinimalSelf(selfId)
             val clsUserIndependentCache = loadClass(classLoader, "com.alipay.mobile.socialcommonsdk.bizdata.UserIndependentCache")
             val clsAliAccountDaoOp = loadClass(classLoader, "com.alipay.mobile.socialcommonsdk.bizdata.contact.data.AliAccountDaoOp")
             val aliAccountDaoOp = callStaticMethod(clsUserIndependentCache, "getCacheObj", clsAliAccountDaoOp)

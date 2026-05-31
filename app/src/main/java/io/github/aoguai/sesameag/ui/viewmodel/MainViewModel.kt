@@ -208,22 +208,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setLegalAccepted(accepted: Boolean) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val activeUserId = resolveActiveUserId()
-                if (!Config.saveLegalAcceptedForCurrentVersion(activeUserId, accepted)) {
+                val targetUserId = resolveActiveUserId()
+                val existingUserIds = resolveExistingUserConfigIds()
+                val saveSuccess = if (!targetUserId.isNullOrEmpty()) {
+                    Config.saveLegalAcceptedForCurrentVersion(targetUserId, accepted)
+                } else if (existingUserIds.isNotEmpty()) {
+                    Config.saveLegalAcceptedForUsers(existingUserIds, accepted)
+                } else {
+                    Log.e(TAG, "Cannot save legal acceptance: active user is unknown")
+                    false
+                }
+
+                if (!saveSuccess) {
                     Log.e(TAG, "Save legal acceptance failed")
                     refreshLegalAcceptanceState()
                     return@launch
                 }
 
-                _isLegalAccepted.value = Config.readLegalAcceptedForCurrentVersion(activeUserId)
+                val readUserId = targetUserId ?: existingUserIds.singleOrNull()
+                _isLegalAccepted.value = Config.readLegalAcceptedForCurrentVersion(readUserId)
 
-                if (!activeUserId.isNullOrEmpty()) {
-                    getApplication<Application>().sendBroadcast(
-                        Intent(ApplicationHookConstants.BroadcastActions.RESTART).apply {
-                            putExtra("userId", activeUserId)
-                            putExtra("configReload", true)
-                        }
-                    )
+                if (!targetUserId.isNullOrEmpty()) {
+                    sendConfigReloadBroadcast(targetUserId)
+                } else {
+                    existingUserIds.forEach { sendConfigReloadBroadcast(it) }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Update legal acceptance failed", e)
@@ -282,7 +290,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun resolveActiveUserId(): String? {
-        return DataStore.get("activedUser", UserEntity::class.java)?.userId
+        DataStore.get("activedUser", UserEntity::class.java)?.userId
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { return it }
+
+        UserMap.currentUid
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { return it }
+
+        return resolveExistingUserConfigIds().singleOrNull()
+    }
+
+    private fun resolveExistingUserConfigIds(): List<String> {
+        return SesameAgUtil.getFolderList(Files.CONFIG_DIR.absolutePath)
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && Files.getConfigV2File(it).exists() }
+            .distinct()
+    }
+
+    private fun sendConfigReloadBroadcast(userId: String) {
+        getApplication<Application>().sendBroadcast(
+            Intent(ApplicationHookConstants.BroadcastActions.RESTART).apply {
+                putExtra("userId", userId)
+                putExtra("configReload", true)
+            }
+        )
     }
 }
 

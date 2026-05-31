@@ -195,6 +195,23 @@ object UserMap {
         }
     }
 
+    @JvmStatic
+    @Synchronized
+    fun saveMinimalSelf(userId: String) {
+        val safeUserId = userId.trim()
+        if (safeUserId.isEmpty()) return
+        val existing = userMap[safeUserId]
+        val entity = existing ?: UserEntity(
+            userId = safeUserId,
+            account = null,
+            friendStatus = null,
+            realName = null,
+            nickName = safeUserId,
+            remarkName = null
+        )
+        saveSelf(entity)
+    }
+
     /**
      * 保存当前用户数据到文件
      */

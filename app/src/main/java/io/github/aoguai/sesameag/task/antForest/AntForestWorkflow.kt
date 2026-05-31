@@ -34,12 +34,9 @@ internal suspend fun AntForest.runForestPreparationAndCollectionWorkflow(tc: Tim
     }
 
     if (isTakeLookEnergyEnabled()) {
-        Log.forest("🚀 执行找能量接口（一键收取）")
+        Log.forest("🚀 执行找能量接口")
         collectEnergyByTakeLook()
-        tc.countDebug("找能量接口（一键收取）")
-    } else if (collectEnergyEnabled) {
-        Log.forest("一键收取开关关闭，跳过找能量接口")
-        tc.countDebug("跳过找能量接口（一键收取未开启）")
+        tc.countDebug("找能量接口")
     } else {
         Log.forest("收集能量开关关闭，跳过找能量接口")
         tc.countDebug("跳过找能量接口（收集能量未开启）")
@@ -80,6 +77,37 @@ internal suspend fun AntForest.runForestPreparationAndCollectionWorkflow(tc: Tim
         Log.error(FOREST_TAG, "❌ 【正常流程】补充检查自己主页失败")
         tc.countDebug("跳过补充检查自己的能量（主页获取失败）")
     }
+    return selfHomeObj
+}
+
+internal fun AntForest.runEnergyOnlyCollectionWorkflow(tc: TimeCounter): JSONObject? {
+    val collectEnergyEnabled = isCollectEnergyEnabled()
+
+    Log.forest("🌳 【只收能量】查询自己的森林主页...")
+    val selfHomeObj = querySelfHome()
+    if (selfHomeObj != null) {
+        if (collectEnergyEnabled) {
+            collectEnergy(UserMap.currentUid, selfHomeObj, "self")
+            Log.forest("✅ 【只收能量】收取自己的能量完成")
+            tc.countDebug("只收能量-收取自己的能量")
+        } else {
+            Log.forest("收集能量开关关闭，跳过自己的能量收取")
+            tc.countDebug("只收能量-跳过自己的能量收取（未开启）")
+        }
+    } else {
+        Log.error(FOREST_TAG, "❌ 【只收能量】获取自己主页信息失败，跳过本次自己能量收取")
+        tc.countDebug("只收能量-跳过自己的能量收取（主页获取失败）")
+    }
+
+    if (isTakeLookEnergyEnabled()) {
+        Log.forest("🚀 【只收能量】执行找能量接口")
+        collectEnergyByTakeLook()
+        tc.countDebug("只收能量-找能量接口")
+    } else {
+        Log.forest("收集能量开关关闭，跳过找能量接口")
+        tc.countDebug("只收能量-跳过找能量接口（收集能量未开启）")
+    }
+
     return selfHomeObj
 }
 

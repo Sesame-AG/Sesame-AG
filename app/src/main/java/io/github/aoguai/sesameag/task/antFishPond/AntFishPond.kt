@@ -420,7 +420,7 @@ class AntFishPond : ModelTask() {
         override fun isBlacklisted(item: TaskFlowItem): Boolean {
             val blacklisted = super<TaskFlowAdapter>.isBlacklisted(item)
             if (blacklisted) {
-                logTaskSkipOnce(item, "已在黑名单中，跳过完成动作；待领奖状态仍会尝试领取")
+                logTaskSkipOnce(item, "已在黑名单中，跳过处理")
             }
             return blacklisted
         }
@@ -521,6 +521,9 @@ class AntFishPond : ModelTask() {
                 return false
             }
             for (item in latestItems) {
+                if (super<TaskFlowAdapter>.isBlacklisted(item)) {
+                    continue
+                }
                 val phase = mapPhase(item)
                 if (phase == TaskFlowPhase.UNKNOWN) {
                     return false
@@ -531,8 +534,7 @@ class AntFishPond : ModelTask() {
                     return false
                 }
                 if (phase == TaskFlowPhase.READY_TO_COMPLETE &&
-                    !handledVisitFinishes.contains(buildFishPondVisitKey(item)) &&
-                    !super<TaskFlowAdapter>.isBlacklisted(item)
+                    !handledVisitFinishes.contains(buildFishPondVisitKey(item))
                 ) {
                     return false
                 }

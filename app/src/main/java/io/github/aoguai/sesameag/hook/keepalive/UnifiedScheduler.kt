@@ -82,6 +82,10 @@ object UnifiedScheduler {
         namedTasks.clear()
     }
 
+    fun activeTaskCount(): Int = taskMap.size
+
+    fun hasScheduledTasks(): Boolean = taskMap.isNotEmpty()
+
     fun cleanup() {
         cancelAll()
         _scope?.cancel()

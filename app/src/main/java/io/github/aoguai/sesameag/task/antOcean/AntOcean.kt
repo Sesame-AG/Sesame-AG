@@ -277,10 +277,14 @@ class AntOcean : ModelTask() {
             if (!queryOceanStatus()) {
                 return
             }
+
+            if (dailyOceanTask?.value == true) {
+                receiveTaskAward() // 先推进任务接口，避免好友清理真实次数先被消耗
+            }
             queryHomePage()
 
             if (dailyOceanTask?.value == true) {
-                receiveTaskAward() // 日常任务
+                receiveTaskAward() // 清理流程后复查日常任务
                 if (noticeLinkedRefreshNeeded) {
                     // 公告提示到存在待完成/待领取任务时，再做一次晚刷新，
                     // 尽量承接前置模块已完成后的联动状态，减少同轮碎片漏领。
@@ -1501,6 +1505,9 @@ class AntOcean : ModelTask() {
 
             if (isOceanTaskRpcSuccess(result)) {
                 Log.ocean("海洋任务🌊完成[${item.title}]")
+                if (isHelpFriendCleanTask(item.type, item.title)) {
+                    markOceanHomeRefreshNeeded()
+                }
                 return TaskFlowActionResult.success()
             }
 

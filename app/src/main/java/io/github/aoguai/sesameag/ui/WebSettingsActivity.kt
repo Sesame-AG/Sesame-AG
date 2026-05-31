@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.app.AlertDialog
 import android.content.ClipData
 import android.content.Context
+import android.content.DialogInterface
 import android.content.Intent
 import android.content.res.Configuration
 import android.os.Bundle
@@ -24,6 +25,7 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import com.fasterxml.jackson.core.type.TypeReference
 import com.google.android.material.appbar.MaterialToolbar
 import io.github.aoguai.sesameag.BuildConfig
@@ -102,16 +104,15 @@ class WebSettingsActivity : AppCompatActivity() {
         webView = findViewById(R.id.webView)
         progressBar = findViewById(R.id.progress_bar)
 
-        // 返回键：优先 WebView 后退，否则保存并退出
+        // 返回键：优先 WebView 后退，否则确认保存意图。
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 if (::webView.isInitialized && webView.canGoBack()) {
                     Log.record(TAG, "WebSettingsActivity.handleOnBackPressed: go back")
                     webView.goBack()
                 } else {
-                    Log.record(TAG, "WebSettingsActivity.handleOnBackPressed: save")
-                    save()
-                    finish()
+                    Log.record(TAG, "WebSettingsActivity.handleOnBackPressed: confirm exit")
+                    confirmExit()
                 }
             }
         })
@@ -168,9 +169,32 @@ class WebSettingsActivity : AppCompatActivity() {
     private fun setupToolbar() {
         toolbar = findViewById(R.id.x_toolbar)
         setSupportActionBar(toolbar)
+        supportActionBar?.setDisplayHomeAsUpEnabled(true)
+        toolbar.setNavigationOnClickListener { confirmExit() }
         toolbar.setContentInsetsAbsolute(0, 0)
         toolbar.title = null
         toolbar.subtitle = userName?.let { "${getString(R.string.settings)}: $it" } ?: getString(R.string.settings)
+    }
+
+    private fun confirmExit() {
+        val dialog = AlertDialog.Builder(context)
+            .setTitle("离开设置")
+            .setMessage("是否保存当前配置修改？")
+            .setPositiveButton("保存并退出") { _, _ ->
+                if (save()) {
+                    finish()
+                }
+            }
+            .setNegativeButton("不保存退出") { _, _ -> finish() }
+            .setNeutralButton(R.string.cancel) { dialog, _ -> dialog.dismiss() }
+            .create()
+        dialog.setOnShowListener {
+            val buttonTextColor = ContextCompat.getColor(context, R.color.selection_color)
+            dialog.getButton(DialogInterface.BUTTON_POSITIVE)?.setTextColor(buttonTextColor)
+            dialog.getButton(DialogInterface.BUTTON_NEGATIVE)?.setTextColor(buttonTextColor)
+            dialog.getButton(DialogInterface.BUTTON_NEUTRAL)?.setTextColor(buttonTextColor)
+        }
+        dialog.show()
     }
 
     private fun ensureSettingsUserContext() {
@@ -569,8 +593,9 @@ class WebSettingsActivity : AppCompatActivity() {
         fun saveOnExit(): Boolean {
             runOnUiThread {
                 Log.record(TAG, "WebViewCallback: saveOnExit called")
-                save()
-                finish()
+                if (save()) {
+                    finish()
+                }
             }
             return true
         }
@@ -657,23 +682,26 @@ class WebSettingsActivity : AppCompatActivity() {
         return super.onOptionsItemSelected(item)
     }
 
-    private fun save() {
+    private fun save(): Boolean {
         // 与 TK3 对齐：强制保存，避免 isModify 误判导致用户点击“保存”却未落盘
-        if (Config.save(userId, true)) {
-            Toast.makeText(context, "保存成功！", Toast.LENGTH_SHORT).show()
-            if (!userId.isNullOrEmpty()) {
-                try {
-                    val intent = Intent(ApplicationHookConstants.BroadcastActions.RESTART).apply {
-                        putExtra("userId", userId)
-                        putExtra("configReload", true)
-                    }
-                    sendBroadcast(intent)
-                } catch (th: Throwable) {
-                    Log.printStackTrace(th)
-                }
-            }
-        } else {
+        if (!Config.save(userId, true)) {
             Toast.makeText(context, "保存失败！", Toast.LENGTH_SHORT).show()
+            return false
+        }
+
+        Toast.makeText(context, "保存成功！", Toast.LENGTH_SHORT).show()
+        Log.record(TAG, "配置保存成功: userId=${userId ?: "默认"}, configReload=${!userId.isNullOrEmpty()}")
+        if (!userId.isNullOrEmpty()) {
+            try {
+                val intent = Intent(ApplicationHookConstants.BroadcastActions.RESTART).apply {
+                    putExtra("userId", userId)
+                    putExtra("configReload", true)
+                }
+                sendBroadcast(intent)
+                Log.record(TAG, "已发送配置重载广播: action=${ApplicationHookConstants.BroadcastActions.RESTART}, userId=$userId")
+            } catch (th: Throwable) {
+                Log.printStackTrace(th)
+            }
         }
 
         val currentUserId = userId
@@ -681,6 +709,7 @@ class WebSettingsActivity : AppCompatActivity() {
             UserMap.save(currentUserId)
             IdMapManager.getInstance(CooperateMap::class.java).save(currentUserId)
         }
+        return true
     }
 
     private fun shouldShowInWebSettings(modelConfig: ModelConfig): Boolean {

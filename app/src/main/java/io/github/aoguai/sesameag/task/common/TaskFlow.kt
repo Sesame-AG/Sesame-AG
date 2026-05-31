@@ -1,6 +1,8 @@
 package io.github.aoguai.sesameag.task.common
 
+import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.util.GlobalThreadPools
+import io.github.aoguai.sesameag.util.RpcOfflineRisk
 import io.github.aoguai.sesameag.util.TaskBlacklist
 import org.json.JSONObject
 import kotlin.math.max
@@ -125,7 +127,8 @@ data class TaskFlowRunResult(
     val rounds: Int,
     val actionAttempted: Boolean = false,
     val progressChanged: Boolean = progressed,
-    val noProgressSuccess: Boolean = false
+    val noProgressSuccess: Boolean = false,
+    val interrupted: Boolean = false
 )
 
 private data class TaskFlowActionCandidate(
@@ -160,7 +163,7 @@ interface TaskFlowAdapter {
         var visibleTaskCount = 0
         var pendingTransitions = 0
         for (item in items) {
-            if (shouldSkip(item)) continue
+            if (isBlacklisted(item) || shouldSkip(item)) continue
             visibleTaskCount++
             when (mapPhase(item)) {
                 TaskFlowPhase.REWARD_READY -> pendingTransitions += 1
@@ -244,6 +247,19 @@ class TaskFlowEngine(
         var noProgressSuccessAny = false
 
         while (round <= roundLimit) {
+            if (ApplicationHookConstants.isOffline()) {
+                adapter.logInfo("${adapter.flowName}[检测到离线模式，中断任务流]")
+                return buildRunResult(
+                    completed = false,
+                    progressed = progressedAny,
+                    stopped = true,
+                    rounds = round,
+                    actionAttempted = actionAttemptedAny,
+                    noProgressSuccess = noProgressSuccessAny,
+                    interrupted = true
+                )
+            }
+
             val response = try {
                 adapter.query()
             } catch (t: Throwable) {
@@ -254,7 +270,22 @@ class TaskFlowEngine(
                     stopped = true,
                     rounds = round,
                     actionAttempted = actionAttemptedAny,
-                    noProgressSuccess = noProgressSuccessAny
+                    noProgressSuccess = noProgressSuccessAny,
+                    interrupted = ApplicationHookConstants.isOffline()
+                )
+            }
+
+            RpcOfflineRisk.enterOfflineIfNeeded(adapter.flowName, response)
+            if (ApplicationHookConstants.isOffline()) {
+                adapter.logInfo("${adapter.flowName}[查询后检测到离线模式，中断任务流]")
+                return buildRunResult(
+                    completed = false,
+                    progressed = progressedAny,
+                    stopped = true,
+                    rounds = round,
+                    actionAttempted = actionAttemptedAny,
+                    noProgressSuccess = noProgressSuccessAny,
+                    interrupted = true
                 )
             }
 
@@ -266,7 +297,8 @@ class TaskFlowEngine(
                     stopped = true,
                     rounds = round,
                     actionAttempted = actionAttemptedAny,
-                    noProgressSuccess = noProgressSuccessAny
+                    noProgressSuccess = noProgressSuccessAny,
+                    interrupted = ApplicationHookConstants.isOffline()
                 )
             }
 
@@ -283,24 +315,22 @@ class TaskFlowEngine(
             val candidates = buildActionCandidates(items)
 
             for (candidate in candidates) {
+                if (ApplicationHookConstants.isOffline()) {
+                    stopCurrentRound = true
+                    roundActions.add(TaskFlowRoundAction("离线中断"))
+                    break
+                }
+
                 val item = candidate.item
+                if (shouldSkipBlacklisted(item)) {
+                    continue
+                }
+
                 if (adapter.shouldSkip(item)) {
                     continue
                 }
 
-                val phase = adapter.mapPhase(item)
-                val action = phase.toAction()
-                if (action == null) {
-                    if (phase == TaskFlowPhase.UNKNOWN) {
-                        adapter.onUnknownPhase(item, phase)
-                        roundActions.add(TaskFlowRoundAction("未知状态", item.title))
-                    }
-                    continue
-                }
-
-                if (phase != TaskFlowPhase.REWARD_READY && adapter.isBlacklisted(item)) {
-                    continue
-                }
+                val action = candidate.initialAction
 
                 val actionKey = adapter.actionKey(item, action)
                 if (actionKey in failedActionKeys) {
@@ -311,6 +341,12 @@ class TaskFlowEngine(
 
                 val result = executeAction(item, action)
                 actionAttemptedAny = true
+                val failureType = result.failureType ?: TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW
+                if (ApplicationHookConstants.isOffline()) {
+                    stopCurrentRound = true
+                    roundActions.add(TaskFlowRoundAction("离线中断", item.title))
+                    break
+                }
                 if (result.success) {
                     adapter.afterSuccess(item, action, result)
                     if (result.progressChanged) {
@@ -327,7 +363,6 @@ class TaskFlowEngine(
                     continue
                 }
 
-                val failureType = result.failureType ?: TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW
                 if (failureType == TaskRpcFailureType.TERMINAL_DONE) {
                     logFailure(item, action, result, failureType, TaskFlowDecision.MARK_HANDLED)
                     adapter.afterFailure(item, action, result, TaskFlowDecision.MARK_HANDLED)
@@ -362,7 +397,9 @@ class TaskFlowEngine(
                     "[本轮有进展:$progressed]"
             )
 
-            if (snapshot.totalTasks > 0 &&
+            if (!stopCurrentRound &&
+                !ApplicationHookConstants.isOffline() &&
+                snapshot.totalTasks > 0 &&
                 snapshot.completedTasks >= snapshot.totalTasks &&
                 snapshot.availableTasks == 0
             ) {
@@ -384,7 +421,8 @@ class TaskFlowEngine(
                     stopped = stopCurrentRound,
                     rounds = round,
                     actionAttempted = actionAttemptedAny,
-                    noProgressSuccess = noProgressSuccessAny
+                    noProgressSuccess = noProgressSuccessAny,
+                    interrupted = ApplicationHookConstants.isOffline()
                 )
             }
 
@@ -399,7 +437,8 @@ class TaskFlowEngine(
             stopped = true,
             rounds = roundLimit,
             actionAttempted = actionAttemptedAny,
-            noProgressSuccess = noProgressSuccessAny
+            noProgressSuccess = noProgressSuccessAny,
+            interrupted = ApplicationHookConstants.isOffline()
         )
     }
 
@@ -409,7 +448,8 @@ class TaskFlowEngine(
         stopped: Boolean,
         rounds: Int,
         actionAttempted: Boolean,
-        noProgressSuccess: Boolean
+        noProgressSuccess: Boolean,
+        interrupted: Boolean = false
     ): TaskFlowRunResult {
         return TaskFlowRunResult(
             completed = completed,
@@ -418,7 +458,8 @@ class TaskFlowEngine(
             rounds = rounds,
             actionAttempted = actionAttempted,
             progressChanged = progressed,
-            noProgressSuccess = noProgressSuccess
+            noProgressSuccess = noProgressSuccess,
+            interrupted = interrupted
         )
     }
 
@@ -427,12 +468,12 @@ class TaskFlowEngine(
         var completedTasks = 0
         var availableTasks = 0
         for (item in items) {
-            if (adapter.shouldSkip(item)) continue
-            val phase = adapter.mapPhase(item)
-            if (phase != TaskFlowPhase.REWARD_READY && adapter.isBlacklisted(item)) {
+            if (shouldSkipBlacklisted(item)) {
                 continue
             }
+            if (adapter.shouldSkip(item)) continue
 
+            val phase = adapter.mapPhase(item)
             totalTasks++
             when (phase) {
                 TaskFlowPhase.TERMINAL -> completedTasks++
@@ -449,6 +490,7 @@ class TaskFlowEngine(
     private fun buildActionCandidates(items: List<TaskFlowItem>): List<TaskFlowActionCandidate> {
         val candidates = mutableListOf<TaskFlowActionCandidate>()
         for ((index, item) in items.withIndex()) {
+            if (shouldSkipBlacklisted(item)) continue
             if (adapter.shouldSkip(item)) continue
 
             val phase = adapter.mapPhase(item)
@@ -462,11 +504,15 @@ class TaskFlowEngine(
 
             candidates.add(TaskFlowActionCandidate(index, item, action))
         }
-        // 领奖优先，避免黑名单、报名或完成动作的失败挡住已经可领取的奖励。
+        // 候选动作按领奖优先排序；黑名单任务已在候选构建前统一跳过。
         return candidates.sortedWith(
             compareBy<TaskFlowActionCandidate> { actionPriority(it.initialAction) }
                 .thenBy { it.index }
         )
+    }
+
+    private fun shouldSkipBlacklisted(item: TaskFlowItem): Boolean {
+        return adapter.isBlacklisted(item)
     }
 
     private fun executeAction(item: TaskFlowItem, action: TaskFlowAction): TaskFlowActionResult {

@@ -827,7 +827,7 @@ class AntSesameCredit : ModelTask() {
             lastUnknownCount = 0
             lastActionableCount = 0
             for (item in items) {
-                if (shouldSkip(item)) continue
+                if (isSesameCreditItemBlacklisted(item) || shouldSkip(item)) continue
                 val phase = mapPhase(item)
                 if (phase == TaskFlowPhase.UNKNOWN) {
                     lastUnknownCount++
@@ -837,7 +837,7 @@ class AntSesameCredit : ModelTask() {
                     phase == TaskFlowPhase.READY_TO_COMPLETE ||
                     phase == TaskFlowPhase.SIGNUP_REQUIRED ||
                     phase == TaskFlowPhase.SIGNUP_COMPLETE
-                if (actionable && (phase == TaskFlowPhase.REWARD_READY || !isSesameCreditItemBlacklisted(item))) {
+                if (actionable) {
                     lastActionableCount++
                 }
             }

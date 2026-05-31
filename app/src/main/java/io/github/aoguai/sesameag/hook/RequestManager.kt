@@ -25,12 +25,14 @@ object RequestManager {
     private const val OFFLINE_RECOVERY_COOLDOWN_MS = 25_000L
     private const val RPC_BRIDGE_NULL_LOG_INTERVAL_MS: Long = 5_000L
     private const val RPC_BLOCKED_LOG_INTERVAL_MS: Long = 5_000L
+    private const val OFFLINE_RECOVERY_COOLDOWN_LOG_INTERVAL_MS: Long = 5_000L
 
     // 连续失败计数器
     private val errorCount = AtomicInteger(0)
 
     private val rpcBridgeNullLogLimiter = RpcLogLimiter(RPC_BRIDGE_NULL_LOG_INTERVAL_MS)
     private val rpcBlockedLogLimiter = RpcLogLimiter(RPC_BLOCKED_LOG_INTERVAL_MS)
+    private val offlineRecoveryCooldownLogLimiter = RpcLogLimiter(OFFLINE_RECOVERY_COOLDOWN_LOG_INTERVAL_MS)
 
     private val rpcRequestCount = AtomicLong(0)
     private val rpcBlockedCount = AtomicLong(0)
@@ -148,7 +150,9 @@ object RequestManager {
         val now = System.currentTimeMillis()
         val elapsed = now - lastOfflineRecoveryTime
         if (elapsed in 0 until OFFLINE_RECOVERY_COOLDOWN_MS) {
-            Log.record(TAG, "离线恢复冷却中，跳过恢复（${elapsed}ms < ${OFFLINE_RECOVERY_COOLDOWN_MS}ms）")
+            if (offlineRecoveryCooldownLogLimiter.shouldLog()) {
+                Log.record(TAG, "离线恢复冷却中，跳过恢复（${elapsed}ms < ${OFFLINE_RECOVERY_COOLDOWN_MS}ms）")
+            }
             return
         }
         lastOfflineRecoveryTime = now
@@ -287,8 +291,7 @@ object RequestManager {
     fun requestObject(rpcEntity: RpcEntity?, tryCount: Int, retryInterval: Int) {
         if (rpcEntity == null) return
         // requestObject 不涉及返回值判断，但同样需要离线检查
-        if (ApplicationHookConstants.shouldBlockRpc()) {
-            handleOfflineRecovery()
+        if (tryBlockByOffline(rpcEntity.requestMethod ?: rpcEntity.methodName) != null) {
             return
         }
 

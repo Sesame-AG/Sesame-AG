@@ -133,6 +133,7 @@ object ResChecker {
             
             // 特殊情况：如果是"人数过多"或"小鸡睡觉"等系统状态，我们认为这不是一个需要记录的"失败"
             val failureInfo = extractFailureInfo(jo)
+            RpcOfflineRisk.enterOfflineIfNeeded(tag, jo)
             if (isSilentFailure(failureInfo)) {
                 return false // 返回false，但不打印错误日志
             }

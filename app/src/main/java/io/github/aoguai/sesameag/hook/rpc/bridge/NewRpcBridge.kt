@@ -9,6 +9,7 @@ import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.Notify
 import io.github.aoguai.sesameag.util.RandomUtil
+import io.github.aoguai.sesameag.util.RpcOfflineRisk
 import io.github.aoguai.sesameag.util.TimeUtil
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
@@ -102,6 +103,8 @@ class NewRpcBridge : RpcBridge {
 
     private val errorMark = arrayListOf("1004", "46", "48")
     private val errorStringMark = arrayListOf("繁忙", "拒绝", "网络不可用", "重试")
+    private val retryableErrorMessageKeywords =
+        arrayListOf("繁忙", "网络不可用", "重试", "稍後再試", "稍后再试", "再試", "再试", "頻繁", "频繁")
 
     // 需要屏蔽错误日志的RPC方法列表
     private val silentErrorMethods = arrayListOf(
@@ -147,6 +150,45 @@ class NewRpcBridge : RpcBridge {
         return minOf(baseMs * factor, 15000L)
     }
 
+    private fun isAuthLikeError(errorCode: String, errorMessage: String): Boolean {
+        return RpcOfflineRisk.isOfflineRisk(errorCode, errorMessage)
+    }
+
+    private fun isRetryableRpcError(errorCode: String, errorMessage: String): Boolean {
+        return errorMark.contains(errorCode) ||
+            errorStringMark.contains(errorMessage) ||
+            retryableErrorMessageKeywords.any { keyword -> errorMessage.contains(keyword, ignoreCase = true) }
+    }
+
+    private fun buildOfflineDetail(
+        methodName: String?,
+        errorCode: String,
+        errorMessage: String,
+        reason: String
+    ): String {
+        return buildString {
+            if (!methodName.isNullOrBlank()) {
+                append("method=")
+                append(methodName)
+            }
+            if (errorCode.isNotBlank()) {
+                if (isNotEmpty()) append(" ")
+                append("code=")
+                append(errorCode)
+            }
+            if (errorMessage.isNotBlank()) {
+                if (isNotEmpty()) append(" ")
+                append("msg=")
+                append(errorMessage.take(300))
+            }
+            if (reason.isNotBlank()) {
+                if (isNotEmpty()) append(" ")
+                append("reason=")
+                append(reason)
+            }
+        }
+    }
+
     private fun handleAuthLikeError(
         rpcEntity: RpcEntity,
         methodName: String?,
@@ -154,6 +196,7 @@ class NewRpcBridge : RpcBridge {
         notifyTitle: String,
         response: String?,
         reason: String,
+        offlineDetail: String = reason,
         count: Int
     ): RpcEntity? {
         if (!shouldShowErrorLog(methodName)) {
@@ -180,7 +223,7 @@ class NewRpcBridge : RpcBridge {
             io.github.aoguai.sesameag.hook.ApplicationHookConstants.enterOffline(
                 cooldownMs,
                 "auth_like",
-                notifyTitle
+                offlineDetail
             )
         }
 
@@ -407,9 +450,7 @@ class NewRpcBridge : RpcBridge {
                                                 val errorCode = getErrorValueAsString(obj, "error")
                                                 val errorMessage = getErrorValueAsString(obj, "errorMessage")
 
-                                                val isMarkedNetworkError =
-                                                    errorMark.contains(errorCode) ||
-                                                        errorStringMark.contains(errorMessage)
+                                                val isMarkedNetworkError = isRetryableRpcError(errorCode, errorMessage)
                                                 if (isMarkedNetworkError) {
                                                     logErrorSummary(methodName, errorCode, errorMessage)
                                                 } else if (shouldShowErrorLog(methodName)) {
@@ -472,14 +513,15 @@ class NewRpcBridge : RpcBridge {
                         val response = rpcEntity.responseString
                         val methodName = rpcEntity.requestMethod
 
-                        if (errorCode == "1009") {
+                        if (isAuthLikeError(errorCode, errorMessage)) {
                             return handleAuthLikeError(
                                 rpcEntity = rpcEntity,
                                 methodName = methodName,
-                                statusText = "需要验证后继续执行",
-                                notifyTitle = "需要验证后继续执行",
+                                statusText = "检测到访问受限，已进入离线模式",
+                                notifyTitle = "检测到访问受限，已进入离线模式",
                                 response = response,
-                                reason = "需要验证: $errorCode/$errorMessage",
+                                reason = "访问受限: $errorCode/$errorMessage",
+                                offlineDetail = buildOfflineDetail(methodName, errorCode, errorMessage, "访问受限"),
                                 count = count
                             )
                         }
@@ -496,7 +538,7 @@ class NewRpcBridge : RpcBridge {
                             )
                         }
 
-                        if (errorMark.contains(errorCode) || errorStringMark.contains(errorMessage)) {
+                        if (isRetryableRpcError(errorCode, errorMessage)) {
                             val shouldHandleRecovery = shouldShowErrorLog(methodName)
                             val currentErrorCount = if (shouldHandleRecovery) {
                                 maxErrorCount.incrementAndGet()
