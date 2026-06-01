@@ -15,8 +15,12 @@ import io.github.aoguai.sesameag.entity.OtherEntityProvider.farmFamilyOption
 import io.github.aoguai.sesameag.entity.ParadiseCoinBenefit
 import io.github.aoguai.sesameag.hook.ExchangeOptionsRefreshBridge
 import io.github.aoguai.sesameag.hook.HookReadyChecker
+import io.github.aoguai.sesameag.hook.ApplicationHook
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.hook.Toast
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleDefaults
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleKind
+import io.github.aoguai.sesameag.hook.keepalive.UnifiedScheduler
 import io.github.aoguai.sesameag.hook.rpc.intervallimit.RpcIntervalLimit.addIntervalLimit
 import io.github.aoguai.sesameag.model.BaseModel
 import io.github.aoguai.sesameag.model.ModelFields
@@ -53,6 +57,7 @@ import io.github.aoguai.sesameag.task.exchange.ExchangeSafety
 import io.github.aoguai.sesameag.util.CoroutineUtils
 import io.github.aoguai.sesameag.util.DataStore
 import io.github.aoguai.sesameag.util.FriendGuard
+import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.LogChannel
 import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log
@@ -1006,6 +1011,118 @@ class AntFarm : ModelTask() {
         return useSpecialFood?.value == true
     }
 
+    private fun persistentFarmDedupeKey(childId: String): String {
+        val owner = UserMap.currentUid?.takeIf { it.isNotBlank() } ?: "default"
+        return "farm_child_${owner}::$childId"
+    }
+
+    internal fun registerPersistentChildTask(
+        childId: String,
+        group: String,
+        triggerAtMs: Long,
+        extraPayload: JSONObject = JSONObject()
+    ) {
+        val context = ApplicationHook.appContext ?: return
+        if (triggerAtMs <= System.currentTimeMillis()) return
+        try {
+            val payload = JSONObject(extraPayload.toString())
+                .put("child_kind", PERSISTENT_CHILD_KIND)
+                .put("child_id", childId)
+                .put("group", group)
+                .put("launch_target", true)
+            ownerFarmId?.takeIf { it.isNotBlank() }?.let { payload.put("farm_id", it) }
+            UserMap.currentUid?.takeIf { it.isNotBlank() }?.let { payload.put("owner_user_id", it) }
+
+            UnifiedScheduler.schedulePersistentTrigger(
+                context = context,
+                name = "庄园子任务:$group",
+                kind = PersistentScheduleKind.MODULE_CHILD,
+                triggerAtMs = triggerAtMs,
+                dedupeKey = persistentFarmDedupeKey(childId),
+                payloadJson = payload.toString(),
+                toleranceMs = PersistentScheduleDefaults.DEFAULT_TOLERANCE_MS,
+                ownerUserId = UserMap.currentUid
+            )
+        } catch (t: Throwable) {
+            Log.printStackTrace(TAG, "注册庄园持久子任务失败[$group][$childId]", t)
+        }
+    }
+
+    internal fun cancelPersistentChildTask(childId: String) {
+        UnifiedScheduler.cancelPersistentByDedupeKey(ApplicationHook.appContext, persistentFarmDedupeKey(childId))
+    }
+
+    internal fun triggerPersistentChildTask(childId: String, group: String, payloadJson: String, source: String): Boolean {
+        val payload = runCatching { JSONObject(payloadJson.ifBlank { "{}" }) }.getOrDefault(JSONObject())
+        val ownerUserId = payload.optString("owner_user_id").trim()
+        if (ownerUserId.isNotBlank() && ownerUserId != UserMap.currentUid) {
+            Log.farm("庄园持久子任务[$group][$childId]账号不匹配，跳过: owner=$ownerUserId current=${UserMap.currentUid}")
+            return true
+        }
+        if (!isEnable()) {
+            Log.farm("庄园持久子任务[$group][$childId]触发时模块已关闭，跳过")
+            return true
+        }
+        GlobalThreadPools.execute(GlobalThreadPools.computeDispatcher) {
+            runPersistentChildTask(childId, group, payload, source)
+        }
+        return true
+    }
+
+    private suspend fun runPersistentChildTask(childId: String, group: String, payload: JSONObject, source: String) {
+        try {
+            Log.farm("庄园持久子任务触发[$group][$childId] source=$source")
+            cancelPersistentChildTask(childId)
+            when (group) {
+                "AS" -> runSleepChildTask()
+                "AW" -> runWakeUpChildTask()
+                "FA" -> runFeedChildTask()
+                "KC" -> runSendBackChildTask()
+                "HIRE" -> runHireChildTask()
+                "DR" -> runDonationCompetitionPersistentTask(payload)
+                else -> Log.farm("未知庄园持久子任务[$group][$childId]，跳过")
+            }
+        } catch (t: Throwable) {
+            Log.printStackTrace(TAG, "庄园持久子任务执行失败[$group][$childId]", t)
+        }
+    }
+
+    private suspend fun runSleepChildTask() {
+        animalSleepNow()
+        syncAnimalStatus(ownerFarmId)
+        receiveFarmAwards()
+    }
+
+    private fun runWakeUpChildTask() {
+        animalWakeUpNow()
+    }
+
+    private suspend fun runFeedChildTask() {
+        Log.farm("🔔 蹲点投喂任务触发")
+        enterFarm()
+        syncAnimalStatus(ownerFarmId)
+        if (sendBackAnimal?.value == true) {
+            sendBackAnimal()
+        }
+        recallAnimal()
+        if (hireAnimal?.value == true) {
+            hireAnimal()
+        }
+        handleAutoFeedAnimal(true)
+        Log.farm("🔄 下一次蹲点任务已创建")
+    }
+
+    private fun runSendBackChildTask() {
+        Log.farm("🔔 蹲点赶鸡任务触发")
+        enterFarm()
+        syncAnimalStatus(ownerFarmId)
+        sendBackAnimal()
+    }
+
+    private fun runHireChildTask() {
+        hireAnimal()
+    }
+
     internal fun preloadFarmTools() {
         listFarmTool()
     }
@@ -1430,6 +1547,7 @@ class AntFarm : ModelTask() {
                         sleepTaskId,
                         "AS",
                         suspendRunnable = {
+                            cancelPersistentChildTask(sleepTaskId)
                             this.animalSleepNow()
                             syncAnimalStatus(ownerFarmId)
                             receiveFarmAwards()
@@ -1437,6 +1555,7 @@ class AntFarm : ModelTask() {
                         animalSleepTime
                     )
                 )
+                registerPersistentChildTask(sleepTaskId, "AS", animalSleepTime)
                 Log.farm("添加定时睡觉🛌[" + UserMap.getCurrentMaskName() + "]在[" + TimeUtil.getCommonDate(
                         animalSleepTime
                     ) + "]执行"
@@ -1447,10 +1566,14 @@ class AntFarm : ModelTask() {
                     ChildModelTask(
                         wakeUpTaskId,
                         "AW",
-                        suspendRunnable = { this.animalWakeUpNow() },
+                        suspendRunnable = {
+                            cancelPersistentChildTask(wakeUpTaskId)
+                            this.animalWakeUpNow()
+                        },
                         animalWakeUpTime
                     )
                 )
+                registerPersistentChildTask(wakeUpTaskId, "AW", animalWakeUpTime)
                 Log.farm("添加定时起床🛌[" + UserMap.getCurrentMaskName() + "]在[" + TimeUtil.getCommonDate(
                         animalWakeUpTime
                     ) + "]执行"
@@ -1695,24 +1818,8 @@ class AntFarm : ModelTask() {
                                 group = "FA",
                                 suspendRunnable = {
                                     try {
-                                        Log.farm("🔔 蹲点投喂任务触发")
-                                        // 重新进入庄园，获取最新状态
-                                        enterFarm()
-                                        // 同步最新状态
-                                        syncAnimalStatus(ownerFarmId)
-                                        // 遣返
-                                        if (sendBackAnimal?.value == true) {
-                                            sendBackAnimal()
-                                        }
-                                        // 先召回自己的小鸡，避免因外出导致本轮雇佣/喂食不执行
-                                        recallAnimal()
-                                        // 雇佣小鸡
-                                        if (hireAnimal?.value == true) {
-                                            hireAnimal()
-                                        }
-                                        // 喂鸡
-                                        handleAutoFeedAnimal(true)
-                                        Log.farm("🔄 下一次蹲点任务已创建")
+                                        cancelPersistentChildTask(taskId)
+                                        runFeedChildTask()
                                     } catch (e: Exception) {
                                         Log.printStackTrace(TAG,"蹲点投喂任务执行失败", e)
                                     }
@@ -1720,6 +1827,7 @@ class AntFarm : ModelTask() {
                                 execTime = nextFeedTime
                             )
                         )
+                        registerPersistentChildTask(taskId, "FA", nextFeedTime)
                         Log.farm(UserMap.getCurrentMaskName() + "小鸡的蹲点投喂时间[" + TimeUtil.getCommonDate(nextFeedTime)+"]")
                     } else {
                         Log.farm("蹲点投喂🥣[倒计时为0，开始投喂]")
@@ -3638,25 +3746,24 @@ class AntFarm : ModelTask() {
                     if (sendBackAnimal?.value == true && timeSendBackAnimal > 0) {
                         try {
                             val taskId = "KC|$ownerFarmId"
-                            val kcTime =
-                                TimeUtil.getCommonDate(System.currentTimeMillis() + timeSendBackAnimal * 60 * 1000L)
+                            val sendBackAt = System.currentTimeMillis() + timeSendBackAnimal * 60 * 1000L
+                            val kcTime = TimeUtil.getCommonDate(sendBackAt)
                             val task = ChildModelTask(
                                 id = taskId,
                                 group = "KC",
                                 suspendRunnable = {
                                     try {
-                                        Log.farm("🔔 蹲点赶鸡任务触发")
-                                        enterFarm()
-                                        syncAnimalStatus(ownerFarmId)
-                                        sendBackAnimal()
+                                        cancelPersistentChildTask(taskId)
+                                        runSendBackChildTask()
                                     } catch (e: Exception) {
                                         Log.error(TAG, "蹲点赶鸡任务执行失败: ${e.message}")
                                         Log.printStackTrace(TAG, e)
                                     }
                                 },
-                                execTime = System.currentTimeMillis() + timeSendBackAnimal * 60 * 1000L
+                                execTime = sendBackAt
                             )
                             addChildTask(task)
+                            registerPersistentChildTask(taskId, "KC", sendBackAt)
                             Log.farm(UserMap.getCurrentMaskName() + "${timeSendBackAnimal}分钟后${kcTime}蹲点赶小鸡")
 
                         } catch (e: Exception) {
@@ -5600,26 +5707,23 @@ class AntFarm : ModelTask() {
                 if (joo.getString("subAnimalType") == "WORK") {
                     val taskId = "HIRE|" + joo.getString("animalId")
                     val beHiredEndTime = joo.getLong("beHiredEndTime")
+                    val task = ChildModelTask(
+                        taskId,
+                        "HIRE",
+                        suspendRunnable = {
+                            cancelPersistentChildTask(taskId)
+                            runHireChildTask()
+                        },
+                        beHiredEndTime
+                    )
                     if (!hasChildTask(taskId)) {
-                        addChildTask(
-                            ChildModelTask(
-                                taskId,
-                                "HIRE",
-                                suspendRunnable = { this.hireAnimal() },
-                                beHiredEndTime
-                            )
-                        )
+                        addChildTask(task)
+                        registerPersistentChildTask(taskId, "HIRE", beHiredEndTime)
                         Log.farm("添加蹲点雇佣👷在[" + TimeUtil.getCommonDate(beHiredEndTime) + "]执行"
                         )
                     } else {
-                        addChildTask(
-                            ChildModelTask(
-                                taskId,
-                                "HIRE",
-                                suspendRunnable = { this.hireAnimal() },
-                                beHiredEndTime
-                            )
-                        )
+                        addChildTask(task)
+                        registerPersistentChildTask(taskId, "HIRE", beHiredEndTime)
                     }
                 }
                 i++
@@ -5804,14 +5908,19 @@ class AntFarm : ModelTask() {
                         val joo = newAnimals.getJSONObject(ii)
                         if (joo.getString("animalId") == animalId) {
                             val beHiredEndTime = joo.getLong("beHiredEndTime")
+                            val taskId = "HIRE|$animalId"
                             addChildTask(
                                 ChildModelTask(
-                                    "HIRE|$animalId",
+                                    taskId,
                                     "HIRE",
-                                    suspendRunnable = { this.hireAnimal() },
+                                    suspendRunnable = {
+                                        cancelPersistentChildTask(taskId)
+                                        runHireChildTask()
+                                    },
                                     beHiredEndTime
                                 )
                             )
+                            registerPersistentChildTask(taskId, "HIRE", beHiredEndTime)
                             Log.farm("添加蹲点雇佣👷在[" + TimeUtil.getCommonDate(beHiredEndTime) + "]执行"
                             )
                             break
@@ -6891,6 +7000,7 @@ class AntFarm : ModelTask() {
         private const val SPECIAL_FOOD_BATCH_LIMIT = 10
         private const val SPECIAL_FOOD_PRODUCE_SCALE = 10000.0
         private const val SPECIAL_FOOD_PRODUCE_EPS = 0.000001
+        const val PERSISTENT_CHILD_KIND = "farm_child_task"
 
         @JvmField
         var instance: AntFarm? = null

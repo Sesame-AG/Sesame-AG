@@ -13,6 +13,7 @@ import android.os.PowerManager
 object WakeLockManager {
     private const val TAG = "WakeLockManager"
     private var wakeLock: PowerManager.WakeLock? = null
+    private var ownerToken: Any? = null
 
     /**
      * 获取唤醒锁
@@ -23,6 +24,12 @@ object WakeLockManager {
     @SuppressLint("WakelockTimeout")
     @Synchronized
     fun acquire(context: Context, timeout: Long = 600_000L) {
+        acquire(context, timeout, null)
+    }
+
+    @SuppressLint("WakelockTimeout")
+    @Synchronized
+    fun acquire(context: Context, timeout: Long = 600_000L, token: Any?) {
         if (wakeLock?.isHeld == true) {
              Log.record(TAG, "唤醒锁已被持有，无需重复获取")
             return
@@ -31,6 +38,7 @@ object WakeLockManager {
             val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
             wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Sesame::TaskWakeLock").apply {
                 acquire(timeout)
+                ownerToken = token
                 Log.record(TAG, "🔒 唤醒锁已获取，超时时间: ${timeout / 1000}s")
             }
         } catch (e: Exception) {
@@ -44,6 +52,15 @@ object WakeLockManager {
      */
     @Synchronized
     fun release() {
+        release(null)
+    }
+
+    @Synchronized
+    fun release(token: Any?) {
+        if (token != null && ownerToken !== token) {
+            Log.record(TAG, "唤醒锁由其他任务持有，跳过释放")
+            return
+        }
         try {
             if (wakeLock?.isHeld == true) {
                 wakeLock?.release()
@@ -52,6 +69,7 @@ object WakeLockManager {
                  Log.record(TAG, "唤醒锁未被持有，无需释放")
             }
             wakeLock = null
+            ownerToken = null
         } catch (e: Exception) {
             Log.error(TAG, "❌ 释放唤醒锁失败: ${e.message}")
             Log.printStackTrace(TAG, e)

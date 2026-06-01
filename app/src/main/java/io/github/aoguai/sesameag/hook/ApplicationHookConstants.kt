@@ -287,7 +287,8 @@ object ApplicationHookConstants {
         val wakenAtTime: Boolean = false,
         val wakenTime: String? = null,
         val reason: String? = null,
-        val dedupeKey: String? = null
+        val dedupeKey: String? = null,
+        val persistentScheduleId: String? = null
     ) {
         fun summary(): String {
             val parts = mutableListOf<String>()

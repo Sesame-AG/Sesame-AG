@@ -86,6 +86,44 @@ object UnifiedScheduler {
 
     fun hasScheduledTasks(): Boolean = taskMap.isNotEmpty()
 
+    fun schedulePersistentTrigger(
+        context: Context,
+        name: String,
+        kind: String,
+        triggerAtMs: Long,
+        dedupeKey: String,
+        payloadJson: String = "{}",
+        toleranceMs: Long = PersistentScheduleDefaults.DEFAULT_TOLERANCE_MS,
+        ownerUserId: String? = null
+    ): PersistentSchedule {
+        val schedule = PersistentSchedule(
+            name = name,
+            kind = kind,
+            triggerAtMs = triggerAtMs,
+            toleranceMs = toleranceMs,
+            dedupeKey = dedupeKey,
+            payloadJson = payloadJson,
+            ownerUserId = ownerUserId
+        )
+        return PersistentScheduleRegistry.upsert(context, schedule)
+    }
+
+    fun cancelPersistentByDedupeKey(context: Context?, dedupeKey: String): Int {
+        return PersistentScheduleRegistry.removeByDedupeKey(context, dedupeKey)
+    }
+
+    fun cancelPersistentByName(context: Context?, name: String): Int {
+        return PersistentScheduleRegistry.removeByName(context, name)
+    }
+
+    fun reconcilePersistentSchedules(context: Context): PersistentScheduleRegistry.ReconcileResult {
+        val result = PersistentScheduleRegistry.reconcile(context)
+        result.dueSchedules.forEach { schedule ->
+            ScheduledTaskRouter.fire(context, schedule, "manual_reconcile")
+        }
+        return result
+    }
+
     fun cleanup() {
         cancelAll()
         _scope?.cancel()
