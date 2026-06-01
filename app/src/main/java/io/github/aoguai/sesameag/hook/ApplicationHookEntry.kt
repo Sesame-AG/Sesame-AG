@@ -23,6 +23,10 @@ object ApplicationHookEntry {
             "onResume", "user_switch" -> ApplicationHookConstants.TriggerType.ON_RESUME
             else -> ApplicationHookConstants.TriggerType.INIT
         }
+        if (type == ApplicationHookConstants.TriggerType.ON_RESUME && ApplicationHookConstants.hasPendingTriggers()) {
+            ApplicationHookCore.dispatchIfNeeded()
+            return
+        }
         val dedupeKey = when (type) {
             ApplicationHookConstants.TriggerType.ON_RESUME -> "on_resume"
             else -> "init"

@@ -125,6 +125,10 @@ internal object ApplicationResumeCoordinator {
         stopAllTask()
         ApplicationHookConstants.clearPendingTriggers("offline_recover")
 
+        ApplicationHook.appContext?.let { context ->
+            UnifiedScheduler.reconcilePersistentSchedules(context)
+        }
+
         ApplicationHookCore.requestExecution(
             ApplicationHookConstants.TriggerInfo(
                 type = ApplicationHookConstants.TriggerType.ON_RESUME,

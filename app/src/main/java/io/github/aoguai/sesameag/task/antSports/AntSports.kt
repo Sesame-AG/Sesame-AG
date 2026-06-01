@@ -9,6 +9,9 @@ import io.github.aoguai.sesameag.hook.ApplicationHook
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.hook.ExchangeOptionsRefreshBridge
 import io.github.aoguai.sesameag.hook.HookReadyChecker
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleDefaults
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleKind
+import io.github.aoguai.sesameag.hook.keepalive.UnifiedScheduler
 import io.github.aoguai.sesameag.model.BaseModel
 import io.github.aoguai.sesameag.model.ModelFields
 import io.github.aoguai.sesameag.model.ModelGroup
@@ -95,6 +98,7 @@ class AntSports : ModelTask() {
 
         /** @brief 步数同步子任务 ID，用于避免同一天重复排队 */
         private const val SYNC_STEP_CHILD_TASK_ID = "syncStep"
+        const val PERSISTENT_CHILD_KIND = "sports_child_task"
         private const val MOTION_DAILY_QUIZ_REWARD_TASK_ID = "QUIZ_ANSWER_ENERGY_BALL_TASK"
 
         private const val RPC_WALK_QUERY_PATH = "com.alipay.sportsplay.biz.rpc.walk.queryPath"
@@ -623,6 +627,7 @@ class AntSports : ModelTask() {
             }
 
             runNeverlandWorkflow()
+            registerPersistentSyncStepTask()
             runStepSyncWorkflow()
 
             // 运动任务
@@ -998,6 +1003,77 @@ class AntSports : ModelTask() {
         return TaskCommon.IS_ENERGY_TIME
     }
 
+    private fun persistentSportsDedupeKey(childId: String): String {
+        val owner = UserMap.currentUid?.takeIf { it.isNotBlank() } ?: "default"
+        return "sports_child_${owner}::$childId"
+    }
+
+    internal fun registerPersistentChildTask(
+        childId: String,
+        group: String,
+        triggerAtMs: Long,
+        extraPayload: JSONObject = JSONObject()
+    ) {
+        val context = ApplicationHook.appContext ?: return
+        if (triggerAtMs <= System.currentTimeMillis()) return
+        try {
+            val payload = JSONObject(extraPayload.toString())
+                .put("child_kind", PERSISTENT_CHILD_KIND)
+                .put("child_id", childId)
+                .put("group", group)
+                .put("launch_target", true)
+            UserMap.currentUid?.takeIf { it.isNotBlank() }?.let { payload.put("owner_user_id", it) }
+
+            UnifiedScheduler.schedulePersistentTrigger(
+                context = context,
+                name = "运动子任务:$group",
+                kind = PersistentScheduleKind.MODULE_CHILD,
+                triggerAtMs = triggerAtMs,
+                dedupeKey = persistentSportsDedupeKey(childId),
+                payloadJson = payload.toString(),
+                toleranceMs = PersistentScheduleDefaults.DEFAULT_TOLERANCE_MS,
+                ownerUserId = UserMap.currentUid
+            )
+        } catch (t: Throwable) {
+            Log.printStackTrace(TAG, "注册运动持久子任务失败[$group][$childId]", t)
+        }
+    }
+
+    internal fun cancelPersistentChildTask(childId: String) {
+        UnifiedScheduler.cancelPersistentByDedupeKey(ApplicationHook.appContext, persistentSportsDedupeKey(childId))
+    }
+
+    internal fun triggerPersistentChildTask(childId: String, group: String, payloadJson: String, source: String): Boolean {
+        val payload = runCatching { JSONObject(payloadJson.ifBlank { "{}" }) }.getOrDefault(JSONObject())
+        val ownerUserId = payload.optString("owner_user_id").trim()
+        if (ownerUserId.isNotBlank() && ownerUserId != UserMap.currentUid) {
+            Log.sports("运动持久子任务[$group][$childId]账号不匹配，跳过: owner=$ownerUserId current=${UserMap.currentUid}")
+            return true
+        }
+        if (!isEnable()) {
+            Log.sports("运动持久子任务[$group][$childId]触发时模块已关闭，跳过")
+            return true
+        }
+        GlobalThreadPools.execute {
+            runPersistentChildTask(childId, group, payload, source)
+        }
+        return true
+    }
+
+    private fun runPersistentChildTask(childId: String, group: String, payload: JSONObject, source: String) {
+        try {
+            Log.sports("运动持久子任务触发[$group][$childId] source=$source")
+            cancelPersistentChildTask(childId)
+            when (group) {
+                "syncStep" -> runPersistentSyncStepTask(childId)
+                "BX" -> runTreasureBoxPersistentTask(childId, payload)
+                else -> Log.sports("未知运动持久子任务[$group][$childId]，跳过")
+            }
+        } catch (t: Throwable) {
+            Log.printStackTrace(TAG, "运动持久子任务执行失败[$group][$childId]", t)
+        }
+    }
+
     /**
      * 步数同步任务
      */
@@ -1015,6 +1091,7 @@ class AntSports : ModelTask() {
                 SYNC_STEP_CHILD_TASK_ID,
                 Runnable {
                     try {
+                        cancelPersistentChildTask(SYNC_STEP_CHILD_TASK_ID)
                         val customStep = tmpStepCount()
                         if (customStep <= 0) {
                             Log.sports("同步步数已关闭，跳过主动同步")
@@ -1065,6 +1142,26 @@ class AntSports : ModelTask() {
                 }
             )
         )
+    }
+
+    private fun runPersistentSyncStepTask(childId: String) {
+        if (isEnergyOnlyModeNow()) {
+            if (!isSyncStepEnabled() || Status.hasFlagToday(StatusFlags.FLAG_ANTSPORTS_SYNC_STEP_DONE)) {
+                return
+            }
+            val token = if (::earliestSyncStepTime.isInitialized) {
+                earliestSyncStepTime.getHourToken() ?: "delayed"
+            } else {
+                "delayed"
+            }
+            registerPersistentSyncStepTask(
+                System.currentTimeMillis() + PersistentScheduleDefaults.DEFAULT_TOLERANCE_MS,
+                token
+            )
+            Log.sports("⏸ 当前为只收能量时间，延后运动持久同步步数[$childId]")
+            return
+        }
+        syncStepTask()
     }
 
     /**
@@ -1121,6 +1218,38 @@ class AntSports : ModelTask() {
 
     internal fun isSyncStepEnabled(): Boolean {
         return (syncStepCount.value ?: 0) > 0
+    }
+
+    internal fun registerPersistentSyncStepTask() {
+        if (!isSyncStepEnabled() ||
+            Status.hasFlagToday(StatusFlags.FLAG_ANTSPORTS_SYNC_STEP_DONE) ||
+            !::earliestSyncStepTime.isInitialized
+        ) {
+            cancelPersistentChildTask(SYNC_STEP_CHILD_TASK_ID)
+            return
+        }
+        val token = earliestSyncStepTime.getHourToken() ?: run {
+            cancelPersistentChildTask(SYNC_STEP_CHILD_TASK_ID)
+            return
+        }
+        if (token == "2400") {
+            cancelPersistentChildTask(SYNC_STEP_CHILD_TASK_ID)
+            return
+        }
+        val triggerAtMs = TimeUtil.getTodayCalendarByTimeStr(token)?.timeInMillis ?: return
+        if (triggerAtMs <= System.currentTimeMillis()) {
+            return
+        }
+        registerPersistentSyncStepTask(triggerAtMs, token)
+    }
+
+    private fun registerPersistentSyncStepTask(triggerAtMs: Long, token: String) {
+        registerPersistentChildTask(
+            SYNC_STEP_CHILD_TASK_ID,
+            "syncStep",
+            triggerAtMs,
+            JSONObject().put("sync_step_time", token)
+        )
     }
 
     private fun getTrainFriendZeroCoinLimit(): Int? {
@@ -4160,12 +4289,14 @@ class AntSports : ModelTask() {
                 if (delay < checkIntervalMs) {
                     val taskId = "BX|$boxNo"
                     if (hasChildTask(taskId)) return
+                    val triggerAtMs = System.currentTimeMillis() + delay
                     Log.sports("还有 $delay ms 开运动宝箱")
                     addChildTask(
                         ChildModelTask(
                             taskId,
                             "BX",
                             Runnable {
+                                cancelPersistentChildTask(taskId)
                                 Log.sports("蹲点开箱开始")
                                 val startTime = System.currentTimeMillis()
                                 while (System.currentTimeMillis() - startTime < 5_000) {
@@ -4175,13 +4306,41 @@ class AntSports : ModelTask() {
                                     GlobalThreadPools.sleepCompat(200)
                                 }
                             },
-                            System.currentTimeMillis() + delay
+                            triggerAtMs
                         )
+                    )
+                    registerPersistentChildTask(
+                        taskId,
+                        "BX",
+                        triggerAtMs,
+                        JSONObject()
+                            .put("box_no", boxNo)
+                            .put("user_id", userId)
+                            .put("can_open_time", cot)
                     )
                 }
             }
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "parseTreasureBoxModel err:", t)
+        }
+    }
+
+    private fun runTreasureBoxPersistentTask(childId: String, payload: JSONObject) {
+        val boxNo = payload.optString("box_no").trim().ifBlank {
+            childId.substringAfter("BX|", "")
+        }
+        val userId = payload.optString("user_id").trim()
+        if (boxNo.isBlank() || userId.isBlank()) {
+            Log.sports("运动持久宝箱[$childId]缺少 box_no/user_id，跳过")
+            return
+        }
+        Log.sports("蹲点开箱开始")
+        val startTime = System.currentTimeMillis()
+        while (System.currentTimeMillis() - startTime < 5_000) {
+            if (openTreasureBox(boxNo, userId) > 0) {
+                break
+            }
+            GlobalThreadPools.sleepCompat(200)
         }
     }
 

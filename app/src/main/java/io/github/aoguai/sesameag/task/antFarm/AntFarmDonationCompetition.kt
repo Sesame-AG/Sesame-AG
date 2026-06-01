@@ -509,36 +509,60 @@ private fun AntFarm.scheduleDonationCompetitionTask(endTimeMs: Long) {
         id = taskId,
         group = "DR",
         suspendRunnable = {
-            if (isPollingMode) {
-                runDonationRankWatchLoop(endTimeMs)
-            } else {
-                Log.record(TAG, "🔔 执行单次排位赛捐赠检查")
-                val uid = UserMap.currentUid ?: return@ChildModelTask
-                val donationsMadeToday = Status.getDailyDonationTotal(uid)
-                val maxDonation = maxDailyDonationCompetitionCount?.value ?: -1
-                if (maxDonation < 0) {
-                    checkRankAndDonate(Int.MAX_VALUE)
-                } else if (donationsMadeToday < maxDonation) {
-                    checkRankAndDonate(maxDonation - donationsMadeToday)
-                }
-            }
-            val reportTime = endTimeMs + 10000L
-            val waitToReport = reportTime - System.currentTimeMillis()
-            if (waitToReport > 0) {
-                Log.record(TAG, "📊 等待结算完成，等待10s获取战报统计")
-                delay(waitToReport)
-            }
-            printDonationReport()
+            cancelPersistentChildTask(taskId)
+            runDonationCompetitionChildTask(endTimeMs, isPollingMode)
         },
         execTime = finalExecTime
     )
 
     addChildTask(task)
+    registerPersistentChildTask(
+        taskId,
+        "DR",
+        finalExecTime,
+        JSONObject()
+            .put("end_time_ms", endTimeMs)
+            .put("polling_mode", isPollingMode)
+    )
     if (finalExecTime == now) {
         Log.record(TAG, "✅ 已创建立即执行任务")
     } else {
         Log.record(TAG, "✅ 已创建${modeName}任务，执行时间: ${TimeUtil.getCommonDate(finalExecTime)}")
     }
+}
+
+internal suspend fun AntFarm.runDonationCompetitionPersistentTask(payload: JSONObject) {
+    val fallbackEndTime = TimeUtil.getTodayCalendarByTimeStr("2000")?.timeInMillis ?: 0L
+    val endTimeMs = payload.optLong("end_time_ms", fallbackEndTime)
+    if (endTimeMs <= 0L) {
+        Log.record(TAG, "庄园排位赛持久任务缺少有效 end_time_ms，跳过")
+        return
+    }
+    val isPollingMode = payload.optBoolean("polling_mode", watchDonationRank?.value == true)
+    runDonationCompetitionChildTask(endTimeMs, isPollingMode)
+}
+
+private suspend fun AntFarm.runDonationCompetitionChildTask(endTimeMs: Long, isPollingMode: Boolean) {
+    if (isPollingMode) {
+        runDonationRankWatchLoop(endTimeMs)
+    } else {
+        Log.record(TAG, "🔔 执行单次排位赛捐赠检查")
+        val uid = UserMap.currentUid ?: return
+        val donationsMadeToday = Status.getDailyDonationTotal(uid)
+        val maxDonation = maxDailyDonationCompetitionCount?.value ?: -1
+        if (maxDonation < 0) {
+            checkRankAndDonate(Int.MAX_VALUE)
+        } else if (donationsMadeToday < maxDonation) {
+            checkRankAndDonate(maxDonation - donationsMadeToday)
+        }
+    }
+    val reportTime = endTimeMs + 10000L
+    val waitToReport = reportTime - System.currentTimeMillis()
+    if (waitToReport > 0) {
+        Log.record(TAG, "📊 等待结算完成，等待10s获取战报统计")
+        delay(waitToReport)
+    }
+    printDonationReport()
 }
 
 private suspend fun AntFarm.runDonationRankWatchLoop(endTimeMs: Long) {

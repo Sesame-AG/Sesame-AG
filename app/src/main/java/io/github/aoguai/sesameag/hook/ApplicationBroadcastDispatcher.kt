@@ -3,6 +3,11 @@ package io.github.aoguai.sesameag.hook
 import android.content.Context
 import android.content.Intent
 import io.github.aoguai.sesameag.hook.keepalive.UnifiedScheduler
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleDefaults
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleKind
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleRegistry
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleState
+import io.github.aoguai.sesameag.hook.keepalive.ScheduledTaskRouter
 import io.github.aoguai.sesameag.model.Model
 import io.github.aoguai.sesameag.task.antFarm.AntFarm
 import io.github.aoguai.sesameag.task.antMember.AntMember
@@ -30,7 +35,7 @@ internal object ApplicationBroadcastDispatcher {
 
         when (action) {
             ApplicationHookConstants.BroadcastActions.RESTART -> handleRestartBroadcast(safeIntent)
-            ApplicationHookConstants.BroadcastActions.EXECUTE -> handleExecuteBroadcast(safeIntent)
+            ApplicationHookConstants.BroadcastActions.EXECUTE -> handleExecuteBroadcast(context, safeIntent)
             ApplicationHookConstants.BroadcastActions.PRE_WAKEUP -> handlePreWakeupBroadcast(context, safeIntent)
             ApplicationHookConstants.BroadcastActions.RE_LOGIN -> ApplicationHook.reOpenApp()
             ApplicationHookConstants.BroadcastActions.RPC_TEST -> handleRpcTest(safeIntent)
@@ -60,34 +65,83 @@ internal object ApplicationBroadcastDispatcher {
         }
     }
 
-    private fun handleExecuteBroadcast(intent: Intent) {
+    private fun handleExecuteBroadcast(context: Context?, intent: Intent) {
         val safeIntent = Intent(intent)
         val isAlarmTriggered = safeIntent.getBooleanExtra("alarm_triggered", false)
         val wakenAtTime = safeIntent.getBooleanExtra("waken_at_time", false)
         val wakenTime = safeIntent.getStringExtra("waken_time")?.trim().takeIf { !it.isNullOrBlank() }
         val normalizedWakenTime = if (wakenAtTime && wakenTime.isNullOrBlank()) "0000" else wakenTime
-
-        val trigger = ApplicationHookConstants.TriggerInfo(
-            type = ApplicationHookConstants.TriggerType.BROADCAST_EXECUTE,
-            priority = if (isAlarmTriggered || wakenAtTime) {
+        val persistentScheduleId = safeIntent.getStringExtra(ScheduledTaskRouter.EXTRA_PERSISTENT_ID)
+            ?.trim()
+            .orEmpty()
+        val persistentSchedule = persistentScheduleId.takeIf { it.isNotBlank() }
+            ?.let { PersistentScheduleRegistry.get(it) }
+        if (persistentScheduleId.isNotBlank() && persistentSchedule == null) {
+            record(TAG, "忽略不存在的持久执行广播: $persistentScheduleId")
+            return
+        }
+        if (persistentSchedule != null && persistentSchedule.state != PersistentScheduleState.SCHEDULED) {
+            record(TAG, "忽略已处理的持久执行广播: ${persistentSchedule.name}")
+            return
+        }
+        if (persistentSchedule != null && !ApplicationHook.isReadyForExec()) {
+            record(TAG, "持久执行广播收到但工作流未就绪，保留调度等待恢复: ${persistentSchedule.name}")
+            return
+        }
+        if (persistentSchedule != null && ApplicationHookConstants.isOffline()) {
+            record(TAG, "持久执行广播收到但当前离线，保留调度等待恢复: ${persistentSchedule.name}")
+            return
+        }
+        if (persistentSchedule?.kind == PersistentScheduleKind.MODULE_CHILD) {
+            val ctx = context?.applicationContext ?: context ?: ApplicationHook.appContext
+            if (ctx == null || !ScheduledTaskRouter.fire(ctx, persistentSchedule, "target_broadcast_execute")) {
+                record(TAG, "模块持久子任务路由失败: ${persistentSchedule.name}")
+            }
+            return
+        }
+        val persistentKind = persistentSchedule?.kind
+            ?: safeIntent.getStringExtra(ScheduledTaskRouter.EXTRA_PERSISTENT_KIND).orEmpty()
+        val triggerType = when (persistentKind) {
+            PersistentScheduleKind.GLOBAL_POLL -> ApplicationHookConstants.TriggerType.ALARM_POLL
+            PersistentScheduleKind.GLOBAL_WAKEUP -> ApplicationHookConstants.TriggerType.ALARM_WAKEUP
+            else -> ApplicationHookConstants.TriggerType.BROADCAST_EXECUTE
+        }
+        val triggerPriority = when (triggerType) {
+            ApplicationHookConstants.TriggerType.ALARM_POLL -> ApplicationHookConstants.TriggerPriority.LOW
+            ApplicationHookConstants.TriggerType.BROADCAST_EXECUTE -> if (isAlarmTriggered || wakenAtTime) {
                 ApplicationHookConstants.TriggerPriority.HIGH
             } else {
                 ApplicationHookConstants.TriggerPriority.NORMAL
-            },
+            }
+            else -> ApplicationHookConstants.TriggerPriority.HIGH
+        }
+        val triggerDedupeKey = persistentSchedule?.dedupeKey?.takeIf { it.isNotBlank() } ?: when {
+            wakenAtTime && !normalizedWakenTime.isNullOrBlank() -> "wakeup_$normalizedWakenTime"
+            persistentKind == PersistentScheduleKind.GLOBAL_POLL -> "alarm_poll"
+            isAlarmTriggered -> "alarm_execute"
+            else -> "broadcast_execute"
+        }
+
+        val trigger = ApplicationHookConstants.TriggerInfo(
+            type = triggerType,
+            priority = triggerPriority,
             alarmTriggered = isAlarmTriggered,
             wakenAtTime = wakenAtTime,
             wakenTime = normalizedWakenTime,
             reason = "broadcast_execute",
-            dedupeKey = when {
-                wakenAtTime && !normalizedWakenTime.isNullOrBlank() -> "wakeup_$normalizedWakenTime"
-                isAlarmTriggered -> "alarm_execute"
-                else -> "broadcast_execute"
-            }
+            dedupeKey = triggerDedupeKey,
+            persistentScheduleId = persistentScheduleId.takeIf { it.isNotBlank() }
         )
 
         ApplicationHookConstants.submitEntry("broadcast_execute") {
             if (!ApplicationHook.isReadyForExec()) {
                 record(TAG, "execute broadcast received but not ready: ${ApplicationHook.readinessSummary()}")
+            }
+            if (wakenAtTime) {
+                if (normalizedWakenTime == "0000") {
+                    ApplicationHook.updateDay()
+                }
+                ApplicationHook.setWakenAtTimeAlarm()
             }
             ApplicationHookCore.requestExecution(trigger)
         }
@@ -97,23 +151,63 @@ internal object ApplicationBroadcastDispatcher {
         val ctx = context?.applicationContext ?: context ?: return
         val safeIntent = Intent(intent)
         val executionTimeMillis = safeIntent.getLongExtra("execution_time", 0L)
+        val forceExecute = safeIntent.getBooleanExtra("force_execute", false)
+        val persistentScheduleId = safeIntent.getStringExtra(ScheduledTaskRouter.EXTRA_PERSISTENT_ID)
+            ?.trim()
+            .orEmpty()
+        val persistentSchedule = persistentScheduleId.takeIf { it.isNotBlank() }
+            ?.let { PersistentScheduleRegistry.get(it) }
+        if (persistentScheduleId.isNotBlank() && persistentSchedule == null) {
+            record(TAG, "忽略不存在的持久预唤醒广播: $persistentScheduleId")
+            return
+        }
+        if (persistentSchedule != null && persistentSchedule.state != PersistentScheduleState.SCHEDULED) {
+            record(TAG, "忽略已处理的持久预唤醒广播: ${persistentSchedule.name}")
+            return
+        }
+        if (persistentSchedule != null && !ApplicationHook.isReadyForExec()) {
+            record(TAG, "持久预唤醒广播收到但工作流未就绪，保留调度等待恢复: ${persistentSchedule.name}")
+            return
+        }
+        if (persistentSchedule != null && ApplicationHookConstants.isOffline()) {
+            record(TAG, "持久预唤醒广播收到但当前离线，保留调度等待恢复: ${persistentSchedule.name}")
+            return
+        }
         val now = System.currentTimeMillis()
-        val delayMillis = executionTimeMillis - now
-
+        val execTime = if (executionTimeMillis > 0) executionTimeMillis else now
         val triggerAtExecTime = ApplicationHookConstants.TriggerInfo(
             type = ApplicationHookConstants.TriggerType.BROADCAST_PREWAKEUP,
             priority = ApplicationHookConstants.TriggerPriority.HIGH,
             alarmTriggered = true,
             reason = if (executionTimeMillis > 0) "prewakeup_to_${TimeUtil.getCommonDate(executionTimeMillis)}" else "prewakeup",
-            dedupeKey = if (executionTimeMillis > 0) "prewakeup_$executionTimeMillis" else "prewakeup"
+            dedupeKey = if (executionTimeMillis > 0) "prewakeup_$executionTimeMillis" else "prewakeup",
+            persistentScheduleId = persistentScheduleId.takeIf { it.isNotBlank() }
         )
 
         UnifiedScheduler.initialize(ctx)
-        if (executionTimeMillis > 0 && delayMillis > 0) {
-            record(TAG, "收到 prewakeup，计划在 ${TimeUtil.getCommonDate(executionTimeMillis)} 执行 (delay=${TimeUtil.formatDuration(delayMillis)})")
-            UnifiedScheduler.scheduleLongDelay(delayMillis, "prewakeup_execute") {
-                ApplicationHookCore.requestExecution(triggerAtExecTime)
+        if (execTime > now && !forceExecute) {
+            val schedule = UnifiedScheduler.schedulePersistentTrigger(
+                context = ctx,
+                name = "prewakeup_execute",
+                kind = PersistentScheduleKind.GLOBAL_PREWAKEUP,
+                triggerAtMs = execTime,
+                dedupeKey = "prewakeup_$execTime",
+                payloadJson = """{"execution_time":$execTime,"launch_target":true}""",
+                toleranceMs = PersistentScheduleDefaults.DEFAULT_TOLERANCE_MS
+            )
+            if (schedule.lastError != null) {
+                val delayMillis = execTime - now
+                record(TAG, "持久预唤醒注册失败，回退进程内等待 ${TimeUtil.formatDuration(delayMillis)}")
+                UnifiedScheduler.scheduleLongDelay(delayMillis, "prewakeup_execute") {
+                    ApplicationHookCore.requestExecution(triggerAtExecTime)
+                }
+                return
             }
+            if (persistentScheduleId.isNotBlank()) {
+                PersistentScheduleRegistry.markFired(context ?: ApplicationHook.appContext, persistentScheduleId)
+            }
+            UnifiedScheduler.cancelNamedTask("prewakeup_execute")
+            record(TAG, "收到 prewakeup，已注册持久预唤醒任务 ${TimeUtil.getCommonDate(schedule.triggerAtMs)}")
             return
         }
 

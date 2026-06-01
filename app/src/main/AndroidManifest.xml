@@ -19,6 +19,7 @@
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <!-- 添加唤醒锁权限（用于定期唤醒设备） -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- 添加前台服务权限 -->
     <uses-permission
         android:name="android.permission.FOREGROUND_SERVICE"
@@ -95,6 +96,26 @@
                 <action android:name="io.github.aoguai.sesameag.action.BIND_COMMAND_SERVICE" />
             </intent-filter>
         </service>
+
+        <receiver
+            android:name="io.github.aoguai.sesameag.hook.keepalive.ScheduledTriggerReceiver"
+            android:enabled="true"
+            android:exported="false" />
+
+        <receiver
+            android:name="io.github.aoguai.sesameag.hook.keepalive.ScheduleReconcileReceiver"
+            android:directBootAware="true"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
+            </intent-filter>
+        </receiver>
 
         <!-- 手动声明 Shizuku Provider，解决 provider is null 报错 -->
         <provider

@@ -1,0 +1,220 @@
+package io.github.aoguai.sesameag.hook.keepalive
+
+import android.content.Context
+import com.fasterxml.jackson.core.type.TypeReference
+import io.github.aoguai.sesameag.util.DataStore
+import io.github.aoguai.sesameag.util.Files
+import io.github.aoguai.sesameag.util.Log
+import io.github.aoguai.sesameag.util.TimeUtil
+
+object PersistentScheduleRegistry {
+    private const val TAG = "PersistentScheduleRegistry"
+    private const val STORE_KEY = "persistentSchedules"
+    private const val RETAIN_FINISHED_MS = 24 * 60 * 60 * 1000L
+    private const val DEFAULT_OVERDUE_GRACE_MS = 60 * 60 * 1000L
+
+    private val scheduleListType = object : TypeReference<MutableList<PersistentSchedule>>() {}
+
+    @Volatile
+    private var storageReady = false
+
+    data class ReconcileResult(
+        val dueSchedules: List<PersistentSchedule>,
+        val rescheduledCount: Int,
+        val expiredCount: Int
+    )
+
+    fun upsert(context: Context, schedule: PersistentSchedule): PersistentSchedule {
+        if (!ensureStorage()) {
+            return schedule.withFailure("persistent_storage_unavailable")
+        }
+        val now = System.currentTimeMillis()
+        val normalized = schedule.copy(
+            updatedAtMs = now,
+            state = PersistentScheduleState.SCHEDULED,
+            lastError = null
+        )
+        val schedules = loadMutable()
+        val removed = schedules.filter {
+            it.id == normalized.id ||
+                (normalized.dedupeKey.isNotBlank() && it.dedupeKey == normalized.dedupeKey)
+        }
+        if (SystemWakeScheduler.schedule(context, normalized)) {
+            removed
+                .filter { it.id != normalized.id }
+                .forEach { SystemWakeScheduler.cancel(context, it) }
+            schedules.removeAll(removed.toSet())
+            schedules.add(normalized)
+            save(schedules)
+            return normalized
+        }
+
+        val failed = normalized.withFailure("system_alarm_schedule_failed", now)
+        if (removed.isEmpty()) {
+            schedules.add(failed)
+            save(schedules)
+        } else {
+            Log.record(TAG, "持久调度注册失败，保留旧调度[${normalized.name}]")
+        }
+        return failed
+    }
+
+    fun removeById(context: Context?, id: String): Boolean {
+        if (id.isBlank()) return false
+        if (!ensureStorage()) return false
+        val schedules = loadMutable()
+        val removed = schedules.filter { it.id == id }
+        if (removed.isEmpty()) return false
+        schedules.removeAll(removed.toSet())
+        save(schedules)
+        context?.let { ctx -> removed.forEach { SystemWakeScheduler.cancel(ctx, it) } }
+        return true
+    }
+
+    fun removeByDedupeKey(context: Context?, dedupeKey: String): Int {
+        if (dedupeKey.isBlank()) return 0
+        if (!ensureStorage()) return 0
+        val schedules = loadMutable()
+        val removed = schedules.filter { it.dedupeKey == dedupeKey }
+        if (removed.isEmpty()) return 0
+        schedules.removeAll(removed.toSet())
+        save(schedules)
+        context?.let { ctx -> removed.forEach { SystemWakeScheduler.cancel(ctx, it) } }
+        return removed.size
+    }
+
+    fun removeByName(context: Context?, name: String): Int {
+        if (name.isBlank()) return 0
+        if (!ensureStorage()) return 0
+        val schedules = loadMutable()
+        val removed = schedules.filter { it.name == name }
+        if (removed.isEmpty()) return 0
+        schedules.removeAll(removed.toSet())
+        save(schedules)
+        context?.let { ctx -> removed.forEach { SystemWakeScheduler.cancel(ctx, it) } }
+        return removed.size
+    }
+
+    fun get(id: String): PersistentSchedule? {
+        if (id.isBlank()) return null
+        if (!ensureStorage()) return null
+        return loadMutable().firstOrNull { it.id == id }
+    }
+
+    fun list(): List<PersistentSchedule> {
+        if (!ensureStorage()) return emptyList()
+        return loadMutable().toList()
+    }
+
+    fun markFired(id: String, now: Long = System.currentTimeMillis()) {
+        updateSchedule(id) { it.withFired(now) }
+    }
+
+    fun markFired(context: Context?, id: String, now: Long = System.currentTimeMillis()) {
+        val schedule = get(id)
+        markFired(id, now)
+        if (context != null && schedule != null) {
+            SystemWakeScheduler.cancel(context, schedule)
+        }
+    }
+
+    fun markFailed(id: String, error: String, now: Long = System.currentTimeMillis()) {
+        updateSchedule(id) { it.withFailure(error, now) }
+    }
+
+    fun markFailed(context: Context?, id: String, error: String, now: Long = System.currentTimeMillis()) {
+        val schedule = get(id)
+        markFailed(id, error, now)
+        if (context != null && schedule != null) {
+            SystemWakeScheduler.cancel(context, schedule)
+        }
+    }
+
+    fun reconcile(context: Context, now: Long = System.currentTimeMillis()): ReconcileResult {
+        if (!ensureStorage()) {
+            return ReconcileResult(emptyList(), 0, 0)
+        }
+        val schedules = loadMutable()
+        val due = mutableListOf<PersistentSchedule>()
+        var rescheduled = 0
+        var expired = 0
+        val retained = mutableListOf<PersistentSchedule>()
+
+        for (schedule in schedules) {
+            if (schedule.state != PersistentScheduleState.SCHEDULED) {
+                if (now - schedule.updatedAtMs <= RETAIN_FINISHED_MS) {
+                    retained.add(schedule)
+                }
+                continue
+            }
+
+            if (schedule.triggerAtMs <= now) {
+                val graceMs = maxOf(schedule.toleranceMs, DEFAULT_OVERDUE_GRACE_MS)
+                if (now - schedule.triggerAtMs <= graceMs) {
+                    due.add(schedule)
+                    retained.add(schedule)
+                    Log.record(TAG, "发现到期持久任务[${schedule.name}] ${TimeUtil.getCommonDate(schedule.triggerAtMs)}")
+                } else {
+                    expired++
+                    SystemWakeScheduler.cancel(context, schedule)
+                    retained.add(schedule.withScheduleState(PersistentScheduleState.EXPIRED, now))
+                    Log.record(TAG, "持久任务已过期[${schedule.name}] ${TimeUtil.getCommonDate(schedule.triggerAtMs)}")
+                }
+                continue
+            }
+
+            if (SystemWakeScheduler.schedule(context, schedule)) {
+                rescheduled++
+            }
+            retained.add(schedule)
+        }
+
+        save(retained)
+        return ReconcileResult(
+            dueSchedules = due,
+            rescheduledCount = rescheduled,
+            expiredCount = expired
+        )
+    }
+
+    private fun updateSchedule(id: String, updater: (PersistentSchedule) -> PersistentSchedule) {
+        if (id.isBlank()) return
+        if (!ensureStorage()) return
+        val schedules = loadMutable()
+        val index = schedules.indexOfFirst { it.id == id }
+        if (index < 0) return
+        schedules[index] = updater(schedules[index])
+        save(schedules)
+    }
+
+    private fun loadMutable(): MutableList<PersistentSchedule> {
+        if (!ensureStorage()) return mutableListOf()
+        return try {
+            DataStore.getOrCreate(STORE_KEY, scheduleListType)
+        } catch (t: Throwable) {
+            Log.printStackTrace(TAG, "读取持久调度列表失败", t)
+            mutableListOf()
+        }
+    }
+
+    private fun save(schedules: List<PersistentSchedule>) {
+        if (!ensureStorage()) return
+        DataStore.put(STORE_KEY, schedules)
+    }
+
+    private fun ensureStorage(): Boolean {
+        if (storageReady) return true
+        return synchronized(this) {
+            if (storageReady) return@synchronized true
+            val initialized = runCatching { DataStore.init(Files.CONFIG_DIR) }
+                .onFailure { Log.printStackTrace(TAG, "初始化持久调度存储失败", it) }
+                .isSuccess &&
+                Files.CONFIG_DIR.exists() &&
+                java.io.File(Files.CONFIG_DIR, "DataStore.json").exists()
+            if (initialized) {
+                storageReady = true
+            }
+            initialized
+        }
+    }
+}

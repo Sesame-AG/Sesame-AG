@@ -78,7 +78,7 @@ class BaseModel : Model() {
          * 是否保持唤醒状态
          */
         val stayAwake: BooleanModelField = BooleanModelField("stayAwake", "保持唤醒", false).withDesc(
-            "开启后，模块在延时等待和定时调度期间会尽量保持 CPU 唤醒；关闭可省电，但后台定时精度可能下降。"
+            "开启后，模块只在任务到期执行窗口短时保持 CPU 唤醒；长时间等待仍依赖系统闹钟或进程内计时。"
         )
 
         /**
@@ -171,7 +171,7 @@ class BaseModel : Model() {
             "定时任务模式",
             TimedTaskModel.Companion.SYSTEM,
             TimedTaskModel.Companion.nickNames
-        ).withDesc("控制长期定时/蹲点/唤醒/轮询任务的等待策略：系统计时使用普通协程等待；程序计时使用 SmartScheduler 保活调度，适合卡时间任务。")
+        ).withDesc("控制进程存活时的等待策略：系统计时使用普通协程等待；程序计时使用进程内等待并在执行窗口短时唤醒，不保证进程被杀后仍执行。")
 
         /**
          * 超时是否重启

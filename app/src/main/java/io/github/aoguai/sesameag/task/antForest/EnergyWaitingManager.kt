@@ -1,11 +1,18 @@
 package io.github.aoguai.sesameag.task.antForest
 
 import android.annotation.SuppressLint
+import android.content.Context
+import io.github.aoguai.sesameag.hook.ApplicationHook
+import io.github.aoguai.sesameag.hook.keepalive.PersistentSchedule
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleKind
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleRegistry
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleState
 import io.github.aoguai.sesameag.hook.keepalive.UnifiedScheduler
 import io.github.aoguai.sesameag.model.BaseModel
 import io.github.aoguai.sesameag.util.FriendGuard
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.TimeUtil
+import io.github.aoguai.sesameag.util.maps.UserMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
@@ -122,6 +129,16 @@ class SmartRetryStrategy {
 object EnergyWaitingManager {
     private const val TAG = "EnergyWaitingManager"
     private const val FAILED_BUBBLE_STALE_GRACE_MS = 2 * 60 * 1000L
+    private const val FOREST_WAITING_DEDUPE_PREFIX = "forest_waiting_"
+    private const val FOREST_WAITING_TOLERANCE_MS = 60 * 60 * 1000L
+    private const val MAX_PERSISTENT_WAITING_ALARMS = 16
+    const val PERSISTENT_CHILD_KIND = "forest_energy_waiting"
+
+    enum class PersistentTriggerResult {
+        HANDLED,
+        DEFERRED,
+        FAILED
+    }
 
     /**
      * 等待任务数据类
@@ -228,6 +245,206 @@ object EnergyWaitingManager {
     // 能量收取回调
     private var energyCollectCallback: EnergyCollectCallback? = null
 
+    private fun appContext(): Context? {
+        return ApplicationHook.appContext
+    }
+
+    private fun currentOwnerUserId(): String {
+        return UserMap.currentUid?.takeIf { it.isNotBlank() } ?: "default"
+    }
+
+    private fun forestWaitingDedupeKey(taskId: String): String {
+        return FOREST_WAITING_DEDUPE_PREFIX + currentOwnerUserId() + "::" + taskId
+    }
+
+    private fun taskIdFromForestWaitingDedupeKey(dedupeKey: String): String {
+        val body = dedupeKey.removePrefix(FOREST_WAITING_DEDUPE_PREFIX)
+        return body.substringAfter("::", body)
+    }
+
+    private fun isReadyForWaitingExecution(): Boolean {
+        return energyCollectCallback != null && !UserMap.currentUid.isNullOrBlank()
+    }
+
+    private fun createPersistentSchedule(task: WaitingTask): PersistentSchedule {
+        val payload = JSONObject().apply {
+            put("child_kind", PERSISTENT_CHILD_KIND)
+            put("task_id", task.taskId)
+            put("user_id", task.userId)
+            put("user_name", task.userName)
+            put("bubble_id", task.bubbleId)
+            put("produce_time", task.produceTime)
+            put("from_tag", task.fromTag)
+            put("retry_count", task.retryCount)
+            put("max_retries", task.maxRetries)
+            put("shield_end_time", task.shieldEndTime)
+            put("bomb_end_time", task.bombEndTime)
+            put("launch_target", true)
+        }
+        return PersistentSchedule(
+            name = "森林蹲点:${task.taskId}",
+            kind = PersistentScheduleKind.MODULE_CHILD,
+            triggerAtMs = calculatePreciseCollectTime(task),
+            toleranceMs = FOREST_WAITING_TOLERANCE_MS,
+            dedupeKey = forestWaitingDedupeKey(task.taskId),
+            payloadJson = payload.toString(),
+            ownerUserId = currentOwnerUserId()
+        )
+    }
+
+    private fun syncPersistentWaitingSchedule(task: WaitingTask) {
+        val context = appContext() ?: return
+        val triggerAt = calculatePreciseCollectTime(task)
+        val now = System.currentTimeMillis()
+        if (triggerAt <= now) {
+            cancelPersistentWaitingSchedule(task.taskId)
+            return
+        }
+        try {
+            PersistentScheduleRegistry.upsert(context, createPersistentSchedule(task))
+        } catch (t: Throwable) {
+            Log.printStackTrace(TAG, "注册森林蹲点系统闹钟失败[${task.taskId}]", t)
+        }
+    }
+
+    private fun cancelPersistentWaitingSchedule(taskId: String) {
+        val context = appContext()
+        runCatching {
+            PersistentScheduleRegistry.removeByDedupeKey(context, forestWaitingDedupeKey(taskId))
+            PersistentScheduleRegistry.list()
+                .filter { schedule ->
+                    schedule.kind == PersistentScheduleKind.MODULE_CHILD &&
+                        schedule.dedupeKey.startsWith(FOREST_WAITING_DEDUPE_PREFIX) &&
+                        taskIdFromForestWaitingDedupeKey(schedule.dedupeKey) == taskId &&
+                        (schedule.ownerUserId == currentOwnerUserId() || schedule.ownerUserId.isNullOrBlank())
+                }
+                .forEach { schedule ->
+                    PersistentScheduleRegistry.removeByDedupeKey(context, schedule.dedupeKey)
+                }
+        }.onFailure {
+            Log.printStackTrace(TAG, "取消森林蹲点系统闹钟失败[$taskId]", it)
+        }
+    }
+
+    private fun syncPersistentWaitingSchedules() {
+        val context = appContext() ?: return
+        val selectedTasks = waitingTasks.values
+            .filter { calculatePreciseCollectTime(it) > System.currentTimeMillis() }
+            .sortedBy { calculatePreciseCollectTime(it) }
+            .take(MAX_PERSISTENT_WAITING_ALARMS)
+        val selectedTaskIds = selectedTasks.mapTo(mutableSetOf()) { it.taskId }
+        val currentOwnerId = currentOwnerUserId()
+        try {
+            PersistentScheduleRegistry.list()
+                .filter { schedule ->
+                    schedule.kind == PersistentScheduleKind.MODULE_CHILD &&
+                        schedule.dedupeKey.startsWith(FOREST_WAITING_DEDUPE_PREFIX) &&
+                        (schedule.ownerUserId == currentOwnerId || schedule.ownerUserId.isNullOrBlank())
+                }
+                .forEach { schedule ->
+                    val taskId = taskIdFromForestWaitingDedupeKey(schedule.dedupeKey)
+                    if (taskId !in selectedTaskIds ||
+                        schedule.state != PersistentScheduleState.SCHEDULED ||
+                        schedule.dedupeKey != forestWaitingDedupeKey(taskId)
+                    ) {
+                        PersistentScheduleRegistry.removeByDedupeKey(context, schedule.dedupeKey)
+                    }
+                }
+            selectedTasks.forEach { syncPersistentWaitingSchedule(it) }
+        } catch (t: Throwable) {
+            Log.printStackTrace(TAG, "同步森林蹲点系统闹钟失败", t)
+        }
+    }
+
+    private fun removeWaitingTask(taskId: String): WaitingTask? {
+        val removed = waitingTasks.remove(taskId)
+        cancelPersistentWaitingSchedule(taskId)
+        if (removed != null) {
+            syncPersistentWaitingSchedules()
+        }
+        return removed
+    }
+
+    fun triggerPersistentWaitingTask(taskId: String, payloadJson: String, source: String): PersistentTriggerResult {
+        if (taskId.isBlank()) return PersistentTriggerResult.FAILED
+        val task = waitingTasks[taskId]
+        if (task == null) {
+            Log.forest("森林蹲点持久任务到期但内存任务不存在[$taskId]，尝试恢复")
+            restorePersistedTaskById(taskId, payloadJson, source)
+            return PersistentTriggerResult.DEFERRED
+        }
+        if (!isReadyForWaitingExecution()) {
+            Log.forest("森林蹲点持久任务[$taskId]等待回调/账号就绪 source=$source")
+            return PersistentTriggerResult.DEFERRED
+        }
+        startPreciseWaitingCoroutine(task)
+        Log.forest("森林蹲点持久任务触发[$taskId] source=$source")
+        return PersistentTriggerResult.HANDLED
+    }
+
+    private fun restorePersistedTaskById(taskId: String, payloadJson: String, source: String) {
+        managerScope.launch {
+            taskMutex.withLock {
+                if (waitingTasks.containsKey(taskId)) return@withLock
+                val task = EnergyWaitingPersistence.loadTasks().firstOrNull { it.taskId == taskId }
+                    ?: restoreTaskFromPayload(payloadJson)
+                    ?: restoreTaskFromPersistentSchedule(taskId)
+                if (task == null) {
+                    cancelPersistentWaitingSchedule(taskId)
+                    Log.forest("森林蹲点持久任务[$taskId]未找到持久化记录，已取消系统闹钟")
+                    return@withLock
+                }
+                waitingTasks[task.taskId] = task
+                EnergyWaitingPersistence.saveTasks(waitingTasks)
+                if (isReadyForWaitingExecution()) {
+                    startPreciseWaitingCoroutine(task)
+                    Log.forest("森林蹲点持久任务[$taskId]已从持久化恢复并触发 source=$source")
+                } else {
+                    Log.forest("森林蹲点持久任务[$taskId]已恢复，等待回调/账号就绪 source=$source")
+                }
+            }
+        }
+    }
+
+    private fun restoreTaskFromPayload(payloadJson: String): WaitingTask? {
+        return parseWaitingTaskPayload(payloadJson)
+    }
+
+    private fun restoreTaskFromPersistentSchedule(taskId: String): WaitingTask? {
+        return try {
+            val schedule = PersistentScheduleRegistry.list().firstOrNull {
+                it.dedupeKey == forestWaitingDedupeKey(taskId)
+            } ?: return null
+            parseWaitingTaskPayload(schedule.payloadJson)
+        } catch (t: Throwable) {
+            Log.printStackTrace(TAG, "从持久调度恢复森林蹲点任务失败[$taskId]", t)
+            null
+        }
+    }
+
+    private fun parseWaitingTaskPayload(payloadJson: String): WaitingTask? {
+        return try {
+            val payload = JSONObject(payloadJson.ifBlank { "{}" })
+            val userId = payload.optString("user_id").takeIf { it.isNotBlank() } ?: return null
+            val bubbleId = payload.optLong("bubble_id", 0L).takeIf { it > 0L } ?: return null
+            val produceTime = payload.optLong("produce_time", 0L).takeIf { it > 0L } ?: return null
+            WaitingTask(
+                userId = userId,
+                userName = payload.optString("user_name", "未知用户"),
+                bubbleId = bubbleId,
+                produceTime = produceTime,
+                fromTag = payload.optString("from_tag", "蹲点收取"),
+                retryCount = payload.optInt("retry_count", 0),
+                maxRetries = payload.optInt("max_retries", 3),
+                shieldEndTime = payload.optLong("shield_end_time", 0L),
+                bombEndTime = payload.optLong("bomb_end_time", 0L)
+            )
+        } catch (t: Throwable) {
+            Log.printStackTrace(TAG, "解析森林蹲点持久任务 payload 失败", t)
+            null
+        }
+    }
+
     /**
      * 添加蹲点任务（带重复检查优化和智能保护判断）
      *
@@ -287,7 +504,7 @@ object EnergyWaitingManager {
                         Log.forest("智能跳过蹲点：[好友|$userName]球[$bubbleId][taskId=$taskId]的保护罩比能量球晚到期${formattedTimeDifference}，无法收取，已跳过。"
                         )
                         // 移除无效的蹲点任务
-                        waitingTasks.remove(taskId)
+                        removeWaitingTask(taskId)
                         EnergyWaitingPersistence.saveTasks(waitingTasks)
                         return@withLock
                     }
@@ -306,7 +523,7 @@ object EnergyWaitingManager {
                 val waitTime = produceTime - currentTime
                 if (waitTime > MAX_WAIT_TIME_MS) {
                     // 移除过长的任务
-                    waitingTasks.remove(taskId)
+                    removeWaitingTask(taskId)
                     Log.forest("能量球[$bubbleId][taskId=$taskId][user=$userName]等待时间过长(${waitTime / 1000 / 60}分钟 > ${MAX_WAIT_TIME_MS / 1000 / 60}分钟)，本次不加入蹲点队列，当前有效任务${waitingTasks.size}个"
                     )
                     EnergyWaitingPersistence.saveTasks(waitingTasks)
@@ -325,7 +542,7 @@ object EnergyWaitingManager {
                 )
 
                 // 移除旧任务（如果存在），避免同一 taskId 同时存在多个协程流程
-                waitingTasks.remove(taskId)
+                removeWaitingTask(taskId)
 
                 // 添加/覆盖任务
                 waitingTasks[taskId] = task
@@ -351,6 +568,7 @@ object EnergyWaitingManager {
 
                 // 保存到持久化存储
                 EnergyWaitingPersistence.saveTasks(waitingTasks)
+                syncPersistentWaitingSchedules()
 
                 // 启动精确蹲点协程
                 startPreciseWaitingCoroutine(task)
@@ -412,20 +630,20 @@ object EnergyWaitingManager {
                             val safeUserId = FriendGuard.normalizeUserId(task.userId)
                             if (safeUserId == null) {
                                 Log.forest("❌ 验证失败[${task.getUserTypeTag()}${task.userName}]：userId无效，取消蹲点")
-                                waitingTasks.remove(task.taskId)
+                                removeWaitingTask(task.taskId)
                                 EnergyWaitingPersistence.saveTasks(waitingTasks)
                                 return@launch
                             }
                             if (task.isPkContest()) {
                                 if (FriendGuard.isSelf(safeUserId)) {
                                     Log.forest("❌ 验证失败[${task.getUserTypeTag()}${task.userName}]：PK榜返回自己账号，取消蹲点")
-                                    waitingTasks.remove(task.taskId)
+                                    removeWaitingTask(task.taskId)
                                     EnergyWaitingPersistence.saveTasks(waitingTasks)
                                     return@launch
                                 }
                             } else if (FriendGuard.shouldSkipFriend(safeUserId, TAG, "验证蚂蚁森林蹲点好友")) {
                                 Log.forest("❌ 验证失败[${task.getUserTypeTag()}${task.userName}]：好友关系无效，取消蹲点")
-                                waitingTasks.remove(task.taskId)
+                                removeWaitingTask(task.taskId)
                                 EnergyWaitingPersistence.saveTasks(waitingTasks)
                                 return@launch
                             }
@@ -442,7 +660,7 @@ object EnergyWaitingManager {
                                     val protectionEnd = maxOf(shieldEnd, bombEnd)
                                     val coverMinutes = (protectionEnd - task.produceTime) / 1000 / 60
                                     Log.forest("❌ 验证失败[${task.getUserTypeTag()}${task.userName}]球[${task.bubbleId}]：保护罩覆盖${coverMinutes}分钟，取消蹲点")
-                                    waitingTasks.remove(task.taskId)
+                                    removeWaitingTask(task.taskId)
                                     EnergyWaitingPersistence.saveTasks(waitingTasks)
                                     return@launch
                                 } else {
@@ -521,6 +739,7 @@ object EnergyWaitingManager {
                 if (smartRetryStrategy.shouldRetry(task.retryCount, e.message, timeToTarget)) {
                     val retryTask = task.withRetry()
                     waitingTasks[task.taskId] = retryTask
+                    syncPersistentWaitingSchedules()
 
                     // 重试延迟
                     val retryDelay = smartRetryStrategy.getRetryDelay(task.retryCount, e.message)
@@ -529,7 +748,7 @@ object EnergyWaitingManager {
                     startPreciseWaitingCoroutine(retryTask)
                 } else {
                     Log.error(TAG, "精确蹲点任务[${task.taskId}]不满足重试条件，放弃")
-                    waitingTasks.remove(task.taskId)
+                    removeWaitingTask(task.taskId)
                     EnergyWaitingPersistence.saveTasks(waitingTasks)
                 }
             }
@@ -675,7 +894,7 @@ object EnergyWaitingManager {
                 if (result.success) {
                     if (result.energyCount > 0) {
                         Log.forest("✅ 蹲点收取[${task.getUserTypeTag()}${task.userName}]成功${result.energyCount}g(耗时${executeTime}ms)")
-                        waitingTasks.remove(task.taskId) // 成功后移除任务
+                        removeWaitingTask(task.taskId) // 成功后移除任务
                         EnergyWaitingPersistence.saveTasks(waitingTasks) // 保存更新
                     } else {
                         Log.forest("⚠️ 蹲点收取[${task.getUserTypeTag()}${task.userName}]异常：返回0能量(${result.message})")
@@ -684,6 +903,7 @@ object EnergyWaitingManager {
                         if (task.retryCount < task.maxRetries) {
                             val retryTask = task.withRetry()
                             waitingTasks[task.taskId] = retryTask
+                            syncPersistentWaitingSchedules()
                             val retryDelay = 5000L // 5秒后重试
                             Log.forest("  → 5秒后重试(${retryTask.retryCount}/${task.maxRetries})")
 
@@ -693,7 +913,7 @@ object EnergyWaitingManager {
                             }
                         } else {
                             Log.forest("  → 已达最大重试次数")
-                            waitingTasks.remove(task.taskId)
+                            removeWaitingTask(task.taskId)
                             EnergyWaitingPersistence.saveTasks(waitingTasks)
                         }
                     }
@@ -706,25 +926,25 @@ object EnergyWaitingManager {
                     when {
                         failedBubbleStale -> {
                             Log.forest("  → 服务端标记目标能量球收取失败且任务已成熟超过宽限期，移除蹲点任务 failedBubbleIds=${result.failedBubbleIds}")
-                            waitingTasks.remove(task.taskId)
+                            removeWaitingTask(task.taskId)
                             for (bubbleId in result.failedBubbleIds) {
-                                waitingTasks.remove("${task.userId}_${bubbleId}")
+                                removeWaitingTask("${task.userId}_${bubbleId}")
                             }
                             EnergyWaitingPersistence.saveTasks(waitingTasks)
                         }
                         result.hasShield || result.hasBomb -> {
                             Log.forest("  → 检测到保护罩/炸弹卡")
-                            waitingTasks.remove(task.taskId)
+                            removeWaitingTask(task.taskId)
                             EnergyWaitingPersistence.saveTasks(waitingTasks) // 保存更新
                         }
                         result.message.contains("用户无可收取的能量球") -> {
                             Log.forest("  → 能量球已不存在，移除任务")
-                            waitingTasks.remove(task.taskId)
+                            removeWaitingTask(task.taskId)
                             EnergyWaitingPersistence.saveTasks(waitingTasks) // 保存更新
                         }
                         result.message.contains("无法查询用户能量信息") -> {
                             Log.forest("  → 用户能量信息查询失败，移除任务")
-                            waitingTasks.remove(task.taskId)
+                            removeWaitingTask(task.taskId)
                             EnergyWaitingPersistence.saveTasks(waitingTasks) // 保存更新
                         }
                         else -> {
@@ -732,6 +952,7 @@ object EnergyWaitingManager {
                             if (task.retryCount < task.maxRetries) {
                                 val retryTask = task.withRetry()
                                 waitingTasks[task.taskId] = retryTask
+                                syncPersistentWaitingSchedules()
 
                                 // 根据错误类型决定重试延迟
                                 val retryDelay = when {
@@ -750,7 +971,7 @@ object EnergyWaitingManager {
                                 }
                             } else {
                                 Log.forest("  → 已达最大重试次数")
-                                waitingTasks.remove(task.taskId)
+                                removeWaitingTask(task.taskId)
                                 EnergyWaitingPersistence.saveTasks(waitingTasks)
                             }
                         }
@@ -855,12 +1076,14 @@ object EnergyWaitingManager {
 
                     // 执行移除
                     expiredTasks.forEach { (taskId, _) ->
-                        waitingTasks.remove(taskId)
+                        removeWaitingTask(taskId)
                     }
 
                     // 持久化保存更改
                     EnergyWaitingPersistence.saveTasks(waitingTasks)
+                    syncPersistentWaitingSchedules()
                 } else {
+                    syncPersistentWaitingSchedules()
                     // 仅在手动调试或强制模式下打印此日志，避免刷屏
                     if (enableRevalidation) {
                          Log.forest("定期清理检查：无过期任务")
@@ -893,7 +1116,23 @@ object EnergyWaitingManager {
      */
     fun setEnergyCollectCallback(callback: EnergyCollectCallback) {
         energyCollectCallback = callback
+        triggerDueWaitingTasks("callback_ready")
         Log.forest("已设置能量收取回调")
+    }
+
+    private fun triggerDueWaitingTasks(source: String) {
+        if (!isReadyForWaitingExecution()) return
+        managerScope.launch {
+            taskMutex.withLock {
+                val now = System.currentTimeMillis()
+                waitingTasks.values
+                    .filter { calculatePreciseCollectTime(it) <= now }
+                    .forEach { task ->
+                        Log.forest("触发已到期森林蹲点任务[${task.taskId}] source=$source")
+                        startPreciseWaitingCoroutine(task)
+                    }
+            }
+        }
     }
 
     /**
@@ -1043,13 +1282,14 @@ object EnergyWaitingManager {
 
                 // 批量移除无效任务
                 tasksToRemove.forEach { taskId ->
-                    waitingTasks.remove(taskId)
+                    removeWaitingTask(taskId)
                 }
 
                 val validCount = tasksToRevalidate.size - tasksToRemove.size
                 if (tasksToRemove.isNotEmpty()) {
                     Log.forest("🧹 验证完成：移除${tasksToRemove.size}个无效任务，保留${validCount}个有效任务")
                     EnergyWaitingPersistence.saveTasks(waitingTasks) // 保存更新
+                    syncPersistentWaitingSchedules()
                 } else {
                     Log.forest("✅ 验证完成：所有${validCount}个任务均有效")
                 }
@@ -1146,6 +1386,7 @@ object EnergyWaitingManager {
                     Log.forest("✅ 成功恢复${restoredCount}个蹲点任务，避免重新遍历好友")
                     // 保存更新后的任务列表
                     EnergyWaitingPersistence.saveTasks(waitingTasks)
+                    syncPersistentWaitingSchedules()
                 }
 
             } catch (e: Exception) {
@@ -1165,4 +1406,3 @@ object EnergyWaitingManager {
         Log.forest("精确能量球蹲点管理器已初始化（支持持久化）")
     }
 }
-

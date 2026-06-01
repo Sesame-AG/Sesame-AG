@@ -20,11 +20,11 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * 协程调度器 - 基于 Coroutines + WakeLock
+ * 协程调度器 - 基于 Coroutines 的进程内等待
  *
  * 核心思想：
- * 1. 抛弃 AlarmManager 的广播回调地狱，回归线性代码。
- * 2. 使用 WakeLock 确保在 delay 期间 CPU 保持运行（解决 Doze 导致的时间停滞）。
+ * 1. 保留进程存活时的线性等待逻辑。
+ * 2. WakeLock 只覆盖任务执行窗口，不再覆盖整个长时间 delay。
  * 3. 使用协程结构化并发管理任务。
  */
 object SmartSchedulerManager {
@@ -90,23 +90,21 @@ object SmartSchedulerManager {
 
         val finalDelay = if (delayMillis < 0) 0L else delayMillis
 
-        // 启动协程
         val job = scope.launch {
-            val wakeLock = if (BaseModel.stayAwake.value == true) {
-                acquireWakeLock(finalDelay + 5000)
-            } else {
-                null
-            }
+            var executionWakeLock: PowerManager.WakeLock? = null
             Log.record(TAG, "⏳ 任务调度: [$taskName] | ID:$taskId | 延迟: ${TimeUtil.formatDuration(finalDelay)}")
             Log.record( ">".repeat(40))
 
             try {
-                // 核心：在 WakeLock 保护下进行挂起
                 delay(finalDelay)
 
                 if (isActive) {
                     Log.record(TAG, "▶️ 开始执行: [$taskName] | ID:$taskId")
-                    // 切换到主线程执行 Hook 逻辑（通常 Hook 需要在主线程）
+                    executionWakeLock = if (BaseModel.stayAwake.value == true) {
+                        acquireWakeLock(PersistentScheduleDefaults.DEFAULT_EXECUTION_WAKELOCK_MS)
+                    } else {
+                        null
+                    }
                     withContext(Dispatchers.Main) {
                         try {
                             block()
@@ -118,8 +116,7 @@ object SmartSchedulerManager {
             } catch (e: CancellationException) {
                 Log.record(TAG, "🚫 任务已取消: [$taskName] | ID:$taskId")
             } finally {
-                // 释放锁和清理 Map
-                releaseWakeLock(wakeLock)
+                releaseWakeLock(executionWakeLock)
                 taskMap.remove(taskId)
                 if (namedTasks[taskName] == taskId) {
                     namedTasks.remove(taskName)

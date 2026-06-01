@@ -4,6 +4,10 @@ import android.util.Base64
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.entity.friend.FriendCapabilityState
+import io.github.aoguai.sesameag.hook.ApplicationHook
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleDefaults
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleKind
+import io.github.aoguai.sesameag.hook.keepalive.UnifiedScheduler
 import io.github.aoguai.sesameag.model.ModelFields
 import io.github.aoguai.sesameag.model.ModelGroup
 import io.github.aoguai.sesameag.model.withDesc
@@ -88,6 +92,77 @@ class AntStall : ModelTask() {
     override fun getGroup(): ModelGroup = ModelGroup.STALL
 
     override fun getIcon(): String = "AntStall.png"
+
+    private fun persistentStallDedupeKey(childId: String): String {
+        val owner = UserMap.currentUid?.takeIf { it.isNotBlank() } ?: "default"
+        return "stall_child_${owner}::$childId"
+    }
+
+    internal fun registerPersistentChildTask(
+        childId: String,
+        group: String,
+        triggerAtMs: Long,
+        extraPayload: JSONObject = JSONObject()
+    ) {
+        val context = ApplicationHook.appContext ?: return
+        if (triggerAtMs <= System.currentTimeMillis()) return
+        try {
+            val payload = JSONObject(extraPayload.toString())
+                .put("child_kind", PERSISTENT_CHILD_KIND)
+                .put("child_id", childId)
+                .put("group", group)
+                .put("launch_target", true)
+            UserMap.currentUid?.takeIf { it.isNotBlank() }?.let { payload.put("owner_user_id", it) }
+
+            UnifiedScheduler.schedulePersistentTrigger(
+                context = context,
+                name = "新村子任务:$group",
+                kind = PersistentScheduleKind.MODULE_CHILD,
+                triggerAtMs = triggerAtMs,
+                dedupeKey = persistentStallDedupeKey(childId),
+                payloadJson = payload.toString(),
+                toleranceMs = PersistentScheduleDefaults.DEFAULT_TOLERANCE_MS,
+                ownerUserId = UserMap.currentUid
+            )
+        } catch (t: Throwable) {
+            Log.printStackTrace(TAG, "注册新村持久子任务失败[$group][$childId]", t)
+        }
+    }
+
+    internal fun cancelPersistentChildTask(childId: String) {
+        UnifiedScheduler.cancelPersistentByDedupeKey(ApplicationHook.appContext, persistentStallDedupeKey(childId))
+    }
+
+    internal fun triggerPersistentChildTask(childId: String, group: String, payloadJson: String, source: String): Boolean {
+        val payload = runCatching { JSONObject(payloadJson.ifBlank { "{}" }) }.getOrDefault(JSONObject())
+        val ownerUserId = payload.optString("owner_user_id").trim()
+        if (ownerUserId.isNotBlank() && ownerUserId != UserMap.currentUid) {
+            Log.stall("新村持久子任务[$group][$childId]账号不匹配，跳过: owner=$ownerUserId current=${UserMap.currentUid}")
+            return true
+        }
+        if (!isEnable()) {
+            Log.stall("新村持久子任务[$group][$childId]触发时模块已关闭，跳过")
+            return true
+        }
+        GlobalThreadPools.execute {
+            runPersistentChildTask(childId, group, payload, source)
+        }
+        return true
+    }
+
+    private fun runPersistentChildTask(childId: String, group: String, payload: JSONObject, source: String) {
+        try {
+            Log.stall("新村持久子任务触发[$group][$childId] source=$source")
+            cancelPersistentChildTask(childId)
+            when (group) {
+                "SB" -> runSendBackPersistentTask(childId, payload)
+                "SH" -> runCloseShopPersistentTask(childId, payload)
+                else -> Log.stall("未知新村持久子任务[$group][$childId]，跳过")
+            }
+        } catch (t: Throwable) {
+            Log.printStackTrace(TAG, "新村持久子任务执行失败[$group][$childId]", t)
+        }
+    }
 
     override fun getFields(): ModelFields {
         return ModelFields().apply {
@@ -533,6 +608,7 @@ class AntStall : ModelTask() {
                     val taskId = "SB|$seatId"
                     if (!hasChildTask(taskId)) {
                         addChildTask(ChildModelTask(taskId, "SB", {
+                            cancelPersistentChildTask(taskId)
                             if (stallAllowOpenReject.value == true) {
                                 if (!FriendGuard.shouldSkipFriend(rentLastUser, TAG, "请走小摊")) {
                                     sendBack(
@@ -545,6 +621,17 @@ class AntStall : ModelTask() {
                                 }
                             }
                         }, endTime))
+                        registerPersistentChildTask(
+                            taskId,
+                            "SB",
+                            endTime,
+                            JSONObject()
+                                .put("seat_id", seatId)
+                                .put("rent_last_bill", rentLastBill)
+                                .put("rent_last_shop", rentLastShop)
+                                .put("rent_last_user", rentLastUser)
+                                .put("biz_start_time", bizStartTime)
+                        )
                         Log.stall("添加蹲点请走⛪在[${TimeUtil.getCommonDate(endTime)}]执行")
                     }
                 }
@@ -552,6 +639,96 @@ class AntStall : ModelTask() {
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "sendBack err:", t)
         }
+    }
+
+    private fun runSendBackPersistentTask(childId: String, payload: JSONObject) {
+        if (stallAllowOpenReject.value != true) {
+            Log.stall("新村持久请走[$childId]触发时功能已关闭，跳过")
+            return
+        }
+        val targetSeatId = payload.optString("seat_id").trim().ifBlank {
+            childId.substringAfter("SB|", "")
+        }
+        val expectedUserId = payload.optString("rent_last_user").trim()
+        if (targetSeatId.isBlank()) {
+            Log.stall("新村持久请走[$childId]缺少 seat_id，跳过")
+            return
+        }
+
+        val homeResponse = AntStallRpcCall.home()
+        val homeJson = JSONObject(homeResponse)
+        if (!ResChecker.checkRes(TAG, homeJson)) {
+            Log.error(TAG, "persistent sendBack home err: $homeResponse")
+            return
+        }
+        val seatsMap = homeJson.optJSONObject("seatsMap") ?: run {
+            Log.stall("新村持久请走[$childId]未查询到摊位信息，跳过")
+            return
+        }
+        val seat = findSeatById(seatsMap, targetSeatId) ?: run {
+            Log.stall("新村持久请走[$childId]未找到摊位[$targetSeatId]，跳过")
+            return
+        }
+        if (seat.optString("status") != "BUSY") {
+            Log.stall("新村持久请走[$childId]摊位已非占用状态，跳过")
+            return
+        }
+        val currentUserId = seat.optString("rentLastUser").trim()
+        if (currentUserId.isBlank() || (expectedUserId.isNotBlank() && currentUserId != expectedUserId)) {
+            Log.stall("新村持久请走[$childId]摊位用户已变化，跳过")
+            return
+        }
+        if (FriendGuard.shouldSkipFriend(currentUserId, TAG, "请走小摊")) {
+            return
+        }
+
+        val bizStartTime = seat.optLong("bizStartTime", 0L)
+        val allowMinutes = stallAllowOpenTime.value ?: 0
+        val endTime = bizStartTime + allowMinutes * 60 * 1000L
+        if (endTime > System.currentTimeMillis()) {
+            registerPersistentChildTask(
+                childId,
+                "SB",
+                endTime,
+                JSONObject()
+                    .put("seat_id", targetSeatId)
+                    .put("rent_last_bill", seat.optString("rentLastBill"))
+                    .put("rent_last_shop", seat.optString("rentLastShop"))
+                    .put("rent_last_user", currentUserId)
+                    .put("biz_start_time", bizStartTime)
+            )
+            Log.stall("新村持久请走[$childId]尚未到点，重排到[${TimeUtil.getCommonDate(endTime)}]")
+            return
+        }
+
+        sendBack(
+            seat.optString("rentLastBill"),
+            targetSeatId,
+            seat.optString("rentLastShop"),
+            currentUserId,
+            collectOccupiedStallUsers(seatsMap)
+        )
+    }
+
+    private fun findSeatById(seatsMap: JSONObject, seatId: String): JSONObject? {
+        for (i in 1..2) {
+            val seat = seatsMap.optJSONObject("GUEST_0$i") ?: continue
+            if (seat.optString("seatId") == seatId) {
+                return seat
+            }
+        }
+        return null
+    }
+
+    private fun collectOccupiedStallUsers(seatsMap: JSONObject): MutableSet<String> {
+        val sentUserId = mutableSetOf<String>()
+        for (i in 1..2) {
+            val seat = seatsMap.optJSONObject("GUEST_0$i") ?: continue
+            if (seat.optString("status") == "BUSY") {
+                seat.optString("rentLastUser").takeIf { it.isNotBlank() }?.let { sentUserId.add(it) }
+            }
+        }
+        return sentUserId
     }
 
     /**
@@ -622,6 +799,7 @@ class AntStall : ModelTask() {
                     val taskId = "SH|$shopId"
                     if (!hasChildTask(taskId)) {
                         addChildTask(ChildModelTask(taskId, "SH", {
+                            cancelPersistentChildTask(taskId)
                             if (stallAutoClose.value == true) {
                                 shopClose(shopId, rentLastBill, rentLastUser)
                             }
@@ -630,6 +808,16 @@ class AntStall : ModelTask() {
                                 openShop()
                             }
                         }, shopTime))
+                        registerPersistentChildTask(
+                            taskId,
+                            "SH",
+                            shopTime,
+                            JSONObject()
+                                .put("shop_id", shopId)
+                                .put("rent_last_bill", rentLastBill)
+                                .put("rent_last_user", rentLastUser)
+                                .put("gmt_last_rent", gmtLastRent)
+                        )
                         Log.stall("添加蹲点收摊⛪在[${TimeUtil.getCommonDate(shopTime)}]执行")
                     }
                 }
@@ -637,6 +825,72 @@ class AntStall : ModelTask() {
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "closeShop err:", t)
         }
+    }
+
+    private fun runCloseShopPersistentTask(childId: String, payload: JSONObject) {
+        val targetShopId = payload.optString("shop_id").trim().ifBlank {
+            childId.substringAfter("SH|", "")
+        }
+        val expectedBillNo = payload.optString("rent_last_bill").trim()
+        if (targetShopId.isBlank()) {
+            Log.stall("新村持久收摊[$childId]缺少 shop_id，跳过")
+            return
+        }
+
+        if (stallAutoClose.value == true) {
+            val response = AntStallRpcCall.shopList()
+            val json = JSONObject(response)
+            if (!ResChecker.checkRes(TAG, json)) {
+                Log.error(TAG, "persistent closeShop err: $response")
+            } else {
+                val shop = findOpenShopById(json.optJSONArray("astUserShopList"), targetShopId)
+                if (shop == null) {
+                    Log.stall("新村持久收摊[$childId]小摊已非开启状态，跳过收摊")
+                } else {
+                    val rentLastBill = shop.optString("rentLastBill").trim()
+                    if (expectedBillNo.isNotBlank() && rentLastBill != expectedBillNo) {
+                        Log.stall("新村持久收摊[$childId]账单已变化，跳过收摊")
+                    } else {
+                        val gmtLastRent = shop.optJSONObject("rentLastEnv")?.optLong("gmtLastRent", 0L) ?: 0L
+                        val selfOpenMinutes = stallSelfOpenTime.value ?: 0
+                        val shopTime = gmtLastRent + selfOpenMinutes * 60 * 1000L
+                        if (shopTime > System.currentTimeMillis()) {
+                            registerPersistentChildTask(
+                                childId,
+                                "SH",
+                                shopTime,
+                                JSONObject()
+                                    .put("shop_id", targetShopId)
+                                    .put("rent_last_bill", rentLastBill)
+                                    .put("rent_last_user", shop.optString("rentLastUser"))
+                                    .put("gmt_last_rent", gmtLastRent)
+                            )
+                            Log.stall("新村持久收摊[$childId]尚未到点，重排到[${TimeUtil.getCommonDate(shopTime)}]")
+                            return
+                        }
+                        shopClose(targetShopId, rentLastBill, shop.optString("rentLastUser"))
+                    }
+                }
+            }
+        } else {
+            Log.stall("新村持久收摊[$childId]触发时收摊功能已关闭，跳过收摊")
+        }
+
+        GlobalThreadPools.sleepCompat(300L)
+        if (stallAutoOpen.value == true) {
+            openShop()
+        }
+    }
+
+    private fun findOpenShopById(shopList: JSONArray?, shopId: String): JSONObject? {
+        if (shopList == null) return null
+        for (i in 0 until shopList.length()) {
+            val shop = shopList.optJSONObject(i) ?: continue
+            if (shop.optString("shopId") == shopId && shop.optString("status") == "OPEN") {
+                return shop
+            }
+        }
+        return null
     }
 
     /**
@@ -2014,6 +2268,7 @@ class AntStall : ModelTask() {
         private const val STALL_DAILY_QA_TASK_TYPE = "ANTSTALL_NORMAL_DAILY_QA"
         private const val STALL_INVITE_REGISTER_TASK_TYPE = "ANTSTALL_NORMAL_INVITE_REGISTER"
         private const val STALL_XLIGHT_TASK_TYPE = "ANTSTALL_XLIGHT_VARIABLE_AWARD"
+        const val PERSISTENT_CHILD_KIND = "stall_child_task"
 
         /**
          * @brief 任务类型列表
