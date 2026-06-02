@@ -611,7 +611,9 @@ class ApplicationHook {
             val scheduled = UnifiedScheduler.activeTaskCount()
             val decision = ReloadResumeDecision(
                 reason = reason,
-                shouldResume = running || pending > 0 || scheduled > 0,
+                // Scheduled timers also exist in the normal waiting state; they must not turn
+                // a config reload into an immediate main workflow run.
+                shouldResume = running || pending > 0,
                 mainTaskRunning = running,
                 pendingTriggers = pending,
                 schedulerTasks = scheduled
