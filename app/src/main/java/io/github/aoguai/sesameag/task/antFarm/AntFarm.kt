@@ -2280,7 +2280,10 @@ class AntFarm : ModelTask() {
             val s = AntFarmRpcCall.listActivityInfo()
             val jo = JSONObject(s)
             if (!ResChecker.checkRes(TAG, jo)) {
-                Log.farm("查询公益捐蛋项目失败: ${formatDonationFailure(jo)}")
+                val classification = classifyFarmRpcFailure(jo)
+                Log.farm(
+                    "查询公益捐蛋项目失败: ${formatFarmHighRiskFailure("listActivityInfo", jo, classification)}"
+                )
                 return false
             }
 
@@ -2398,9 +2401,13 @@ class AntFarm : ModelTask() {
         return false
     }
 
-    private data class DonationPerformResult(
+    internal data class DonationPerformResult(
         val success: Boolean,
-        val actualAmount: Int = 0
+        val actualAmount: Int = 0,
+        val classification: TaskRpcFailureType? = null,
+        val code: String = "",
+        val message: String = "",
+        val raw: String = ""
     )
 
     private fun isUndonatedByCurrentUser(activity: JSONObject, uid: String): Boolean? {
@@ -2419,7 +2426,7 @@ class AntFarm : ModelTask() {
         return true
     }
 
-    private fun performDonationDetailed(
+    internal fun performDonationDetailed(
         activityId: String?,
         activityName: String?,
         count: Int,
@@ -2441,7 +2448,17 @@ class AntFarm : ModelTask() {
                 }
                 return DonationPerformResult(true, actualAmount)
             }
-            Log.farm("捐赠失败: ${formatDonationFailure(donationResponse)}")
+            val classification = classifyFarmRpcFailure(donationResponse)
+            Log.farm(
+                "捐赠失败: ${formatFarmHighRiskFailure("donation", donationResponse, classification)}"
+            )
+            return DonationPerformResult(
+                success = false,
+                classification = classification,
+                code = extractFarmRpcErrorCode(donationResponse),
+                message = extractFarmRpcMessage(donationResponse),
+                raw = donationResponse.toString()
+            )
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "performDonation err:", t)
         }
@@ -2461,15 +2478,6 @@ class AntFarm : ModelTask() {
         } else {
             localRemaining
         }
-    }
-
-    private fun formatDonationFailure(jo: JSONObject): String {
-        val resultDesc = jo.optString("resultDesc")
-        val memo = jo.optString("memo")
-        val resultCode = jo.optString("resultCode")
-        return "resultDesc=${resultDesc.ifBlank { "<blank>" }}, " +
-            "memo=${memo.ifBlank { "<blank>" }}, " +
-            "resultCode=${resultCode.ifBlank { "<blank>" }}, response=$jo"
     }
 
     internal fun AntFarm.performDonation(
@@ -3314,33 +3322,72 @@ class AntFarm : ModelTask() {
             message.contains("当日上限")
     }
 
-    private fun extractFarmRpcErrorCode(jo: JSONObject): String {
+    internal fun extractFarmRpcErrorCode(jo: JSONObject): String {
         return jo.optString("resultCode")
             .ifBlank { jo.optString("errorCode") }
             .ifBlank { jo.optString("code") }
+            .ifBlank { jo.optString("resultStatus") }
     }
 
-    private fun extractFarmRpcMessage(jo: JSONObject): String {
+    internal fun extractFarmRpcMessage(jo: JSONObject): String {
         return jo.optString("memo")
             .ifBlank { jo.optString("resultDesc") }
+            .ifBlank { jo.optString("resultView") }
             .ifBlank { jo.optString("desc") }
             .ifBlank { jo.optString("errorMsg") }
+            .ifBlank { jo.optString("errorMessage") }
             .ifBlank { jo.optString("resultMsg") }
             .ifBlank { jo.toString() }
     }
 
-    private fun classifyFarmRpcFailure(jo: JSONObject): TaskRpcFailureType {
+    internal fun classifyFarmRpcFailure(jo: JSONObject): TaskRpcFailureType {
         val code = extractFarmRpcErrorCode(jo)
         val message = extractFarmRpcMessage(jo)
         return when {
-            containsAny(message, "已领取", "已经领取", "重复领取", "重复领奖", "重复完成", "已完成", "任务已完结", "任务已结束") ->
+            containsAny(
+                message,
+                "已领取",
+                "已经领取",
+                "重复领取",
+                "重复领奖",
+                "重复完成",
+                "已完成",
+                "任务已完结",
+                "任务已结束",
+                "不要着急",
+                "还没吃完",
+                "正在吃",
+                "正在睡觉",
+                "小鸡睡觉"
+            ) ->
                 TaskRpcFailureType.TERMINAL_DONE
 
             code == "331" ||
                 isFarmTaskQuotaReachedResponse(jo) ||
                 code == "CAMP_TRIGGER_ERROR" ||
                 code.contains("LIMIT", ignoreCase = true) ||
-                containsAny(message, "上限", "限制", "受限", "不可领取", "资格不足", "饲料槽已满", "兑完", "风控", "风险") ->
+                code.contains("RISK", ignoreCase = true) ||
+                code.contains("CAPTCHA", ignoreCase = true) ||
+                code.contains("VERIFY", ignoreCase = true) ||
+                containsAny(
+                    message,
+                    "上限",
+                    "限制",
+                    "受限",
+                    "不可领取",
+                    "资格不足",
+                    "饲料槽已满",
+                    "兑完",
+                    "风控",
+                    "风险",
+                    "captcha",
+                    "验证码",
+                    "需要验证",
+                    "访问异常",
+                    "访问被拒绝",
+                    "安全验证",
+                    "校验失败"
+                ) ->
                 TaskRpcFailureType.BUSINESS_LIMIT
 
             code == "400000040" ||
@@ -3358,6 +3405,25 @@ class AntFarm : ModelTask() {
 
             else -> TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW
         }
+    }
+
+    internal fun farmHighRiskDecision(failureType: TaskRpcFailureType): String {
+        return when (failureType) {
+            TaskRpcFailureType.TERMINAL_DONE -> "MARK_HANDLED"
+            TaskRpcFailureType.RETRYABLE_RPC -> "RETRY_LATER"
+            TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW -> "LOG_REVIEW"
+            else -> "STOP_CURRENT"
+        }
+    }
+
+    internal fun formatFarmHighRiskFailure(
+        action: String,
+        jo: JSONObject,
+        failureType: TaskRpcFailureType = classifyFarmRpcFailure(jo)
+    ): String {
+        return "rpc=$action, code=${extractFarmRpcErrorCode(jo).ifBlank { "<blank>" }}, " +
+            "message=${extractFarmRpcMessage(jo).ifBlank { "<blank>" }}, " +
+            "classification=${failureType.name}, decision=${farmHighRiskDecision(failureType)}, raw=$jo"
     }
 
     private fun isFarmMarkedRetryable(jo: JSONObject): Boolean {
@@ -3772,13 +3838,14 @@ class AntFarm : ModelTask() {
                     }
                     return true
                 } else {
-                    // 检查特定的错误码
-                    val resultCode = jo.optString("resultCode", "")
-                    val memo = jo.optString("memo", "")
-                    if ("311" == resultCode) {
-                        Log.farm("投喂小鸡🥣[$memo]")
+                    val classification = classifyFarmRpcFailure(jo)
+                    val detail = formatFarmHighRiskFailure("feedAnimal", jo, classification)
+                    if (classification == TaskRpcFailureType.TERMINAL_DONE ||
+                        classification == TaskRpcFailureType.BUSINESS_LIMIT
+                    ) {
+                        Log.farm("投喂小鸡🥣[$detail]")
                     } else {
-                        Log.farm("投喂小鸡失败: $jo")
+                        Log.farm("投喂小鸡失败: $detail")
                     }
                 }
             }
@@ -4716,10 +4783,19 @@ class AntFarm : ModelTask() {
                             val cuisineVO = jo.getJSONObject("cuisineVO")
                             Log.farm("小鸡厨房👨🏻‍🍳[" + cuisineVO.getString("name") + "]制作成功")
                         } else {
-                            Log.farm("小鸡厨房制作$jo")
+                            val classification = classifyFarmRpcFailure(jo)
+                            Log.farm(
+                                "小鸡厨房制作失败: ${formatFarmHighRiskFailure("cook", jo, classification)}"
+                            )
+                            break
                         }
                     }
                 }
+            } else {
+                val classification = classifyFarmRpcFailure(jo)
+                Log.farm(
+                    "进入小鸡厨房失败: ${formatFarmHighRiskFailure("enterKitchen", jo, classification)}"
+                )
             }
         } catch (e: CancellationException) {
             // 协程取消异常必须重新抛出，不能吞掉
@@ -5059,7 +5135,10 @@ class AntFarm : ModelTask() {
             val memo = joRes.optString("memo").ifBlank { joRes.optString("resultDesc", joRes.toString()) }
             val resultCode = joRes.optString("resultCode")
             val staleStock = resultCode == "A06" || memo.contains("高级饲料持有不足") || memo.contains("持有不足")
-            Log.farm("美食使用失败，停止后续操作: $memo")
+            val classification = classifyFarmRpcFailure(joRes)
+            Log.farm(
+                "美食使用失败，停止后续操作: ${formatFarmHighRiskFailure("useFarmFood", joRes, classification)}"
+            )
             if (staleStock) {
                 Log.farm("美食库存疑似已变化，放弃当前库存计划，避免重复请求")
             }

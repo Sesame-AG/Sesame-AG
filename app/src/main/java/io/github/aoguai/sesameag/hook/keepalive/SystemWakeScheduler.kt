@@ -29,7 +29,7 @@ object SystemWakeScheduler {
                 return true
             }
             if (index == 0 && alarmContexts.size > 1) {
-                Log.record(TAG, "模块系统闹钟注册失败，尝试目标应用拉起调度[${schedule.name}]")
+                Log.runtime(TAG, "模块系统闹钟注册失败，尝试目标应用拉起调度[${schedule.name}]")
             }
         }
         return false
@@ -51,10 +51,10 @@ object SystemWakeScheduler {
                 }
             if (PermissionUtil.checkAlarmPermissions(alarmContext)) {
                 scheduleExact(alarmManager, triggerAt, pendingIntent)
-                Log.record(TAG, "已注册精确系统闹钟[${schedule.name}] ${TimeUtil.getCommonDate(triggerAt)}")
+                Log.runtime(TAG, "已注册精确系统闹钟[${schedule.name}] ${TimeUtil.getCommonDate(triggerAt)}")
             } else {
                 scheduleFallback(alarmManager, triggerAt, schedule.toleranceMs, pendingIntent)
-                Log.record(TAG, "精确闹钟权限缺失，已降级注册系统闹钟[${schedule.name}] ${TimeUtil.getCommonDate(triggerAt)}")
+                Log.runtime(TAG, "精确闹钟权限缺失，已降级注册系统闹钟[${schedule.name}] ${TimeUtil.getCommonDate(triggerAt)}")
             }
             true
         } catch (t: Throwable) {
@@ -74,7 +74,7 @@ object SystemWakeScheduler {
             try {
                 alarmManager.cancel(pendingIntent)
                 pendingIntent.cancel()
-                Log.record(TAG, "已取消系统闹钟[${schedule.name}] package=${alarmContext.packageName}")
+                Log.runtime(TAG, "已取消系统闹钟[${schedule.name}] package=${alarmContext.packageName}")
             } catch (t: Throwable) {
                 Log.printStackTrace(TAG, "取消系统闹钟失败[${schedule.name}]", t)
             }
@@ -115,14 +115,19 @@ object SystemWakeScheduler {
         return if (context.packageName == General.MODULE_PACKAGE_NAME) {
             buildReceiverPendingIntent(context, schedule, updateFlag)
         } else if (shouldLaunchTarget(schedule)) {
-            buildTargetLaunchPendingIntent(context, schedule, updateFlag)
+            buildTargetLaunchPendingIntent(
+                context,
+                schedule,
+                updateFlag,
+                allowBackgroundAlways = true
+            )
         } else {
             buildReceiverPendingIntent(context, schedule, updateFlag)
         }
     }
 
     private fun shouldLaunchTarget(schedule: PersistentSchedule): Boolean {
-        return payloadOf(schedule).optBoolean("launch_target", true)
+        return payloadOf(schedule).optBoolean("launch_target", false)
     }
 
     private fun payloadOf(schedule: PersistentSchedule): JSONObject {
@@ -159,7 +164,8 @@ object SystemWakeScheduler {
     private fun buildTargetLaunchPendingIntent(
         context: Context,
         schedule: PersistentSchedule,
-        updateFlag: Int
+        updateFlag: Int,
+        allowBackgroundAlways: Boolean
     ): PendingIntent? {
         val intent = buildTargetLaunchIntent(context, schedule)
         val flags = updateFlag or PendingIntent.FLAG_IMMUTABLE
@@ -169,7 +175,7 @@ object SystemWakeScheduler {
                 requestCodeFor(schedule.id),
                 intent,
                 flags,
-                creatorLaunchOptions()
+                creatorLaunchOptions(allowAlways = allowBackgroundAlways)
             )
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "创建目标应用 PendingIntent 失败[${schedule.name}]", t)
@@ -177,11 +183,12 @@ object SystemWakeScheduler {
         }
     }
 
-    fun launchTargetNow(context: Context, schedule: PersistentSchedule): Boolean {
+    fun launchTargetNow(context: Context, schedule: PersistentSchedule, allowBackgroundAlways: Boolean = false): Boolean {
         val pendingIntent = buildTargetLaunchPendingIntent(
             context.applicationContext ?: context,
             schedule,
-            PendingIntent.FLAG_UPDATE_CURRENT
+            PendingIntent.FLAG_UPDATE_CURRENT,
+            allowBackgroundAlways = allowBackgroundAlways
         ) ?: return false
         return try {
             pendingIntent.send(
@@ -191,7 +198,7 @@ object SystemWakeScheduler {
                 null,
                 null,
                 null,
-                senderLaunchOptions()
+                senderLaunchOptions(allowAlways = allowBackgroundAlways)
             )
             Log.record(TAG, "已通过 PendingIntent 拉起目标应用[${schedule.name}]")
             true
@@ -222,9 +229,11 @@ object SystemWakeScheduler {
         }
     }
 
-    private fun creatorLaunchOptions(): android.os.Bundle? {
+    private fun creatorLaunchOptions(allowAlways: Boolean): android.os.Bundle? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return null
-        val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
+        val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA && !allowAlways) {
+            ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOW_IF_VISIBLE
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
             ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOW_ALWAYS
         } else {
             @Suppress("DEPRECATION")
@@ -235,9 +244,11 @@ object SystemWakeScheduler {
             .toBundle()
     }
 
-    private fun senderLaunchOptions(): android.os.Bundle? {
+    private fun senderLaunchOptions(allowAlways: Boolean): android.os.Bundle? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return null
-        val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
+        val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA && !allowAlways) {
+            ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOW_IF_VISIBLE
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
             ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOW_ALWAYS
         } else {
             @Suppress("DEPRECATION")

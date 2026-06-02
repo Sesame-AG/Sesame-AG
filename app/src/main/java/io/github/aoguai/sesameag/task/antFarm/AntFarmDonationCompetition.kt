@@ -5,6 +5,7 @@ import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.model.BaseModel
 import io.github.aoguai.sesameag.task.ModelTask
 import io.github.aoguai.sesameag.task.antFarm.AntFarm.Companion.TAG
+import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
 import io.github.aoguai.sesameag.util.DataStore
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.ResChecker
@@ -93,7 +94,11 @@ internal fun AntFarm.handleDonationCompetition() {
         val res = AntFarmRpcCall.enterDonationCompetitionRank()
         val jo = JSONObject(res)
         if (!ResChecker.checkRes(TAG, jo)) {
-            Log.record(TAG, "进入捐蛋排位赛失败: ${jo.optString("memo")}")
+            val classification = classifyFarmRpcFailure(jo)
+            Log.record(
+                TAG,
+                "进入捐蛋排位赛失败: ${formatFarmHighRiskFailure("enterDonationCompetitionRank", jo, classification)}"
+            )
             return
         }
 
@@ -107,12 +112,16 @@ internal fun AntFarm.handleDonationCompetition() {
 /**
  * 遍历奖励列表并领取
  */
-private fun receiveCompetitionAwards(): Int {
+private fun AntFarm.receiveCompetitionAwards(): Int {
     try {
         val res = AntFarmRpcCall.enterCompetitionAwardPage()
         val jo = JSONObject(res)
         if (!ResChecker.checkRes(TAG, jo)) {
-            Log.record(TAG, "进入排位赛奖励页失败：${formatDonationAwardFailure(jo)}")
+            val classification = classifyFarmRpcFailure(jo)
+            Log.record(
+                TAG,
+                "进入排位赛奖励页失败：${formatFarmHighRiskFailure("enterCompetitionAwardPage", jo, classification)}"
+            )
             return 0
         }
 
@@ -179,7 +188,14 @@ private fun receiveCompetitionAwards(): Int {
                 receivedCount++
                 Log.record(TAG, "🎉 成功领取 $levelName 段位奖励")
             } else {
-                Log.record(TAG, "领取 $levelName 段位奖励失败：${formatDonationAwardFailure(receiveJo)}")
+                val classification = classifyFarmRpcFailure(receiveJo)
+                if (classification == TaskRpcFailureType.TERMINAL_DONE) {
+                    receivedCount++
+                }
+                Log.record(
+                    TAG,
+                    "领取 $levelName 段位奖励失败：${formatFarmHighRiskFailure("receiveDonationLevelReward", receiveJo, classification)}"
+                )
             }
         }
 
@@ -198,15 +214,6 @@ private fun receiveCompetitionAwards(): Int {
     return 0
 }
 
-private fun formatDonationAwardFailure(jo: JSONObject): String {
-    return jo.optString("memo")
-        .ifBlank { jo.optString("resultDesc") }
-        .ifBlank { jo.optString("errorMsg") }
-        .ifBlank { jo.optString("desc") }
-        .ifBlank { jo.optString("resultCode") }
-        .ifBlank { jo.toString() }
-}
-
 private fun AntFarm.isStableDonationCompetitionMode(): Boolean {
     return donationCompetitionMode?.value == AntFarm.DonationCompetitionMode.STABLE
 }
@@ -218,12 +225,16 @@ private fun AntFarm.hasCompletedStableDonationCompetition(): Boolean {
     return true
 }
 
-private fun queryDonationAwardSnapshot(): DonationAwardSnapshot? {
+private fun AntFarm.queryDonationAwardSnapshot(): DonationAwardSnapshot? {
     return try {
         val res = AntFarmRpcCall.enterCompetitionAwardPage()
         val jo = JSONObject(res)
         if (!ResChecker.checkRes(TAG, jo)) {
-            Log.record(TAG, "进入排位赛奖励页失败：${formatDonationAwardFailure(jo)}")
+            val classification = classifyFarmRpcFailure(jo)
+            Log.record(
+                TAG,
+                "进入排位赛奖励页失败：${formatFarmHighRiskFailure("enterCompetitionAwardPage", jo, classification)}"
+            )
             return null
         }
         parseDonationAwardSnapshot(jo)
@@ -777,6 +788,12 @@ private fun AntFarm.checkRankAndDonate(
                     Log.record(TAG, "评估结论：剩余配额(${effectiveRemainingQuota})不足以提升星星奖励，放弃捐赠")
                 }
             }
+        } else {
+            val classification = classifyFarmRpcFailure(jo)
+            Log.record(
+                TAG,
+                "刷新捐蛋排位赛失败: ${formatFarmHighRiskFailure("enterDonationCompetitionRank", jo, classification)}"
+            )
         }
     } catch (e: Exception) {
         Log.printStackTrace(TAG, "checkRankAndDonate err:", e)
@@ -808,7 +825,14 @@ private fun AntFarm.donateForCompetition(count: Int): Boolean {
 
         val s = AntFarmRpcCall.listActivityInfo()
         val jo = JSONObject(s)
-        if (!ResChecker.checkRes(TAG, jo)) return false
+        if (!ResChecker.checkRes(TAG, jo)) {
+            val classification = classifyFarmRpcFailure(jo)
+            Log.record(
+                TAG,
+                "查询公益捐蛋项目失败: ${formatFarmHighRiskFailure("listActivityInfo", jo, classification)}"
+            )
+            return false
+        }
 
         val jaActivityInfos = jo.optJSONArray("activityInfos") ?: return false
         if (jaActivityInfos.length() == 0) return false
@@ -823,7 +847,8 @@ private fun AntFarm.donateForCompetition(count: Int): Boolean {
             val activityId = projectJo.getString("activityId")
             val activityName = projectJo.optString("projectName", activityId)
 
-            return performDonation(activityId, activityName, count)
+            val donationResult = performDonationDetailed(activityId, activityName, count)
+            return donationResult.success
         }
     } catch (e: Exception) {
         Log.printStackTrace(TAG, "donateForCompetition err:", e)
@@ -910,7 +935,7 @@ private fun AntFarm.tryUseSpecialFoodForCompetition(requiredEggCount: Int): Bool
 /**
  * 任务结束汇报：统计今日产出
  */
-private fun printDonationReport() {
+private fun AntFarm.printDonationReport() {
     try {
         val uid = UserMap.currentUid ?: return
         val res = AntFarmRpcCall.enterDonationCompetitionRank()
@@ -939,6 +964,12 @@ private fun printDonationReport() {
                 Log.record(TAG, "🌟 今日预计获星：$earnedStars 颗")
                 Log.record(TAG, "-------------------------")
             }
+        } else {
+            val classification = classifyFarmRpcFailure(jo)
+            Log.record(
+                TAG,
+                "刷新捐蛋排位赛战报失败: ${formatFarmHighRiskFailure("enterDonationCompetitionRank", jo, classification)}"
+            )
         }
     } catch (_: Exception) {
     }

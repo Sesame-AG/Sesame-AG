@@ -33,14 +33,14 @@ class ScheduleReconcileReceiver : BroadcastReceiver() {
         }
         try {
             Log.record(TAG, "收到系统恢复广播: $action")
-            val result = PersistentScheduleRegistry.reconcile(ctx)
+            val result = PersistentScheduleRegistry.reconcile(
+                ctx,
+                mode = PersistentReconcileMode.RESCHEDULE_ONLY
+            )
             Log.record(
                 TAG,
                 "持久调度重排完成 due=${result.dueSchedules.size} rescheduled=${result.rescheduledCount} expired=${result.expiredCount}"
             )
-            result.dueSchedules.forEach { schedule ->
-                ScheduledTaskRouter.fire(ctx, schedule, "reconcile")
-            }
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "系统恢复广播处理失败", t)
         }

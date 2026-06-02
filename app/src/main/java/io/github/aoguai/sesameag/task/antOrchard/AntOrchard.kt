@@ -1288,6 +1288,9 @@ class AntOrchard : ModelTask() {
 
         override fun shouldSkip(item: TaskFlowItem): Boolean {
             val phase = mapPhase(item)
+            if (shouldSkipOrchardManurePot(item)) {
+                return true
+            }
             when (phase) {
                 TaskFlowPhase.BUSINESS_ACTION -> {
                     logTaskSkipOnce(item, "action=${item.actionType} 依赖业务动作或其他模块完成，跳过")
@@ -1476,6 +1479,23 @@ class AntOrchard : ModelTask() {
             if (loggedSkipKeys.add(key)) {
                 Log.orchard("农场任务⏭️[${item.title}] $reason")
             }
+        }
+
+        private fun shouldSkipOrchardManurePot(item: TaskFlowItem): Boolean {
+            if (item.actionType != "ANTFARM_COLLECT_MANURE") {
+                return false
+            }
+            if (skipManurePotCollectThisRound) {
+                logTaskSkipOnce(item, "本轮已触发肥料太少保护，跳过重复收取")
+                return true
+            }
+            val manureFactory = latestListTaskResponse.optJSONObject("manureFactory") ?: return false
+            if (!manureFactory.optBoolean("canCollect", false)) {
+                // orchardListTask can keep this task as TODO after the pot has already been collected.
+                logTaskSkipOnce(item, "肥料池当前不可收取，跳过本轮")
+                return true
+            }
+            return false
         }
     }
 

@@ -370,6 +370,31 @@ object ApplicationHookConstants {
         }
     }
 
+    fun removePendingTriggers(reason: String, predicate: (TriggerInfo) -> Boolean): List<TriggerInfo> {
+        return synchronized(triggerLock) {
+            val removed = mutableListOf<TriggerInfo>()
+            val currentPending = pendingTrigger
+            if (currentPending != null && predicate(currentPending)) {
+                removed.add(currentPending)
+                pendingTrigger = null
+            }
+            if (triggerQueue.isNotEmpty()) {
+                val it = triggerQueue.iterator()
+                while (it.hasNext()) {
+                    val trigger = it.next()
+                    if (predicate(trigger)) {
+                        removed.add(trigger)
+                        it.remove()
+                    }
+                }
+            }
+            if (removed.isNotEmpty()) {
+                record(TAG, "🧹 trigger removed: $reason | count=${removed.size} remain=${pendingTriggerCount()}")
+            }
+            removed
+        }
+    }
+
     private fun enqueueLocked(trigger: TriggerInfo) {
         if (triggerQueue.size >= MAX_TRIGGER_QUEUE_SIZE) {
             val dropped = triggerQueue.pollFirst()

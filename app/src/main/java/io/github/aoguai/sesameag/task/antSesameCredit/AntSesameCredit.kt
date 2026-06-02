@@ -2454,18 +2454,20 @@ class AntSesameCredit : ModelTask() {
                         return
                     }
 
-                    val totalWait = json.optJSONObject("totalWaitProcessVO") ?: return
-                    val idList = totalWait.optJSONArray("totalProgressIdList")
-                    if (idList == null || idList.length() == 0) {
+                    val newProgressBallIds = copyNewProgressBallIds(json)
+                    if (newProgressBallIds.length() == 0) {
                         if (collectedRounds == 0 && emptyRetryBeforeCollect == 0) {
                             emptyRetryBeforeCollect++
                             Thread.sleep(1200)
                             continue
                         }
+                        if (collectedRounds == 0) {
+                            Log.sesame("攒芝麻分🎁[暂无可领取进度球]")
+                        }
                         return
                     }
 
-                    val collectResp = AntSesameCreditRpcCall.Zmxy.collectProgressBall(idList) ?: return
+                    val collectResp = AntSesameCreditRpcCall.Zmxy.collectProgressBall(newProgressBallIds) ?: return
                     val collectJson = JSONObject(collectResp)
                     if (isSesameProgressBallEmpty(collectJson)) {
                         Log.sesame("攒芝麻分🎁[暂无可领取进度球]")
@@ -2493,6 +2495,18 @@ class AntSesameCredit : ModelTask() {
             } catch (e: Exception) {
                 Log.printStackTrace(TAG, "queryAndCollect err", e)
             }
+        }
+
+        private fun copyNewProgressBallIds(json: JSONObject): JSONArray {
+            val ids = JSONArray()
+            val source = json.optJSONArray("newProgressBallIds") ?: return ids
+            for (index in 0 until source.length()) {
+                val id = source.optString(index)
+                if (id.isNotBlank()) {
+                    ids.put(id)
+                }
+            }
+            return ids
         }
 
         /**

@@ -23,7 +23,7 @@ object ApplicationHookEntry {
             "onResume", "user_switch" -> ApplicationHookConstants.TriggerType.ON_RESUME
             else -> ApplicationHookConstants.TriggerType.INIT
         }
-        if (type == ApplicationHookConstants.TriggerType.ON_RESUME && ApplicationHookConstants.hasPendingTriggers()) {
+        if (ApplicationHookConstants.hasPendingTriggers()) {
             ApplicationHookCore.dispatchIfNeeded()
             return
         }

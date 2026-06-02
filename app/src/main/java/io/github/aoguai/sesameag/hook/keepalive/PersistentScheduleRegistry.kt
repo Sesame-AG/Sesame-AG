@@ -11,7 +11,6 @@ object PersistentScheduleRegistry {
     private const val TAG = "PersistentScheduleRegistry"
     private const val STORE_KEY = "persistentSchedules"
     private const val RETAIN_FINISHED_MS = 24 * 60 * 60 * 1000L
-    private const val DEFAULT_OVERDUE_GRACE_MS = 60 * 60 * 1000L
 
     private val scheduleListType = object : TypeReference<MutableList<PersistentSchedule>>() {}
 
@@ -38,6 +37,9 @@ object PersistentScheduleRegistry {
         val removed = schedules.filter {
             it.id == normalized.id ||
                 (normalized.dedupeKey.isNotBlank() && it.dedupeKey == normalized.dedupeKey)
+        }
+        removed.firstOrNull { isSameScheduledTask(it, normalized) }?.let { existing ->
+            return existing
         }
         if (SystemWakeScheduler.schedule(context, normalized)) {
             removed
@@ -130,7 +132,19 @@ object PersistentScheduleRegistry {
         }
     }
 
-    fun reconcile(context: Context, now: Long = System.currentTimeMillis()): ReconcileResult {
+    fun markExpired(context: Context?, id: String, now: Long = System.currentTimeMillis()) {
+        val schedule = get(id)
+        updateSchedule(id) { it.withScheduleState(PersistentScheduleState.EXPIRED, now) }
+        if (context != null && schedule != null) {
+            SystemWakeScheduler.cancel(context, schedule)
+        }
+    }
+
+    fun reconcile(
+        context: Context,
+        now: Long = System.currentTimeMillis(),
+        mode: PersistentReconcileMode = PersistentReconcileMode.RESCHEDULE_ONLY
+    ): ReconcileResult {
         if (!ensureStorage()) {
             return ReconcileResult(emptyList(), 0, 0)
         }
@@ -149,11 +163,18 @@ object PersistentScheduleRegistry {
             }
 
             if (schedule.triggerAtMs <= now) {
-                val graceMs = maxOf(schedule.toleranceMs, DEFAULT_OVERDUE_GRACE_MS)
+                val graceMs = schedule.toleranceMs.coerceAtLeast(0L)
                 if (now - schedule.triggerAtMs <= graceMs) {
-                    due.add(schedule)
-                    retained.add(schedule)
-                    Log.record(TAG, "发现到期持久任务[${schedule.name}] ${TimeUtil.getCommonDate(schedule.triggerAtMs)}")
+                    if (mode == PersistentReconcileMode.FIRE_ALARM_DUE) {
+                        due.add(schedule)
+                        retained.add(schedule)
+                        Log.record(TAG, "发现到期持久任务[${schedule.name}] ${TimeUtil.getCommonDate(schedule.triggerAtMs)}")
+                    } else {
+                        expired++
+                        SystemWakeScheduler.cancel(context, schedule)
+                        retained.add(schedule.withScheduleState(PersistentScheduleState.EXPIRED, now))
+                        Log.runtime(TAG, "恢复重排跳过已到期持久任务[${schedule.name}] ${TimeUtil.getCommonDate(schedule.triggerAtMs)}")
+                    }
                 } else {
                     expired++
                     SystemWakeScheduler.cancel(context, schedule)
@@ -175,6 +196,18 @@ object PersistentScheduleRegistry {
             rescheduledCount = rescheduled,
             expiredCount = expired
         )
+    }
+
+    private fun isSameScheduledTask(left: PersistentSchedule, right: PersistentSchedule): Boolean {
+        return left.state == PersistentScheduleState.SCHEDULED &&
+            right.state == PersistentScheduleState.SCHEDULED &&
+            left.name == right.name &&
+            left.kind == right.kind &&
+            left.triggerAtMs == right.triggerAtMs &&
+            left.toleranceMs == right.toleranceMs &&
+            left.dedupeKey == right.dedupeKey &&
+            left.payloadJson == right.payloadJson &&
+            left.ownerUserId == right.ownerUserId
     }
 
     private fun updateSchedule(id: String, updater: (PersistentSchedule) -> PersistentSchedule) {

@@ -16,6 +16,11 @@ object PersistentScheduleState {
     const val EXPIRED = "EXPIRED"
 }
 
+enum class PersistentReconcileMode {
+    RESCHEDULE_ONLY,
+    FIRE_ALARM_DUE
+}
+
 data class PersistentSchedule(
     val id: String = UUID.randomUUID().toString(),
     val name: String = "",

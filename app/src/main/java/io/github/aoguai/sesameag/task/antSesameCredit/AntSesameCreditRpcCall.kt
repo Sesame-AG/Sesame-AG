@@ -413,8 +413,14 @@ object AntSesameCreditRpcCall {
             guideBehaviorId: String = "",
             invokeVersion: String = SESAME_GROWTH_GUIDE_INVOKE_VERSION
         ): String {
-            val requestData =
-                """[{"guideBehaviorId":"$guideBehaviorId","invokeVersion":"$invokeVersion","switchNewPage":true}]"""
+            val args = JSONObject().apply {
+                put("guideBehaviorId", guideBehaviorId)
+                put("hitExperiment", true)
+                put("invokeVersion", invokeVersion)
+                put("newSpecialRecommend", true)
+                put("switchNewPage", true)
+            }
+            val requestData = JSONArray().put(args).toString()
             return RequestManager.requestString(
                 "com.antgroup.zmxy.zmcustprod.biz.rpc.growthbehavior.apiGrowthBehaviorRpcManager.queryToDoList",
                 requestData
@@ -470,7 +476,13 @@ object AntSesameCreditRpcCall {
          */
         @JvmStatic
         fun queryScoreProgress(): String {
-            val requestData = """[{"needTotalProcess":"TRUE","queryGuideInfo":true,"switchNewPage":true}]"""
+            val args = JSONObject().apply {
+                put("hitExperiment", true)
+                put("needTotalProcess", "TRUE")
+                put("queryGuideInfo", true)
+                put("switchNewPage", true)
+            }
+            val requestData = JSONArray().put(args).toString()
             return RequestManager.requestString(
                 "com.antgroup.zmxy.zmcustprod.biz.rpc.home.api.HomeV8RpcManager.queryScoreProgress",
                 requestData
@@ -481,9 +493,16 @@ object AntSesameCreditRpcCall {
          * 收集一个或多个进度球
          */
         @JvmStatic
-        fun collectProgressBall(ballIdList: JSONArray?): String? {
-            if (ballIdList == null || ballIdList.length() == 0) return null
-            val requestData = """[{"ballIdList":${ballIdList}}]"""
+        fun collectProgressBall(newProgressBallIds: JSONArray?): String? {
+            if (newProgressBallIds == null || newProgressBallIds.length() == 0) {
+                return null
+            }
+            val args = JSONObject().apply {
+                put("ballIdList", JSONArray())
+                put("hitExperiment", true)
+                put("newProgressBallIds", newProgressBallIds)
+            }
+            val requestData = JSONArray().put(args).toString()
             return RequestManager.requestString(
                 "com.antgroup.zmxy.zmcustprod.biz.rpc.growthbehavior.apiGrowthBehaviorRpcManager.collectProgressBall",
                 requestData

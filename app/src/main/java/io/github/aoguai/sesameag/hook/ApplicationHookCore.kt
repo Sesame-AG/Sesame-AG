@@ -18,6 +18,7 @@ object ApplicationHookCore {
     }
 
     private fun dispatchPendingTriggers() {
+        ApplicationHook.discardCoveredAlarmPollTriggers()
         if (!ApplicationHookConstants.hasPendingTriggers()) return
 
         if (ApplicationHookConstants.isOffline()) {

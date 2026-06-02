@@ -41,6 +41,18 @@ object ScheduledTaskRouter {
                 Log.record(TAG, "持久任务[${schedule.name}]状态为${schedule.state}，忽略 source=$source")
                 return true
             }
+            val now = System.currentTimeMillis()
+            if (schedule.triggerAtMs > now) {
+                SystemWakeScheduler.schedule(appContext, schedule)
+                Log.runtime(TAG, "持久任务[${schedule.name}]未到触发时间，已重排 source=$source")
+                return true
+            }
+            val toleranceMs = schedule.toleranceMs.coerceAtLeast(0L)
+            if (now - schedule.triggerAtMs > toleranceMs) {
+                PersistentScheduleRegistry.markExpired(appContext, schedule.id, now)
+                Log.record(TAG, "持久任务[${schedule.name}]超过触发窗口，已过期 source=$source")
+                return true
+            }
             val targetProcess = isTargetProcess(appContext)
             val routeResult = routeInternal(context, schedule, source)
             when (routeResult) {
@@ -130,7 +142,7 @@ object ScheduledTaskRouter {
             return true
         }
 
-        maybeLaunchTarget(context, schedule)
+        maybeLaunchTarget(context, schedule, source)
         sendTargetBroadcast(context, intent, schedule, source)
         return true
     }
@@ -158,7 +170,7 @@ object ScheduledTaskRouter {
             return true
         }
 
-        maybeLaunchTarget(context, schedule)
+        maybeLaunchTarget(context, schedule, source)
         sendTargetBroadcast(context, intent, schedule, source)
         return true
     }
@@ -167,10 +179,13 @@ object ScheduledTaskRouter {
         val payload = payloadOf(schedule)
         val childKind = payload.optString("child_kind", "unknown")
         val ownerUserId = schedule.ownerUserId?.trim().orEmpty()
-        if (isTargetProcess(context) && ownerUserId.isNotEmpty() && ownerUserId != UserMap.currentUid) {
+        val payloadOwnerUserId = payload.optString("owner_user_id").trim()
+        val targetProcess = isTargetProcess(context)
+        val expectedOwnerUserId = ownerUserId.ifBlank { payloadOwnerUserId }
+        if (targetProcess && expectedOwnerUserId.isNotEmpty() && expectedOwnerUserId != UserMap.currentUid) {
             Log.record(
                 TAG,
-                "模块持久子任务账号不匹配，标记完成[${schedule.name}] owner=$ownerUserId current=${UserMap.currentUid}"
+                "模块持久子任务账号不匹配，标记完成[${schedule.name}] owner=$expectedOwnerUserId current=${UserMap.currentUid}"
             )
             return RouteResult.SKIPPED
         }
@@ -184,11 +199,12 @@ object ScheduledTaskRouter {
                 Log.record(TAG, "森林蹲点持久任务缺少 task_id: ${schedule.name}")
                 return RouteResult.FAILED
             }
-            if (isTargetProcess(context)) {
+            if (targetProcess) {
                 return routeResult(
                     EnergyWaitingManager.triggerPersistentWaitingTask(taskId, schedule.payloadJson, source)
                 )
             }
+            return routeResult(dispatchExecute(context, schedule, source, wakenAtTime = false, wakenTime = null))
         }
         if (childKind == AntFarm.PERSISTENT_CHILD_KIND) {
             val childId = payload.optString("child_id").trim()
@@ -197,7 +213,7 @@ object ScheduledTaskRouter {
                 Log.record(TAG, "庄园持久子任务缺少 child_id/group: ${schedule.name}")
                 return RouteResult.FAILED
             }
-            if (isTargetProcess(context)) {
+            if (targetProcess) {
                 val antFarm = Model.getModel(AntFarm::class.java)
                 if (antFarm != null) {
                     if (!antFarm.isEnable()) {
@@ -210,8 +226,10 @@ object ScheduledTaskRouter {
                         RouteResult.FAILED
                     }
                 }
-                Log.record(TAG, "庄园实例尚未就绪，转为主流程恢复: ${schedule.name}")
+                Log.record(TAG, "庄园实例尚未就绪，延后持久子任务: ${schedule.name}")
+                return RouteResult.DEFERRED
             }
+            return routeResult(dispatchExecute(context, schedule, source, wakenAtTime = false, wakenTime = null))
         }
         if (childKind == AntStall.PERSISTENT_CHILD_KIND) {
             val childId = payload.optString("child_id").trim()
@@ -220,7 +238,7 @@ object ScheduledTaskRouter {
                 Log.record(TAG, "新村持久子任务缺少 child_id/group: ${schedule.name}")
                 return RouteResult.FAILED
             }
-            if (isTargetProcess(context)) {
+            if (targetProcess) {
                 val antStall = Model.getModel(AntStall::class.java)
                 if (antStall != null) {
                     if (!antStall.isEnable()) {
@@ -233,8 +251,10 @@ object ScheduledTaskRouter {
                         RouteResult.FAILED
                     }
                 }
-                Log.record(TAG, "新村实例尚未就绪，转为主流程恢复: ${schedule.name}")
+                Log.record(TAG, "新村实例尚未就绪，延后持久子任务: ${schedule.name}")
+                return RouteResult.DEFERRED
             }
+            return routeResult(dispatchExecute(context, schedule, source, wakenAtTime = false, wakenTime = null))
         }
         if (childKind == AntSports.PERSISTENT_CHILD_KIND) {
             val childId = payload.optString("child_id").trim()
@@ -243,7 +263,7 @@ object ScheduledTaskRouter {
                 Log.record(TAG, "运动持久子任务缺少 child_id/group: ${schedule.name}")
                 return RouteResult.FAILED
             }
-            if (isTargetProcess(context)) {
+            if (targetProcess) {
                 val antSports = Model.getModel(AntSports::class.java)
                 if (antSports != null) {
                     if (!antSports.isEnable()) {
@@ -256,10 +276,13 @@ object ScheduledTaskRouter {
                         RouteResult.FAILED
                     }
                 }
-                Log.record(TAG, "运动实例尚未就绪，转为主流程恢复: ${schedule.name}")
+                Log.record(TAG, "运动实例尚未就绪，延后持久子任务: ${schedule.name}")
+                return RouteResult.DEFERRED
             }
+            return routeResult(dispatchExecute(context, schedule, source, wakenAtTime = false, wakenTime = null))
         }
-        return routeResult(dispatchExecute(context, schedule, source, wakenAtTime = false, wakenTime = null))
+        Log.record(TAG, "未知模块持久子任务类型[$childKind] name=${schedule.name}")
+        return RouteResult.FAILED
     }
 
     private fun routeResult(result: EnergyWaitingManager.PersistentTriggerResult): RouteResult {
@@ -329,7 +352,7 @@ object ScheduledTaskRouter {
         )
     }
 
-    private fun maybeLaunchTarget(context: Context, schedule: PersistentSchedule): Boolean {
+    private fun maybeLaunchTarget(context: Context, schedule: PersistentSchedule, source: String): Boolean {
         if (!shouldLaunchTarget(schedule)) {
             return false
         }
@@ -337,7 +360,11 @@ object ScheduledTaskRouter {
             Log.record(TAG, "持久任务拉起目标应用被频控[${schedule.name}]")
             return false
         }
-        val launched = SystemWakeScheduler.launchTargetNow(context, schedule)
+        val launched = SystemWakeScheduler.launchTargetNow(
+            context,
+            schedule,
+            allowBackgroundAlways = source == "alarm"
+        )
         if (launched) {
             clearLaunchFailures(schedule)
             return true
@@ -410,7 +437,7 @@ object ScheduledTaskRouter {
     }
 
     private fun shouldLaunchTarget(schedule: PersistentSchedule): Boolean {
-        return payloadOf(schedule).optBoolean("launch_target", true)
+        return payloadOf(schedule).optBoolean("launch_target", false)
     }
 
     private fun payloadOf(schedule: PersistentSchedule): JSONObject {

@@ -116,8 +116,11 @@ object UnifiedScheduler {
         return PersistentScheduleRegistry.removeByName(context, name)
     }
 
-    fun reconcilePersistentSchedules(context: Context): PersistentScheduleRegistry.ReconcileResult {
-        val result = PersistentScheduleRegistry.reconcile(context)
+    fun reconcilePersistentSchedules(
+        context: Context,
+        mode: PersistentReconcileMode = PersistentReconcileMode.RESCHEDULE_ONLY
+    ): PersistentScheduleRegistry.ReconcileResult {
+        val result = PersistentScheduleRegistry.reconcile(context, mode = mode)
         result.dueSchedules.forEach { schedule ->
             ScheduledTaskRouter.fire(context, schedule, "manual_reconcile")
         }

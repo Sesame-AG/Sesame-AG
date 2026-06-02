@@ -2358,7 +2358,8 @@ class AntMember : ModelTask() {
         val simpleTaskConfig = resolveCurrentMemberTaskConfigObject(taskProcessObject) ?: original.simpleTaskConfig
         val taskConfigId = resolveCurrentMemberTaskConfigId(taskProcessObject) ?: original.taskConfigId
         if (!isWhitelistedMemberTaskConfigId(taskConfigId, original.adBizId.isNotBlank())) {
-            logSkippedUnsupportedMemberTask(original.title, taskConfigId, taskProcessObject)
+            val taskTitle = simpleTaskConfig.optString("title").ifEmpty { original.title }
+            logSkippedUnsupportedMemberTask(taskTitle, taskConfigId, taskProcessObject)
             return null
         }
         val processId = taskProcessObject.optString("processId").ifEmpty {
@@ -3611,24 +3612,18 @@ class AntMember : ModelTask() {
         taskConfigId: String,
         taskProcessObject: JSONObject
     ) {
-        if (!loggedUnsupportedMemberTaskIds.add(taskConfigId)) {
-            return
-        }
-        if (loggedUnsupportedMemberTaskIds.size > MEMBER_TASK_UNSUPPORTED_LOG_LIMIT) {
-            if (!unsupportedMemberTaskOverflowLogged) {
-                unsupportedMemberTaskOverflowLogged = true
-                Log.member("会员任务#更多未纳入白名单闭环任务已省略日志，仅跳过不执行")
-            }
-            return
-        }
+        if (isMemberTaskProcessFinished(taskProcessObject)) return
         val source = taskProcessObject.optString("source").ifEmpty {
             resolveCurrentMemberTaskConfigObject(taskProcessObject)?.optString("sourceBusiness").orEmpty()
         }
         val status = taskProcessObject.optString("status").ifEmpty {
             taskProcessObject.optString("subStatus")
         }
+        TaskBlacklist.addToBlacklist(memberTaskBlacklistModule, taskConfigId, taskTitle)
         val detail = buildString {
             append("configId=").append(taskConfigId)
+            append(", classification=UNSUPPORTED_NO_CLOSURE")
+            append(", decision=BLACKLIST")
             if (source.isNotBlank()) {
                 append(", source=").append(source)
             }
@@ -3636,7 +3631,17 @@ class AntMember : ModelTask() {
                 append(", status=").append(status)
             }
         }
-        Log.member("会员任务[$taskTitle]#未纳入白名单闭环，跳过($detail)")
+        if (!loggedUnsupportedMemberTaskIds.add(taskConfigId)) {
+            return
+        }
+        if (loggedUnsupportedMemberTaskIds.size > MEMBER_TASK_UNSUPPORTED_LOG_LIMIT) {
+            if (!unsupportedMemberTaskOverflowLogged) {
+                unsupportedMemberTaskOverflowLogged = true
+                Log.member("会员任务#更多未纳入白名单闭环任务已加入黑名单并省略日志")
+            }
+            return
+        }
+        Log.member("会员任务[$taskTitle]#未纳入白名单闭环，已加入黑名单($detail)")
     }
 
     private fun isMemberTaskInBlacklist(taskConfigId: String, taskTitle: String): Boolean {
@@ -6243,6 +6248,7 @@ class AntMember : ModelTask() {
             "600202400073337",
             "600202500136682",
             "600202300040463",
+            "600202400104923",
             "600202400081445",
             "600202600208739",
             "600202500195828",

@@ -642,7 +642,6 @@ class NewRpcBridge : RpcBridge {
                         )
                     }
                     Log.capture(TAG, captureMessage)
-                    Log.printStack(TAG)
                 }
             }
         }
