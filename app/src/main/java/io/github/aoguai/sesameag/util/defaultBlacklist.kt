@@ -125,6 +125,7 @@ private val oceanDefaultBlacklist = setOf(
     "DAOLIU_SCSST_GAME_NEW",
     "LMCT_QDRW_HAIYANG",       // finishTask 返回 400000040，不支持rpc调用
     "mokuai_senlin_hydrw|随机任务：玩一玩得拼图", // finishTask 返回 400000040，不支持rpc调用
+    "MHXCZ_QDRW_HAIYANG|随机任务：玩一玩梦幻消除战", // finishTask 返回 400000040，不支持rpc调用
     "随机任务：玩一玩浪漫餐厅"  // finishTask 返回 400000040，不支持rpc调用
 )
 
@@ -197,6 +198,8 @@ private val forestDefaultBlacklist = setOf(
     "FKSSJ_LJRW_HUOLI",    // 水世界捡海面物资5次：不支持rpc调用
     "FKSSJ_LJRWdiaoyu_HUOLI", // 水世界手动钓鱼成功10次：不支持rpc调用
     "YBLB_TASK_QUDONG",    // 玩一步两步通关1次：不支持rpc调用
+    "BWXRK_TASK_QUDONG|保卫向日葵通过1关", // 不支持rpc调用，缺少稳定完成RPC闭环
+    "GYG_TAOBAOzhibo_202606|去淘宝花花乐领红包", // 不支持rpc调用，缺少稳定完成RPC闭环
     "玩游戏得",             // 森林抽抽乐游戏类任务暂无稳定RPC闭环
     "开宝箱",               // 森林抽抽乐宝箱类任务不在本流程处理
     "疯狂水世界",           // 森林抽抽乐游戏类任务暂无稳定RPC闭环

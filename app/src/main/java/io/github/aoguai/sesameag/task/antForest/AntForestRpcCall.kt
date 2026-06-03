@@ -27,6 +27,8 @@ object AntForestRpcCall {
     private var TASK_LIST_VERSION = "20250821"
     private var TASK_LIST_EXT_VERSION = "20260109"
     private var TAKE_LOOK_VERSION = "20260107"
+    private const val COLLECT_ENERGY_VERSION = "20250326"
+    private const val TAKE_LOOK_COMBINE_BIZ_VERSION = "20250108"
 
     @JvmStatic
     fun init() {
@@ -95,6 +97,10 @@ object AntForestRpcCall {
             }
         }
         return extend
+    }
+
+    private fun forestHeaders(source: String): Map<String, String> {
+        return mapOf("source" to source, "ags-source" to source)
     }
 
     /**
@@ -366,6 +372,42 @@ object AntForestRpcCall {
         }
     }
 
+    @JvmStatic
+    fun queryTakeLookCombineBiz(
+        skipUsers: JSONObject,
+        source: String? = null,
+        takeLookExposedTimes: Int = 0,
+        takeLookExposed: Boolean = false
+    ): String {
+        return try {
+            val actualSource = source ?: DEFAULT_SOURCE
+            val extInfo = JSONObject().apply {
+                if (skipUsers.length() > 0) {
+                    put("skipUsers", skipUsers.toString())
+                }
+                if (takeLookExposed) {
+                    put("takeLookExposed", "Y")
+                }
+                put("takeLookExposedTimes", takeLookExposedTimes)
+            }
+            val requestData = JSONObject().apply {
+                put("extInfo", extInfo)
+                put("source", actualSource)
+                put("version", TAKE_LOOK_COMBINE_BIZ_VERSION)
+            }
+            RequestManager.requestString(
+                RpcEntity(
+                    "alipay.antforest.forest.h5.queryCombineBiz",
+                    "[$requestData]",
+                    headers = forestHeaders(actualSource)
+                )
+            )
+        } catch (e: JSONException) {
+            Log.printStackTrace("AntForestRpcCall", "queryTakeLookCombineBiz构建请求参数失败", e)
+            ""
+        }
+    }
+
     /**
      * 找能量方法 - 查找可收取能量的好友（带跳过用户列表）
      */
@@ -387,7 +429,13 @@ object AntForestRpcCall {
                 put("takeLookStart", takeLookStart)
                 put("version", TAKE_LOOK_VERSION)
             }
-            RequestManager.requestString("alipay.antforest.forest.h5.takeLook", "[$requestData]")
+            RequestManager.requestString(
+                RpcEntity(
+                    "alipay.antforest.forest.h5.takeLook",
+                    "[$requestData]",
+                    headers = forestHeaders(actualSource)
+                )
+            )
         } catch (e: JSONException) {
             Log.printStackTrace("AntForestRpcCall", "takeLook构建请求参数失败", e)
             ""
@@ -408,9 +456,13 @@ object AntForestRpcCall {
                 put("bubbleIds", JSONArray().put(bubbleId))
                 put("source", actualSource)
                 put("userId", userId)
-                put("version", VERSION)
+                put("version", COLLECT_ENERGY_VERSION)
             }
-            RpcEntity("alipay.antmember.forest.h5.collectEnergy", "[$args]", null)
+            RpcEntity(
+                "alipay.antmember.forest.h5.collectEnergy",
+                "[$args]",
+                headers = forestHeaders(actualSource)
+            )
         } catch (e: Exception) {
             Log.printStackTrace(e)
             null
@@ -438,9 +490,13 @@ object AntForestRpcCall {
             put("fromAct", "BATCH_ROB_ENERGY")
             put("source", actualSource)
             put("userId", userId)
-            put("version", VERSION)
+            put("version", COLLECT_ENERGY_VERSION)
         }
-        return RpcEntity("alipay.antmember.forest.h5.collectEnergy", "[$arg]")
+        return RpcEntity(
+            "alipay.antmember.forest.h5.collectEnergy",
+            "[$arg]",
+            headers = forestHeaders(actualSource)
+        )
     }
 
     @JvmStatic
@@ -586,14 +642,20 @@ object AntForestRpcCall {
     }
 
     @JvmStatic
-    fun takeLookEnd(source: String = BACK_FROM_ENERGY_RAIN_SOURCE): String {
+    fun takeLookEnd(source: String = DEFAULT_SOURCE): String {
         return try {
             val requestData = JSONObject().apply {
                 put("contactsStatus", "N")
                 put("source", source)
                 put("version", TASK_LIST_VERSION)
             }
-            RequestManager.requestString("alipay.antforest.forest.h5.takeLookEnd", JSONArray().put(requestData).toString())
+            RequestManager.requestString(
+                RpcEntity(
+                    "alipay.antforest.forest.h5.takeLookEnd",
+                    JSONArray().put(requestData).toString(),
+                    headers = forestHeaders(source)
+                )
+            )
         } catch (e: JSONException) {
             Log.printStackTrace("AntForestRpcCall", "takeLookEnd构建请求参数失败", e)
             ""

@@ -440,6 +440,15 @@ class AntSesameCredit : ModelTask() {
                         Log.printStackTrace("$TAG.handleGrowthGuideTasks.babanongchang", e)
                     }
                 }
+
+                if ("wait_doing" == status &&
+                    behaviorId !in setOf("meiriwenda", "shipingwenda", "babanongchang_7d")
+                ) {
+                    Log.sesame(
+                        "信誉任务[业务动作需真实完成，暂不自动伪造] " +
+                            "title=$title behaviorId=$behaviorId subTitle=$subTitle"
+                    )
+                }
             }
         } catch (e: Throwable) {
             Log.printStackTrace("$TAG.handleGrowthGuideTasks.Fatal", e)
@@ -638,6 +647,12 @@ class AntSesameCredit : ModelTask() {
             }
             if (!ResChecker.checkRes(TAG, responseObj)) {
                 val failureType = classifySesameTaskFailure(errorCode, resultView)
+                val continueCurrentRound = shouldContinueSesameCurrentRoundOnFailure(
+                    failureType,
+                    errorCode,
+                    resultView,
+                    responseObj
+                )
                 return TaskFlowActionResult.failure(
                     failureType = failureType,
                     code = errorCode,
@@ -645,8 +660,8 @@ class AntSesameCredit : ModelTask() {
                     rpc = "AntSesameCreditRpcCall.joinSesameTask",
                     raw = joinRes,
                     detail = sesameCreditActionDetail(item, "join"),
-                    stopCurrentRound = failureType == TaskRpcFailureType.RETRYABLE_RPC ||
-                        isSesameTaskFlowInterrupted(responseObj)
+                    stopCurrentRound = isSesameTaskFlowInterrupted(responseObj),
+                    continueCurrentRoundOnFailure = continueCurrentRound
                 )
             }
             val recordId = responseObj.optJSONObject("data")?.optString("recordId").orEmpty()
@@ -701,6 +716,12 @@ class AntSesameCredit : ModelTask() {
             }
             if (!ResChecker.checkRes(TAG, responseObj)) {
                 val failureType = classifySesameTaskFailure(errorCode, resultView)
+                val continueCurrentRound = shouldContinueSesameCurrentRoundOnFailure(
+                    failureType,
+                    errorCode,
+                    resultView,
+                    responseObj
+                )
                 return TaskFlowActionResult.failure(
                     failureType = failureType,
                     code = errorCode,
@@ -708,8 +729,8 @@ class AntSesameCredit : ModelTask() {
                     rpc = "AntSesameCreditRpcCall.finishSesameTask",
                     raw = finishRes,
                     detail = sesameCreditActionDetail(item, "finish"),
-                    stopCurrentRound = failureType == TaskRpcFailureType.RETRYABLE_RPC ||
-                        isSesameTaskFlowInterrupted(responseObj)
+                    stopCurrentRound = isSesameTaskFlowInterrupted(responseObj),
+                    continueCurrentRoundOnFailure = continueCurrentRound
                 )
             }
 
@@ -733,7 +754,9 @@ class AntSesameCredit : ModelTask() {
             result: TaskFlowActionResult,
             decision: TaskFlowDecision
         ) {
-            if (decision == TaskFlowDecision.RETRY_LATER || result.stopCurrentRound) {
+            if (result.stopCurrentRound ||
+                (decision == TaskFlowDecision.RETRY_LATER && !result.continueCurrentRoundOnFailure)
+            ) {
                 interrupted = true
             }
         }
@@ -2462,7 +2485,7 @@ class AntSesameCredit : ModelTask() {
                             continue
                         }
                         if (collectedRounds == 0) {
-                            Log.sesame("攒芝麻分🎁[暂无可领取进度球]")
+                            Log.sesame("攒芝麻分🎁[进度锦囊暂无可领取进度球]")
                         }
                         return
                     }
@@ -2470,7 +2493,7 @@ class AntSesameCredit : ModelTask() {
                     val collectResp = AntSesameCreditRpcCall.Zmxy.collectProgressBall(newProgressBallIds) ?: return
                     val collectJson = JSONObject(collectResp)
                     if (isSesameProgressBallEmpty(collectJson)) {
-                        Log.sesame("攒芝麻分🎁[暂无可领取进度球]")
+                        Log.sesame("攒芝麻分🎁[进度锦囊暂无可领取进度球]")
                         return
                     }
                     if (!ResChecker.checkRes(TAG, collectJson)) {
@@ -3036,7 +3059,11 @@ class AntSesameCredit : ModelTask() {
                 rpc = "AntSesameCreditRpcCall.feedBackSesameTask",
                 raw = lastFeedbackRes,
                 detail = "module=$moduleName taskId=$templateId taskName=$taskTitle action=feedback bizType=$bizType",
-                stopCurrentRound = failureType == TaskRpcFailureType.RETRYABLE_RPC
+                continueCurrentRoundOnFailure = shouldContinueSesameCurrentRoundOnFailure(
+                    failureType,
+                    lastErrorCode,
+                    lastResultView.ifEmpty { lastFeedbackRes }
+                )
             )
         }
 
@@ -3099,14 +3126,20 @@ class AntSesameCredit : ModelTask() {
                         Log.sesame("$logPrefix[炼金次数登记已完成，继续浏览上报]#$taskTitle - $rewardMsg")
                     } else if (isAdTaskRetryable(rewardJo, rewardMsg)) {
                         Log.sesame("$logPrefix[炼金次数登记暂时不可用]#$taskTitle - $rewardMsg")
+                        val rewardCode = rewardJo.optString("resultCode", rewardJo.optString("errorCode", ""))
                         return TaskFlowActionResult.failure(
                             failureType = TaskRpcFailureType.RETRYABLE_RPC,
-                            code = rewardJo.optString("resultCode", rewardJo.optString("errorCode", "")),
+                            code = rewardCode,
                             message = rewardMsg,
                             rpc = "AntSesameCreditRpcCall.adRewardLjcs",
                             raw = rewardRes,
                             detail = "module=$moduleName taskId=$bizId taskName=$taskTitle action=adRewardLjcs",
-                            stopCurrentRound = true
+                            continueCurrentRoundOnFailure = shouldContinueSesameCurrentRoundOnFailure(
+                                TaskRpcFailureType.RETRYABLE_RPC,
+                                rewardCode,
+                                rewardMsg,
+                                rewardJo
+                            )
                         )
                     } else {
                         Log.error(TAG, "$logPrefix[炼金次数登记失败]#$taskTitle - $rewardMsg")
@@ -3143,7 +3176,12 @@ class AntSesameCredit : ModelTask() {
                             rpc = "AntSesameCreditRpcCall.adTaskApplayerQuery",
                             raw = layerRes,
                             detail = "module=$moduleName taskId=$bizId taskName=$taskTitle action=adLayer",
-                            stopCurrentRound = true
+                            continueCurrentRoundOnFailure = shouldContinueSesameCurrentRoundOnFailure(
+                                TaskRpcFailureType.RETRYABLE_RPC,
+                                layerCode,
+                                layerMsg,
+                                layerResponse
+                            )
                         )
                     } else {
                         Log.error(TAG, "$logPrefix[广告浏览配置失败]#$taskTitle - code=$layerCode msg=$layerMsg")
@@ -3193,8 +3231,34 @@ class AntSesameCredit : ModelTask() {
                 rpc = "AntSesameCreditRpcCall.taskFinish",
                 raw = adFinishRes,
                 detail = "module=$moduleName taskId=$bizId taskName=$taskTitle action=adFinish",
-                stopCurrentRound = failureType == TaskRpcFailureType.RETRYABLE_RPC
+                continueCurrentRoundOnFailure = shouldContinueSesameCurrentRoundOnFailure(
+                    failureType,
+                    errorCode,
+                    resultView,
+                    adFinishJo
+                )
             )
+        }
+
+        private fun shouldContinueSesameCurrentRoundOnFailure(
+            failureType: TaskRpcFailureType,
+            errorCode: String,
+            resultView: String,
+            response: JSONObject? = null
+        ): Boolean {
+            if (failureType != TaskRpcFailureType.RETRYABLE_RPC) {
+                return false
+            }
+            if (isSesameTaskFlowInterrupted(response)) {
+                return false
+            }
+            if (containsAnySesame(resultView, "需要验证")) {
+                return false
+            }
+            val code = errorCode.trim()
+            val message = resultView.trim()
+            return code == "OP_REPEAT_CHECK" ||
+                containsAnySesame(message, "操作太频繁", "频繁", "稍后再试")
         }
 
         private fun isSesameTaskFlowInterrupted(response: JSONObject? = null): Boolean {

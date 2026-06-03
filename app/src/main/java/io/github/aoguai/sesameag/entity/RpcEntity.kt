@@ -15,7 +15,8 @@ class RpcEntity @JvmOverloads constructor(
     val requestRelation: String? = null,
     val appName: String? = null,
     val methodName: String? = "taskFeedback",
-    val facadeName: String? = null
+    val facadeName: String? = null,
+    val headers: Map<String, String>? = null
 ) {
     @Volatile
     var hasResult = false
@@ -70,6 +71,9 @@ class RpcEntity @JvmOverloads constructor(
             jo.put("operationType", this.requestMethod)
             jo.put("requestData", this.requestData)
             jo.put("relationLocal", this.requestRelation)
+            if (!this.headers.isNullOrEmpty()) {
+                jo.put("headers", JSONObject(this.headers))
+            }
             jo.put("wua", SecurityBodyHelper.getSecurityBodyData(4).toString())
             jo.put("useWua", true)
             jo.put("disableLimitView", true)

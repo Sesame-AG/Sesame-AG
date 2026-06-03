@@ -65,6 +65,8 @@ data class TaskFlowActionResult(
     val raw: String = "",
     val detail: String = "",
     val stopCurrentRound: Boolean = false,
+    // 单个任务的可重试失败不一定要停止同一快照里的其他独立任务。
+    val continueCurrentRoundOnFailure: Boolean = false,
     // 默认批量处理当前查询快照，只有强依赖服务端新状态的动作才要求立即刷新。
     val refreshAfterAction: Boolean = false,
     // RPC 成功不一定代表服务端任务状态已经推进；无进展成功不继续驱动刷新闭环。
@@ -89,7 +91,8 @@ data class TaskFlowActionResult(
             rpc: String = "",
             raw: String = "",
             detail: String = "",
-            stopCurrentRound: Boolean = false
+            stopCurrentRound: Boolean = false,
+            continueCurrentRoundOnFailure: Boolean = false
         ): TaskFlowActionResult {
             return TaskFlowActionResult(
                 success = false,
@@ -99,7 +102,8 @@ data class TaskFlowActionResult(
                 rpc = rpc,
                 raw = raw,
                 detail = detail,
-                stopCurrentRound = stopCurrentRound
+                stopCurrentRound = stopCurrentRound,
+                continueCurrentRoundOnFailure = continueCurrentRoundOnFailure
             )
         }
     }
@@ -163,9 +167,10 @@ interface TaskFlowAdapter {
         var visibleTaskCount = 0
         var pendingTransitions = 0
         for (item in items) {
-            if (isBlacklisted(item) || shouldSkip(item)) continue
+            val phase = mapPhase(item)
+            if ((phase != TaskFlowPhase.REWARD_READY && isBlacklisted(item)) || shouldSkip(item)) continue
             visibleTaskCount++
-            when (mapPhase(item)) {
+            when (phase) {
                 TaskFlowPhase.REWARD_READY -> pendingTransitions += 1
                 TaskFlowPhase.READY_TO_COMPLETE -> {
                     val current = item.current ?: 0
@@ -380,8 +385,16 @@ class TaskFlowEngine(
                 logFailure(item, action, result, failureType, decision)
                 adapter.afterFailure(item, action, result, decision)
                 failedActionKeys.add(actionKey)
-                roundActions.add(TaskFlowRoundAction(failureActionText(action, decision), item.title))
-                if (decision == TaskFlowDecision.RETRY_LATER || result.stopCurrentRound) {
+                val shouldStopAfterFailure =
+                    result.stopCurrentRound ||
+                        (decision == TaskFlowDecision.RETRY_LATER && !result.continueCurrentRoundOnFailure)
+                roundActions.add(
+                    TaskFlowRoundAction(
+                        failureActionText(action, decision, shouldStopAfterFailure),
+                        item.title
+                    )
+                )
+                if (shouldStopAfterFailure) {
                     stopCurrentRound = true
                     break
                 }
@@ -504,7 +517,7 @@ class TaskFlowEngine(
 
             candidates.add(TaskFlowActionCandidate(index, item, action))
         }
-        // 候选动作按领奖优先排序；黑名单任务已在候选构建前统一跳过。
+        // 候选动作按领奖优先排序；黑名单仅拦截主动推进，待领奖任务继续放行。
         return candidates.sortedWith(
             compareBy<TaskFlowActionCandidate> { actionPriority(it.initialAction) }
                 .thenBy { it.index }
@@ -512,6 +525,7 @@ class TaskFlowEngine(
     }
 
     private fun shouldSkipBlacklisted(item: TaskFlowItem): Boolean {
+        if (adapter.mapPhase(item) == TaskFlowPhase.REWARD_READY) return false
         return adapter.isBlacklisted(item)
     }
 
@@ -638,9 +652,13 @@ class TaskFlowEngine(
         }
     }
 
-    private fun failureActionText(action: TaskFlowAction, decision: TaskFlowDecision): String {
+    private fun failureActionText(
+        action: TaskFlowAction,
+        decision: TaskFlowDecision,
+        stopped: Boolean
+    ): String {
         return when (decision) {
-            TaskFlowDecision.RETRY_LATER -> "止损停止"
+            TaskFlowDecision.RETRY_LATER -> if (stopped) "止损停止" else "${action.logName}失败待重试"
             TaskFlowDecision.BLACKLIST -> "${action.logName}失败并黑名单"
             TaskFlowDecision.STOP_TODAY_OR_CURRENT_CHAIN -> "${action.logName}业务止损"
             TaskFlowDecision.MARK_HANDLED -> "终态成功"

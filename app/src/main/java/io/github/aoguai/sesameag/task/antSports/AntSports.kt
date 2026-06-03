@@ -150,6 +150,13 @@ class AntSports : ModelTask() {
         var missingRecordIdCount: Int = 0
     )
 
+    private data class SportsHomeTaskCompletionResult(
+        val response: JSONObject,
+        val action: String,
+        val rpc: String,
+        val source: String
+    )
+
     private data class MotionQuizRewardCandidate(
         val creativityId: String,
         val objectId: String,
@@ -631,13 +638,14 @@ class AntSports : ModelTask() {
             runStepSyncWorkflow()
 
             // 运动任务
-            if (sportsTasksField.value == true &&
-                (
-                    !Status.hasFlagToday(StatusFlags.FLAG_ANTSPORTS_DAILY_TASKS_DONE) ||
-                        !Status.hasFlagToday(StatusFlags.FLAG_ANTSPORTS_MOTION_DAILY_QUIZ_DONE)
-                )
-            ) {
-                sportsTasks()
+            if (sportsTasksField.value == true) {
+                if (!Status.hasFlagToday(StatusFlags.FLAG_ANTSPORTS_DAILY_TASKS_DONE) ||
+                    !Status.hasFlagToday(StatusFlags.FLAG_ANTSPORTS_MOTION_DAILY_QUIZ_DONE)
+                ) {
+                    sportsTasks()
+                } else {
+                    Log.sports("运动任务[今日任务面板与问答完成标记已存在，跳过任务入口]")
+                }
             }
 
             // 运动球任务
@@ -1438,6 +1446,8 @@ class AntSports : ModelTask() {
         try {
             if (!Status.hasFlagToday(StatusFlags.FLAG_ANTSPORTS_DAILY_TASKS_DONE)) {
                 sportsTaskPanel()
+            } else {
+                Log.sports("运动任务面板[今日完成标记已存在，跳过面板闭环]")
             }
         } catch (e: Exception) {
             Log.printStackTrace(e)
@@ -1544,6 +1554,32 @@ class AntSports : ModelTask() {
         override fun onAllTasksDone(snapshot: TaskFlowSnapshot) {
             if (ApplicationHookConstants.isOffline()) {
                 Log.sports("⏸ 检测到离线模式，不设置运动任务今日完成标识")
+                return
+            }
+            val verifyResponse = try {
+                query()
+            } catch (t: Throwable) {
+                Log.error(TAG, "运动任务面板完成复核查询异常：${t.message}")
+                return
+            }
+            if (!isQuerySuccess(verifyResponse)) {
+                Log.error(TAG, "运动任务面板完成复核查询失败 raw=$verifyResponse")
+                return
+            }
+            val pendingTasks = extractItems(verifyResponse)
+                .filter { item ->
+                    !isBlacklisted(item) &&
+                        !shouldSkip(item) &&
+                        item.status in setOf("WAIT_COMPLETE", "WAIT_RECEIVE")
+                }
+            if (pendingTasks.isNotEmpty()) {
+                val pendingText = pendingTasks
+                    .take(6)
+                    .joinToString("；") {
+                        "${it.title}(taskId=${it.id.ifBlank { "UNKNOWN" }}, status=${it.status})"
+                    }
+                val suffix = if (pendingTasks.size > 6) "；... 共${pendingTasks.size}个" else ""
+                Log.sports("运动任务面板[完成复核仍有待处理，暂不设置今日完成标记] $pendingText$suffix")
                 return
             }
             val today = TimeUtil.getDateStr2()
@@ -2125,10 +2161,14 @@ class AntSports : ModelTask() {
     }
 
     private fun resolveSportsPanelAdTaskBizId(taskDetail: JSONObject): String {
-        return taskDetail.optJSONObject("bizExtMap")
+        val bizIdFromExt = taskDetail.optJSONObject("bizExtMap")
             ?.optString("bizId", "")
             ?.trim()
             .orEmpty()
+        if (bizIdFromExt.isNotBlank()) {
+            return bizIdFromExt
+        }
+        return extractDecodedUrlParam(taskDetail.optString("taskUrl", ""), "bizId").trim()
     }
 
     private fun resolveSportsPanelAdTaskFinishPayload(taskDetail: JSONObject, adTaskBizId: String): JSONObject {
@@ -2211,6 +2251,33 @@ class AntSports : ModelTask() {
      */
     private fun buildSportsHomeBubbleCooldownFlag(taskId: String): String {
         return StatusFlags.FLAG_ANTSPORTS_HOME_BUBBLE_COOLDOWN_PREFIX + taskId
+    }
+
+    private fun completeSportsHomeBubbleTask(
+        task: JSONObject,
+        taskId: String
+    ): SportsHomeTaskCompletionResult {
+        val taskType = task.optString("taskType", "")
+        val isAdTask = taskType.equals("AD_TASK", ignoreCase = true) || task.optBoolean("adTask", false)
+        if (isAdTask) {
+            val adTaskBizId = resolveSportsPanelAdTaskBizId(task)
+            val adTaskFinishPayload = resolveSportsPanelAdTaskFinishPayload(task, adTaskBizId)
+            if (adTaskFinishPayload.optString("bizId", "").trim().isNotBlank()) {
+                return SportsHomeTaskCompletionResult(
+                    response = JSONObject(AntSportsRpcCall.finishAdTask(adTaskFinishPayload)),
+                    action = "finishAdTask",
+                    rpc = "AntSportsRpcCall.finishAdTask",
+                    source = "adtask.finish"
+                )
+            }
+            Log.sports("运动首页任务[广告闭环参数缺失，回退直完成：taskId=$taskId，taskType=$taskType]")
+        }
+        return SportsHomeTaskCompletionResult(
+            response = JSONObject(AntSportsRpcCall.completeHomeBubbleTask(taskId)),
+            action = "completeHomeBubbleTask",
+            rpc = "AntSportsRpcCall.completeHomeBubbleTask",
+            source = "completeHomeBubbleTask"
+        )
     }
 
     private fun isSportsRpcSuccess(result: JSONObject): Boolean {
@@ -2834,22 +2901,24 @@ class AntSports : ModelTask() {
 
                     Log.sports("运动首页任务[直完成开始：$taskName，taskId=$taskId，taskType=${task.optString("taskType", "")}]"
                     )
-                    val completeRes = JSONObject(AntSportsRpcCall.completeHomeBubbleTask(taskId))
+                    val completion = completeSportsHomeBubbleTask(task, taskId)
+                    val completeRes = completion.response
 
                     if (ResChecker.checkRes(TAG, completeRes)) {
                         hasCompletedTask = true
                         hasPendingRewardBubble = true
                         val dataObj = completeRes.optJSONObject("data")
                         val assetCoinAmount =
-                            dataObj?.optInt("assetCoinAmount", task.optInt("prizeAmount", 0)) ?: 0
-                        Log.sports("运动球任务✅[$taskName]#奖励$assetCoinAmount💰")
+                            dataObj?.optInt("assetCoinAmount", task.optInt("prizeAmount", 0))
+                                ?: task.optInt("prizeAmount", 0)
+                        Log.sports("运动球任务✅[$taskName]#奖励$assetCoinAmount💰，方式=${completion.source}")
                         continue
                     }
 
                     val errorCode = extractSportsHomeBubbleErrorCode(completeRes)
                     val errorMsg = extractSportsHomeBubbleErrorMessage(completeRes)
                     val detail = "module=$SPORTS_TASK_BLACKLIST_MODULE taskId=$taskId taskName=$taskName " +
-                        "action=completeHomeBubbleTask rpc=AntSportsRpcCall.completeHomeBubbleTask " +
+                        "action=${completion.action} rpc=${completion.rpc} " +
                         "code=${errorCode.ifEmpty { "UNKNOWN" }} msg=$errorMsg raw=$completeRes"
                     if (shouldCooldownSportsHomeBubbleTask(completeRes)) {
                         Status.setFlagToday(cooldownFlag)
