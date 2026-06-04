@@ -24,12 +24,20 @@ import io.github.aoguai.sesameag.hook.ApplicationHook
 object PermissionUtil {
     // 修复 TAG 获取错误
     private val TAG: String = PermissionUtil::class.java.simpleName
-
     // 基础存储权限 (Android 10及以下)
     private val PERMISSIONS_STORAGE = arrayOf(
         Manifest.permission.READ_EXTERNAL_STORAGE,
         Manifest.permission.WRITE_EXTERNAL_STORAGE
     )
+
+    fun isPackageInstalled(context: Context, packageName: String): Boolean {
+        if (packageName.isBlank()) return false
+        return runCatching {
+            @Suppress("DEPRECATION")
+            context.packageManager.getPackageInfo(packageName, 0)
+            true
+        }.getOrDefault(false)
+    }
 
     // --- 1. 文件存储权限 ---
 
@@ -65,9 +73,10 @@ object PermissionUtil {
                 val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
                     data = Uri.parse("package:${activity.packageName}")
                 }
-                startActivitySafely(activity, intent, Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                return startActivitySafely(activity, intent, Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
             } else {
                 permissionLauncher.launch(PERMISSIONS_STORAGE)
+                return true
             }
         } catch (e: Exception) {
             Log.printStackTrace(TAG, "请求文件权限失败", e)
@@ -82,14 +91,30 @@ object PermissionUtil {
      */
     @JvmStatic
     fun checkAlarmPermissions(context: Context? = null): Boolean {
-        // 优先使用传入的 context，没有则尝试获取 Hook 的 context
-        val ctx = context ?: contextSafely ?: return false
+        return checkExactAlarmPermissions(context)
+    }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val alarmManager = ctx.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
-            return alarmManager?.canScheduleExactAlarms() == true
-        }
-        return true
+    @JvmStatic
+    fun checkExactAlarmPermissions(
+        context: Context? = null,
+        packageName: String? = null
+    ): Boolean {
+        val ctx = context ?: contextSafely ?: return false
+        val targetPackage = packageName?.takeIf { it.isNotBlank() } ?: ctx.packageName
+
+        return runCatching {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                true
+            } else if (targetPackage == ctx.packageName) {
+                val alarmManager = ctx.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
+                alarmManager?.canScheduleExactAlarms() == true
+            } else {
+                // Android 公开 API 不提供可靠的跨包 exact alarm 状态读取能力。
+                false
+            }
+        }.onFailure {
+            Log.printStackTrace(TAG, "检查精确闹钟权限失败: $targetPackage", it)
+        }.getOrDefault(false)
     }
 
     /**
@@ -99,15 +124,31 @@ object PermissionUtil {
      */
     @JvmStatic
     fun checkOrRequestAlarmPermissions(activity: Activity): Boolean {
-        if (checkAlarmPermissions(activity)) return true
+        return checkOrRequestExactAlarmPermissions(activity)
+    }
+
+    @JvmStatic
+    fun checkOrRequestExactAlarmPermissions(
+        activity: Activity,
+        packageName: String? = null,
+        intentLauncher: ActivityResultLauncher<Intent>? = null
+    ): Boolean {
+        val targetPackage = packageName?.takeIf { it.isNotBlank() } ?: activity.packageName
+        if (checkExactAlarmPermissions(activity, targetPackage)) return true
         if (!ensureModulePermissionRequestHost(activity, "exact_alarm")) return false
+        if (!isPackageInstalled(activity, targetPackage)) return false
 
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
-                    data = Uri.parse("package:${activity.packageName}")
+                    data = Uri.parse("package:$targetPackage")
                 }
-                startActivitySafely(activity, intent, Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)
+                return startActivitySafely(
+                    activity,
+                    intent,
+                    Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+                    intentLauncher
+                )
             }
         } catch (e: Exception) {
             Log.printStackTrace(TAG, "请求闹钟权限失败", e)
@@ -128,7 +169,11 @@ object PermissionUtil {
         val ctx = context ?: contextSafely ?: return false
         val pm = ctx.getSystemService(Context.POWER_SERVICE) as? PowerManager
         val targetPackage = packageName?.takeIf { it.isNotBlank() } ?: ctx.packageName
-        return pm?.isIgnoringBatteryOptimizations(targetPackage) == true
+        return runCatching {
+            pm?.isIgnoringBatteryOptimizations(targetPackage) == true
+        }.onFailure {
+            Log.printStackTrace(TAG, "检查电池优化权限失败: $targetPackage", it)
+        }.getOrDefault(false)
     }
 
     /**
@@ -138,15 +183,25 @@ object PermissionUtil {
      */
     @JvmStatic
     fun checkOrRequestBatteryPermissions(activity: Activity): Boolean {
-        if (checkBatteryPermissions(activity)) return true
+        return checkOrRequestBatteryPermissions(activity, activity.packageName)
+    }
+
+    @JvmStatic
+    fun checkOrRequestBatteryPermissions(
+        activity: Activity,
+        packageName: String
+    ): Boolean {
+        val targetPackage = packageName.takeIf { it.isNotBlank() } ?: activity.packageName
+        if (checkBatteryPermissions(activity, targetPackage)) return true
         if (!ensureModulePermissionRequestHost(activity, "battery_optimization")) return false
+        if (!isPackageInstalled(activity, targetPackage)) return false
 
         try {
             // 尝试直接请求指定包名
             val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                data = Uri.parse("package:${activity.packageName}")
+                data = Uri.parse("package:$targetPackage")
             }
-            startActivitySafely(activity, intent, Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+            return startActivitySafely(activity, intent, Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
         } catch (e: Exception) {
             Log.printStackTrace(TAG, "请求电池优化权限失败", e)
         }
@@ -181,6 +236,7 @@ object PermissionUtil {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             try {
                 permissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
+                return true
             } catch (e: Exception) {
                 Log.printStackTrace(TAG, "请求通知权限失败", e)
             }
@@ -194,19 +250,36 @@ object PermissionUtil {
     /**
      * 安全启动 Activity，自动处理 Flag 和 异常
      */
-    private fun startActivitySafely(context: Context, intent: Intent, fallbackAction: String? = null) {
+    private fun startActivitySafely(
+        context: Context,
+        intent: Intent,
+        fallbackAction: String? = null,
+        intentLauncher: ActivityResultLauncher<Intent>? = null
+    ): Boolean {
         try {
+            if (intentLauncher != null && context is Activity) {
+                intentLauncher.launch(intent)
+                return true
+            }
             if (context !is Activity) {
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(intent)
+            return true
         } catch (e: ActivityNotFoundException) {
             if (!fallbackAction.isNullOrEmpty()) {
                 try {
                     val fallbackIntent = Intent(fallbackAction).apply {
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        if (context !is Activity || intentLauncher == null) {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
                     }
-                    context.startActivity(fallbackIntent)
+                    if (intentLauncher != null && context is Activity) {
+                        intentLauncher.launch(fallbackIntent)
+                    } else {
+                        context.startActivity(fallbackIntent)
+                    }
+                    return true
                 } catch (ex: Exception) {
                     Log.printStackTrace(TAG, "Fallback Intent 启动失败: $fallbackAction", ex)
                 }
@@ -216,6 +289,7 @@ object PermissionUtil {
         } catch (e: Exception) {
             Log.printStackTrace(TAG, "未知错误", e)
         }
+        return false
     }
 
     private fun ensureModulePermissionRequestHost(activity: Activity, permissionName: String): Boolean {

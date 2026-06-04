@@ -1287,6 +1287,7 @@ class ApplicationHook {
                 filter.addAction(ApplicationHookConstants.BroadcastActions.RPC_TEST)
                 filter.addAction(ApplicationHookConstants.BroadcastActions.MANUAL_TASK)
                 filter.addAction(ApplicationHookConstants.BroadcastActions.HOOK_READY)
+                filter.addAction(ApplicationHookConstants.BroadcastActions.PERMISSION_SNAPSHOT)
                 filter.addAction(ApplicationHookConstants.BroadcastActions.REFRESH_FRIENDS)
                 filter.addAction(ApplicationHookConstants.BroadcastActions.REFRESH_EXCHANGE_OPTIONS)
 
@@ -1297,7 +1298,8 @@ class ApplicationHook {
                         context,
                         mBroadcastReceiver,
                         filter,
-                        ContextCompat.RECEIVER_NOT_EXPORTED
+                        // 该接收器依赖模块进程发起的自定义广播，必须允许跨 App 投递。
+                        ContextCompat.RECEIVER_EXPORTED
                     )
                 }
                 record(TAG, "BroadcastReceiver registered")

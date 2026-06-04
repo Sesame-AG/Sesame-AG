@@ -11,6 +11,7 @@ import io.github.aoguai.sesameag.entity.UserEntity
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.service.ConnectionState
 import io.github.aoguai.sesameag.service.LsposedServiceManager
+import io.github.aoguai.sesameag.ui.permissions.PermissionHealthSnapshot
 import io.github.aoguai.sesameag.util.DataStore
 import io.github.aoguai.sesameag.util.DirectoryWatcher
 import io.github.aoguai.sesameag.util.SesameAgUtil
@@ -82,10 +83,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isLegalAccepted = MutableStateFlow(false)
     val isLegalAccepted: StateFlow<Boolean> = _isLegalAccepted.asStateFlow()
 
+    private val _permissionHealth = MutableStateFlow(PermissionHealthSnapshot.EMPTY)
+    val permissionHealth: StateFlow<PermissionHealthSnapshot> = _permissionHealth.asStateFlow()
+
     // --- 监听器 ---
 
     // 监听 LSPosed 服务连接 (仅用于更新详细版本信息)
     private val serviceListener: (ConnectionState) -> Unit = { _ ->
+        LsposedServiceManager.refreshScope()
         refreshModuleFrameworkStatus()
     }
 
@@ -268,6 +273,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             IconManager.syncIconState(getApplication(), isHidden)
         }
+    }
+
+    fun updatePermissionHealth(snapshot: PermissionHealthSnapshot) {
+        _permissionHealth.value = snapshot
     }
 
     fun clearAllLogs(context: Context) {

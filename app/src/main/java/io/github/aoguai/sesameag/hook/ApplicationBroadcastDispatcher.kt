@@ -2,6 +2,7 @@ package io.github.aoguai.sesameag.hook
 
 import android.content.Context
 import android.content.Intent
+import io.github.aoguai.sesameag.data.General
 import io.github.aoguai.sesameag.hook.keepalive.UnifiedScheduler
 import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleDefaults
 import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleKind
@@ -41,6 +42,7 @@ internal object ApplicationBroadcastDispatcher {
             ApplicationHookConstants.BroadcastActions.RPC_TEST -> handleRpcTest(safeIntent)
             ApplicationHookConstants.BroadcastActions.MANUAL_TASK -> handleManualTaskBroadcast(safeIntent)
             ApplicationHookConstants.BroadcastActions.HOOK_READY -> handleHookReadyBroadcast(context, safeIntent)
+            ApplicationHookConstants.BroadcastActions.PERMISSION_SNAPSHOT -> handlePermissionSnapshotBroadcast(context, safeIntent)
             ApplicationHookConstants.BroadcastActions.REFRESH_FRIENDS -> handleRefreshFriendsBroadcast(context, safeIntent)
             ApplicationHookConstants.BroadcastActions.REFRESH_EXCHANGE_OPTIONS -> handleRefreshExchangeOptionsBroadcast(context, safeIntent)
         }
@@ -285,6 +287,26 @@ internal object ApplicationBroadcastDispatcher {
             putExtra("ready", ready)
             putExtra("message", message)
             putExtra("currentUserId", currentUserId)
+            putExtra("timestamp", System.currentTimeMillis())
+        })
+    }
+
+    private fun handlePermissionSnapshotBroadcast(context: Context?, intent: Intent) {
+        val ctx = context?.applicationContext ?: context ?: ApplicationHook.appContext ?: return
+        val requestToken = intent.getLongExtra("requestToken", 0L)
+        val permissions = ModuleStatusReporter
+            .getStatusSnapshot(refresh = true, reason = "permission_snapshot")
+            .get("permissions") as? Map<*, *>
+
+        ctx.sendBroadcast(Intent(ApplicationHookConstants.BroadcastActions.PERMISSION_SNAPSHOT_RESULT).apply {
+            setPackage(General.MODULE_PACKAGE_NAME)
+            if (requestToken != 0L) {
+                putExtra("requestToken", requestToken)
+            }
+            putExtra("available", permissions?.get("available") as? Boolean ?: false)
+            putExtra("contextPackage", permissions?.get("contextPackage") as? String ?: "")
+            putExtra("targetBatteryIgnored", permissions?.get("targetBatteryIgnored") as? Boolean ?: false)
+            (permissions?.get("targetExactAlarmAllowed") as? Boolean)?.let { putExtra("targetExactAlarmAllowed", it) }
             putExtra("timestamp", System.currentTimeMillis())
         })
     }
