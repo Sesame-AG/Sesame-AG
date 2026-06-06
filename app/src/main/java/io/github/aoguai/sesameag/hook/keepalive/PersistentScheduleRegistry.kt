@@ -2,6 +2,7 @@ package io.github.aoguai.sesameag.hook.keepalive
 
 import android.content.Context
 import com.fasterxml.jackson.core.type.TypeReference
+import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
 import io.github.aoguai.sesameag.util.DataStore
 import io.github.aoguai.sesameag.util.Files
 import io.github.aoguai.sesameag.util.Log
@@ -108,6 +109,49 @@ object PersistentScheduleRegistry {
         return loadMutable().toList()
     }
 
+    fun clearAll(context: Context?) {
+        if (!ensureStorage()) return
+        val schedules = loadMutable()
+        if (schedules.isEmpty()) return
+        save(emptyList())
+        context?.let { ctx ->
+            schedules.forEach { SystemWakeScheduler.cancel(ctx, it) }
+        }
+    }
+
+    fun activateSession(
+        context: Context,
+        ownerUserId: String,
+        sessionEpoch: Long,
+        now: Long = System.currentTimeMillis()
+    ) {
+        if (!ensureStorage()) return
+        val safeOwnerUserId = ownerUserId.trim()
+        if (safeOwnerUserId.isEmpty() || sessionEpoch <= 0L) return
+        val schedules = loadMutable()
+        if (schedules.isEmpty()) return
+        val retained = mutableListOf<PersistentSchedule>()
+        for (schedule in schedules) {
+            val scheduleOwnerUserId = schedule.ownerUserId?.trim().orEmpty()
+            val isCurrentSessionSchedule =
+                scheduleOwnerUserId.isNotEmpty() &&
+                    scheduleOwnerUserId == safeOwnerUserId &&
+                    schedule.sessionEpoch == sessionEpoch
+            if (!isCurrentSessionSchedule) {
+                SystemWakeScheduler.cancel(context, schedule)
+                continue
+            }
+
+            if (schedule.state == PersistentScheduleState.SCHEDULED && schedule.triggerAtMs > now) {
+                SystemWakeScheduler.schedule(context, schedule)
+            } else {
+                SystemWakeScheduler.cancel(context, schedule)
+            }
+            retained.add(schedule)
+        }
+        save(retained)
+    }
+
     fun markFired(id: String, now: Long = System.currentTimeMillis()) {
         updateSchedule(id) { it.withFired(now) }
     }
@@ -149,16 +193,34 @@ object PersistentScheduleRegistry {
             return ReconcileResult(emptyList(), 0, 0)
         }
         val schedules = loadMutable()
+        if (schedules.isEmpty()) {
+            return ReconcileResult(emptyList(), 0, 0)
+        }
+        val activeSession = AccountSessionCoordinator.currentOrPersistedSessionIdentity() ?: run {
+            Log.record(TAG, "当前无可恢复会话，跳过持久调度恢复重排")
+            return ReconcileResult(emptyList(), 0, 0)
+        }
         val due = mutableListOf<PersistentSchedule>()
         var rescheduled = 0
         var expired = 0
         val retained = mutableListOf<PersistentSchedule>()
 
         for (schedule in schedules) {
+            val ownerUserId = schedule.ownerUserId?.trim().orEmpty()
+            val isCurrentSessionSchedule =
+                ownerUserId.isNotEmpty() &&
+                ownerUserId == activeSession.userId &&
+                schedule.sessionEpoch == activeSession.sessionEpoch
+
             if (schedule.state != PersistentScheduleState.SCHEDULED) {
-                if (now - schedule.updatedAtMs <= RETAIN_FINISHED_MS) {
+                if (isCurrentSessionSchedule && now - schedule.updatedAtMs <= RETAIN_FINISHED_MS) {
                     retained.add(schedule)
                 }
+                continue
+            }
+
+            if (!isCurrentSessionSchedule) {
+                SystemWakeScheduler.cancel(context, schedule)
                 continue
             }
 
@@ -207,7 +269,8 @@ object PersistentScheduleRegistry {
             left.toleranceMs == right.toleranceMs &&
             left.dedupeKey == right.dedupeKey &&
             left.payloadJson == right.payloadJson &&
-            left.ownerUserId == right.ownerUserId
+            left.ownerUserId == right.ownerUserId &&
+            left.sessionEpoch == right.sessionEpoch
     }
 
     private fun updateSchedule(id: String, updater: (PersistentSchedule) -> PersistentSchedule) {

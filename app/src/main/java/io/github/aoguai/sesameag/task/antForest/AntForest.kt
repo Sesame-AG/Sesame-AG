@@ -6,12 +6,14 @@ import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.data.Statistics
 import io.github.aoguai.sesameag.entity.CollectEnergyEntity
+import io.github.aoguai.sesameag.entity.MapperEntity
 import io.github.aoguai.sesameag.entity.friend.FriendCapabilityState
 import io.github.aoguai.sesameag.entity.KVMap
 import io.github.aoguai.sesameag.entity.OtherEntityProvider.listEcoLifeOptions
 import io.github.aoguai.sesameag.entity.OtherEntityProvider.listHealthcareOptions
 import io.github.aoguai.sesameag.entity.VitalityStore
 import io.github.aoguai.sesameag.entity.VitalityStore.Companion.getNameById
+import io.github.aoguai.sesameag.hook.ExchangeOptionsRefreshBridge
 import io.github.aoguai.sesameag.hook.HookReadyChecker
 import io.github.aoguai.sesameag.util.GameTask
 import io.github.aoguai.sesameag.hook.RequestManager.requestString
@@ -49,6 +51,14 @@ import io.github.aoguai.sesameag.task.common.TaskFlowPhase
 import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
 import io.github.aoguai.sesameag.task.antFarm.AntFarmRpcCall
 import io.github.aoguai.sesameag.task.antFarm.FarmGame
+import io.github.aoguai.sesameag.task.exchange.ExchangeCost
+import io.github.aoguai.sesameag.task.exchange.ExchangeEffectCatalog
+import io.github.aoguai.sesameag.task.exchange.ExchangeEffectNeed
+import io.github.aoguai.sesameag.task.exchange.ExchangeItem
+import io.github.aoguai.sesameag.task.exchange.ExchangeLimit
+import io.github.aoguai.sesameag.task.exchange.ExchangeReplenishResult
+import io.github.aoguai.sesameag.task.exchange.ExchangeReplenisher
+import io.github.aoguai.sesameag.task.exchange.ExchangeSafety
 import io.github.aoguai.sesameag.task.antForest.ForestUtil.hasBombCard
 import io.github.aoguai.sesameag.task.antForest.ForestUtil.hasShield
 import io.github.aoguai.sesameag.task.antForest.Privilege.studentSignInRedEnvelope
@@ -71,6 +81,8 @@ import io.github.aoguai.sesameag.util.TimeUtil
 import io.github.aoguai.sesameag.util.friend.FriendCapabilityRecorder
 import io.github.aoguai.sesameag.util.friend.FriendRepository
 import io.github.aoguai.sesameag.util.maps.UserMap
+import io.github.aoguai.sesameag.util.maps.IdMapManager
+import io.github.aoguai.sesameag.util.maps.VitalityRewardsMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -383,9 +395,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
     }
 
     internal fun hasFriendRankingWorkEnabled(): Boolean {
-        return isCollectEnergyEnabled() ||
-                collectGiftBox?.value == true ||
-                hasRebornProtectWorkEnabled()
+        return isCollectEnergyEnabled()
     }
 
     override fun getFields(): ModelFields {
@@ -1768,19 +1778,88 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         }
     }
 
-    private fun refreshVitalityExchangeOptionsForSettings(): List<VitalityStore> {
-        if (!HookReadyChecker.isTargetAppReadyForRpc(UserMap.currentUid)) {
-            Log.forest("活力值兑换🎁目标应用未启动，设置页使用缓存列表")
+    private fun refreshVitalityExchangeOptionsForSettings(): List<MapperEntity> {
+        if (!HookReadyChecker.isCurrentProcessReadyForRpc(UserMap.currentUid)) {
+            if (!HookReadyChecker.isTargetAppReadyForRpc(UserMap.currentUid) ||
+                !ExchangeOptionsRefreshBridge.requestRefresh(
+                    ExchangeOptionsRefreshBridge.TARGET_FOREST_VITALITY,
+                    UserMap.currentUid
+                )
+            ) {
+                Log.forest("活力值兑换🎁目标应用未启动，设置页使用缓存列表")
+                return VitalityStore.list
+            }
+            Log.forest("活力值兑换🎁目标应用已远程刷新列表")
+            IdMapManager.getInstance(VitalityRewardsMap::class.java).load(UserMap.currentUid)
             return VitalityStore.list
         }
         return runCatching {
             Vitality.initVitality("SC_ASSETS")
-            VitalityStore.list
+            buildVitalityExchangeMapperList().ifEmpty { VitalityStore.list }
         }.onFailure {
             Log.printStackTrace(TAG, "refreshVitalityExchangeOptionsForSettings err:", it)
         }.getOrElse {
             VitalityStore.list
         }
+    }
+
+    internal fun refreshVitalityExchangeOptionsForRemote() {
+        Vitality.initVitality("SC_ASSETS")
+    }
+
+    private fun buildVitalityExchangeMapperList(): List<MapperEntity> {
+        return Vitality.skuInfo.entries
+            .mapNotNull { (skuId, skuModel) -> buildVitalityExchangeItem(skuId, skuModel).toMapperEntity() }
+    }
+
+    private fun buildVitalityExchangeItem(skuId: String, skuModel: JSONObject): ExchangeItem {
+        val skuName = skuModel.optString("skuName").ifBlank { skuId }
+        val price = skuModel.optJSONObject("price")?.optString("amount").orEmpty()
+            .ifBlank { skuModel.optString("price") }
+        val statusText = formatVitalityStatusList(skuModel.optJSONArray("itemStatusList"))
+        val unsafeByName = listOf("皮肤", "装扮", "主题", "挂件", "背景", "红包", "优惠券", "券")
+            .any { skuName.contains(it) }
+        val unavailable = statusText.isNotBlank()
+        val safety = when {
+            unavailable -> ExchangeSafety.UNAVAILABLE
+            unsafeByName -> ExchangeSafety.LOG_ONLY
+            else -> ExchangeSafety.AUTO
+        }
+        val safetyReason = when {
+            unavailable -> statusText
+            unsafeByName -> "展示/券类权益不参与自动补兑"
+            else -> ""
+        }
+        val effectTags = ExchangeEffectCatalog.tagsFor(ExchangeEffectCatalog.SOURCE_FOREST_VITALITY, skuName)
+        return ExchangeItem(
+            id = skuId,
+            name = skuName,
+            cost = ExchangeCost(pointText = price.takeIf { it.isNotBlank() }?.let { "${it}活力值" }.orEmpty()),
+            limit = ExchangeLimit(statusText = statusText),
+            safety = safety,
+            safetyReason = safetyReason,
+            effectTags = effectTags,
+            displayMeta = ExchangeEffectCatalog.displayMeta(
+                ExchangeEffectCatalog.SOURCE_FOREST_VITALITY,
+                skuName,
+                safety,
+                safetyReason,
+                effectTags
+            )
+        )
+    }
+
+    private fun formatVitalityStatusList(itemStatusList: JSONArray?): String {
+        if (itemStatusList == null || itemStatusList.length() == 0) {
+            return ""
+        }
+        val statuses = mutableListOf<String>()
+        for (i in 0 until itemStatusList.length()) {
+            val rawStatus = itemStatusList.optString(i)
+            val status = runCatching { VitalityStore.ExchangeStatus.valueOf(rawStatus) }.getOrNull()
+            statuses.add(status?.nickName ?: rawStatus)
+        }
+        return statuses.filter { it.isNotBlank() }.joinToString("、")
     }
 
     internal fun handleVitalityExchange(itemFilter: ((String, String) -> Boolean)? = null): Boolean {
@@ -1802,6 +1881,11 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 if (itemFilter != null && !itemFilter(skuId, skuName)) {
                     continue
                 }
+                val exchangeItem = Vitality.skuInfo[skuId]?.let { buildVitalityExchangeItem(skuId, it) }
+                if (exchangeItem != null && exchangeItem.safety != ExchangeSafety.AUTO) {
+                    Log.forest("活力值兑换🍃跳过[${exchangeItem.displayName()}]#${exchangeItem.safetyReason}")
+                    continue
+                }
                 // 处理活力值兑换
                 while (Status.canVitalityExchangeToday(skuId, count)) {
                     if (!Vitality.handleVitalityExchange(skuId)) {
@@ -1818,26 +1902,94 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         return exchangedAny
     }
 
-    private fun exchangeSelectedVitalityRewardsForMissingProp(
+    internal fun replenishExchangeByNeed(
+        need: ExchangeEffectNeed,
+        reason: String,
+        maxCount: Int
+    ): ExchangeReplenishResult {
+        if (vitalityExchange?.value != true) {
+            return ExchangeReplenishResult.NOT_SELECTED
+        }
+        val exchangeList = vitalityExchangeList?.value ?: emptyMap()
+        if (exchangeList.isEmpty()) {
+            return ExchangeReplenishResult.NOT_SELECTED
+        }
+        return runCatching {
+            Vitality.initVitality("SC_ASSETS")
+            val safeMaxCount = maxCount.coerceAtLeast(1)
+            var matchedSelected = false
+            var attempted = false
+            var exchangedCount = 0
+            val sortedEntries = exchangeList.entries.sortedBy { entry ->
+                val skuId = entry.key
+                val skuModel = if (skuId == null) null else Vitality.skuInfo[skuId]
+                if (skuId == null || skuModel == null) {
+                    Int.MAX_VALUE
+                } else {
+                    ExchangeEffectCatalog.priorityFor(buildVitalityExchangeItem(skuId, skuModel), need)
+                }
+            }
+            for (entry in sortedEntries) {
+                val skuId = entry.key ?: continue
+                val count = entry.value?.takeIf { it > 0 } ?: continue
+                val skuName = Vitality.skuInfo[skuId]?.optString("skuName").orEmpty()
+                if (skuName.isBlank()) {
+                    continue
+                }
+                val tags = ExchangeEffectCatalog.tagsFor(ExchangeEffectCatalog.SOURCE_FOREST_VITALITY, skuName)
+                if (tags.none { it.need == need }) {
+                    continue
+                }
+                matchedSelected = true
+                val exchangeItem = Vitality.skuInfo[skuId]?.let { buildVitalityExchangeItem(skuId, it) }
+                if (exchangeItem?.safety != ExchangeSafety.AUTO) {
+                    continue
+                }
+                while (exchangedCount < safeMaxCount && Status.canVitalityExchangeToday(skuId, count)) {
+                    attempted = true
+                    if (!Vitality.handleVitalityExchange(skuId)) {
+                        break
+                    }
+                    exchangedCount += 1
+                    Log.forest("缺货补兑🍃[$skuName]#${reason.ifBlank { need.name }}")
+                    if (exchangedCount >= safeMaxCount) {
+                        break
+                    }
+                    GlobalThreadPools.sleepCompat(1000L)
+                }
+            }
+            when {
+                exchangedCount > 0 -> ExchangeReplenishResult.EXCHANGED
+                matchedSelected && attempted -> ExchangeReplenishResult.BUSINESS_LIMIT
+                matchedSelected -> ExchangeReplenishResult.NOT_AVAILABLE
+                else -> ExchangeReplenishResult.NOT_SELECTED
+            }
+        }.onFailure {
+            Log.printStackTrace(TAG, "replenishVitalityExchangeByNeed err:", it)
+        }.getOrDefault(ExchangeReplenishResult.RETRY_LATER)
+    }
+
+    private fun replenishSelectedRewardsForMissingProp(
         propName: String,
         allowPerpetualExchange: Boolean,
-        vararg nameKeywords: String
+        need: ExchangeEffectNeed
     ): JSONObject? {
         if (!allowPerpetualExchange) {
             return null
         }
-        if (vitalityExchange?.value != true) {
+        Log.forest("背包中没有$propName，尝试按已勾选兑换列表补兑...")
+        val result = ExchangeReplenisher.replenish(
+            need = need,
+            reason = "森林缺少$propName",
+            maxCount = 1
+        ) {
+            queryPropList(true)
+        }
+        if (result != ExchangeReplenishResult.EXCHANGED) {
+            Log.forest("缺货补兑[$propName]未完成#$result")
             return null
         }
-        val exchangeList = vitalityExchangeList?.value ?: emptyMap()
-        if (exchangeList.isEmpty()) {
-            return null
-        }
-        Log.forest("背包中没有$propName，尝试按“活力值 | 兑换列表”兑换已勾选权益...")
-        val exchanged = handleVitalityExchange { _, skuName ->
-            nameKeywords.any { keyword -> skuName.contains(keyword) }
-        }
-        return if (exchanged) queryPropList(true) else null
+        return queryPropList(true)
     }
 
     private fun notifyMain() {
@@ -2836,7 +2988,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
      */
     internal suspend fun collectFriendEnergyCoroutine() {
         if (!hasFriendRankingWorkEnabled()) {
-            Log.forest("收集能量、领取礼盒和复活能量均未开启，跳过好友排行榜扫描")
+            Log.forest("收能量未开启，跳过好友主页扫描；好友礼盒/复活能量仅随已获取好友主页处理")
             return
         }
         resetRebornScanStateForFriendRanking()
@@ -3009,31 +3161,16 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             collectEnergy(userId, queryFriendHome(userId, "PKContest"), "pk")
         } else { // 普通好友
             val needCollectEnergy = collectEnergy?.value == true && !jsonCollectMap.contains(userId)
-            val needHelpProtect = canTryRebornProtectNow(userId) && !handledProtectUsers.contains(userId)
-            val needCollectGiftBox = collectGiftBox?.value == true &&
-                    !handledGiftBoxUsers.contains(userId) &&
-                    obj.optBoolean("canCollectGiftBox")
             val energyAlreadyProcessed = processedUsersCache.contains(userId)
             val shouldQueryForEnergy = needCollectEnergy && !energyAlreadyProcessed
-            if (!shouldQueryForEnergy && !needHelpProtect && !needCollectGiftBox) {
+            if (!shouldQueryForEnergy) {
                 //   Log.forest("    普通好友: [$userName$userId], 所有条件不满足，跳过")
                 return
             }
-            var userHomeObj: JSONObject? = null
             // 只要开启了收能量，就进去看看，以便添加蹲点
-            if (shouldQueryForEnergy) {
-                // 即使排行榜信息显示没有可收能量，也进去检查，以便添加蹲点任务
-                Log.forest("  正在查询好友 [$userName$userId] 的主页...")
-                userHomeObj = collectEnergy(userId, queryFriendHome(userId, null), "friend")
-            }
-            if (needHelpProtect || needCollectGiftBox) {
-                val shouldRefreshExtraBenefitHome = userHomeObj == null ||
-                    (needHelpProtect && !shouldProtectFriendEnergyFromHome(userId, userHomeObj)) ||
-                    (needCollectGiftBox && !shouldCollectGiftBoxFromHome(userHomeObj))
-                if (shouldRefreshExtraBenefitHome) {
-                    userHomeObj = queryFriendHome(userId, "rankNew", forceRefresh = userHomeObj != null)
-                }
-            }
+            // 即使排行榜信息显示没有可收能量，也进去检查，以便添加蹲点任务
+            Log.forest("  正在查询好友 [$userName$userId] 的主页...")
+            val userHomeObj = collectEnergy(userId, queryFriendHome(userId, null), "friend")
             handleFriendExtraBenefits(userId, userHomeObj)
         }
     }
@@ -5580,6 +5717,27 @@ class AntForest : ModelTask(), EnergyCollectCallback {
      */
     internal fun queryUserPatrol() {
         val patrolChanceLimitFlag = StatusFlags.FLAG_ANTFOREST_PATROL_CHANCE_EXCHANGE_LIMIT
+        var patrolChanceReplenishTried = false
+        fun replenishPatrolChanceIfNeeded(reason: String): Boolean {
+            if (patrolChanceReplenishTried) {
+                return false
+            }
+            patrolChanceReplenishTried = true
+            val replenishResult = ExchangeReplenisher.replenish(
+                need = ExchangeEffectNeed.FOREST_PATROL_CHANCE,
+                reason = reason,
+                maxCount = 1
+            ) {
+                AntForestRpcCall.queryUserPatrol()
+            }
+            return if (replenishResult == ExchangeReplenishResult.EXCHANGED) {
+                Log.forest("保护地巡护机会已触发缺货补兑，重新查询巡护状态")
+                true
+            } else {
+                Log.forest("保护地巡护机会补兑未完成#$replenishResult")
+                false
+            }
+        }
         try {
             do {
                 // 查询当前巡护任务
@@ -5654,6 +5812,11 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                         }
                     } else if ("GOING" == currentStatus) {
                         patrolKeepGoing(null, currentNode, patrolId)
+                    }
+                    if ("STANDING" == currentStatus && leftChance <= 0 &&
+                        replenishPatrolChanceIfNeeded("森林保护地巡护机会不足")
+                    ) {
+                        continue
                     }
                 } else {
                     Log.forest(jo.optString("resultDesc", jo.optString("desc", "查询巡护任务失败")))
@@ -6528,10 +6691,10 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             }
             if (doubleClickProps.isEmpty()) {
                 if (allowVitalityExchangeFallback) {
-                    val refreshedBag = exchangeSelectedVitalityRewardsForMissingProp(
+                    val refreshedBag = replenishSelectedRewardsForMissingProp(
                         "双击卡",
                         doubleCardConstant?.value == true,
-                        "双击卡"
+                        ExchangeEffectNeed.FOREST_DOUBLE_CLICK
                     )
                     if (refreshedBag != null) {
                         useDoubleCard(refreshedBag, false)
@@ -6617,7 +6780,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             "隐身卡",
             arrayOf<String>("LIMIT_TIME_STEALTH_CARD", "STEALTH_CARD"),
             null,  // 无特殊条件
-            { exchangeSelectedVitalityRewardsForMissingProp("隐身卡", stealthCardConstant?.value == true, "隐身") != null },
+            { replenishSelectedRewardsForMissingProp("隐身卡", stealthCardConstant?.value == true, ExchangeEffectNeed.FOREST_STEALTH) != null },
             { time: Long? -> stealthEndTime = time!! + TimeFormatter.ONE_DAY_MS }
         )
         usePropTemplate(bagObject, config, stealthCardConstant?.value == true)
@@ -6679,10 +6842,10 @@ class AntForest : ModelTask(), EnergyCollectCallback {
 
                 // 2.2 使用统一活力值兑换列表补货，不再维护保护罩专用兑换开关或硬编码 SKU。
                 if (availableShields.isEmpty()) {
-                    val refreshedBag = exchangeSelectedVitalityRewardsForMissingProp(
+                    val refreshedBag = replenishSelectedRewardsForMissingProp(
                         "保护罩",
                         shieldCardConstant?.value == true,
-                        "保护罩"
+                        ExchangeEffectNeed.FOREST_SHIELD
                     )
                     collectShieldsFromBag(refreshedBag, availableShields)
                 }
@@ -6769,7 +6932,18 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     collectSelfEnergyImmediately("加速卡")
                 }
             } else {
-                Log.forest("背包中无可用加速卡")
+                val refreshedBag = replenishSelectedRewardsForMissingProp(
+                    "时光加速器",
+                    bubbleBoostCard?.value != ApplyPropType.CLOSE,
+                    ExchangeEffectNeed.FOREST_BUBBLE_BOOST
+                )
+                val exchangedProp = selectPreferredBoostProp(refreshedBag)
+                if (exchangedProp != null && usePropBag(exchangedProp, needRefreshHome = false)) {
+                    Log.forest("使用补兑加速卡🌪[${getPropName(exchangedProp)}]")
+                    collectSelfEnergyImmediately("补兑加速卡")
+                } else {
+                    Log.forest("背包中无可用加速卡")
+                }
             }
         } catch (th: Throwable) {
             Log.printStackTrace(TAG, "useBubbleBoostCard err", th)
@@ -6815,10 +6989,18 @@ class AntForest : ModelTask(), EnergyCollectCallback {
     private fun useRobMultiplierCard(bag: JSONObject? = queryPropList()) {
         try {
             val now = System.currentTimeMillis()
-            val selected = selectPreferredRobMultiplierProp(bag, now)
+            var selected = selectPreferredRobMultiplierProp(bag, now)
             if (selected == null) {
-                Log.forest("背包中无可用或无需使用的收好友N倍卡")
-                return
+                val refreshedBag = replenishSelectedRewardsForMissingProp(
+                    "收好友N倍卡",
+                    robMultiplierCard?.value != ApplyPropType.CLOSE,
+                    ExchangeEffectNeed.FOREST_ROB_MULTIPLIER
+                )
+                selected = selectPreferredRobMultiplierProp(refreshedBag, now)
+                if (selected == null) {
+                    Log.forest("背包中无可用或无需使用的收好友N倍卡")
+                    return
+                }
             }
             if (!isLimitedRobMultiplierProp(selected.propType)) {
                 val decision = evaluateTriggerDecision(robMultiplierCardTime, StatusFlags.FLAG_ANTFOREST_ROB_MULTIPLIER_CARD_TRIGGER_INDEX)
@@ -6895,24 +7077,20 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 }
 
                 if (propType == "LIMIT_TIME_ENERGY_RAIN_CHANCE" && !hasPlayableEnergyRainChance()) {
-                    val skuInfo = Vitality.findSkuInfoBySkuName("能量雨次卡")
-                    if (skuInfo != null) {
-                        val skuId = skuInfo.getString("skuId")
-                        if (Status.canVitalityExchangeToday(skuId, 1)) {
-                            if (Vitality.VitalityExchange(
-                                    skuInfo.getString("spuId"),
-                                    skuId,
-                                    "限时能量雨机会"
-                                )
-                            ) {
-                                delay(1000)
-                                val joExchanged = findPropBag(queryPropList(true), propType)
-                                if (joExchanged != null && usePropBag(joExchanged)) {
-                                    getLimitTimeEnergyRainFlag(joExchanged)?.let { Status.setFlagToday(it) }
-                                    usedAny = true
-                                    delay(1000)
-                                }
-                            }
+                    val replenishResult = ExchangeReplenisher.replenish(
+                        need = ExchangeEffectNeed.FOREST_ENERGY_RAIN,
+                        reason = "森林能量雨机会不足",
+                        maxCount = 1
+                    ) {
+                        queryPropList(true)
+                    }
+                    if (replenishResult == ExchangeReplenishResult.EXCHANGED) {
+                        delay(1000)
+                        val joExchanged = findPropBag(queryPropList(true), propType)
+                        if (joExchanged != null && usePropBag(joExchanged)) {
+                            getLimitTimeEnergyRainFlag(joExchanged)?.let { Status.setFlagToday(it) }
+                            usedAny = true
+                            delay(1000)
                         }
                     }
                 }
@@ -6941,24 +7119,17 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             var jo = findPropBag(bagObject, "ENERGY_BOMB_CARD")
             if (jo == null) {
                 Log.forest("背包中没有炸弹卡，尝试兑换...")
-                val skuInfo = Vitality.findSkuInfoBySkuName("能量炸弹卡")
-                if (skuInfo == null) {
-                    Log.forest("活力值商店中未找到炸弹卡。")
-                    return
+                val replenishResult = ExchangeReplenisher.replenish(
+                    need = ExchangeEffectNeed.FOREST_ENERGY_BOMB,
+                    reason = "森林能量炸弹卡缺货",
+                    maxCount = 1
+                ) {
+                    queryPropList(true)
                 }
-
-                val skuId = skuInfo.getString("skuId")
-                if (Status.canVitalityExchangeToday(skuId, 1)) {
-                    if (Vitality.VitalityExchange(
-                            skuInfo.getString("spuId"),
-                            skuId,
-                            "能量炸弹卡"
-                        )
-                    ) {
-                        jo = findPropBag(queryPropList(), "ENERGY_BOMB_CARD")
-                    }
+                if (replenishResult == ExchangeReplenishResult.EXCHANGED) {
+                    jo = findPropBag(queryPropList(true), "ENERGY_BOMB_CARD")
                 } else {
-                    Log.forest("今日炸弹卡兑换次数已达上限。")
+                    Log.forest("能量炸弹卡补兑未完成#$replenishResult")
                 }
             }
 
@@ -7678,13 +7849,18 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         return 0L // 立即收取，无延迟
     }
 
+    override fun canRunWaitingCollection(): Boolean {
+        return isCollectEnergyEnabled()
+    }
+
     override suspend fun collectUserEnergyForWaiting(task: EnergyWaitingManager.WaitingTask): CollectResult {
         if (!isCollectEnergyEnabled()) {
-            Log.forest("收集能量开关关闭，跳过蹲点收取")
+            Log.forest("收集能量开关关闭，暂停蹲点收取")
             return CollectResult(
                 success = false,
                 userName = task.userName,
-                message = "收集能量开关关闭"
+                message = EnergyWaitingManager.WAITING_PAUSED_COLLECT_DISABLED,
+                paused = true
             )
         }
         return try {

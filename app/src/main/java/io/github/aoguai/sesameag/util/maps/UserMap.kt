@@ -174,25 +174,98 @@ object UserMap {
         userMap.clear()
         if (userId.isNullOrEmpty()) return
 
-        try {
+        val entity = readStoredSnapshot(userId)
+        if (entity != null) {
+            userMap[userId] = entity
+        }
+    }
+
+    @JvmStatic
+    @Synchronized
+    fun readSelf(userId: String?): UserEntity? {
+        if (userId.isNullOrEmpty()) return null
+        val cached = userMap[userId]
+        if (cached != null) {
+            return cached
+        }
+        return readStoredSnapshot(userId)
+    }
+
+    private fun readSelfFromFile(userId: String): UserEntity? {
+        return try {
             val body = Files.readFromFile(Files.getSelfIdFile(userId)!!)
-            if (body.isNotEmpty()) {
-                val dto: UserEntity.UserDto? = JsonUtil.parseObject(
+            if (body.isEmpty()) {
+                null
+            } else {
+                JsonUtil.parseObject(
                     body,
                     object : TypeReference<UserEntity.UserDto>() {}
-                )
-
-                if (dto != null) {
-                    val uid = dto.userId
-                    val entity = dto.toEntity()
-                    if (!uid.isNullOrEmpty()) {
-                        userMap[uid] = entity
-                    }
-                }
+                )?.toEntity()
             }
         } catch (e: Exception) {
             Log.printStackTrace(e)
+            null
         }
+    }
+
+    private fun readFriendEntityFromFile(userId: String): UserEntity? {
+        return try {
+            val body = Files.readFromFile(Files.getFriendIdMapFile(userId)!!)
+            if (body.isEmpty()) {
+                null
+            } else {
+                val dtoMap: Map<String, UserEntity.UserDto>? = JsonUtil.parseObject(
+                    body,
+                    object : TypeReference<Map<String, UserEntity.UserDto>>() {}
+                )
+                val dto = dtoMap?.get(userId) ?: dtoMap?.values?.firstOrNull { it.userId == userId }
+                dto?.toEntity()
+            }
+        } catch (e: Exception) {
+            Log.printStackTrace(e)
+            null
+        }
+    }
+
+    private fun readStoredSnapshot(userId: String): UserEntity? {
+        val selfEntity = readSelfFromFile(userId)
+        val friendEntity = readFriendEntityFromFile(userId)
+        if (selfEntity == null && friendEntity == null) {
+            return null
+        }
+        return mergeUserEntity(userId, selfEntity, friendEntity)
+    }
+
+    private fun normalizedText(value: String?): String? {
+        return value?.trim()?.takeIf { it.isNotEmpty() }
+    }
+
+    private fun mergeUserEntity(userId: String, primary: UserEntity?, secondary: UserEntity? = null): UserEntity {
+        val safeUserId = userId.trim()
+        require(safeUserId.isNotEmpty()) { "userId must not be blank" }
+
+        val primaryEntity = primary?.takeIf { it.userId?.trim() == safeUserId }
+        val secondaryEntity = secondary?.takeIf { it.userId?.trim() == safeUserId }
+
+        val realName = normalizedText(primaryEntity?.realName)
+            ?: normalizedText(secondaryEntity?.realName)
+        val remarkName = normalizedText(primaryEntity?.remarkName)
+            ?: normalizedText(secondaryEntity?.remarkName)
+        val nickName = normalizedText(primaryEntity?.nickName)
+            ?: normalizedText(secondaryEntity?.nickName)
+            ?: remarkName
+            ?: realName
+            ?: safeUserId
+
+        return UserEntity(
+            userId = safeUserId,
+            account = normalizedText(primaryEntity?.account)
+                ?: normalizedText(secondaryEntity?.account),
+            friendStatus = primaryEntity?.friendStatus ?: secondaryEntity?.friendStatus,
+            realName = realName,
+            nickName = nickName,
+            remarkName = remarkName
+        )
     }
 
     @JvmStatic
@@ -200,14 +273,10 @@ object UserMap {
     fun saveMinimalSelf(userId: String) {
         val safeUserId = userId.trim()
         if (safeUserId.isEmpty()) return
-        val existing = userMap[safeUserId]
-        val entity = existing ?: UserEntity(
-            userId = safeUserId,
-            account = null,
-            friendStatus = null,
-            realName = null,
-            nickName = safeUserId,
-            remarkName = null
+        val entity = mergeUserEntity(
+            safeUserId,
+            userMap[safeUserId],
+            readStoredSnapshot(safeUserId)
         )
         saveSelf(entity)
     }
@@ -219,12 +288,43 @@ object UserMap {
     @Synchronized
     fun saveSelf(userEntity: UserEntity?) {
         val entity = userEntity ?: return
-        // 2. 直接存入对象！DataStore 会自动转 JSON 并写入文件
+        val safeUserId = entity.userId?.trim().orEmpty()
+        if (safeUserId.isEmpty()) return
+        val existing = mergeUserEntity(
+            safeUserId,
+            userMap[safeUserId],
+            readStoredSnapshot(safeUserId)
+        )
+        val mergedEntity = mergeUserEntity(safeUserId, entity, existing)
+        updateActiveUser(mergedEntity)
+        val body = JsonUtil.formatJson(mergedEntity)
+        Files.write2File(body, Files.getSelfIdFile(safeUserId)!!)
+    }
+
+    @JvmStatic
+    @Synchronized
+    fun updateActiveUser(userEntity: UserEntity?) {
+        val entity = userEntity ?: return
+        val safeUserId = entity.userId?.trim().orEmpty()
+        if (safeUserId.isEmpty()) return
+        userMap[safeUserId] = entity
         DataStore.put("activedUser", entity)
         Log.record(TAG, "update now active user: $entity")
+    }
 
-        val body = JsonUtil.formatJson(entity)
-        Files.write2File(body, Files.getSelfIdFile(entity.userId)!!)
+    @JvmStatic
+    @Synchronized
+    fun ensureActiveUserSnapshot(userId: String, fallback: UserEntity? = null): UserEntity {
+        val safeUserId = userId.trim()
+        require(safeUserId.isNotEmpty()) { "userId must not be blank" }
+        val existing = mergeUserEntity(
+            safeUserId,
+            userMap[safeUserId],
+            readStoredSnapshot(safeUserId)
+        )
+        val entity = mergeUserEntity(safeUserId, fallback, existing)
+        saveSelf(entity)
+        return entity
     }
 }
 

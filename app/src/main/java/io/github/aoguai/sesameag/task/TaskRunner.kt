@@ -3,6 +3,7 @@ package io.github.aoguai.sesameag.task
 import android.annotation.SuppressLint
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
+import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
 import io.github.aoguai.sesameag.hook.ApplicationHook
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.hook.CustomRpcScheduler
@@ -66,6 +67,8 @@ class CoroutineTaskRunner(allModels: List<Model>) {
     private val skippedCount = AtomicInteger(0)
     private val taskExecutionTimes = ConcurrentHashMap<String, Long>()
     private val longRunningJobs = ConcurrentLinkedQueue<LongRunningJob>()
+    private var runSessionOwnerUserId: String? = null
+    private var runSessionEpoch: Long = 0L
 
     private data class LongRunningJob(
         val taskId: String,
@@ -83,10 +86,18 @@ class CoroutineTaskRunner(allModels: List<Model>) {
         rounds: Int = BaseModel.taskExecutionRounds.value ?: 1
     ) = coroutineScope { // 使用 coroutineScope 创建子作用域
         val startTime = System.currentTimeMillis()
+        val activeSession = AccountSessionCoordinator.currentSession()
+        runSessionOwnerUserId = activeSession?.userId
+        runSessionEpoch = activeSession?.sessionEpoch ?: 0L
 
         // 【互斥检查】如果手动任务流正在运行，则跳过本次自动执行
         if (ManualTask.isManualRunning) {
             Log.record(TAG, "⏸ 检测到“手动庄园任务流”正在运行中，跳过本次自动任务调度")
+            return@coroutineScope
+        }
+
+        if (!isRunSessionCurrent()) {
+            logSessionInvalid("runner_start")
             return@coroutineScope
         }
 
@@ -110,6 +121,10 @@ class CoroutineTaskRunner(allModels: List<Model>) {
 
             // 执行多轮任务
             for (roundIndex in 0 until rounds) {
+                if (!isRunSessionCurrent()) {
+                    logSessionInvalid("before_round_${roundIndex + 1}")
+                    break
+                }
                 if (ApplicationHookConstants.isOffline()) {
                     Log.record(TAG, "⏸ 检测到离线模式，停止后续轮次")
                     break
@@ -120,7 +135,9 @@ class CoroutineTaskRunner(allModels: List<Model>) {
 
             awaitLongRunningJobs()
 
-            if (CustomSettings.onlyOnceDaily.value == true) {
+            if (!isRunSessionCurrent()) {
+                logSessionInvalid("after_long_running_jobs")
+            } else if (CustomSettings.onlyOnceDaily.value == true) {
                 // 确保时间状态是最新的
                 TaskCommon.update()
                 if (ApplicationHookConstants.isOffline()) {
@@ -141,7 +158,11 @@ class CoroutineTaskRunner(allModels: List<Model>) {
             withContext(NonCancellable) {
                 awaitLongRunningJobs()
             }
-            scheduleNext()
+            if (isRunSessionCurrent()) {
+                scheduleNext()
+            } else {
+                Log.record(TAG, "⏭ 会话已切换，跳过下次调度 owner=$runSessionOwnerUserId session=$runSessionEpoch")
+            }
             printExecutionSummary(startTime, System.currentTimeMillis())
         }
     }
@@ -151,6 +172,10 @@ class CoroutineTaskRunner(allModels: List<Model>) {
      */
     private suspend fun executeRound(round: Int, totalRounds: Int, status: CustomSettings.OnceDailyStatus) = coroutineScope {
         val roundStartTime = System.currentTimeMillis()
+        if (!isRunSessionCurrent()) {
+            logSessionInvalid("round_$round")
+            return@coroutineScope
+        }
         if (ApplicationHookConstants.isOffline()) {
             Log.record(TAG, "⏸ [第 $round/$totalRounds 轮] 检测到离线模式，跳过本轮")
             return@coroutineScope
@@ -199,6 +224,11 @@ class CoroutineTaskRunner(allModels: List<Model>) {
         if (tasks.isEmpty()) {
             return@coroutineScope
         }
+        if (!isRunSessionCurrent()) {
+            logSessionInvalid("batch_${round}_$batchIndex")
+            skippedCount.addAndGet(tasks.size)
+            return@coroutineScope
+        }
         if (ApplicationHookConstants.isOffline()) {
             skippedCount.addAndGet(tasks.size)
             Log.record(TAG, "⏸ [第 $round/$totalRounds 轮][批次 $batchIndex/$totalBatches] 检测到离线模式，跳过批次")
@@ -213,11 +243,21 @@ class CoroutineTaskRunner(allModels: List<Model>) {
         val semaphore = Semaphore(MAX_CONCURRENCY)
         val deferreds = tasks.map { task ->
             async {
+                if (!isRunSessionCurrent()) {
+                    Log.record(TAG, "⏸ 任务 ${task.getName()} 因会话切换而中止")
+                    skippedCount.incrementAndGet()
+                    return@async
+                }
                 if (ManualTask.isManualRunning) {
                     Log.record(TAG, "⏸ 任务 ${task.getName()} 因手动模式启动而中止")
                     return@async
                 }
                 semaphore.withPermit {
+                    if (!isRunSessionCurrent()) {
+                        Log.record(TAG, "⏸ 任务 ${task.getName()} 因会话切换而中止")
+                        skippedCount.incrementAndGet()
+                        return@withPermit
+                    }
                     if (ApplicationHookConstants.isOffline()) {
                         skippedCount.incrementAndGet()
                         Log.record(TAG, "⏸ 任务 ${task.getName()} 因离线模式启动而中止")
@@ -295,6 +335,12 @@ class CoroutineTaskRunner(allModels: List<Model>) {
         val taskId = "$taskName-R$round"
         val startTime = System.currentTimeMillis()
 
+        if (!isRunSessionCurrent()) {
+            skippedCount.incrementAndGet()
+            Log.record(TAG, "⏸ 会话已切换，跳过: $taskName")
+            return
+        }
+
         if (ApplicationHookConstants.isOffline()) {
             skippedCount.incrementAndGet()
             Log.record(TAG, "⏸ 检测到离线模式，跳过: $taskName")
@@ -331,7 +377,10 @@ class CoroutineTaskRunner(allModels: List<Model>) {
 
             // 成功
             val time = System.currentTimeMillis() - startTime
-            if (ApplicationHookConstants.isOffline()) {
+            if (!isRunSessionCurrent()) {
+                skippedCount.incrementAndGet()
+                Log.record(TAG, "⏸ 会话已切换，中断: $taskId (耗时: ${time}ms)")
+            } else if (ApplicationHookConstants.isOffline()) {
                 skippedCount.incrementAndGet()
                 Log.record(TAG, "⏸ 离线模式中断: $taskId (耗时: ${time}ms)")
             } else {
@@ -359,6 +408,14 @@ class CoroutineTaskRunner(allModels: List<Model>) {
         var loggedWait = false
         while (true) {
             val longRunningJob = longRunningJobs.peek() ?: break
+            if (!isRunSessionCurrent()) {
+                Log.record(TAG, "⏸ 会话已切换，中断白名单长任务: ${longRunningJob.taskId}")
+                longRunningJob.task.stopTask()
+                longRunningJob.job.cancel()
+                longRunningJobs.remove(longRunningJob)
+                skippedCount.incrementAndGet()
+                continue
+            }
             if (ApplicationHookConstants.isOffline()) {
                 Log.record(TAG, "⏸ 离线模式中断白名单长任务: ${longRunningJob.taskId}")
                 longRunningJob.task.stopTask()
@@ -374,7 +431,10 @@ class CoroutineTaskRunner(allModels: List<Model>) {
             longRunningJob.job.join()
             longRunningJobs.remove(longRunningJob)
             val time = System.currentTimeMillis() - longRunningJob.startTime
-            if (ApplicationHookConstants.isOffline()) {
+            if (!isRunSessionCurrent()) {
+                skippedCount.incrementAndGet()
+                Log.record(TAG, "⏸ 会话已切换，中断: ${longRunningJob.taskId} (耗时: ${time}ms)")
+            } else if (ApplicationHookConstants.isOffline()) {
                 skippedCount.incrementAndGet()
                 Log.record(TAG, "⏸ 离线模式中断: ${longRunningJob.taskId} (耗时: ${time}ms)")
             } else {
@@ -407,6 +467,21 @@ class CoroutineTaskRunner(allModels: List<Model>) {
         failureCount.set(0)
         skippedCount.set(0)
         taskExecutionTimes.clear()
+    }
+
+    private fun isRunSessionCurrent(): Boolean {
+        val ownerUserId = runSessionOwnerUserId?.trim().orEmpty()
+        if (ownerUserId.isEmpty() || runSessionEpoch <= 0L) {
+            return false
+        }
+        return AccountSessionCoordinator.isCurrentSession(ownerUserId, runSessionEpoch)
+    }
+
+    private fun logSessionInvalid(stage: String) {
+        Log.record(
+            TAG,
+            "⏹ 会话已失效，停止统一任务闭环: stage=$stage owner=$runSessionOwnerUserId session=$runSessionEpoch current=${AccountSessionCoordinator.currentSession()}"
+        )
     }
 
     @SuppressLint("DefaultLocale")

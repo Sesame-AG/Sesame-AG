@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import io.github.aoguai.sesameag.hook.ApplicationHook
 import io.github.aoguai.sesameag.hook.ApplicationHookCore
+import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
 import io.github.aoguai.sesameag.data.General
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.model.Model
@@ -85,7 +86,23 @@ object ScheduledTaskRouter {
 
     private fun routeInternal(context: Context, schedule: PersistentSchedule, source: String): RouteResult {
         val appContext = context.applicationContext ?: context
-        if (isTargetProcess(appContext) && ApplicationHookConstants.isOffline()) {
+        val targetProcess = isTargetProcess(appContext)
+        val currentSession = AccountSessionCoordinator.currentSession()
+        if (targetProcess && currentSession == null) {
+            Log.record(
+                TAG,
+                "当前会话尚未建立，延后持久任务[${schedule.name}] source=$source"
+            )
+            return RouteResult.DEFERRED
+        }
+        if (targetProcess && !AccountSessionCoordinator.isScheduleRoutable(schedule)) {
+            Log.record(
+                TAG,
+                "持久任务会话不匹配，丢弃调度[${schedule.name}] owner=${schedule.ownerUserId} session=${schedule.sessionEpoch} current=$currentSession"
+            )
+            return RouteResult.SKIPPED
+        }
+        if (targetProcess && ApplicationHookConstants.isOffline()) {
             Log.record(TAG, "离线状态中，延后持久任务[${schedule.name}] source=$source")
             return RouteResult.DEFERRED
         }
@@ -181,11 +198,12 @@ object ScheduledTaskRouter {
         val ownerUserId = schedule.ownerUserId?.trim().orEmpty()
         val payloadOwnerUserId = payload.optString("owner_user_id").trim()
         val targetProcess = isTargetProcess(context)
+        val currentOwnerUserId = AccountSessionCoordinator.currentUserId() ?: UserMap.currentUid
         val expectedOwnerUserId = ownerUserId.ifBlank { payloadOwnerUserId }
-        if (targetProcess && expectedOwnerUserId.isNotEmpty() && expectedOwnerUserId != UserMap.currentUid) {
+        if (targetProcess && expectedOwnerUserId.isNotEmpty() && expectedOwnerUserId != currentOwnerUserId) {
             Log.record(
                 TAG,
-                "模块持久子任务账号不匹配，标记完成[${schedule.name}] owner=$expectedOwnerUserId current=${UserMap.currentUid}"
+                "模块持久子任务账号不匹配，标记完成[${schedule.name}] owner=$expectedOwnerUserId current=$currentOwnerUserId"
             )
             return RouteResult.SKIPPED
         }
@@ -347,7 +365,9 @@ object ScheduledTaskRouter {
                 wakenTime = wakenTime,
                 reason = reason,
                 dedupeKey = schedule.dedupeKey.ifBlank { schedule.id },
-                persistentScheduleId = schedule.id
+                persistentScheduleId = schedule.id,
+                ownerUserId = schedule.ownerUserId,
+                sessionEpoch = schedule.sessionEpoch
             )
         )
     }

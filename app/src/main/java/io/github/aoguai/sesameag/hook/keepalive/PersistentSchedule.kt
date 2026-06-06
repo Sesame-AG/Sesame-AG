@@ -30,6 +30,7 @@ data class PersistentSchedule(
     val dedupeKey: String = "",
     val payloadJson: String = "{}",
     val ownerUserId: String? = null,
+    val sessionEpoch: Long = 0L,
     val createdAtMs: Long = System.currentTimeMillis(),
     val updatedAtMs: Long = System.currentTimeMillis(),
     val state: String = PersistentScheduleState.SCHEDULED,

@@ -4,6 +4,7 @@ import android.util.Base64
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.entity.friend.FriendCapabilityState
+import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
 import io.github.aoguai.sesameag.hook.ApplicationHook
 import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleDefaults
 import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleKind
@@ -94,7 +95,9 @@ class AntStall : ModelTask() {
     override fun getIcon(): String = "AntStall.png"
 
     private fun persistentStallDedupeKey(childId: String): String {
-        val owner = UserMap.currentUid?.takeIf { it.isNotBlank() } ?: "default"
+        val owner = AccountSessionCoordinator.currentUserId()?.takeIf { it.isNotBlank() }
+            ?: UserMap.currentUid?.takeIf { it.isNotBlank() }
+            ?: "default"
         return "stall_child_${owner}::$childId"
     }
 
@@ -107,12 +110,15 @@ class AntStall : ModelTask() {
         val context = ApplicationHook.appContext ?: return
         if (triggerAtMs <= System.currentTimeMillis()) return
         try {
+            val ownerUserId = AccountSessionCoordinator.currentUserId()?.takeIf { it.isNotBlank() }
+                ?: UserMap.currentUid?.takeIf { it.isNotBlank() }
             val payload = JSONObject(extraPayload.toString())
                 .put("child_kind", PERSISTENT_CHILD_KIND)
                 .put("child_id", childId)
                 .put("group", group)
                 .put("launch_target", true)
-            UserMap.currentUid?.takeIf { it.isNotBlank() }?.let { payload.put("owner_user_id", it) }
+            ownerUserId?.let { payload.put("owner_user_id", it) }
+            payload.put("session_epoch", AccountSessionCoordinator.currentSessionEpoch())
 
             UnifiedScheduler.schedulePersistentTrigger(
                 context = context,
@@ -122,7 +128,8 @@ class AntStall : ModelTask() {
                 dedupeKey = persistentStallDedupeKey(childId),
                 payloadJson = payload.toString(),
                 toleranceMs = PersistentScheduleDefaults.DEFAULT_TOLERANCE_MS,
-                ownerUserId = UserMap.currentUid
+                ownerUserId = ownerUserId,
+                sessionEpoch = AccountSessionCoordinator.currentSessionEpoch()
             )
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "注册新村持久子任务失败[$group][$childId]", t)
@@ -136,8 +143,14 @@ class AntStall : ModelTask() {
     internal fun triggerPersistentChildTask(childId: String, group: String, payloadJson: String, source: String): Boolean {
         val payload = runCatching { JSONObject(payloadJson.ifBlank { "{}" }) }.getOrDefault(JSONObject())
         val ownerUserId = payload.optString("owner_user_id").trim()
-        if (ownerUserId.isNotBlank() && ownerUserId != UserMap.currentUid) {
-            Log.stall("新村持久子任务[$group][$childId]账号不匹配，跳过: owner=$ownerUserId current=${UserMap.currentUid}")
+        val payloadSessionEpoch = payload.optLong("session_epoch", 0L)
+        val currentOwnerUserId = (AccountSessionCoordinator.currentUserId() ?: UserMap.currentUid).orEmpty()
+        if (ownerUserId.isNotBlank() && ownerUserId != currentOwnerUserId) {
+            Log.stall("新村持久子任务[$group][$childId]账号不匹配，跳过: owner=$ownerUserId current=$currentOwnerUserId")
+            return true
+        }
+        if (!isPersistentChildSessionCurrent(currentOwnerUserId, payloadSessionEpoch)) {
+            Log.stall("新村持久子任务[$group][$childId]会话无效，跳过触发: owner=$currentOwnerUserId session=$payloadSessionEpoch")
             return true
         }
         if (!isEnable()) {
@@ -145,13 +158,30 @@ class AntStall : ModelTask() {
             return true
         }
         GlobalThreadPools.execute {
-            runPersistentChildTask(childId, group, payload, source)
+            runPersistentChildTask(childId, group, payload, source, currentOwnerUserId.orEmpty(), payloadSessionEpoch)
         }
         return true
     }
 
-    private fun runPersistentChildTask(childId: String, group: String, payload: JSONObject, source: String) {
+    private fun isPersistentChildSessionCurrent(ownerUserId: String, sessionEpoch: Long): Boolean {
+        return ownerUserId.isNotBlank() &&
+            sessionEpoch > 0L &&
+            AccountSessionCoordinator.isCurrentSession(ownerUserId, sessionEpoch)
+    }
+
+    private fun runPersistentChildTask(
+        childId: String,
+        group: String,
+        payload: JSONObject,
+        source: String,
+        ownerUserId: String,
+        sessionEpoch: Long
+    ) {
         try {
+            if (!isPersistentChildSessionCurrent(ownerUserId, sessionEpoch)) {
+                Log.stall("新村持久子任务[$group][$childId]会话已切换，取消执行: owner=$ownerUserId session=$sessionEpoch")
+                return
+            }
             Log.stall("新村持久子任务触发[$group][$childId] source=$source")
             cancelPersistentChildTask(childId)
             when (group) {

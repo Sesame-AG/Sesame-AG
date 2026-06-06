@@ -22,6 +22,9 @@ import io.github.aoguai.sesameag.task.common.TaskFlowEngine
 import io.github.aoguai.sesameag.task.common.TaskFlowItem
 import io.github.aoguai.sesameag.task.common.TaskFlowPhase
 import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
+import io.github.aoguai.sesameag.task.exchange.ExchangeEffectNeed
+import io.github.aoguai.sesameag.task.exchange.ExchangeReplenishResult
+import io.github.aoguai.sesameag.task.exchange.ExchangeReplenisher
 import io.github.aoguai.sesameag.util.FriendGuard
 import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.Log
@@ -591,7 +594,7 @@ class AntDodo : ModelTask() {
             ?.takeIf { it.isNotBlank() }
     }
 
-    private fun propList() {
+    private fun propList(allowReplenish: Boolean = true) {
         try {
             val giftTargetUserId = resolveSendFriendCardTarget()
             th@ while (!Thread.currentThread().isInterrupted) {
@@ -604,25 +607,44 @@ class AntDodo : ModelTask() {
                 if (ResChecker.checkRes(TAG, jo)) {
                     val propList = jo.getJSONObject("data").optJSONArray("propList")
                     if (propList == null || propList.length() == 0) {
+                        if (replenishDodoPropIfMissing(
+                                allowReplenish = allowReplenish,
+                                historyMissing = true,
+                                friendMissing = true
+                            )
+                        ) {
+                            return
+                        }
                         Log.dodo("神奇物种道具跳过：未找到可使用的道具")
                         return
                     }
+                    var hasHistoryProp = false
+                    var hasFriendProp = false
+                    var usedEnabledProp = false
                     for (i in 0 until propList.length()) {
                         val prop = propList.getJSONObject(i)
                         val propType = prop.optString("propType")
                         val propName = prop.optJSONObject("propConfig")?.optString("propName")
                             ?.takeIf { it.isNotBlank() } ?: propType
+                        val propKind = resolvePropKind(propType)
+                        val propIdList = prop.optJSONArray("propIdList")
+                        val holdsNum = prop.optInt("holdsNum", propIdList?.length() ?: 0)
+                        val hasUsablePropId = propIdList != null && propIdList.length() > 0
+                        if (propKind == DodoPropKind.HISTORY_CARD && holdsNum > 0 && hasUsablePropId) {
+                            hasHistoryProp = true
+                        }
+                        if (propKind == DodoPropKind.FRIEND_CARD && holdsNum > 0 && hasUsablePropId) {
+                            hasFriendProp = true
+                        }
                         if (!isUsePropType(propType)) {
                             Log.dodo("神奇物种道具跳过[$propName]：配置未开启")
                             continue
                         }
-                        val propIdList = prop.optJSONArray("propIdList")
                         if (propIdList == null || propIdList.length() == 0) {
                             Log.runtime(TAG, "神奇物种道具[$propName]缺少propIdList")
                             continue
                         }
                         val propId = propIdList.getString(0)
-                        val holdsNum = prop.optInt("holdsNum", propIdList.length())
                         val consumeTargetResult = resolvePropConsumeTarget(propType)
                         val consumeTarget = consumeTargetResult?.target
                         if (isUniversalCardProp(propType)) {
@@ -661,11 +683,20 @@ class AntDodo : ModelTask() {
                         } else {
                             Log.dodo("使用道具🎭[$propName]")
                         }
+                        usedEnabledProp = true
                         logPropRefreshState(propType, propName, consumeTarget, animal)
                         GlobalThreadPools.sleepCompat(300)
                         if (holdsNum > 1) {
                             continue@th
                         }
+                    }
+                    if (!usedEnabledProp && replenishDodoPropIfMissing(
+                            allowReplenish = allowReplenish,
+                            historyMissing = !hasHistoryProp,
+                            friendMissing = !hasFriendProp
+                        )
+                    ) {
+                        return
                     }
                 }
                 break
@@ -674,6 +705,42 @@ class AntDodo : ModelTask() {
             Log.runtime(TAG, "AntDodo PropList err:")
             Log.printStackTrace(TAG, th)
         }
+    }
+
+    private fun replenishDodoPropIfMissing(
+        allowReplenish: Boolean,
+        historyMissing: Boolean,
+        friendMissing: Boolean
+    ): Boolean {
+        if (!allowReplenish) {
+            return false
+        }
+        var exchanged = false
+        if (historyMissing && isUsePropType("COLLECT_HISTORY_ANIMAL_7_DAYS")) {
+            val result = ExchangeReplenisher.replenish(
+                need = ExchangeEffectNeed.DODO_HISTORY_CARD,
+                reason = "神奇物种抽历史卡机会不足",
+                maxCount = 1
+            ) {
+                AntDodoRpcCall.propList()
+            }
+            exchanged = exchanged || result == ExchangeReplenishResult.EXCHANGED
+        }
+        if (friendMissing && isUsePropType("COLLECT_TO_FRIEND_TIMES_7_DAYS")) {
+            val result = ExchangeReplenisher.replenish(
+                need = ExchangeEffectNeed.DODO_FRIEND_CARD,
+                reason = "神奇物种抽好友卡机会不足",
+                maxCount = 1
+            ) {
+                AntDodoRpcCall.propList()
+            }
+            exchanged = exchanged || result == ExchangeReplenishResult.EXCHANGED
+        }
+        if (exchanged) {
+            Log.dodo("神奇物种道具已触发缺货补兑，重新查询道具列表")
+            propList(allowReplenish = false)
+        }
+        return exchanged
     }
 
     private fun isUsePropType(propType: String): Boolean {

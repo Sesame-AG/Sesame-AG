@@ -364,33 +364,43 @@ abstract class ModelTask : Model() {
 
     /**
      * 停止任务（协程版本）
-     * 注意：此方法是非阻塞的，会异步取消任务
+     * 注意：此方法只负责发出取消信号；如需等待退出，请调用 stopTaskAndWait。
      */
-    @OptIn(DelicateCoroutinesApi::class)
     open fun stopTask() {
         // 立即标记为非运行状态
         isRunning = false
-        
+
         // 取消协程作用域（这会自动取消所有子协程）
         taskScope?.cancel()
         taskScope = null
-        
-        // 异步清理子任务映射
-        // 使用 GlobalScope 确保清理逻辑能够完成，即使父作用域已被取消
-        kotlinx.coroutines.GlobalScope.launch(Dispatchers.Default) {
-            try {
-                childTaskMap.values.forEach { childTask ->
-                    try {
-                        childTask.cancel()
-                    } catch (e: Exception) {
-                        Log.printStackTrace("stopTask err", e)
-                    }
+
+        try {
+            childTaskMap.values.forEach { childTask ->
+                try {
+                    childTask.cancel()
+                } catch (e: Exception) {
+                    Log.printStackTrace("stopTask err", e)
                 }
-                childTaskMap.clear()
-            } catch (e: Exception) {
-                Log.printStackTrace("stopTask err", e)
             }
+        } finally {
+            childTaskMap.clear()
         }
+    }
+
+    suspend fun stopTaskAndWait(timeoutMs: Long = 5_000L): Boolean {
+        val runningJob = synchronized(startJobLock) { currentStartJob }
+        stopTask()
+        if (runningJob == null) {
+            return true
+        }
+        return withTimeoutOrNull(timeoutMs) {
+            try {
+                runningJob.join()
+                true
+            } catch (_: CancellationException) {
+                true
+            }
+        } ?: false
     }
 
     /**
@@ -642,6 +652,44 @@ abstract class ModelTask : Model() {
                     }
                 }
             }
+        }
+
+        @JvmStatic
+        suspend fun stopAllTaskAndWait(timeoutMs: Long = 5_000L): Boolean {
+            val runningJobs = mutableListOf<Job>()
+            var allStopped = true
+            for (model in modelArray) {
+                if (model is ModelTask) {
+                    val stopped = try {
+                        val runningJob = synchronized(model.startJobLock) { model.currentStartJob }
+                        model.stopTask()
+                        if (runningJob != null) {
+                            runningJobs += runningJob
+                        }
+                        true
+                    } catch (e: Exception) {
+                        Log.printStackTrace("停止任务异常", e)
+                        false
+                    }
+                    if (!stopped) {
+                        allStopped = false
+                    }
+                }
+            }
+            if (runningJobs.isEmpty()) {
+                return allStopped
+            }
+            val joined = withTimeoutOrNull(timeoutMs) {
+                runningJobs.forEach { job ->
+                    try {
+                        job.join()
+                    } catch (_: CancellationException) {
+                        // ignore cancellation raised by cooperative shutdown
+                    }
+                }
+                true
+            } ?: false
+            return allStopped && joined
         }
 
     }

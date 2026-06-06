@@ -37,17 +37,19 @@ object Vitality {
     }
 
     @JvmStatic
-    fun ItemDetailBySpuId(spuId: String) {
+    fun ItemDetailBySpuId(spuId: String): Boolean {
         try {
-            val jo = JsonUtil.parseJSONObjectOrNull(AntForestRpcCall.itemDetail(spuId)) ?: return
+            val jo = JsonUtil.parseJSONObjectOrNull(AntForestRpcCall.itemDetail(spuId)) ?: return false
             if (ResChecker.checkRes("${TAG}查询森林活力值商品详情失败:", jo)) {
-                val itemDetail = jo.optJSONObject("spuItemInfoVO") ?: return
+                val itemDetail = jo.optJSONObject("spuItemInfoVO") ?: return false
                 handleItemDetail(itemDetail)
+                return true
             }
         } catch (th: Throwable) {
             Log.runtime(TAG, "ItemDetailBySpuId err")
             Log.printStackTrace(TAG, th)
         }
+        return false
     }
 
     @JvmStatic
@@ -137,14 +139,21 @@ object Vitality {
             initVitality("SC_ASSETS")
         }
         
-        val sku = skuInfo[skuId]
-        if (sku == null) {
+        var sku = skuInfo[skuId] ?: run {
             Log.forest("活力兑换🍃找不到要兑换的权益！")
             return false
         }
         
         try {
-            val skuName = sku.optString("skuName")
+            var skuName = sku.optString("skuName")
+            val spuId = sku.optString("spuId")
+            if (spuId.isEmpty()) return false
+            if (!ItemDetailBySpuId(spuId)) {
+                Log.forest("活力兑换🍃[$skuName]兑换前详情复核失败")
+                return false
+            }
+            sku = skuInfo[skuId] ?: sku
+            skuName = sku.optString("skuName").ifBlank { skuName }
             val itemStatusList = sku.optJSONArray("itemStatusList") ?: JSONArray()
             for (i in 0 until itemStatusList.length()) {
                 val itemStatus = itemStatusList.optString(i)
@@ -159,12 +168,11 @@ object Vitality {
                 }
             }
             
-            val spuId = sku.optString("spuId")
-            if (spuId.isEmpty()) return false
             if (VitalityExchange(spuId, skuId, skuName)) {
                 if (skuName.contains("限时")) {
                     Status.setFlagToday(StatusFlags.FLAG_ANTFOREST_VITALITY_EXCHANGE_LIMIT_PREFIX + skuId)
                 }
+                ItemDetailBySpuId(spuId)
                 return true
             }
             ItemDetailBySpuId(spuId)

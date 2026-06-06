@@ -25,6 +25,8 @@ object ExchangeOptionsRefreshBridge {
     const val TARGET_BEAN_RIGHT = "bean_right"
     const val TARGET_FARM_PARADISE = "farm_paradise"
     const val TARGET_SPORTS_ENERGY = "sports_energy"
+    const val TARGET_FOREST_VITALITY = "forest_vitality"
+    const val TARGET_SESAME_GRAIN = "sesame_grain"
 
     fun requestRefresh(
         target: String,

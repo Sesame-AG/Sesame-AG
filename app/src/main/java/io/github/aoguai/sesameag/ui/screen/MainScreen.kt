@@ -33,6 +33,7 @@ import io.github.aoguai.sesameag.entity.UserEntity
 import io.github.aoguai.sesameag.ui.MainActivity
 import io.github.aoguai.sesameag.ui.compose.CommonAlertDialog
 import io.github.aoguai.sesameag.ui.navigation.BottomNavItem
+import io.github.aoguai.sesameag.ui.permissions.PermissionHealthSnapshot
 import io.github.aoguai.sesameag.ui.screen.content.HomeContent
 import io.github.aoguai.sesameag.ui.screen.content.LogsContent
 import io.github.aoguai.sesameag.ui.screen.content.SettingsContent
@@ -46,6 +47,7 @@ fun MainScreen(
     oneWord: String,
     activeUserName: String,
     moduleStatus: MainViewModel.ModuleStatus,
+    permissionHealth: PermissionHealthSnapshot,
     viewModel: MainViewModel,
     isDynamicColor: Boolean, // 传给 MainScreen
     userList: List<UserEntity>, // 🔥 确保 userList 被传入 MainScreen
@@ -145,6 +147,7 @@ fun MainScreen(
                 BottomNavItem.Home -> HomeContent(
                     moduleStatus = moduleStatus,
                     serviceStatus = serviceStatus,
+                    permissionHealth = permissionHealth,
                     oneWord = oneWord,
                     isOneWordLoading = isOneWordLoading,
                     isLegalAccepted = isLegalAccepted,

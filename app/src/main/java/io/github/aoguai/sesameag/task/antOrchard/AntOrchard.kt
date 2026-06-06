@@ -20,6 +20,9 @@ import io.github.aoguai.sesameag.task.common.TaskFlowEngine
 import io.github.aoguai.sesameag.task.common.TaskFlowItem
 import io.github.aoguai.sesameag.task.common.TaskFlowPhase
 import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
+import io.github.aoguai.sesameag.task.exchange.ExchangeEffectNeed
+import io.github.aoguai.sesameag.task.exchange.ExchangeReplenishResult
+import io.github.aoguai.sesameag.task.exchange.ExchangeReplenisher
 import io.github.aoguai.sesameag.util.CoroutineUtils
 import io.github.aoguai.sesameag.util.FriendGuard
 import io.github.aoguai.sesameag.util.Log
@@ -218,6 +221,7 @@ class AntOrchard : ModelTask() {
         val statusKey = if (isMain) StatusFlags.FLAG_ANTORCHARD_SPREAD_MANURE_COUNT else StatusFlags.FLAG_ANTORCHARD_SPREAD_MANURE_COUNT_YEB
 
         var totalWatered = Status.getIntFlagToday(statusKey) ?: 0
+        var fertilizerReplenishTried = false
 
         if (!waterToLimit && totalWatered >= targetLimit) {
             Log.orchard("$sceneName: 今日已完成施肥目标 $totalWatered/$targetLimit")
@@ -275,6 +279,23 @@ class AntOrchard : ModelTask() {
 
                 if (accountInfo != null) {
                     if (happyPoint == null || happyPoint < singleWateringCost) {
+                        if (!fertilizerReplenishTried) {
+                            fertilizerReplenishTried = true
+                            val replenishResult = ExchangeReplenisher.replenish(
+                                need = ExchangeEffectNeed.ORCHARD_FERTILIZER,
+                                reason = "$sceneName 肥料不足",
+                                maxCount = 1
+                            ) {
+                                AntOrchardRpcCall.orchardIndex()
+                            }
+                            if (replenishResult == ExchangeReplenishResult.EXCHANGED) {
+                                Log.orchard("$sceneName 肥料不足已触发会员积分补兑，重新查询库存")
+                                continue
+                            }
+                            if (replenishResult == ExchangeReplenishResult.RETRY_LATER) {
+                                Log.orchard("$sceneName 肥料补兑暂不可用，保留后续调度重试")
+                            }
+                        }
                         Log.orchard("$sceneName 肥料不足: 当前 ${happyPoint ?: 0} < 消耗 $singleWateringCost")
                         return
                     }

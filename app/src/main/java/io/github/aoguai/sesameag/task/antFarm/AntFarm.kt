@@ -15,6 +15,7 @@ import io.github.aoguai.sesameag.entity.OtherEntityProvider.farmFamilyOption
 import io.github.aoguai.sesameag.entity.ParadiseCoinBenefit
 import io.github.aoguai.sesameag.hook.ExchangeOptionsRefreshBridge
 import io.github.aoguai.sesameag.hook.HookReadyChecker
+import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
 import io.github.aoguai.sesameag.hook.ApplicationHook
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.hook.Toast
@@ -51,9 +52,14 @@ import io.github.aoguai.sesameag.task.common.TaskFlowPhase
 import io.github.aoguai.sesameag.task.common.TaskFlowSnapshot
 import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
 import io.github.aoguai.sesameag.task.exchange.ExchangeCost
+import io.github.aoguai.sesameag.task.exchange.ExchangeEffectCatalog
+import io.github.aoguai.sesameag.task.exchange.ExchangeEffectNeed
 import io.github.aoguai.sesameag.task.exchange.ExchangeItem
 import io.github.aoguai.sesameag.task.exchange.ExchangeLimit
+import io.github.aoguai.sesameag.task.exchange.ExchangeReplenishResult
+import io.github.aoguai.sesameag.task.exchange.ExchangeReplenisher
 import io.github.aoguai.sesameag.task.exchange.ExchangeSafety
+import io.github.aoguai.sesameag.task.exchange.ExchangeSafetyRules
 import io.github.aoguai.sesameag.util.CoroutineUtils
 import io.github.aoguai.sesameag.util.DataStore
 import io.github.aoguai.sesameag.util.FriendGuard
@@ -877,7 +883,6 @@ class AntFarm : ModelTask() {
                 LinkedHashSet<String?>()
             ) {
                 refreshParadiseCoinExchangeOptionsForSettings()
-                ParadiseCoinBenefit.getList()
             }.withDesc("仅兑换列表中的小鸡乐园权益。需开启“小鸡乐园 | 兑换权益”。").also {
                 paradiseCoinExchangeBenefitList = it
             })
@@ -1013,7 +1018,9 @@ class AntFarm : ModelTask() {
     }
 
     private fun persistentFarmDedupeKey(childId: String): String {
-        val owner = UserMap.currentUid?.takeIf { it.isNotBlank() } ?: "default"
+        val owner = AccountSessionCoordinator.currentUserId()?.takeIf { it.isNotBlank() }
+            ?: UserMap.currentUid?.takeIf { it.isNotBlank() }
+            ?: "default"
         return "farm_child_${owner}::$childId"
     }
 
@@ -1026,13 +1033,16 @@ class AntFarm : ModelTask() {
         val context = ApplicationHook.appContext ?: return
         if (triggerAtMs <= System.currentTimeMillis()) return
         try {
+            val ownerUserId = AccountSessionCoordinator.currentUserId()?.takeIf { it.isNotBlank() }
+                ?: UserMap.currentUid?.takeIf { it.isNotBlank() }
             val payload = JSONObject(extraPayload.toString())
                 .put("child_kind", PERSISTENT_CHILD_KIND)
                 .put("child_id", childId)
                 .put("group", group)
                 .put("launch_target", true)
             ownerFarmId?.takeIf { it.isNotBlank() }?.let { payload.put("farm_id", it) }
-            UserMap.currentUid?.takeIf { it.isNotBlank() }?.let { payload.put("owner_user_id", it) }
+            ownerUserId?.let { payload.put("owner_user_id", it) }
+            payload.put("session_epoch", AccountSessionCoordinator.currentSessionEpoch())
 
             UnifiedScheduler.schedulePersistentTrigger(
                 context = context,
@@ -1042,7 +1052,8 @@ class AntFarm : ModelTask() {
                 dedupeKey = persistentFarmDedupeKey(childId),
                 payloadJson = payload.toString(),
                 toleranceMs = PersistentScheduleDefaults.DEFAULT_TOLERANCE_MS,
-                ownerUserId = UserMap.currentUid
+                ownerUserId = ownerUserId,
+                sessionEpoch = AccountSessionCoordinator.currentSessionEpoch()
             )
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "注册庄园持久子任务失败[$group][$childId]", t)
@@ -1056,8 +1067,14 @@ class AntFarm : ModelTask() {
     internal fun triggerPersistentChildTask(childId: String, group: String, payloadJson: String, source: String): Boolean {
         val payload = runCatching { JSONObject(payloadJson.ifBlank { "{}" }) }.getOrDefault(JSONObject())
         val ownerUserId = payload.optString("owner_user_id").trim()
-        if (ownerUserId.isNotBlank() && ownerUserId != UserMap.currentUid) {
-            Log.farm("庄园持久子任务[$group][$childId]账号不匹配，跳过: owner=$ownerUserId current=${UserMap.currentUid}")
+        val payloadSessionEpoch = payload.optLong("session_epoch", 0L)
+        val currentOwnerUserId = (AccountSessionCoordinator.currentUserId() ?: UserMap.currentUid).orEmpty()
+        if (ownerUserId.isNotBlank() && ownerUserId != currentOwnerUserId) {
+            Log.farm("庄园持久子任务[$group][$childId]账号不匹配，跳过: owner=$ownerUserId current=$currentOwnerUserId")
+            return true
+        }
+        if (!isPersistentChildSessionCurrent(currentOwnerUserId, payloadSessionEpoch)) {
+            Log.farm("庄园持久子任务[$group][$childId]会话无效，跳过触发: owner=$currentOwnerUserId session=$payloadSessionEpoch")
             return true
         }
         if (!isEnable()) {
@@ -1065,13 +1082,30 @@ class AntFarm : ModelTask() {
             return true
         }
         GlobalThreadPools.execute(GlobalThreadPools.computeDispatcher) {
-            runPersistentChildTask(childId, group, payload, source)
+            runPersistentChildTask(childId, group, payload, source, currentOwnerUserId.orEmpty(), payloadSessionEpoch)
         }
         return true
     }
 
-    private suspend fun runPersistentChildTask(childId: String, group: String, payload: JSONObject, source: String) {
+    private fun isPersistentChildSessionCurrent(ownerUserId: String, sessionEpoch: Long): Boolean {
+        return ownerUserId.isNotBlank() &&
+            sessionEpoch > 0L &&
+            AccountSessionCoordinator.isCurrentSession(ownerUserId, sessionEpoch)
+    }
+
+    private suspend fun runPersistentChildTask(
+        childId: String,
+        group: String,
+        payload: JSONObject,
+        source: String,
+        ownerUserId: String,
+        sessionEpoch: Long
+    ) {
         try {
+            if (!isPersistentChildSessionCurrent(ownerUserId, sessionEpoch)) {
+                Log.farm("庄园持久子任务[$group][$childId]会话已切换，取消执行: owner=$ownerUserId session=$sessionEpoch")
+                return
+            }
             Log.farm("庄园持久子任务触发[$group][$childId] source=$source")
             cancelPersistentChildTask(childId)
             when (group) {
@@ -1290,7 +1324,37 @@ class AntFarm : ModelTask() {
     }
 
 
-    private fun refreshParadiseCoinExchangeOptionsForSettings() {
+    private fun buildParadiseCoinExchangeItem(
+        spuId: String,
+        spuName: String,
+        minPrice: Int,
+        controlTag: String,
+        itemStatusList: JSONArray?
+    ): ExchangeItem {
+        val statusText = formatFarmPropStatusList(itemStatusList)
+        val blocked = hasBlockingFarmPropStatus(itemStatusList)
+        val safety = if (blocked) ExchangeSafety.UNAVAILABLE else ExchangeSafety.AUTO
+        val safetyReason = if (blocked) statusText else ""
+        val effectTags = ExchangeEffectCatalog.tagsFor(ExchangeEffectCatalog.SOURCE_FARM_PARADISE, spuName)
+        return ExchangeItem(
+            id = spuId,
+            name = spuName.ifBlank { spuId },
+            cost = ExchangeCost(pointText = "${minPrice}乐园币"),
+            limit = ExchangeLimit(statusText = listOf(controlTag, statusText).filter { it.isNotBlank() }.joinToString("、")),
+            safety = safety,
+            safetyReason = safetyReason,
+            effectTags = effectTags,
+            displayMeta = ExchangeEffectCatalog.displayMeta(
+                ExchangeEffectCatalog.SOURCE_FARM_PARADISE,
+                spuName,
+                safety,
+                safetyReason,
+                effectTags
+            )
+        )
+    }
+
+    private fun refreshParadiseCoinExchangeOptionsForSettings(): List<MapperEntity> {
         if (!HookReadyChecker.isCurrentProcessReadyForRpc(UserMap.currentUid)) {
             if (!HookReadyChecker.isTargetAppReadyForRpc(UserMap.currentUid) ||
                 !ExchangeOptionsRefreshBridge.requestRefresh(
@@ -1299,21 +1363,22 @@ class AntFarm : ModelTask() {
                 )
             ) {
                 Log.farm("小鸡乐园币💸目标应用未就绪，设置页使用缓存列表")
-                return
+                return ParadiseCoinBenefit.getList()
             }
             val benefitMap = IdMapManager.getInstance(ParadiseCoinBenefitIdMap::class.java)
             benefitMap.load(UserMap.currentUid)
             Log.farm("小鸡乐园币💸设置页加载目标应用刷新列表#${benefitMap.map.size}")
-            return
+            return ParadiseCoinBenefit.getList()
         }
         try {
             val jo = JSONObject(AntFarmRpcCall.getMallHome())
             if (!ResChecker.checkRes(TAG, jo)) {
                 Log.error(TAG, "小鸡乐园币💸[设置页刷新权益列表失败]")
-                return
+                return ParadiseCoinBenefit.getList()
             }
-            val mallItemSimpleList = jo.optJSONArray("mallItemSimpleList") ?: return
+            val mallItemSimpleList = jo.optJSONArray("mallItemSimpleList") ?: return ParadiseCoinBenefit.getList()
             val benefitMap = IdMapManager.getInstance(ParadiseCoinBenefitIdMap::class.java)
+            val mapperList = mutableListOf<MapperEntity>()
             for (i in 0..<mallItemSimpleList.length()) {
                 val mallItemInfo = mallItemSimpleList.optJSONObject(i) ?: continue
                 val spuName = mallItemInfo.optString("spuName")
@@ -1324,25 +1389,94 @@ class AntFarm : ModelTask() {
                     continue
                 }
                 val itemStatusList = mallItemInfo.optJSONArray("itemStatusList")
-                val statusText = formatFarmPropStatusList(itemStatusList)
-                val exchangeItem = ExchangeItem(
-                    id = spuId,
-                    name = spuName.ifBlank { spuId },
-                    cost = ExchangeCost(pointText = "${minPrice}乐园币"),
-                    limit = ExchangeLimit(statusText = listOf(controlTag, statusText).filter { it.isNotBlank() }.joinToString("、")),
-                    safety = if (hasBlockingFarmPropStatus(itemStatusList)) ExchangeSafety.UNAVAILABLE else ExchangeSafety.AUTO,
-                    safetyReason = if (hasBlockingFarmPropStatus(itemStatusList)) statusText else ""
-                )
+                val exchangeItem = buildParadiseCoinExchangeItem(spuId, spuName.ifBlank { spuId }, minPrice, controlTag, itemStatusList)
                 benefitMap.add(spuId, exchangeItem.displayName())
+                mapperList.add(exchangeItem.toMapperEntity())
             }
             benefitMap.save(UserMap.currentUid)
+            return mapperList.ifEmpty { ParadiseCoinBenefit.getList() }
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "refreshParadiseCoinExchangeOptionsForSettings err:", t)
+            return ParadiseCoinBenefit.getList()
         }
     }
 
     internal fun refreshParadiseCoinExchangeOptionsForRemote() {
         refreshParadiseCoinExchangeOptionsForSettings()
+    }
+
+    internal fun replenishExchangeByNeed(
+        need: ExchangeEffectNeed,
+        reason: String,
+        maxCount: Int
+    ): ExchangeReplenishResult {
+        if (paradiseCoinExchangeBenefit?.value != true) {
+            return ExchangeReplenishResult.NOT_SELECTED
+        }
+        val selectedIds = paradiseCoinExchangeBenefitList?.value
+            ?.filterNotNull()
+            ?.map { it.trim() }
+            ?.filter { it.isNotEmpty() }
+            ?.toSet()
+            ?: emptySet()
+        if (selectedIds.isEmpty()) {
+            return ExchangeReplenishResult.NOT_SELECTED
+        }
+        return runCatching {
+            val jo = JSONObject(AntFarmRpcCall.getMallHome())
+            if (!ResChecker.checkRes(TAG, jo)) {
+                return@runCatching ExchangeReplenishResult.RETRY_LATER
+            }
+            val mallItemSimpleList = jo.optJSONArray("mallItemSimpleList") ?: return@runCatching ExchangeReplenishResult.NOT_AVAILABLE
+            val mallItems = mutableListOf<Pair<JSONObject, ExchangeItem>>()
+            for (i in 0 until mallItemSimpleList.length()) {
+                val mallItemInfo = mallItemSimpleList.optJSONObject(i) ?: continue
+                val exchangeItem = buildParadiseCoinExchangeItem(
+                    spuId = mallItemInfo.optString("spuId"),
+                    spuName = mallItemInfo.optString("spuName"),
+                    minPrice = mallItemInfo.optInt("minPrice"),
+                    controlTag = mallItemInfo.optString("controlTag"),
+                    itemStatusList = mallItemInfo.optJSONArray("itemStatusList")
+                )
+                mallItems.add(mallItemInfo to exchangeItem)
+            }
+            var matchedSelected = false
+            var attempted = false
+            var exchangedCount = 0
+            for ((mallItemInfo, exchangeItem) in mallItems.sortedBy { ExchangeEffectCatalog.priorityFor(it.second, need) }) {
+                if (exchangedCount >= maxCount.coerceAtLeast(1)) {
+                    break
+                }
+                val spuId = mallItemInfo.optString("spuId")
+                if (!selectedIds.contains(spuId)) {
+                    continue
+                }
+                val spuName = mallItemInfo.optString("spuName")
+                if (exchangeItem.effectTags.none { it.need == need }) {
+                    continue
+                }
+                matchedSelected = true
+                if (exchangeItem.safety != ExchangeSafety.AUTO ||
+                    !Status.canParadiseCoinExchangeBenefitToday(spuId) ||
+                    isExchange(mallItemInfo.optJSONArray("itemStatusList") ?: JSONArray(), spuId, spuName)
+                ) {
+                    continue
+                }
+                attempted = true
+                if (exchangeBenefit(spuId)) {
+                    exchangedCount += 1
+                    Log.farm("乐园币缺货补兑💸[$spuName]#${reason.ifBlank { need.name }}")
+                }
+            }
+            when {
+                exchangedCount > 0 -> ExchangeReplenishResult.EXCHANGED
+                matchedSelected && attempted -> ExchangeReplenishResult.BUSINESS_LIMIT
+                matchedSelected -> ExchangeReplenishResult.NOT_AVAILABLE
+                else -> ExchangeReplenishResult.NOT_SELECTED
+            }
+        }.onFailure {
+            Log.printStackTrace(TAG, "replenishParadiseExchangeByNeed err:", it)
+        }.getOrDefault(ExchangeReplenishResult.RETRY_LATER)
     }
 
     internal suspend fun paradiseCoinExchangeBenefit() {
@@ -1362,18 +1496,14 @@ class AntFarm : ModelTask() {
                 val controlTag = mallItemInfo.getString("controlTag")
                 val spuId = mallItemInfo.getString("spuId")
                 val itemStatusList = mallItemInfo.optJSONArray("itemStatusList")
-                val statusText = formatFarmPropStatusList(itemStatusList)
-                val exchangeItem = ExchangeItem(
-                    id = spuId,
-                    name = spuName,
-                    cost = ExchangeCost(pointText = "${minPrice}乐园币"),
-                    limit = ExchangeLimit(statusText = listOf(controlTag, statusText).filter { it.isNotBlank() }.joinToString("、")),
-                    safety = if (hasBlockingFarmPropStatus(itemStatusList)) ExchangeSafety.UNAVAILABLE else ExchangeSafety.AUTO,
-                    safetyReason = if (hasBlockingFarmPropStatus(itemStatusList)) statusText else ""
-                )
+                val exchangeItem = buildParadiseCoinExchangeItem(spuId, spuName, minPrice, controlTag, itemStatusList)
                 oderInfo = exchangeItem.displayName()
                 IdMapManager.getInstance(ParadiseCoinBenefitIdMap::class.java)
                     .add(spuId, oderInfo)
+                if (exchangeItem.safety != ExchangeSafety.AUTO) {
+                    Log.farm("乐园币兑换💸跳过[${exchangeItem.displayName()}]#${exchangeItem.safetyReason.ifBlank { exchangeItem.safety.name }}")
+                    continue
+                }
                 if (!Status.canParadiseCoinExchangeBenefitToday(spuId) ||
                     paradiseCoinExchangeBenefitList?.value?.contains(spuId) != true ||
                     isExchange(itemStatusList ?: JSONArray(), spuId, spuName)
@@ -1428,7 +1558,12 @@ class AntFarm : ModelTask() {
     private fun exchangeBenefit(spuId: String?, skuId: String?): Boolean {
         try {
             val jo = JSONObject(AntFarmRpcCall.exchangeBenefit(spuId, skuId))
-            return ResChecker.checkRes(TAG, jo)
+            val success = ExchangeSafetyRules.isSuccessResponse(jo) || ResChecker.checkRes(TAG, jo)
+            if (success && !spuId.isNullOrBlank()) {
+                runCatching { AntFarmRpcCall.getMallItemDetail(spuId) }
+                    .onFailure { Log.printStackTrace(TAG, "exchangeBenefit.postDetail err:", it) }
+            }
+            return success
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "exchangeBenefit err:",t)
         }
@@ -1717,6 +1852,18 @@ class AntFarm : ModelTask() {
         // 2. 判断是否需要喂食
         if (AnimalFeedStatus.HUNGRY.name == ownerAnimal.animalFeedStatus) {
             if (feedAnimal?.value == true) {
+                if (foodStock < 180) {
+                    val replenishResult = ExchangeReplenisher.replenish(
+                        need = ExchangeEffectNeed.FARM_FEED,
+                        reason = "庄园饲料不足",
+                        maxCount = 1
+                    ) {
+                        syncAnimalStatus(ownerFarmId)
+                    }
+                    if (replenishResult == ExchangeReplenishResult.EXCHANGED) {
+                        Log.farm("饲料不足已触发乐园币/会员权益补兑，重新按最新库存判断投喂")
+                    }
+                }
                 Log.farm("小鸡在挨饿, 尝试为你自动喂食")
                 if (feedAnimal(ownerFarmId)) {
                     // 刷新状态
@@ -1748,19 +1895,14 @@ class AntFarm : ModelTask() {
                 if (usedCount >= 2) {
                     Log.farm("今日加饭卡已使用${usedCount}/2，跳过使用")
                 } else {
-                    val bigEaterCount = getFarmToolCount(ToolType.BIG_EATER_TOOL, forceRefresh = true)
-                    if (bigEaterCount <= 0) {
-                        Log.farm("背包中无加饭卡，跳过使用")
+                    val result = useFarmTool(ownerFarmId, ToolType.BIG_EATER_TOOL)
+                    if (result) {
+                        Log.farm("使用道具🎭[加饭卡]！")
+                        DataStore.put(usedKey, usedCount + 1)
+                        // 刷新状态
+                        syncAnimalStatus(ownerFarmId)
                     } else {
-                        val result = useFarmTool(ownerFarmId, ToolType.BIG_EATER_TOOL)
-                        if (result) {
-                            Log.farm("使用道具🎭[加饭卡]！")
-                            DataStore.put(usedKey, usedCount + 1)
-                            // 刷新状态
-                            syncAnimalStatus(ownerFarmId)
-                        } else {
-                            Log.farm("⚠️使用道具🎭[加饭卡]失败，可能卡片不足或状态异常~")
-                        }
+                        Log.farm("⚠️使用道具🎭[加饭卡]失败，可能卡片不足或状态异常~")
                     }
                 }
             }
@@ -3896,6 +4038,41 @@ class AntFarm : ModelTask() {
         return findFarmTool(toolType, forceRefresh)?.toolCount ?: 0
     }
 
+    private fun farmToolReplenishNeed(toolType: ToolType): ExchangeEffectNeed? {
+        return when (toolType) {
+            ToolType.ACCELERATETOOL -> ExchangeEffectNeed.FARM_ACCELERATE_TOOL
+            ToolType.BIG_EATER_TOOL -> ExchangeEffectNeed.FARM_BIG_EATER_TOOL
+            ToolType.FENCETOOL -> ExchangeEffectNeed.FARM_FENCE_TOOL
+            ToolType.NEWEGGTOOL -> ExchangeEffectNeed.FARM_NEW_EGG_TOOL
+            else -> null
+        }
+    }
+
+    private fun replenishFarmToolIfMissing(
+        targetFarmId: String?,
+        toolType: ToolType,
+        reason: String
+    ): FarmTool? {
+        val need = farmToolReplenishNeed(toolType) ?: return null
+        findFarmTool(toolType, forceRefresh = true)?.takeIf { it.toolCount > 0 }?.let { return it }
+        val replenishResult = ExchangeReplenisher.replenish(
+            need = need,
+            reason = reason,
+            maxCount = 1
+        ) {
+            syncAnimalStatus(targetFarmId ?: ownerFarmId)
+            listFarmTool()
+        }
+        if (replenishResult != ExchangeReplenishResult.EXCHANGED) {
+            return null
+        }
+        return findFarmTool(toolType, forceRefresh = true)?.takeIf { it.toolCount > 0 }
+    }
+
+    private fun canReplenishFarmTool(toolType: ToolType): Boolean {
+        return farmToolReplenishNeed(toolType) != null
+    }
+
     private fun applyFarmToolUseResult(tool: FarmTool, response: JSONObject): Int {
         val fallbackCount = (tool.toolCount - 1).coerceAtLeast(0)
         val toolCountAfter = if (response.has("toolCount")) {
@@ -4077,8 +4254,15 @@ class AntFarm : ModelTask() {
                 null -> Unit
             }
             if (accelerateToolCount <= 0) {
-                exitReason = "NO_TOOL_LEFT"
-                break
+                val replenishedTool = replenishFarmToolIfMissing(
+                    ownerFarmId,
+                    ToolType.ACCELERATETOOL,
+                    "庄园加速卡缺货"
+                )
+                if (replenishedTool == null) {
+                    exitReason = "NO_TOOL_LEFT"
+                    break
+                }
             }
             if (useFarmTool(ownerFarmId, ToolType.ACCELERATETOOL)) {
                 // 用了一张加速卡，那剩余饲料减少自己小鸡1个小时的饲料消耗量，如前述38g左右
@@ -4212,18 +4396,37 @@ class AntFarm : ModelTask() {
                 Log.farm("道具🎭[${toolType.nickName()}]本轮已被判定为无效，跳过继续尝试")
                 return false
             }
-            val tool = findFarmTool(toolType, forceRefresh = toolType != ToolType.ACCELERATETOOL)
-            if (tool == null) {
-                Log.farm("背包中未找到道具🎭[${toolType.nickName()}]，跳过使用")
-                return false
-            }
-            if (tool.toolCount <= 0) {
-                Log.farm("背包中道具🎭[${toolType.nickName()}]数量为0，跳过使用")
-                return false
-            }
             if (toolType == ToolType.FENCETOOL && hasFence) {
                 Log.farm("🛡️ 篱笆效果尚在（剩余${fenceCountDown / 60}分钟），跳过重复使用")
                 return false
+            }
+            val allowReplenish = canReplenishFarmTool(toolType)
+            var tool = findFarmTool(toolType, forceRefresh = toolType != ToolType.ACCELERATETOOL)
+            if (tool == null) {
+                if (allowReplenish) {
+                    tool = replenishFarmToolIfMissing(
+                        targetFarmId,
+                        toolType,
+                        "庄园道具[${toolType.nickName()}]缺货"
+                    )
+                }
+                if (tool == null) {
+                    Log.farm("背包中未找到道具🎭[${toolType.nickName()}]，跳过使用")
+                    return false
+                }
+            }
+            if (tool.toolCount <= 0) {
+                if (allowReplenish) {
+                    tool = replenishFarmToolIfMissing(
+                        targetFarmId,
+                        toolType,
+                        "庄园道具[${toolType.nickName()}]数量为0"
+                    )
+                }
+                if (tool == null || tool.toolCount <= 0) {
+                    Log.farm("背包中道具🎭[${toolType.nickName()}]数量为0，跳过使用")
+                    return false
+                }
             }
 
             val toolCountBefore = tool.toolCount

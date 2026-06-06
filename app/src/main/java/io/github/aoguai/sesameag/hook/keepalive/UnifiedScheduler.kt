@@ -1,9 +1,11 @@
 package io.github.aoguai.sesameag.hook.keepalive
 
 import android.content.Context
+import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
 import io.github.aoguai.sesameag.model.BaseModel
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.TimeUtil
+import io.github.aoguai.sesameag.util.maps.UserMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
@@ -94,8 +96,17 @@ object UnifiedScheduler {
         dedupeKey: String,
         payloadJson: String = "{}",
         toleranceMs: Long = PersistentScheduleDefaults.DEFAULT_TOLERANCE_MS,
-        ownerUserId: String? = null
+        ownerUserId: String? = null,
+        sessionEpoch: Long = 0L
     ): PersistentSchedule {
+        val boundOwnerUserId = ownerUserId?.trim()?.takeIf { it.isNotEmpty() }
+            ?: AccountSessionCoordinator.currentUserId()
+            ?: UserMap.currentUid?.trim()?.takeIf { it.isNotEmpty() }
+        val boundSessionEpoch = if (sessionEpoch > 0L) {
+            sessionEpoch
+        } else {
+            AccountSessionCoordinator.currentSessionEpoch()
+        }
         val schedule = PersistentSchedule(
             name = name,
             kind = kind,
@@ -103,8 +114,16 @@ object UnifiedScheduler {
             toleranceMs = toleranceMs,
             dedupeKey = dedupeKey,
             payloadJson = payloadJson,
-            ownerUserId = ownerUserId
+            ownerUserId = boundOwnerUserId,
+            sessionEpoch = boundSessionEpoch
         )
+        if (boundOwnerUserId.isNullOrBlank() || boundSessionEpoch <= 0L) {
+            Log.record(
+                TAG,
+                "拒绝注册缺少会话归属的持久调度[$name] kind=$kind owner=$boundOwnerUserId session=$boundSessionEpoch"
+            )
+            return schedule.withFailure("missing_session_context")
+        }
         return PersistentScheduleRegistry.upsert(context, schedule)
     }
 

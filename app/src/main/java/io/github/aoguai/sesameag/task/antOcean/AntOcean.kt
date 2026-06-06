@@ -25,6 +25,9 @@ import io.github.aoguai.sesameag.task.common.TaskFlowEngine
 import io.github.aoguai.sesameag.task.common.TaskFlowItem
 import io.github.aoguai.sesameag.task.common.TaskFlowPhase
 import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
+import io.github.aoguai.sesameag.task.exchange.ExchangeEffectNeed
+import io.github.aoguai.sesameag.task.exchange.ExchangeReplenishResult
+import io.github.aoguai.sesameag.task.exchange.ExchangeReplenisher
 import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.maps.BeachMap
@@ -2140,7 +2143,7 @@ class AntOcean : ModelTask() {
     }
 
     // 使用万能拼图
-    private suspend fun usePropByType() {
+    private suspend fun usePropByType(allowReplenish: Boolean = true) {
         try {
             val propListJson = AntOceanRpcCall.usePropByTypeList()
             val propListObj = JsonUtil.parseJSONObjectOrNull(propListJson) ?: return
@@ -2163,6 +2166,37 @@ class AntOcean : ModelTask() {
                     val propInfo = oceanPropVOByTypeList.optJSONObject(i) ?: continue
                     if (propInfo.optString("type") == "UNIVERSAL_PIECE") {
                         propInfos.add(propInfo)
+                    }
+                }
+            }
+            val hasUsableUniversalPiece = propInfos.any { it.optInt("holdsNum", 0) > 0 }
+            if (!hasUsableUniversalPiece && allowReplenish) {
+                val target = querySeaAreaDetailData()?.let { detailJo ->
+                    findCurrentChapterPropTarget(detailJo, maxPieceCount = 1, extraCollectOnly = false)
+                }
+                if (target != null) {
+                    val replenishResult = ExchangeReplenisher.replenish(
+                        need = ExchangeEffectNeed.OCEAN_UNIVERSAL_PIECE,
+                        reason = "神奇海洋万能拼图不足",
+                        maxCount = 1
+                    ) {
+                        AntOceanRpcCall.usePropByTypeList()
+                    }
+                    if (replenishResult == ExchangeReplenishResult.EXCHANGED) {
+                        Log.ocean("神奇海洋🏖️[万能拼图]已触发缺货补兑，重新查询道具列表")
+                        usePropByType(allowReplenish = false)
+                        return
+                    }
+                    val randomPieceResult = ExchangeReplenisher.replenish(
+                        need = ExchangeEffectNeed.OCEAN_RANDOM_PIECE,
+                        reason = "神奇海洋随机拼图推进",
+                        maxCount = 1
+                    ) {
+                        AntOceanRpcCall.querySeaAreaDetailList()
+                    }
+                    if (randomPieceResult == ExchangeReplenishResult.EXCHANGED) {
+                        Log.ocean("神奇海洋🏖️[随机拼图]已触发补兑，后续重新查询海域进度")
+                        return
                     }
                 }
             }

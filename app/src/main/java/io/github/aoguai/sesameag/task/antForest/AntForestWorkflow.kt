@@ -58,8 +58,8 @@ internal suspend fun AntForest.runForestPreparationAndCollectionWorkflow(tc: Tim
         collectFriendEnergyCoroutine()
         tc.countDebug("好友排行榜补全（同步）")
     } else {
-        Log.forest("收集能量、领取礼盒和复活能量均未开启，跳过好友排行榜扫描")
-        tc.countDebug("跳过好友排行榜扫描（无收取/礼盒/复活需求）")
+        Log.forest("收能量未开启，跳过好友主页扫描；好友礼盒/复活能量仅随已获取好友主页处理")
+        tc.countDebug("跳过好友主页扫描（收能量未开启）")
     }
 
     Log.forest("🌳 【正常流程】补充检查自己的森林主页...")

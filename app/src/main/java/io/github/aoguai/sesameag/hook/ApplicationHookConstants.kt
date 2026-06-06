@@ -26,10 +26,13 @@ object ApplicationHookConstants {
         const val MANUAL_TASK: String = "com.eg.android.AlipayGphone.sesame.manual_task"
         const val HOOK_READY: String = "com.eg.android.AlipayGphone.sesame.hook_ready"
         const val HOOK_READY_RESULT: String = "com.eg.android.AlipayGphone.sesame.hook_ready_result"
+        const val PERMISSION_SNAPSHOT: String = "com.eg.android.AlipayGphone.sesame.permission_snapshot"
+        const val PERMISSION_SNAPSHOT_RESULT: String = "com.eg.android.AlipayGphone.sesame.permission_snapshot_result"
         const val REFRESH_FRIENDS: String = "com.eg.android.AlipayGphone.sesame.refresh_friends"
         const val REFRESH_FRIENDS_RESULT: String = "com.eg.android.AlipayGphone.sesame.refresh_friends_result"
         const val REFRESH_EXCHANGE_OPTIONS: String = "com.eg.android.AlipayGphone.sesame.refresh_exchange_options"
         const val REFRESH_EXCHANGE_OPTIONS_RESULT: String = "com.eg.android.AlipayGphone.sesame.refresh_exchange_options_result"
+        const val ACCOUNT_CONTEXT_CHANGED: String = "com.eg.android.AlipayGphone.sesame.account_context_changed"
     }
 
     object AlipayClasses {
@@ -169,6 +172,10 @@ object ApplicationHookConstants {
             stopAllTask()
         }
 
+        AccountSessionCoordinator.refreshWorkflowState(
+            ApplicationHook.appContext,
+            if (wasOffline) "offline_refresh" else "offline_enter"
+        )
         ModuleStatusReporter.requestUpdate(if (wasOffline) "offline_refresh" else "offline_enter")
     }
 
@@ -234,6 +241,14 @@ object ApplicationHookConstants {
 
         record(TAG, "exitOffline: type=$type durationMs=$durationMs reason=${enterReason ?: "null"} detail=${enterDetail ?: "null"}")
 
+        AccountSessionCoordinator.refreshWorkflowState(
+            ApplicationHook.appContext,
+            when (type) {
+                OfflineEventType.EXIT -> "offline_exit"
+                OfflineEventType.AUTO_EXIT -> "offline_auto_exit"
+                else -> "offline_exit"
+            }
+        )
         ModuleStatusReporter.requestUpdate(
             when (type) {
                 OfflineEventType.EXIT -> "offline_exit"
@@ -288,7 +303,9 @@ object ApplicationHookConstants {
         val wakenTime: String? = null,
         val reason: String? = null,
         val dedupeKey: String? = null,
-        val persistentScheduleId: String? = null
+        val persistentScheduleId: String? = null,
+        val ownerUserId: String? = null,
+        val sessionEpoch: Long = 0L
     ) {
         fun summary(): String {
             val parts = mutableListOf<String>()
@@ -298,6 +315,8 @@ object ApplicationHookConstants {
             if (wakenAtTime) parts.add("wakenAtTime")
             if (!wakenTime.isNullOrBlank()) parts.add("wakenTime=$wakenTime")
             if (!reason.isNullOrBlank()) parts.add("reason=$reason")
+            if (!ownerUserId.isNullOrBlank()) parts.add("owner=$ownerUserId")
+            if (sessionEpoch > 0L) parts.add("session=$sessionEpoch")
             return parts.joinToString(" ")
         }
     }

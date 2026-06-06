@@ -1,5 +1,7 @@
 package io.github.aoguai.sesameag.hook
 
+import io.github.aoguai.sesameag.data.General
+import io.github.aoguai.sesameag.util.PermissionUtil
 import io.github.aoguai.sesameag.util.Log
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.max
@@ -116,11 +118,37 @@ object ModuleStatusReporter {
             "process" to ApplicationHook.finalProcessName,
             "offline" to offlineSnapshot,
             "rpc" to rpcSnapshot,
+            "permissions" to buildPermissionSnapshot(),
             "meta" to linkedMapOf(
                 "process" to ApplicationHook.finalProcessName,
                 "lastWriteAtMs" to lastWriteAtMs.get()
             )
         )
     }
-}
 
+    private fun buildPermissionSnapshot(): Map<String, Any?> {
+        val context = ApplicationHook.appContext ?: return linkedMapOf(
+            "available" to false,
+            "reason" to "appContext is null"
+        )
+
+        return linkedMapOf(
+            "available" to true,
+            "contextPackage" to context.packageName,
+            "modulePackage" to General.MODULE_PACKAGE_NAME,
+            "targetPackage" to General.PACKAGE_NAME,
+            "moduleBatteryIgnored" to PermissionUtil.checkBatteryPermissions(context, General.MODULE_PACKAGE_NAME),
+            "targetBatteryIgnored" to PermissionUtil.checkBatteryPermissions(context, General.PACKAGE_NAME),
+            "moduleExactAlarmAllowed" to if (context.packageName == General.MODULE_PACKAGE_NAME) {
+                PermissionUtil.checkExactAlarmPermissions(context, General.MODULE_PACKAGE_NAME)
+            } else {
+                null
+            },
+            "targetExactAlarmAllowed" to if (context.packageName == General.PACKAGE_NAME) {
+                PermissionUtil.checkExactAlarmPermissions(context, General.PACKAGE_NAME)
+            } else {
+                null
+            }
+        )
+    }
+}

@@ -2,6 +2,7 @@ package io.github.aoguai.sesameag.task.antForest
 
 import android.annotation.SuppressLint
 import android.content.Context
+import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
 import io.github.aoguai.sesameag.hook.ApplicationHook
 import io.github.aoguai.sesameag.hook.keepalive.PersistentSchedule
 import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleKind
@@ -20,6 +21,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -53,6 +55,11 @@ interface EnergyCollectCallback {
      * @return 延迟时间（毫秒）
      */
     fun getWaitingCollectDelay(): Long
+
+    /**
+     * 当前是否允许执行蹲点收取。
+     */
+    fun canRunWaitingCollection(): Boolean = true
 }
 
 /**
@@ -67,7 +74,8 @@ data class CollectResult(
     val energyCount: Int = 0,
     val totalCollected: Int = 0,  // 累加后的总能量
     val failedBubbleIds: Set<Long> = emptySet(),
-    val allRequestedBubblesFailed: Boolean = false
+    val allRequestedBubblesFailed: Boolean = false,
+    val paused: Boolean = false
 )
 
 /**
@@ -132,6 +140,7 @@ object EnergyWaitingManager {
     private const val FOREST_WAITING_DEDUPE_PREFIX = "forest_waiting_"
     private const val FOREST_WAITING_TOLERANCE_MS = 60 * 60 * 1000L
     private const val MAX_PERSISTENT_WAITING_ALARMS = 16
+    const val WAITING_PAUSED_COLLECT_DISABLED = "收集能量开关关闭，暂停蹲点收取"
     const val PERSISTENT_CHILD_KIND = "forest_energy_waiting"
 
     enum class PersistentTriggerResult {
@@ -149,6 +158,7 @@ object EnergyWaitingManager {
         val bubbleId: Long,
         val produceTime: Long,
         val fromTag: String,
+        val sessionEpoch: Long = 0L,
         val retryCount: Int = 0,
         val maxRetries: Int = 3,
         val shieldEndTime: Long = 0, // 保护罩结束时间
@@ -196,6 +206,7 @@ object EnergyWaitingManager {
 
     // 蹲点任务存储
     private val waitingTasks = ConcurrentHashMap<String, WaitingTask>()
+    private val waitingJobs = ConcurrentHashMap<String, Job>()
 
     // 智能重试策略
     private val smartRetryStrategy = SmartRetryStrategy()
@@ -245,12 +256,27 @@ object EnergyWaitingManager {
     // 能量收取回调
     private var energyCollectCallback: EnergyCollectCallback? = null
 
+    @Volatile
+    private var restoredSessionEpoch: Long = 0L
+
     private fun appContext(): Context? {
         return ApplicationHook.appContext
     }
 
     private fun currentOwnerUserId(): String {
-        return UserMap.currentUid?.takeIf { it.isNotBlank() } ?: "default"
+        return AccountSessionCoordinator.currentUserId()?.takeIf { it.isNotBlank() }
+            ?: UserMap.currentUid?.takeIf { it.isNotBlank() }
+            ?: "default"
+    }
+
+    private fun currentSessionEpoch(): Long {
+        return AccountSessionCoordinator.currentSession()?.sessionEpoch ?: 0L
+    }
+
+    private fun isRunSessionCurrent(ownerUserId: String, sessionEpoch: Long): Boolean {
+        return ownerUserId.isNotBlank() &&
+            sessionEpoch > 0L &&
+            AccountSessionCoordinator.isCurrentSession(ownerUserId, sessionEpoch)
     }
 
     private fun forestWaitingDedupeKey(taskId: String): String {
@@ -263,10 +289,28 @@ object EnergyWaitingManager {
     }
 
     private fun isReadyForWaitingExecution(): Boolean {
-        return energyCollectCallback != null && !UserMap.currentUid.isNullOrBlank()
+        val session = AccountSessionCoordinator.currentSession() ?: return false
+        return energyCollectCallback != null &&
+            session.workflowAllowed &&
+            session.userId.isNotBlank()
     }
 
-    private fun createPersistentSchedule(task: WaitingTask): PersistentSchedule {
+    private fun isWaitingCollectionAllowed(): Boolean {
+        return energyCollectCallback?.canRunWaitingCollection() == true
+    }
+
+    private fun logWaitingCollectionPaused(source: String, task: WaitingTask? = null) {
+        val taskText = task?.let { "[${it.taskId}][${it.getUserTypeTag()}${it.userName}]" } ?: ""
+        Log.forest("森林蹲点暂停$taskText：收集能量未开启，保留任务等待下次收能量链路 source=$source")
+    }
+
+    private fun createPersistentSchedule(task: WaitingTask): PersistentSchedule? {
+        val ownerUserId = currentOwnerUserId()
+        val sessionEpoch = task.sessionEpoch
+        if (!isRunSessionCurrent(ownerUserId, sessionEpoch)) {
+            Log.forest("森林蹲点持久调度会话无效，跳过注册[${task.taskId}][owner=$ownerUserId][session=$sessionEpoch]")
+            return null
+        }
         val payload = JSONObject().apply {
             put("child_kind", PERSISTENT_CHILD_KIND)
             put("task_id", task.taskId)
@@ -279,6 +323,8 @@ object EnergyWaitingManager {
             put("max_retries", task.maxRetries)
             put("shield_end_time", task.shieldEndTime)
             put("bomb_end_time", task.bombEndTime)
+            put("owner_user_id", ownerUserId)
+            put("session_epoch", sessionEpoch)
             put("launch_target", true)
         }
         return PersistentSchedule(
@@ -288,7 +334,8 @@ object EnergyWaitingManager {
             toleranceMs = FOREST_WAITING_TOLERANCE_MS,
             dedupeKey = forestWaitingDedupeKey(task.taskId),
             payloadJson = payload.toString(),
-            ownerUserId = currentOwnerUserId()
+            ownerUserId = ownerUserId,
+            sessionEpoch = sessionEpoch
         )
     }
 
@@ -301,7 +348,11 @@ object EnergyWaitingManager {
             return
         }
         try {
-            PersistentScheduleRegistry.upsert(context, createPersistentSchedule(task))
+            val schedule = createPersistentSchedule(task) ?: run {
+                cancelPersistentWaitingSchedule(task.taskId)
+                return
+            }
+            PersistentScheduleRegistry.upsert(context, schedule)
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "注册森林蹲点系统闹钟失败[${task.taskId}]", t)
         }
@@ -316,7 +367,7 @@ object EnergyWaitingManager {
                     schedule.kind == PersistentScheduleKind.MODULE_CHILD &&
                         schedule.dedupeKey.startsWith(FOREST_WAITING_DEDUPE_PREFIX) &&
                         taskIdFromForestWaitingDedupeKey(schedule.dedupeKey) == taskId &&
-                        (schedule.ownerUserId == currentOwnerUserId() || schedule.ownerUserId.isNullOrBlank())
+                        schedule.ownerUserId == currentOwnerUserId()
                 }
                 .forEach { schedule ->
                     PersistentScheduleRegistry.removeByDedupeKey(context, schedule.dedupeKey)
@@ -339,7 +390,7 @@ object EnergyWaitingManager {
                 .filter { schedule ->
                     schedule.kind == PersistentScheduleKind.MODULE_CHILD &&
                         schedule.dedupeKey.startsWith(FOREST_WAITING_DEDUPE_PREFIX) &&
-                        (schedule.ownerUserId == currentOwnerId || schedule.ownerUserId.isNullOrBlank())
+                        schedule.ownerUserId == currentOwnerId
                 }
                 .forEach { schedule ->
                     val taskId = taskIdFromForestWaitingDedupeKey(schedule.dedupeKey)
@@ -357,6 +408,7 @@ object EnergyWaitingManager {
     }
 
     private fun removeWaitingTask(taskId: String): WaitingTask? {
+        waitingJobs.remove(taskId)?.cancel()
         val removed = waitingTasks.remove(taskId)
         cancelPersistentWaitingSchedule(taskId)
         if (removed != null) {
@@ -375,6 +427,10 @@ object EnergyWaitingManager {
         }
         if (!isReadyForWaitingExecution()) {
             Log.forest("森林蹲点持久任务[$taskId]等待回调/账号就绪 source=$source")
+            return PersistentTriggerResult.DEFERRED
+        }
+        if (!isWaitingCollectionAllowed()) {
+            logWaitingCollectionPaused("persistent:$source", task)
             return PersistentTriggerResult.DEFERRED
         }
         startPreciseWaitingCoroutine(task)
@@ -397,8 +453,12 @@ object EnergyWaitingManager {
                 waitingTasks[task.taskId] = task
                 EnergyWaitingPersistence.saveTasks(waitingTasks)
                 if (isReadyForWaitingExecution()) {
-                    startPreciseWaitingCoroutine(task)
-                    Log.forest("森林蹲点持久任务[$taskId]已从持久化恢复并触发 source=$source")
+                    if (isWaitingCollectionAllowed()) {
+                        startPreciseWaitingCoroutine(task)
+                        Log.forest("森林蹲点持久任务[$taskId]已从持久化恢复并触发 source=$source")
+                    } else {
+                        logWaitingCollectionPaused("restore:$source", task)
+                    }
                 } else {
                     Log.forest("森林蹲点持久任务[$taskId]已恢复，等待回调/账号就绪 source=$source")
                 }
@@ -425,15 +485,21 @@ object EnergyWaitingManager {
     private fun parseWaitingTaskPayload(payloadJson: String): WaitingTask? {
         return try {
             val payload = JSONObject(payloadJson.ifBlank { "{}" })
+            val ownerUserId = payload.optString("owner_user_id").trim()
             val userId = payload.optString("user_id").takeIf { it.isNotBlank() } ?: return null
             val bubbleId = payload.optLong("bubble_id", 0L).takeIf { it > 0L } ?: return null
             val produceTime = payload.optLong("produce_time", 0L).takeIf { it > 0L } ?: return null
+            val sessionEpoch = payload.optLong("session_epoch", 0L)
+            if (!isRunSessionCurrent(ownerUserId, sessionEpoch)) {
+                return null
+            }
             WaitingTask(
                 userId = userId,
                 userName = payload.optString("user_name", "未知用户"),
                 bubbleId = bubbleId,
                 produceTime = produceTime,
                 fromTag = payload.optString("from_tag", "蹲点收取"),
+                sessionEpoch = sessionEpoch,
                 retryCount = payload.optInt("retry_count", 0),
                 maxRetries = payload.optInt("max_retries", 3),
                 shieldEndTime = payload.optLong("shield_end_time", 0L),
@@ -537,6 +603,7 @@ object EnergyWaitingManager {
                     bubbleId = bubbleId,
                     produceTime = produceTime,
                     fromTag = fromTag,
+                    sessionEpoch = currentSessionEpoch(),
                     shieldEndTime = finalShieldEndTime,
                     bombEndTime = finalBombEndTime
                 )
@@ -590,8 +657,26 @@ object EnergyWaitingManager {
      * 核心原则：不提前收取，严格按时机执行
      */
     private fun startPreciseWaitingCoroutine(task: WaitingTask) {
-        managerScope.launch {
+        val ownerUserId = currentOwnerUserId()
+        val sessionEpoch = task.sessionEpoch
+        if (!isRunSessionCurrent(ownerUserId, sessionEpoch)) {
+            Log.forest("森林蹲点任务[${task.taskId}]会话无效，跳过启动[user=$ownerUserId][session=$sessionEpoch]")
+            return
+        }
+        if (!isWaitingCollectionAllowed()) {
+            logWaitingCollectionPaused("start", task)
+            return
+        }
+        waitingJobs.remove(task.taskId)?.cancel()
+        val job = managerScope.launch {
             try {
+                if (!isRunSessionCurrent(ownerUserId, sessionEpoch)) {
+                    return@launch
+                }
+                if (!isWaitingCollectionAllowed()) {
+                    logWaitingCollectionPaused("run", task)
+                    return@launch
+                }
                 val currentTime = System.currentTimeMillis()
                 val preciseCollectTime = calculatePreciseCollectTime(task)
                 val waitTime = preciseCollectTime - currentTime
@@ -618,6 +703,9 @@ object EnergyWaitingManager {
                          Log.forest("蹲点[${task.getUserTypeTag()}${task.userName}]将在${(waitBeforeValidation/1000/60).toInt()}分钟后验证")
                         scheduleWaitingDelay(waitBeforeValidation, "ForestWaitingValidate:${task.taskId}")
 
+                        if (!isRunSessionCurrent(ownerUserId, sessionEpoch)) {
+                            return@launch
+                        }
                         // 检查任务是否被移除
                         if (!waitingTasks.containsKey(task.taskId)) {
                             Log.forest("⚠️ 蹲点[${task.getUserTypeTag()}${task.userName}]已被移除")
@@ -625,6 +713,10 @@ object EnergyWaitingManager {
                         }
 
                         // 倒计时2分钟验证：查询好友保护罩状态
+                        if (!isWaitingCollectionAllowed()) {
+                            logWaitingCollectionPaused("validate", task)
+                            return@launch
+                        }
                         Log.forest("🔍 倒计时2分钟验证[${task.getUserTypeTag()}${task.userName}]保护罩状态...")
                         try {
                             val safeUserId = FriendGuard.normalizeUserId(task.userId)
@@ -679,6 +771,9 @@ object EnergyWaitingManager {
                     } else if (waitTime > twoMinutes) {
                         val waitBeforeFinalCheck = waitTime - twoMinutes
                         scheduleWaitingDelay(waitBeforeFinalCheck, "ForestWaitingFinal:${task.taskId}")
+                        if (!isRunSessionCurrent(ownerUserId, sessionEpoch)) {
+                            return@launch
+                        }
                         if (!waitingTasks.containsKey(task.taskId)) {
                             Log.forest("⚠️ 蹲点[${task.getUserTypeTag()}${task.userName}]已被移除")
                             return@launch
@@ -693,6 +788,9 @@ object EnergyWaitingManager {
                         delay(currentWait)
                         remainingWait -= currentWait
 
+                        if (!isRunSessionCurrent(ownerUserId, sessionEpoch)) {
+                            return@launch
+                        }
                         // 检查任务是否仍然有效
                         if (!waitingTasks.containsKey(task.taskId)) {
                             Log.forest("⚠️ 蹲点[${task.getUserTypeTag()}${task.userName}]已被移除")
@@ -706,6 +804,9 @@ object EnergyWaitingManager {
                     }
 
                     // 等待完成，最终检查任务有效性
+                    if (!isRunSessionCurrent(ownerUserId, sessionEpoch)) {
+                        return@launch
+                    }
                     if (!waitingTasks.containsKey(task.taskId)) {
                         Log.forest("⚠️ 蹲点[${task.getUserTypeTag()}${task.userName}]等待过程中被移除")
                         return@launch
@@ -725,6 +826,13 @@ object EnergyWaitingManager {
                 }
 
                 // 执行收取任务
+                if (!isRunSessionCurrent(ownerUserId, sessionEpoch)) {
+                    return@launch
+                }
+                if (!isWaitingCollectionAllowed()) {
+                    logWaitingCollectionPaused("execute", task)
+                    return@launch
+                }
                 executePreciseWaitingTask(task)
 
             } catch (_: CancellationException) {
@@ -751,8 +859,16 @@ object EnergyWaitingManager {
                     removeWaitingTask(task.taskId)
                     EnergyWaitingPersistence.saveTasks(waitingTasks)
                 }
+            } finally {
+                val runningJob = kotlinx.coroutines.currentCoroutineContext()[Job]
+                if (runningJob != null) {
+                    waitingJobs.remove(task.taskId, runningJob)
+                } else {
+                    waitingJobs.remove(task.taskId)
+                }
             }
         }
+        waitingJobs[task.taskId] = job
     }
 
     private suspend fun scheduleWaitingDelay(delayMillis: Long, taskName: String) {
@@ -786,6 +902,10 @@ object EnergyWaitingManager {
                 // 检查任务是否仍然有效
                 if (!waitingTasks.containsKey(task.taskId)) {
                      Log.forest("精确蹲点任务[${task.taskId}]已被移除，跳过执行")
+                    return@withLock
+                }
+                if (!isWaitingCollectionAllowed()) {
+                    logWaitingCollectionPaused("precise", task)
                     return@withLock
                 }
 
@@ -886,6 +1006,11 @@ object EnergyWaitingManager {
                 val startTime = System.currentTimeMillis()
                 val result = collectEnergyFromWaiting(task)
                 val executeTime = System.currentTimeMillis() - startTime
+                if (result.paused) {
+                    Log.forest("⏸ 蹲点收取[${task.getUserTypeTag()}${task.userName}]暂停：${result.message.ifBlank { WAITING_PAUSED_COLLECT_DISABLED }}")
+                    syncPersistentWaitingSchedules()
+                    return@withLock
+                }
 
                 // 更新用户模式数据
                 UserEnergyPatternManager.updateUserPattern(task.userId, result, executeTime)
@@ -1053,11 +1178,14 @@ object EnergyWaitingManager {
                         .take(3)
                         .joinToString(",") { "${it.userName}/球[${it.bubbleId}]/任务[${it.taskId}]" }
                     val moreText = if (matureTasks.size > 3) "等${matureTasks.size}个" else ""
-                    Log.forest("🔄 重新触发蹲点：[${taskNames}${moreText}]已成熟但未执行")
-
-                    matureTasks.forEach { (_, task) ->
-                        // 重新启动倒计时协程
-                        startPreciseWaitingCoroutine(task)
+                    if (isWaitingCollectionAllowed()) {
+                        Log.forest("🔄 重新触发蹲点：[${taskNames}${moreText}]已成熟但未执行")
+                        matureTasks.forEach { (_, task) ->
+                            // 重新启动倒计时协程
+                            startPreciseWaitingCoroutine(task)
+                        }
+                    } else {
+                        Log.forest("森林蹲点暂停：[${taskNames}${moreText}]已成熟但收集能量未开启，保留任务等待下次收能量链路")
                     }
                 }
 
@@ -1093,8 +1221,12 @@ object EnergyWaitingManager {
                 // 3. 手动触发全面验证（仅在手动启用时执行）
                 if (enableRevalidation) {
                     if (waitingTasks.isNotEmpty()) {
-                        Log.forest("🔍 手动全面验证：开始检查所有蹲点任务保护罩状态...")
-                        revalidateAllWaitingTasks()
+                        if (isWaitingCollectionAllowed()) {
+                            Log.forest("🔍 手动全面验证：开始检查所有蹲点任务保护罩状态...")
+                            revalidateAllWaitingTasks()
+                        } else {
+                            Log.forest("森林蹲点复核暂停：收集能量未开启，跳过好友主页验证")
+                        }
                     }
                 }
 
@@ -1116,12 +1248,43 @@ object EnergyWaitingManager {
      */
     fun setEnergyCollectCallback(callback: EnergyCollectCallback) {
         energyCollectCallback = callback
+        restoreForCurrentSession("callback_ready")
         triggerDueWaitingTasks("callback_ready")
         Log.forest("已设置能量收取回调")
     }
 
+    fun resetForSessionSwitch(reason: String) {
+        waitingJobs.values.toList().forEach { it.cancel() }
+        waitingJobs.clear()
+        waitingTasks.clear()
+        restoredSessionEpoch = 0L
+        Log.forest("森林蹲点会话已重置[$reason]")
+    }
+
+    fun restoreForCurrentSession(reason: String) {
+        val session = AccountSessionCoordinator.currentSession()
+        if (session == null) {
+            Log.forest("森林蹲点恢复跳过：当前无激活会话[$reason]")
+            return
+        }
+        if (!isReadyForWaitingExecution()) {
+            Log.forest("森林蹲点恢复延后：等待回调/工作流就绪[user=${session.userId}][$reason]")
+            return
+        }
+        if (restoredSessionEpoch == session.sessionEpoch) {
+            triggerDueWaitingTasks("restore_skip_$reason")
+            return
+        }
+        restoredSessionEpoch = session.sessionEpoch
+        restoreTasksFromPersistence(reason, session.userId, session.sessionEpoch)
+    }
+
     private fun triggerDueWaitingTasks(source: String) {
         if (!isReadyForWaitingExecution()) return
+        if (!isWaitingCollectionAllowed()) {
+            logWaitingCollectionPaused("triggerDue:$source")
+            return
+        }
         managerScope.launch {
             taskMutex.withLock {
                 val now = System.currentTimeMillis()
@@ -1213,6 +1376,10 @@ object EnergyWaitingManager {
             taskMutex.withLock {
                 if (waitingTasks.isEmpty()) {
                      Log.forest("无需验证：当前无蹲点任务")
+                    return@withLock
+                }
+                if (!isWaitingCollectionAllowed()) {
+                    Log.forest("森林蹲点复核暂停：收集能量未开启，跳过好友主页验证")
                     return@withLock
                 }
 
@@ -1342,26 +1509,39 @@ object EnergyWaitingManager {
     /**
      * 从持久化存储恢复蹲点任务（内部方法）
      */
-    private fun restoreTasksFromPersistence() {
+    private fun restoreTasksFromPersistence(reason: String, ownerUserId: String, sessionEpoch: Long) {
         managerScope.launch {
             try {
-                // 延迟5秒，确保主任务和回调已初始化
-                delay(5000)
+                delay(1000)
+                if (!isRunSessionCurrent(ownerUserId, sessionEpoch) || !isReadyForWaitingExecution()) {
+                    Log.forest("森林蹲点恢复取消：会话已切换或回调未就绪[user=$ownerUserId][session=$sessionEpoch][$reason]")
+                    return@launch
+                }
 
                 // 加载持久化的任务
                 val loadedTasks = EnergyWaitingPersistence.loadTasks()
 
                 if (loadedTasks.isEmpty()) {
-                     Log.forest("持久化存储中无任务需要恢复")
+                     Log.forest("持久化存储中无任务需要恢复[user=$ownerUserId][session=$sessionEpoch][$reason]")
                     return@launch
                 }
 
-                Log.forest("🔄 从持久化存储恢复${loadedTasks.size}个蹲点任务...")
+                Log.forest("🔄 从持久化存储恢复${loadedTasks.size}个蹲点任务[user=$ownerUserId][session=$sessionEpoch][$reason]...")
 
                 // 验证并重新添加任务
-                val restoredCount = EnergyWaitingPersistence.validateAndRestoreTasks(loadedTasks) { task ->
+                val verifyRemoteHome = isWaitingCollectionAllowed()
+                if (!verifyRemoteHome) {
+                    logWaitingCollectionPaused("restoreValidate:$reason")
+                }
+                val restoredCount = EnergyWaitingPersistence.validateAndRestoreTasks(
+                    loadedTasks,
+                    verifyRemoteHome = verifyRemoteHome
+                ) { task ->
                     taskMutex.withLock {
                         try {
+                            if (!isRunSessionCurrent(ownerUserId, sessionEpoch)) {
+                                return@withLock false
+                            }
                             // 检查任务是否已经存在（避免重复添加）
                             if (waitingTasks.containsKey(task.taskId)) {
                                  Log.forest("任务[${task.taskId}]已存在，跳过重复添加")
@@ -1371,8 +1551,12 @@ object EnergyWaitingManager {
                             // 添加任务到内存
                             waitingTasks[task.taskId] = task
 
-                            // 启动蹲点协程
-                            startPreciseWaitingCoroutine(task)
+                            if (isWaitingCollectionAllowed()) {
+                                // 启动蹲点协程
+                                startPreciseWaitingCoroutine(task)
+                            } else {
+                                logWaitingCollectionPaused("restorePersistence:$reason", task)
+                            }
 
                             true
                         } catch (e: Exception) {
@@ -1399,9 +1583,6 @@ object EnergyWaitingManager {
     init {
         // 启动定期清理任务
         startPeriodicCleanup()
-
-        // 从持久化存储恢复任务
-        restoreTasksFromPersistence()
 
         Log.forest("精确能量球蹲点管理器已初始化（支持持久化）")
     }

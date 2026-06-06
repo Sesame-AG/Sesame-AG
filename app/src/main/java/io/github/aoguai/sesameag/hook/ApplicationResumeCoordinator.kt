@@ -1,5 +1,6 @@
 package io.github.aoguai.sesameag.hook
 
+import io.github.aoguai.sesameag.hook.keepalive.PersistentReconcileMode
 import io.github.aoguai.sesameag.hook.keepalive.UnifiedScheduler
 import io.github.aoguai.sesameag.task.ModelTask.Companion.stopAllTask
 import io.github.aoguai.sesameag.util.Log.record
@@ -126,7 +127,10 @@ internal object ApplicationResumeCoordinator {
         ApplicationHookConstants.clearPendingTriggers("offline_recover")
 
         ApplicationHook.appContext?.let { context ->
-            UnifiedScheduler.reconcilePersistentSchedules(context)
+            UnifiedScheduler.reconcilePersistentSchedules(
+                context,
+                mode = PersistentReconcileMode.FIRE_ALARM_DUE
+            )
         }
 
         ApplicationHookCore.requestExecution(
@@ -134,7 +138,9 @@ internal object ApplicationResumeCoordinator {
                 type = ApplicationHookConstants.TriggerType.ON_RESUME,
                 priority = ApplicationHookConstants.TriggerPriority.HIGH,
                 reason = triggerReason,
-                dedupeKey = dedupeKey
+                dedupeKey = dedupeKey,
+                ownerUserId = AccountSessionCoordinator.currentUserId(),
+                sessionEpoch = AccountSessionCoordinator.currentSessionEpoch()
             )
         )
         return true

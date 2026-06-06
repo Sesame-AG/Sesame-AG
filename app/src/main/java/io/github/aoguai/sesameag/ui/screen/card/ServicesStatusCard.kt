@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -27,15 +28,23 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.github.aoguai.sesameag.ui.permissions.PermissionHealthItem
+import io.github.aoguai.sesameag.ui.permissions.PermissionHealthSnapshot
+import io.github.aoguai.sesameag.ui.permissions.PermissionPolicy
+import io.github.aoguai.sesameag.ui.permissions.PermissionStatus
 import io.github.aoguai.sesameag.util.CommandUtil.ServiceStatus
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ServicesStatusCard(
     status: ServiceStatus, // 使用新定义的状态
+    permissionHealth: PermissionHealthSnapshot,
     expanded: Boolean,
     onClick: () -> Unit
 ) {
+    val hasPermissionIssue = permissionHealth.attentionCount > 0 || permissionHealth.hasCriticalIssue
+    val shellReady = status is ServiceStatus.Active
+    val loading = status is ServiceStatus.Loading || permissionHealth.totalCount == 0
     ElevatedCard(
         onClick = onClick,
         modifier = Modifier
@@ -43,11 +52,11 @@ fun ServicesStatusCard(
             .padding(horizontal = 8.dp, vertical = 4.dp), // 稍微调整间距
         colors = CardDefaults.elevatedCardColors(
             containerColor = when (status) {
-                is ServiceStatus.Active -> MaterialTheme.colorScheme.primary
-                is ServiceStatus.Inactive -> MaterialTheme.colorScheme.errorContainer
                 is ServiceStatus.Loading -> MaterialTheme.colorScheme.surfaceVariant
-                else -> {
-                    MaterialTheme.colorScheme.surfaceVariant
+                else -> when {
+                    hasPermissionIssue -> MaterialTheme.colorScheme.errorContainer
+                    shellReady -> MaterialTheme.colorScheme.primary
+                    else -> MaterialTheme.colorScheme.surfaceVariant
                 }
             }
         ),
@@ -57,55 +66,36 @@ fun ServicesStatusCard(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                when (status) {
-                    is ServiceStatus.Active -> {
-                        val isRootReady = status.type == "Root"
-                        Icon(
-                            Icons.Outlined.CheckCircle,
-                            "已连接"
-                        )
-                        Column(Modifier.padding(start = 20.dp)) {
-                            Text(
-                                text = if (isRootReady) "Root Shell 已连接" else "Shizuku Shell 已连接",
-                                style = MaterialTheme.typography.titleMedium
-                            )
-                            Text(
-                                text = if (isRootReady) "命令服务具备 Root 执行器" else "命令服务当前使用 Shizuku 执行器",
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                text = if (isRootReady) {
-                                    "已检测到 Root Shell，命令服务可直接执行提权命令"
-                                } else {
-                                    "此卡仅反映命令执行器；若当前进程已由 LSPosed/LibXposed 注入，工作流仍可生效"
-                                },
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        }
-                    }
-
-                    is ServiceStatus.Inactive -> {
-                        Icon(Icons.Outlined.Warning, "未授权")
-                        Column(Modifier.padding(start = 20.dp)) {
-                            Text(text = "Shell 服务不可用", style = MaterialTheme.typography.titleMedium)
-                            Text(text = "点击查看解决方案", style = MaterialTheme.typography.bodyMedium)
-                        }
-                    }
-
-                    is ServiceStatus.Loading -> {
-                        CircularProgressIndicator(modifier = Modifier.size(24.dp))
-                        Column(Modifier.padding(start = 20.dp)) {
-                            Text(text = "正在检查服务权限...", style = MaterialTheme.typography.titleMedium)
-                        }
-                    }
-
-                    else -> {
-                        CircularProgressIndicator(modifier = Modifier.size(24.dp))
-                        Column(Modifier.padding(start = 20.dp)) {
-                            Text(text = "正在检查服务权限...", style = MaterialTheme.typography.titleMedium)
-                        }
-                    }
+                if (loading) {
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                } else if (hasPermissionIssue || !shellReady) {
+                    Icon(Icons.Outlined.Warning, "权限待处理")
+                } else {
+                    Icon(Icons.Outlined.CheckCircle, "权限正常")
+                }
+                Column(Modifier.padding(start = 20.dp)) {
+                    Text(
+                        text = when {
+                            loading -> "正在检查运行权限..."
+                            hasPermissionIssue -> "运行与权限待处理"
+                            shellReady -> "运行与权限正常"
+                            else -> "运行权限待确认"
+                        },
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(
+                        text = "权限 ${permissionHealth.grantedCount}/${permissionHealth.totalCount} · ${shellStatusText(status)}",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = if (permissionHealth.hasRequestableIssue) {
+                            "可处理项 ${permissionHealth.requestableCount}"
+                        } else {
+                            "权限状态已同步"
+                        },
+                        style = MaterialTheme.typography.bodySmall
+                    )
                 }
             }
 
@@ -116,20 +106,74 @@ fun ServicesStatusCard(
                 exit = shrinkVertically(animationSpec = tween(300))
             ) {
                 Column(modifier = Modifier.padding(top = 16.dp)) {
-                    Text(text = "授权指南", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    Text(text = "运行权限", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "工作流权限以 Hook 注入或实时 Root 检测结果为准；此卡仅反映命令服务当前选中的 Shell 执行器。\n\n" +
-                                "说明：\n" +
-                                "1. 当前进程已由 LSPosed/LibXposed 注入时，可直接启动工作流。\n" +
-                                "2. 未注入时，会回退到实时 Root 检测。\n" +
-                                "3. Shizuku 状态主要用于排障与命令服务展示，不单独决定配置是否生效。",
-                        style = MaterialTheme.typography.bodyMedium,
-                        lineHeight = 20.sp
-                    )
+                    if (permissionHealth.items.isEmpty()) {
+                        Text(
+                            text = "权限快照尚未生成，请稍后重试。",
+                            style = MaterialTheme.typography.bodyMedium,
+                            lineHeight = 20.sp
+                        )
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            permissionHealth.items.forEach { item ->
+                                PermissionHealthRow(item)
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 }
 
+@Composable
+private fun PermissionHealthRow(item: PermissionHealthItem) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = item.title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (item.policy == PermissionPolicy.AUTO_CRITICAL) FontWeight.Bold else FontWeight.Normal
+            )
+            Text(
+                text = permissionStatusText(item.status),
+                style = MaterialTheme.typography.labelMedium
+            )
+        }
+        Text(
+            text = item.description,
+            style = MaterialTheme.typography.bodySmall,
+            lineHeight = 18.sp
+        )
+    }
+}
+
+private fun shellStatusText(status: ServiceStatus): String {
+    return when (status) {
+        is ServiceStatus.Active -> if (status.type == "Root") {
+            "Root Shell 已连接"
+        } else {
+            "Shizuku Shell 已连接"
+        }
+
+        is ServiceStatus.Inactive -> "Shell 服务不可用"
+        is ServiceStatus.Loading -> "Shell 检查中"
+        is ServiceStatus.Error -> "Shell 服务异常"
+    }
+}
+
+private fun permissionStatusText(status: PermissionStatus): String {
+    return when (status) {
+        PermissionStatus.GRANTED -> "已授权"
+        PermissionStatus.MISSING -> "缺失"
+        PermissionStatus.REQUESTING -> "请求中"
+        PermissionStatus.DENIED -> "已拒绝"
+        PermissionStatus.UNAVAILABLE -> "不可用"
+        PermissionStatus.UNSUPPORTED -> "不支持"
+    }
+}

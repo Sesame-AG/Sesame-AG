@@ -7,7 +7,12 @@ object ApplicationHookCore {
     private const val TAG = "ApplicationHookCore"
 
     fun requestExecution(trigger: TriggerInfo) {
-        ApplicationHookConstants.setPendingTrigger(trigger)
+        val boundTrigger = AccountSessionCoordinator.bindTrigger(trigger)
+        if (!AccountSessionCoordinator.shouldAcceptTrigger(boundTrigger)) {
+            record(TAG, "ignore trigger due to stale/switching session: ${boundTrigger.summary()}")
+            return
+        }
+        ApplicationHookConstants.setPendingTrigger(boundTrigger)
         dispatchIfNeeded()
     }
 
@@ -19,7 +24,15 @@ object ApplicationHookCore {
 
     private fun dispatchPendingTriggers() {
         ApplicationHook.discardCoveredAlarmPollTriggers()
+        ApplicationHookConstants.removePendingTriggers("stale_session_trigger") { trigger ->
+            !AccountSessionCoordinator.shouldAcceptTrigger(trigger)
+        }
         if (!ApplicationHookConstants.hasPendingTriggers()) return
+
+        if (AccountSessionCoordinator.isSwitching()) {
+            record(TAG, "session switching, skip dispatch: ${ApplicationHook.readinessSummary()}")
+            return
+        }
 
         if (ApplicationHookConstants.isOffline()) {
             record(TAG, "offline active, skip dispatch: ${ApplicationHook.readinessSummary()}")

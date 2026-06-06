@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.aoguai.sesameag.ui.MainActivity
 import io.github.aoguai.sesameag.ui.extension.openUrl
+import io.github.aoguai.sesameag.ui.permissions.PermissionHealthSnapshot
 import io.github.aoguai.sesameag.ui.screen.card.ModuleStatusCard
 import io.github.aoguai.sesameag.ui.screen.card.OneWordCard
 import io.github.aoguai.sesameag.ui.screen.card.ServicesStatusCard
@@ -39,6 +40,7 @@ import io.github.aoguai.sesameag.util.ToastUtil
 fun HomeContent(
     moduleStatus: MainViewModel.ModuleStatus,
     serviceStatus: ServiceStatus,
+    permissionHealth: PermissionHealthSnapshot,
     oneWord: String,
     isOneWordLoading: Boolean,
     isLegalAccepted: Boolean,
@@ -92,9 +94,16 @@ fun HomeContent(
         item {
             ServicesStatusCard(
                 status = serviceStatus,
+                permissionHealth = permissionHealth,
                 expanded = isServiceCardExpanded,
                 onClick = {
-                    isServiceCardExpanded = !isServiceCardExpanded // 此处不可省略
+                    onEvent(
+                        MainActivity.MainUiEvent.RequestPermissionCheck { canToggleDetails ->
+                            if (canToggleDetails) {
+                                isServiceCardExpanded = !isServiceCardExpanded // 此处不可省略
+                            }
+                        }
+                    )
                 }
             )
         }

@@ -5,8 +5,10 @@ import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.Status.Companion.hasFlagToday
 import io.github.aoguai.sesameag.data.Status.Companion.setFlagToday
 import io.github.aoguai.sesameag.data.StatusFlags
+import io.github.aoguai.sesameag.entity.MapperEntity
 import io.github.aoguai.sesameag.entity.SesameGift
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
+import io.github.aoguai.sesameag.hook.ExchangeOptionsRefreshBridge
 import io.github.aoguai.sesameag.hook.HookReadyChecker
 import io.github.aoguai.sesameag.hook.internal.LocationHelper.requestLocationSuspend
 import io.github.aoguai.sesameag.hook.internal.SecurityBodyHelper.getSecurityBodyData
@@ -26,6 +28,7 @@ import io.github.aoguai.sesameag.task.common.TaskFlowItem
 import io.github.aoguai.sesameag.task.common.TaskFlowPhase
 import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
 import io.github.aoguai.sesameag.task.exchange.ExchangeCost
+import io.github.aoguai.sesameag.task.exchange.ExchangeEffectCatalog
 import io.github.aoguai.sesameag.task.exchange.ExchangeItem
 import io.github.aoguai.sesameag.task.exchange.ExchangeLimit
 import io.github.aoguai.sesameag.task.exchange.ExchangeSafety
@@ -151,7 +154,6 @@ class AntSesameCredit : ModelTask() {
                 LinkedHashSet<String?>()
             ) {
                 refreshSesameGrainExchangeOptionsForSettings()
-                SesameGift.getList()
             }.withDesc("勾选允许自动兑换的芝麻粒商品，需开启“芝麻粒 | 兑换道具”。").also { sesameGrainExchangeList = it })
         // 芝麻炼金
         modelFields.addField(
@@ -3288,10 +3290,20 @@ class AntSesameCredit : ModelTask() {
      * 芝麻粒兑换道具
      * 仿照会员积分兑换逻辑：遍历列表更新Map，同时匹配用户设置进行兑换
      */
-    private fun refreshSesameGrainExchangeOptionsForSettings() {
-        if (!HookReadyChecker.isTargetAppReadyForRpc(UserMap.currentUid)) {
-            Log.sesame("芝麻粒兑换🛒目标应用未启动，设置页使用缓存列表")
-            return
+    private fun refreshSesameGrainExchangeOptionsForSettings(): List<MapperEntity> {
+        if (!HookReadyChecker.isCurrentProcessReadyForRpc(UserMap.currentUid)) {
+            if (!HookReadyChecker.isTargetAppReadyForRpc(UserMap.currentUid) ||
+                !ExchangeOptionsRefreshBridge.requestRefresh(
+                    ExchangeOptionsRefreshBridge.TARGET_SESAME_GRAIN,
+                    UserMap.currentUid
+                )
+            ) {
+                Log.sesame("芝麻粒兑换🛒目标应用未启动，设置页使用缓存列表")
+                return SesameGift.getList()
+            }
+            Log.sesame("芝麻粒兑换🛒目标应用已远程刷新列表")
+            IdMapManager.getInstance(SesameGiftMap::class.java).load(UserMap.currentUid)
+            return SesameGift.getList()
         }
         try {
             val userId = UserMap.currentUid
@@ -3301,6 +3313,7 @@ class AntSesameCredit : ModelTask() {
             val scannedTabs = LinkedHashSet<String>()
             val seenTemplateIds = LinkedHashSet<String>()
             val sesameGiftMap = IdMapManager.getInstance(SesameGiftMap::class.java)
+            val mapperList = mutableListOf<MapperEntity>()
             var tabIndex = 0
             var refreshedCount = 0
             while (tabIndex < pendingTabs.size) {
@@ -3338,6 +3351,7 @@ class AntSesameCredit : ModelTask() {
                             continue
                         }
                         sesameGiftMap.add(candidate.item.id, candidate.item.displayName())
+                        mapperList.add(candidate.item.toMapperEntity())
                         refreshedCount++
                     }
                     hasNextPage = data.optBoolean("hasNext", false)
@@ -3346,9 +3360,15 @@ class AntSesameCredit : ModelTask() {
             }
             sesameGiftMap.save(userId)
             Log.sesame("芝麻粒兑换🛒设置页刷新列表#$refreshedCount")
+            return mapperList.ifEmpty { SesameGift.getList() }
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "refreshSesameGrainExchangeOptionsForSettings err:", t)
+            return SesameGift.getList()
         }
+    }
+
+    internal fun refreshSesameGrainExchangeOptionsForRemote() {
+        refreshSesameGrainExchangeOptionsForSettings()
     }
 
     internal suspend fun doSesameGrainExchange(): Unit = CoroutineUtils.run {
@@ -3518,6 +3538,7 @@ class AntSesameCredit : ModelTask() {
             baseReason.isNotEmpty() -> baseReason
             else -> ""
         }
+        val effectTags = ExchangeEffectCatalog.tagsFor(ExchangeEffectCatalog.SOURCE_SESAME_GRAIN, name)
         return SesameExchangeCandidate(
             item = ExchangeItem(
                 id = templateId,
@@ -3529,7 +3550,15 @@ class AntSesameCredit : ModelTask() {
                     statusText = statusParts.joinToString("、")
                 ),
                 safety = safety,
-                safetyReason = safetyReason
+                safetyReason = safetyReason,
+                effectTags = effectTags,
+                displayMeta = ExchangeEffectCatalog.displayMeta(
+                    ExchangeEffectCatalog.SOURCE_SESAME_GRAIN,
+                    name,
+                    safety,
+                    safetyReason,
+                    effectTags
+                )
             ),
             templateId = templateId,
             pointNeeded = pointNeeded
@@ -3556,7 +3585,9 @@ class AntSesameCredit : ModelTask() {
     private fun exchangeSesameGift(templateId: String, name: String, point: String): Boolean {
         try {
             val detailResp = JSONObject(AntSesameCreditRpcCall.queryAwardDetail(templateId))
-            if (!ResChecker.checkRes(TAG, "芝麻粒兑换详情查询失败:", detailResp)) {
+            if (!ExchangeSafetyRules.isSuccessResponse(detailResp) &&
+                !ResChecker.checkRes(TAG, "芝麻粒兑换详情查询失败:", detailResp)
+            ) {
                 return false
             }
             val detailCandidate = detailResp.optJSONObject("data")
@@ -3574,13 +3605,15 @@ class AntSesameCredit : ModelTask() {
             val resString = AntSesameCreditRpcCall.obtainAward(templateId)
             val jo = JSONObject(resString)
 
-            if (ResChecker.checkRes(TAG, jo)) {
+            if (ExchangeSafetyRules.isSuccessResponse(jo) || ResChecker.checkRes(TAG, jo)) {
                 val recordId = jo.optJSONObject("data")?.optString("awardRecordId", "").orEmpty()
                 Log.sesame("芝麻粒兑换🛒[成功] ${detailCandidate.item.name} #消耗${point}粒")
                 if (recordId.isNotBlank()) {
                     runCatching {
                         val awardDetail = JSONObject(AntSesameCreditRpcCall.queryMyAwardDetail(recordId))
-                        if (ResChecker.checkRes(TAG, "芝麻粒兑换结果查询失败:", awardDetail)) {
+                        if (ExchangeSafetyRules.isSuccessResponse(awardDetail) ||
+                            ResChecker.checkRes(TAG, "芝麻粒兑换结果查询失败:", awardDetail)
+                        ) {
                             val awardStatus = awardDetail.optJSONObject("data")?.optString("status").orEmpty()
                             Log.sesame("芝麻粒兑换🛒结果[${detailCandidate.item.name}]#${awardStatus.ifBlank { "已领取" }}")
                         }

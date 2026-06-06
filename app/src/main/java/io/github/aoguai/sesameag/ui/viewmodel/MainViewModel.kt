@@ -1,8 +1,11 @@
 package io.github.aoguai.sesameag.ui.viewmodel
 
 import android.app.Application
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.aoguai.sesameag.SesameApplication.Companion.PREFERENCES_KEY
@@ -11,6 +14,7 @@ import io.github.aoguai.sesameag.entity.UserEntity
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.service.ConnectionState
 import io.github.aoguai.sesameag.service.LsposedServiceManager
+import io.github.aoguai.sesameag.ui.permissions.PermissionHealthSnapshot
 import io.github.aoguai.sesameag.util.DataStore
 import io.github.aoguai.sesameag.util.DirectoryWatcher
 import io.github.aoguai.sesameag.util.SesameAgUtil
@@ -82,19 +86,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isLegalAccepted = MutableStateFlow(false)
     val isLegalAccepted: StateFlow<Boolean> = _isLegalAccepted.asStateFlow()
 
+    private val _permissionHealth = MutableStateFlow(PermissionHealthSnapshot.EMPTY)
+    val permissionHealth: StateFlow<PermissionHealthSnapshot> = _permissionHealth.asStateFlow()
+
     // --- 监听器 ---
 
     // 监听 LSPosed 服务连接 (仅用于更新详细版本信息)
     private val serviceListener: (ConnectionState) -> Unit = { _ ->
+        LsposedServiceManager.refreshScope()
         refreshModuleFrameworkStatus()
     }
 
+    private val accountContextReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != ApplicationHookConstants.BroadcastActions.ACCOUNT_CONTEXT_CHANGED) {
+                return
+            }
+            applyAccountContext(intent)
+            refreshUserConfigs()
+        }
+    }
 
     private var isInitialized = false
+    private var accountContextReceiverRegistered = false
 
     fun initAppLogic(): Boolean {
         if (isInitialized) return false
         isInitialized = true
+        registerAccountContextReceiver()
 
         viewModelScope.launch(Dispatchers.IO) {
             initEnvironment()
@@ -116,6 +135,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         super.onCleared()
         LsposedServiceManager.removeConnectionListener(serviceListener)
+        unregisterAccountContextReceiver()
     }
 
 
@@ -157,9 +177,57 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         try {
             val activeUserEntity = DataStore.get("activedUser", UserEntity::class.java)
             _activeUser.value = activeUserEntity
+            UserMap.setCurrentUserId(activeUserEntity?.userId?.trim()?.takeIf { it.isNotEmpty() })
         } catch (e: Exception) {
             Log.e(TAG, "Read active user failed", e)
             _activeUser.value = null
+            UserMap.setCurrentUserId(null)
+        }
+    }
+
+    private fun applyAccountContext(intent: Intent) {
+        val sessionUserId = intent.getStringExtra("userId")
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+        val snapshotUserId = intent.getStringExtra("activeUserId")
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+        val activeUserId = snapshotUserId ?: sessionUserId
+        val snapshotShowName = intent.getStringExtra("activeUserShowName")
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+        val snapshotNickName = intent.getStringExtra("activeUserNickName")
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+        val snapshotRemarkName = intent.getStringExtra("activeUserRemarkName")
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+        val snapshotRealName = intent.getStringExtra("activeUserRealName")
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+
+        if (activeUserId != null) {
+            _activeUser.value = UserEntity(
+                userId = activeUserId,
+                account = intent.getStringExtra("activeUserAccount"),
+                friendStatus = if (intent.hasExtra("activeUserFriendStatus")) {
+                    intent.getIntExtra("activeUserFriendStatus", 0)
+                } else {
+                    null
+                },
+                realName = snapshotRealName,
+                nickName = snapshotNickName ?: snapshotShowName ?: activeUserId,
+                remarkName = snapshotRemarkName
+            )
+            UserMap.setCurrentUserId(activeUserId)
+        } else {
+            refreshActiveUser()
+        }
+
+        if (intent.hasExtra("legalAccepted")) {
+            _isLegalAccepted.value = intent.getBooleanExtra("legalAccepted", false)
+        } else {
+            refreshLegalAcceptanceState()
         }
     }
 
@@ -202,6 +270,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             DataStore.init(Files.CONFIG_DIR)
         } catch (e: Exception) {
             Log.e(TAG, "Environment init failed", e)
+        }
+    }
+
+    private fun registerAccountContextReceiver() {
+        if (accountContextReceiverRegistered) return
+        val application = getApplication<Application>()
+        val filter = IntentFilter(ApplicationHookConstants.BroadcastActions.ACCOUNT_CONTEXT_CHANGED)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                application.registerReceiver(accountContextReceiver, filter, Context.RECEIVER_EXPORTED)
+            } else {
+                application.registerReceiver(accountContextReceiver, filter)
+            }
+            accountContextReceiverRegistered = true
+        } catch (e: Exception) {
+            Log.e(TAG, "Register account context receiver failed", e)
+        }
+    }
+
+    private fun unregisterAccountContextReceiver() {
+        if (!accountContextReceiverRegistered) return
+        val application = getApplication<Application>()
+        try {
+            application.unregisterReceiver(accountContextReceiver)
+        } catch (e: Exception) {
+            Log.e(TAG, "Unregister account context receiver failed", e)
+        } finally {
+            accountContextReceiverRegistered = false
         }
     }
 
@@ -268,6 +364,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             IconManager.syncIconState(getApplication(), isHidden)
         }
+    }
+
+    fun updatePermissionHealth(snapshot: PermissionHealthSnapshot) {
+        _permissionHealth.value = snapshot
     }
 
     fun clearAllLogs(context: Context) {

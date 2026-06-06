@@ -237,6 +237,30 @@ object HookUtil {
         Log.printStackTrace(TAG, it)
     }.getOrNull()
 
+    fun captureCurrentUserEntity(classLoader: ClassLoader?): UserEntity? {
+        val activeClassLoader = classLoader ?: return null
+        return runCatching {
+            val userObject = getUserObject(activeClassLoader) ?: error("用户对象为空")
+            val userId = getFieldValue(userObject, "userId") as? String
+            if (userId.isNullOrBlank()) {
+                return null
+            }
+            UserEntity(
+                userId = userId,
+                account = runCatching { getFieldValue(userObject, "account") as? String }.getOrNull(),
+                friendStatus = runCatching { getFieldValue(userObject, "friendStatus") as? Int }.getOrNull(),
+                realName = runCatching { getFieldValue(userObject, "name") as? String }.getOrNull(),
+                nickName = runCatching {
+                    (getFieldValue(userObject, "nickName") as? String)
+                        ?: (getFieldValue(userObject, "displayName") as? String)
+                }.getOrNull(),
+                remarkName = runCatching { getFieldValue(userObject, "remarkName") as? String }.getOrNull()
+            )
+        }.onFailure {
+            Log.printStackTrace(TAG, "captureCurrentUserEntity 失败", it)
+        }.getOrNull()
+    }
+
     fun hookUser(classLoader: ClassLoader): FriendRefreshResult {
         var targetUserId = UserMap.currentUid.orEmpty()
         return try {

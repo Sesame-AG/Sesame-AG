@@ -1,6 +1,8 @@
 package io.github.aoguai.sesameag.hook
 
 object ApplicationHookEntry {
+    private fun currentOwnerUserId(): String? = AccountSessionCoordinator.currentUserId()
+    private fun currentSessionEpoch(): Long = AccountSessionCoordinator.currentSessionEpoch()
 
     fun onInitCompleted(reason: String) {
         if (reason == "broadcast_restart" || reason == "config_reload") {
@@ -13,7 +15,9 @@ object ApplicationHookEntry {
                     type = ApplicationHookConstants.TriggerType.INIT,
                     priority = ApplicationHookConstants.TriggerPriority.HIGH,
                     reason = reason,
-                    dedupeKey = "${reason}_resume"
+                    dedupeKey = "${reason}_resume",
+                    ownerUserId = currentOwnerUserId(),
+                    sessionEpoch = currentSessionEpoch()
                 )
             )
             return
@@ -36,7 +40,9 @@ object ApplicationHookEntry {
                 type = type,
                 priority = ApplicationHookConstants.TriggerPriority.HIGH,
                 reason = reason,
-                dedupeKey = dedupeKey
+                dedupeKey = dedupeKey,
+                ownerUserId = currentOwnerUserId(),
+                sessionEpoch = currentSessionEpoch()
             )
         )
     }
@@ -47,7 +53,9 @@ object ApplicationHookEntry {
                 type = ApplicationHookConstants.TriggerType.ALARM_POLL,
                 priority = ApplicationHookConstants.TriggerPriority.LOW,
                 alarmTriggered = true,
-                dedupeKey = "alarm_poll"
+                dedupeKey = "alarm_poll",
+                ownerUserId = currentOwnerUserId(),
+                sessionEpoch = currentSessionEpoch()
             )
         )
     }
@@ -57,7 +65,9 @@ object ApplicationHookEntry {
             ApplicationHookConstants.TriggerInfo(
                 type = ApplicationHookConstants.TriggerType.INTERVAL_RETRY,
                 priority = ApplicationHookConstants.TriggerPriority.LOW,
-                dedupeKey = "interval_retry"
+                dedupeKey = "interval_retry",
+                ownerUserId = currentOwnerUserId(),
+                sessionEpoch = currentSessionEpoch()
             )
         )
     }
@@ -70,7 +80,9 @@ object ApplicationHookEntry {
                 alarmTriggered = true,
                 wakenAtTime = true,
                 wakenTime = "0000",
-                dedupeKey = "wakeup_midnight"
+                dedupeKey = "wakeup_midnight",
+                ownerUserId = currentOwnerUserId(),
+                sessionEpoch = currentSessionEpoch()
             )
         )
     }
@@ -83,7 +95,9 @@ object ApplicationHookEntry {
                 alarmTriggered = true,
                 wakenAtTime = true,
                 wakenTime = timeStr,
-                dedupeKey = "wakeup_$timeStr"
+                dedupeKey = "wakeup_$timeStr",
+                ownerUserId = currentOwnerUserId(),
+                sessionEpoch = currentSessionEpoch()
             )
         )
     }
