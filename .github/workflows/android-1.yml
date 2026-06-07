@@ -6,6 +6,7 @@ on:
     tags:
       - "[0-9]*-*"
   workflow_dispatch:
+  
 env:
   CI: "true"
   JAVA_DISTRIBUTION: "oracle"
@@ -50,6 +51,7 @@ jobs:
           set -euo pipefail
           sudo timedatectl set-timezone Asia/Shanghai
           echo "Current time: $(date)"
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -60,6 +62,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           grep -Eq '^distributionUrl=.*gradle-'"${LOCAL_GRADLE_VERSION//./\\.}"'-bin\.zip$' gradle/wrapper/gradle-wrapper.properties
           grep -Eq '^android-plugin = "'"${LOCAL_AGP_VERSION//./\\.}"'"$' gradle/libs.versions.toml
           grep -Eq '^kotlin = "'"${LOCAL_KOTLIN_VERSION//./\\.}"'"$' gradle/libs.versions.toml
@@ -67,6 +70,7 @@ jobs:
           grep -Eq 'compileSdk = '"${ANDROID_API_LEVEL}"'$' app/build.gradle.kts
           grep -Eq 'sourceCompatibility = JavaVersion.VERSION_17' app/build.gradle.kts
           grep -Eq 'targetCompatibility = JavaVersion.VERSION_17' app/build.gradle.kts
+
       - name: Resolve Release Metadata
         id: meta
         shell: bash
@@ -77,21 +81,25 @@ jobs:
           tag_version_code=""
           configured_version_name=""
           version_name=""
+
           if [[ "${RELEASE_TAG_RAW}" =~ ${release_tag_regex} ]]; then
             tag_valid="true"
             tag_version_code="${BASH_REMATCH[1]}"
             version_name="${BASH_REMATCH[2]}"
           fi
+
           configured_version_name="$(sed -n 's/^appVersion=//p' gradle.properties | head -n1 | tr -d '\r')"
           if [[ -z "${configured_version_name}" ]]; then
             echo "Failed to resolve appVersion from gradle.properties" >&2
             exit 1
           fi
+
           version_code="$(git rev-list --count HEAD | tr -d '\n')"
           if [[ -z "${version_code}" ]]; then
             echo "Failed to resolve versionCode from git history" >&2
             exit 1
           fi
+
           xposed_tag="${RELEASE_TAG_RAW}"
           echo "tag_valid=${tag_valid}" >> "$GITHUB_OUTPUT"
           echo "tag_version_code=${tag_version_code}" >> "$GITHUB_OUTPUT"
@@ -99,6 +107,7 @@ jobs:
           echo "version_name=${version_name}" >> "$GITHUB_OUTPUT"
           echo "version_code=${version_code}" >> "$GITHUB_OUTPUT"
           echo "xposed_tag=${xposed_tag}" >> "$GITHUB_OUTPUT"
+
       - name: Check Signing And Target Repository
         id: check
         shell: bash
@@ -117,7 +126,9 @@ jobs:
           PUBLISH_TO_XPOSED_REPO: ${{ env.PUBLISH_TO_XPOSED_REPO }}
         run: |
           set -euo pipefail
+
           git fetch origin "refs/heads/${TARGET_SOURCE_BRANCH}:refs/remotes/origin/${TARGET_SOURCE_BRANCH}" --force
+
           missing=()
           [[ -n "${ANDROID_SIGNING_KEY}" ]] || missing+=("ANDROID_SIGNING_KEY")
           [[ -n "${ANDROID_KEY_ALIAS}" ]] || missing+=("ANDROID_KEY_ALIAS")
@@ -126,8 +137,10 @@ jobs:
           if [[ "${PUBLISH_TO_XPOSED_REPO}" == "true" ]]; then
             [[ -n "${TARGET_REPO_PAT}" ]] || missing+=("TARGET_REPO_PAT")
           fi
+
           ready="false"
           reason=""
+
           if [[ ${#missing[@]} -gt 0 ]]; then
             reason="缺少必要 Secrets: ${missing[*]}"
           elif [[ "${TAG_VALID}" != "true" ]]; then
@@ -166,14 +179,17 @@ jobs:
             else
               reason="检查目标 Xposed 模块仓库失败，请稍后重试"
             fi
+
             rm -f target_repo.json
           fi
+
           echo "ready=${ready}" >> "$GITHUB_OUTPUT"
           {
             echo "reason<<EOF"
             printf '%s\n' "${reason}"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
+
           {
             echo "## Release Preflight"
             echo
@@ -190,6 +206,7 @@ jobs:
             echo "- 发布到目标仓库: \`${PUBLISH_TO_XPOSED_REPO}\`"
             echo "- 检查结果: ${reason}"
           } >> "$GITHUB_STEP_SUMMARY"
+
   release:
     needs: preflight
     if: needs.preflight.outputs.ready == 'true'
@@ -204,6 +221,7 @@ jobs:
           set -euo pipefail
           sudo timedatectl set-timezone Asia/Shanghai
           echo "Current time: $(date)"
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -224,6 +242,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "ORG_GRADLE_JAVA_HOME=${JAVA_HOME}" >> "$GITHUB_ENV"
+
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
@@ -242,6 +261,7 @@ jobs:
           set +o pipefail
           yes | sdkmanager --licenses >/dev/null
           set -o pipefail
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -262,11 +282,13 @@ jobs:
           java -version
           sdkmanager --version
           ./gradlew --version
+
       - name: Build Release APKs
         shell: bash
         run: |
           set -euo pipefail
           ./gradlew --no-daemon --stacktrace assembleRelease
+
       - name: Stage Unsigned APKs
         shell: bash
         run: |
@@ -281,6 +303,7 @@ jobs:
           for apk in "${apks[@]}"; do
             cp "${apk}" "${STAGING_DIR}/"
           done
+
       - name: Sign APKs
         id: sign_apks
         uses: ilharp/sign-android-release@v2
@@ -301,6 +324,7 @@ jobs:
           XPOSED_TAG: ${{ needs.preflight.outputs.xposed_tag }}
         run: |
           set -euo pipefail
+
           body_path="${RUNNER_TEMP}/xposed-release-body.md"
           tag_object_type="$(git cat-file -t "${GITHUB_REF}" 2>/dev/null || true)"
           repo_name="${REPOSITORY#*/}"
@@ -314,6 +338,7 @@ jobs:
           commit_type_regex='^([[:alpha:]]+)(\([^)]*\))?[!]?:[[:space:]]+'
           tmp_dir="$(mktemp -d)"
           trap 'rm -rf "${tmp_dir}"' EXIT
+
           categories=(feat fix perf refactor revert other)
           declare -A category_titles=(
             [feat]="新功能"
@@ -323,23 +348,29 @@ jobs:
             [revert]="回滚变更"
             [other]="其他更新"
           )
+
           for category in "${categories[@]}"; do
             : > "${tmp_dir}/${category}.md"
           done
+
           if [[ "${tag_object_type}" == "tag" ]]; then
             tag_notes="$(git for-each-ref "${GITHUB_REF}" --format='%(contents)')"
           fi
+
           if [[ -n "${prev_tag}" ]]; then
             compare_url="https://github.com/${REPOSITORY}/compare/${prev_tag}...${RELEASE_TAG_RAW}"
             commit_range_display="${prev_tag}...${RELEASE_TAG_RAW}"
             range_args=("${prev_tag}..${GITHUB_SHA}")
           fi
+
           contributors_path="${tmp_dir}/contributors.tsv"
           : > "${contributors_path}"
           declare -A seen_release_author=()
           relevant_commit_count=0
+
           while IFS=$'\t' read -r commit_sha commit_subject author_name author_email; do
             [[ -n "${commit_sha}" ]] || continue
+
             author_key="${author_name}|${author_email,,}"
             if [[ -z "${seen_release_author[$author_key]+x}" ]]; then
               seen_release_author[$author_key]=1
@@ -349,9 +380,11 @@ jobs:
                 "${author_email}" \
                 >> "${contributors_path}"
             fi
+
             if [[ "${commit_subject}" =~ ${excluded_type_regex} ]]; then
               continue
             fi
+
             category="other"
             if [[ "${commit_subject}" =~ ${commit_type_regex} ]]; then
               commit_type="${BASH_REMATCH[1],,}"
@@ -364,6 +397,7 @@ jobs:
                   ;;
               esac
             fi
+
             relevant_commit_count=$((relevant_commit_count + 1))
             short_sha="${commit_sha:0:7}"
             printf -- "- %s ([%s](https://github.com/%s/commit/%s))\n" \
@@ -373,32 +407,41 @@ jobs:
               "${commit_sha}" \
               >> "${tmp_dir}/${category}.md"
           done < <(git log --reverse --format='%H%x09%s%x09%an%x09%ae' "${range_args[@]}")
+
           contributor_html=""
           contributor_names=()
           declare -A seen_contributor=()
+
           while IFS=$'\t' read -r contributor_sha contributor_name contributor_email; do
             [[ -n "${contributor_sha}" ]] || continue
+
             api_json="$(curl -fsSL \
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer ${GITHUB_API_TOKEN}" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
               "https://api.github.com/repos/${REPOSITORY}/commits/${contributor_sha}" || true)"
+
             contributor_login=""
             contributor_avatar_url=""
+
             if [[ -n "${api_json}" ]]; then
               contributor_login="$(python3 -c 'import json,sys; data=json.load(sys.stdin); print(((data.get("author") or {}).get("login") or "").strip())' <<< "${api_json}")"
               contributor_avatar_url="$(python3 -c 'import json,sys; data=json.load(sys.stdin); print(((data.get("author") or {}).get("avatar_url") or "").strip())' <<< "${api_json}")"
             fi
+
             dedupe_key="${contributor_login:-${contributor_name}|${contributor_email}}"
             if [[ -n "${seen_contributor[$dedupe_key]+x}" ]]; then
               continue
             fi
             seen_contributor[$dedupe_key]=1
+
             contributor_label="${contributor_name}"
             if [[ -n "${contributor_login}" ]]; then
               contributor_label="@${contributor_login}"
             fi
+
             contributor_names+=("${contributor_label}")
+
             if [[ -n "${contributor_login}" && -n "${contributor_avatar_url}" ]]; then
               contributor_html+="$(
                 printf '<a href="https://github.com/%s" title="%s"><img src="%s" width="40" height="40" alt="%s" style="border-radius:50%%;margin:0 6px 6px 0;" /></a>' \
@@ -409,6 +452,7 @@ jobs:
               )"
             fi
           done < "${contributors_path}"
+
           {
             echo "内容同步自源仓库 [${repo_name}](https://github.com/${REPOSITORY})"
             echo
@@ -416,12 +460,14 @@ jobs:
             echo "模块仓库标签：\`${XPOSED_TAG}\`"
             echo "变更范围：\`${commit_range_display}\`"
             echo
+
             if [[ -n "${tag_notes//[[:space:]]/}" ]]; then
               echo "## 发布备注"
               echo
               echo "${tag_notes}"
               echo
             fi
+
             if [[ ${relevant_commit_count} -gt 0 ]]; then
               echo "## 变更说明"
               echo
@@ -434,13 +480,16 @@ jobs:
                 fi
               done
             fi
+
             if [[ ${#contributor_names[@]} -gt 0 ]]; then
               echo "## 本轮贡献者"
               echo
+
               if [[ -n "${contributor_html}" ]]; then
                 echo "<p>${contributor_html}</p>"
                 echo
               fi
+
               joined_contributors=""
               for contributor_name in "${contributor_names[@]}"; do
                 if [[ -n "${joined_contributors}" ]]; then
@@ -451,6 +500,7 @@ jobs:
               echo "感谢以下参与本轮更新提交的开发者：${joined_contributors}"
               echo
             fi
+
             echo "## Full Changelog"
             echo
             if [[ -n "${compare_url}" ]]; then
@@ -458,6 +508,7 @@ jobs:
             fi
             echo "- 提交历史：${commit_history_url}"
             echo
+
             echo "> ## 下载说明"
             echo "<b>- arm64-v8a:</b> 适用于64位 ARM 设备 (主流新手机)"
             echo "<b>- armeabi-v7a:</b> 适用于32位 ARM 设备 (旧款手机)"
@@ -466,7 +517,9 @@ jobs:
             echo ">"
             echo "> **如果不确定，请下载 \`universal\` 版本。**"
           } > "${body_path}"
+
           echo "body_path=${body_path}" >> "$GITHUB_OUTPUT"
+
       - name: Prepare Release Assets
         id: prepare_assets
         shell: bash
@@ -492,6 +545,7 @@ jobs:
             cp "${{ steps.release_notes.outputs.body_path }}" "${ASSET_DIR}/RELEASE_NOTES-${RELEASE_TAG_RAW}.md"
           fi
           echo "asset_dir=${ASSET_DIR}" >> "$GITHUB_OUTPUT"
+
       - name: Package APK Artifact
         if: env.PUBLISH_TO_XPOSED_REPO != 'true'
         id: package_artifact
@@ -504,6 +558,7 @@ jobs:
             zip -r -P "${ARTIFACT_PASSWORD}" "${artifact_path}" .
           )
           echo "artifact_path=${artifact_path}" >> "$GITHUB_OUTPUT"
+
       - name: Upload APK Artifact
         if: env.PUBLISH_TO_XPOSED_REPO != 'true'
         uses: actions/upload-artifact@v7
