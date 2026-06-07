@@ -28,6 +28,8 @@ import io.github.aoguai.sesameag.task.exchange.ExchangeEffectCatalog
 import io.github.aoguai.sesameag.task.exchange.ExchangeEffectNeed
 import io.github.aoguai.sesameag.task.exchange.ExchangeItem
 import io.github.aoguai.sesameag.task.exchange.ExchangeLimit
+import io.github.aoguai.sesameag.task.exchange.ExchangeOptionRow
+import io.github.aoguai.sesameag.task.exchange.ExchangeOptionsCache
 import io.github.aoguai.sesameag.task.exchange.ExchangeReplenishResult
 import io.github.aoguai.sesameag.task.exchange.ExchangeReplenisher
 import io.github.aoguai.sesameag.task.exchange.ExchangeSafety
@@ -724,25 +726,42 @@ class AntMember : ModelTask() {
      */
     private fun refreshMemberPointExchangeOptionsForSettings(): List<MapperEntity> {
         if (!HookReadyChecker.isCurrentProcessReadyForRpc(UserMap.currentUid)) {
-            if (!HookReadyChecker.isTargetAppReadyForRpc(UserMap.currentUid) ||
-                !ExchangeOptionsRefreshBridge.requestRefresh(
-                    ExchangeOptionsRefreshBridge.TARGET_MEMBER_POINT,
-                    UserMap.currentUid
+            if (!HookReadyChecker.isTargetAppReadyForRpc(UserMap.currentUid)) {
+                val cachedRows = ExchangeOptionsCache.loadForSettingsCache(
+                    UserMap.currentUid,
+                    ExchangeOptionsRefreshBridge.TARGET_MEMBER_POINT
                 )
-            ) {
-                Log.member("会员积分🎐目标应用未就绪，设置页使用缓存列表")
-                return MemberBenefit.getList()
+                Log.member("会员积分🎐目标应用未就绪，设置页使用结构化缓存列表#${cachedRows.size}")
+                return cachedRows
             }
-            val memberBenefitMap = IdMapManager.getInstance(MemberBenefitsMap::class.java)
-            memberBenefitMap.load(UserMap.currentUid)
-            Log.member("会员积分🎐设置页加载目标应用刷新列表#${memberBenefitMap.map.size}")
-            return MemberBenefit.getList()
+            val refreshResult = ExchangeOptionsRefreshBridge.requestRefreshOptions(
+                ExchangeOptionsRefreshBridge.TARGET_MEMBER_POINT,
+                UserMap.currentUid
+            )
+            if (refreshResult.success) {
+                Log.member("会员积分🎐设置页使用目标应用刷新列表#${refreshResult.options.size}")
+                return refreshResult.options
+            }
+            Log.member("会员积分🎐远程刷新失败，不使用旧缓存#${refreshResult.message}")
+            return emptyList()
         }
+        val rows = runCatching {
+            refreshMemberPointExchangeOptionsFromRpc()
+        }.onFailure {
+            Log.printStackTrace(TAG, "refreshMemberPointExchangeOptionsForSettings.currentRpc err:", it)
+        }.getOrElse {
+            emptyList()
+        }
+        Log.member("会员积分🎐设置页刷新结构化列表#${rows.size}")
+        return rows
+    }
+
+    private fun refreshMemberPointExchangeOptionsFromRpc(): List<ExchangeOptionRow> {
         try {
             val userId = UserMap.currentUid
             val memberInfo = JSONObject(AntMemberRpcCall.queryMemberInfo())
             if (!ResChecker.checkRes(TAG, "会员积分兑换列表刷新失败:", memberInfo)) {
-                return MemberBenefit.getList()
+                throw IllegalStateException("会员积分兑换列表刷新失败")
             }
             val pointBalance = memberInfo.optString("pointBalance")
                 .ifEmpty { memberInfo.optInt("pointBalance", 0).toString() }
@@ -752,17 +771,18 @@ class AntMember : ModelTask() {
                 memberBenefitMap.add(candidate.item.id, candidate.item.displayName())
             }
             memberBenefitMap.save(userId)
-            Log.member("会员积分🎐设置页刷新兑换列表#${candidateMap.size}")
-            return candidateMap.values.map { it.item.toMapperEntity() }.ifEmpty { MemberBenefit.getList() }
+            val rows = candidateMap.values.map { it.item.toOptionRow() }
+            ExchangeOptionsCache.save(userId, ExchangeOptionsRefreshBridge.TARGET_MEMBER_POINT, rows)
+            Log.member("会员积分🎐刷新兑换列表#${rows.size}")
+            return rows
         } catch (t: Throwable) {
-            Log.printStackTrace(TAG, "refreshMemberPointExchangeOptionsForSettings err:", t)
-            return MemberBenefit.getList()
+            Log.printStackTrace(TAG, "refreshMemberPointExchangeOptionsFromRpc err:", t)
+            throw t
         }
     }
 
-    internal fun refreshMemberPointExchangeOptionsForRemote() {
-        refreshMemberPointExchangeOptionsForSettings()
-    }
+    internal fun refreshMemberPointExchangeOptionsForRemote(): List<ExchangeOptionRow> =
+        refreshMemberPointExchangeOptionsFromRpc()
 
     private fun queryMemberExchangeCandidates(
         userId: String?,
@@ -878,20 +898,37 @@ class AntMember : ModelTask() {
 
     private fun refreshBeanExchangeRightOptionsForSettings(): List<MapperEntity> {
         if (!HookReadyChecker.isCurrentProcessReadyForRpc(UserMap.currentUid)) {
-            if (!HookReadyChecker.isTargetAppReadyForRpc(UserMap.currentUid) ||
-                !ExchangeOptionsRefreshBridge.requestRefresh(
-                    ExchangeOptionsRefreshBridge.TARGET_BEAN_RIGHT,
-                    UserMap.currentUid
+            if (!HookReadyChecker.isTargetAppReadyForRpc(UserMap.currentUid)) {
+                val cachedRows = ExchangeOptionsCache.loadForSettingsCache(
+                    UserMap.currentUid,
+                    ExchangeOptionsRefreshBridge.TARGET_BEAN_RIGHT
                 )
-            ) {
-                Log.member("安心豆🫘目标应用未就绪，设置页使用缓存列表")
-                return BeanExchangeRight.getList()
+                Log.member("安心豆🫘目标应用未就绪，设置页使用结构化缓存列表#${cachedRows.size}")
+                return cachedRows
             }
-            val beanRightMap = IdMapManager.getInstance(BeanExchangeRightMap::class.java)
-            beanRightMap.load(UserMap.currentUid)
-            Log.member("安心豆🫘设置页加载目标应用刷新列表#${beanRightMap.map.size}")
-            return BeanExchangeRight.getList()
+            val refreshResult = ExchangeOptionsRefreshBridge.requestRefreshOptions(
+                ExchangeOptionsRefreshBridge.TARGET_BEAN_RIGHT,
+                UserMap.currentUid
+            )
+            if (refreshResult.success) {
+                Log.member("安心豆🫘设置页使用目标应用刷新列表#${refreshResult.options.size}")
+                return refreshResult.options
+            }
+            Log.member("安心豆🫘远程刷新失败，不使用旧缓存#${refreshResult.message}")
+            return emptyList()
         }
+        val rows = runCatching {
+            refreshBeanExchangeRightOptionsFromRpc()
+        }.onFailure {
+            Log.printStackTrace(TAG, "refreshBeanExchangeRightOptionsForSettings.currentRpc err:", it)
+        }.getOrElse {
+            emptyList()
+        }
+        Log.member("安心豆🫘设置页刷新结构化列表#${rows.size}")
+        return rows
+    }
+
+    private fun refreshBeanExchangeRightOptionsFromRpc(): List<ExchangeOptionRow> {
         try {
             val userId = UserMap.currentUid
             val candidateMap = queryBeanExchangeCandidates(queryBlueBeanBalance())
@@ -900,17 +937,18 @@ class AntMember : ModelTask() {
                 beanRightMap.add(candidate.item.id, candidate.item.displayName())
             }
             beanRightMap.save(userId)
-            Log.member("安心豆🫘设置页刷新兑换列表#${candidateMap.size}")
-            return candidateMap.values.map { it.item.toMapperEntity() }.ifEmpty { BeanExchangeRight.getList() }
+            val rows = candidateMap.values.map { it.item.toOptionRow() }
+            ExchangeOptionsCache.save(userId, ExchangeOptionsRefreshBridge.TARGET_BEAN_RIGHT, rows)
+            Log.member("安心豆🫘刷新兑换列表#${rows.size}")
+            return rows
         } catch (t: Throwable) {
-            Log.printStackTrace(TAG, "refreshBeanExchangeRightOptionsForSettings err:", t)
-            return BeanExchangeRight.getList()
+            Log.printStackTrace(TAG, "refreshBeanExchangeRightOptionsFromRpc err:", t)
+            throw t
         }
     }
 
-    internal fun refreshBeanExchangeRightOptionsForRemote() {
-        refreshBeanExchangeRightOptionsForSettings()
-    }
+    internal fun refreshBeanExchangeRightOptionsForRemote(): List<ExchangeOptionRow> =
+        refreshBeanExchangeRightOptionsFromRpc()
 
     private fun queryBeanExchangeCandidates(beanBalance: Int?): LinkedHashMap<String, BeanExchangeCandidate> {
         val candidateMap = LinkedHashMap<String, BeanExchangeCandidate>()

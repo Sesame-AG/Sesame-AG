@@ -355,7 +355,9 @@ object AntForestRpcCall {
             val actualSource = source ?: DEFAULT_SOURCE
             val arg = JSONObject().apply {
                 put("activityParam", JSONObject())
-                put("canRobFlags", "T,F,F,F,F")
+                if (actualFromAct != "TAKE_LOOK" && actualFromAct != "TAKE_LOOK_FRIEND") {
+                    put("canRobFlags", "T,F,F,F,F")
+                }
                 put("configVersionMap", JSONObject().put("wateringBubbleConfig", "0"))
                 put("currentEnergy", 0)
                 put("currentVitalityAmount", 0)
@@ -1014,10 +1016,10 @@ object AntForestRpcCall {
     }
 
     @JvmStatic
-    fun itemList(labelType: String): String {
+    fun itemList(labelType: String, startIndex: Int = 0, pageSize: Int = 10): String {
         return RequestManager.requestString(
             "com.alipay.antiep.itemList",
-            "[{\"extendInfo\":\"{}\",\"labelType\":\"$labelType\",\"pageSize\":20,\"requestType\":\"rpc\",\"sceneCode\":\"ANTFOREST_VITALITY\",\"source\":\"afEntry\",\"startIndex\":0}]"
+            "[{\"extendInfo\":\"{}\",\"fromSpuId\":\"\",\"labelType\":\"$labelType\",\"pageSize\":$pageSize,\"requestType\":\"rpc\",\"sceneCode\":\"ANTFOREST_VITALITY\",\"source\":\"afEntry\",\"startIndex\":$startIndex}]"
         )
     }
 

@@ -22,18 +22,19 @@ object Vitality {
     val skuInfo = HashMap<String, JSONObject>()
 
     @JvmStatic
-    fun ItemListByType(labelType: String): JSONArray? {
-        var itemInfoVOList: JSONArray? = null
+    fun ItemListByType(labelType: String, startIndex: Int = 0, pageSize: Int = 10): JSONArray? {
         try {
-            val jo = JsonUtil.parseJSONObjectOrNull(AntForestRpcCall.itemList(labelType)) ?: return null
+            val jo = JsonUtil.parseJSONObjectOrNull(
+                AntForestRpcCall.itemList(labelType, startIndex, pageSize)
+            ) ?: return null
             if (ResChecker.checkRes("${TAG}查询森林活力值商品列表失败:", jo)) {
-                itemInfoVOList = jo.optJSONArray("itemInfoVOList")
+                return jo.optJSONArray("itemInfoVOList")
             }
         } catch (th: Throwable) {
             Log.runtime(TAG, "ItemListByType err")
             Log.printStackTrace(TAG, th)
         }
-        return itemInfoVOList
+        return null
     }
 
     @JvmStatic
@@ -55,13 +56,28 @@ object Vitality {
     @JvmStatic
     fun initVitality(labelType: String) {
         try {
-            val itemInfoVOList = ItemListByType(labelType)
-            if (itemInfoVOList != null) {
+            skuInfo.clear()
+            runCatching { AntForestRpcCall.queryVitalityStoreIndex() }
+                .onFailure { Log.printStackTrace(TAG, "queryVitalityStoreIndex err:", it) }
+            val pageSize = 10
+            var startIndex = 0
+            var loadedAny = false
+            while (startIndex <= 100) {
+                val itemInfoVOList = ItemListByType(labelType, startIndex, pageSize)
+                if (itemInfoVOList == null || itemInfoVOList.length() == 0) {
+                    break
+                }
+                loadedAny = true
                 for (i in 0 until itemInfoVOList.length()) {
                     val itemInfoVO = itemInfoVOList.optJSONObject(i) ?: continue
                     handleVitalityItem(itemInfoVO)
                 }
-            } else {
+                if (itemInfoVOList.length() < pageSize) {
+                    break
+                }
+                startIndex += pageSize
+            }
+            if (!loadedAny) {
                 Log.error(TAG, "活力兑换🍃初始化失败！")
             }
         } catch (th: Throwable) {
@@ -88,7 +104,7 @@ object Vitality {
                     skuName.contains("海洋") || skuName.contains("物种") || skuName.contains("收能量") || skuName.contains("隐身")) {
                     oderInfo = "$skuName\n价格${price}🍃活力值\n每日限时兑1个"
                 } else if (skuName == "限时31天内使用31天长效双击卡") {
-                    oderInfo = "$skuName\n价格${price}🍃活力值\n每月限时兑1个，记得关，艹"
+                    oderInfo = "$skuName\n价格${price}🍃活力值\n每月限时兑1个"
                 }
                 
                 if (!skuModel.has("spuId")) {

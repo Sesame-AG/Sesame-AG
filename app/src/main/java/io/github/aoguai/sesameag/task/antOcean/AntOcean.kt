@@ -24,6 +24,7 @@ import io.github.aoguai.sesameag.task.common.TaskFlowAdapter
 import io.github.aoguai.sesameag.task.common.TaskFlowEngine
 import io.github.aoguai.sesameag.task.common.TaskFlowItem
 import io.github.aoguai.sesameag.task.common.TaskFlowPhase
+import io.github.aoguai.sesameag.task.common.TaskFlowRunResult
 import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
 import io.github.aoguai.sesameag.task.exchange.ExchangeEffectNeed
 import io.github.aoguai.sesameag.task.exchange.ExchangeReplenishResult
@@ -178,6 +179,7 @@ class AntOcean : ModelTask() {
     private var selfOceanCleanRetried = false
     private var noticeLinkedRefreshNeeded = false
     private var oceanHomeRefreshNeeded = false
+    private var oceanTasksDoneInvalidatedThisRun = false
 
     override fun getName(): String {
         return "海洋"
@@ -276,6 +278,7 @@ class AntOcean : ModelTask() {
             selfOceanCleanRetried = false
             noticeLinkedRefreshNeeded = false
             oceanHomeRefreshNeeded = false
+            oceanTasksDoneInvalidatedThisRun = false
 
             if (!queryOceanStatus()) {
                 return
@@ -521,8 +524,18 @@ class AntOcean : ModelTask() {
         }
     }
 
+    private fun markOceanTasksDoneInvalidated() {
+        oceanTasksDoneInvalidatedThisRun = true
+    }
+
+    private fun markOceanNoticeLinkedRefreshNeeded() {
+        noticeLinkedRefreshNeeded = true
+        markOceanTasksDoneInvalidated()
+    }
+
     private fun markOceanHomeRefreshNeeded() {
         oceanHomeRefreshNeeded = true
+        markOceanTasksDoneInvalidated()
     }
 
     private suspend fun refreshOceanHomeIfNeeded(reason: String) {
@@ -1283,10 +1296,20 @@ class AntOcean : ModelTask() {
         }
     }
 
-    private suspend fun receiveTaskAward() {
+    private suspend fun receiveTaskAward(): TaskFlowRunResult? {
+        if (Status.hasFlagToday(StatusFlags.FLAG_ANTOCEAN_TASKS_DONE) && !oceanTasksDoneInvalidatedThisRun) {
+            Log.ocean("海洋任务🌊[今日已确认完成，跳过重复查询]")
+            return null
+        }
         try {
-            TaskFlowEngine(OceanTaskFlowAdapter(), roundSleepMs = 500L).run()
+            val result = TaskFlowEngine(OceanTaskFlowAdapter(), roundSleepMs = 500L).run()
+            if (result.completed && !result.actionAttempted && !result.interrupted) {
+                Status.setFlagToday(StatusFlags.FLAG_ANTOCEAN_TASKS_DONE)
+                oceanTasksDoneInvalidatedThisRun = false
+                Log.ocean("海洋任务🌊今日已确认完成")
+            }
             refreshOceanHomeIfNeeded("任务领奖/清理后")
+            return result
         } catch (e: JSONException) {
             Log.runtime(TAG, "JSON解析错误: " + (e.message ?: ""))
             Log.printStackTrace(TAG, e)
@@ -1294,6 +1317,7 @@ class AntOcean : ModelTask() {
             Log.runtime(TAG, "receiveTaskAward err:")
             Log.printStackTrace(TAG, t)
         }
+        return null
     }
 
     private inner class OceanTaskFlowAdapter : TaskFlowAdapter {
@@ -1784,7 +1808,7 @@ class AntOcean : ModelTask() {
                         val todoTaskNum = extendInfo?.optInt("todoTaskNum", 0) ?: 0
                         val taskCanReceiveRewardNum = extendInfo?.optInt("taskCanReceiveRewardNum", 0) ?: 0
                         if (haveNotice || todoTaskNum > 0 || taskCanReceiveRewardNum > 0) {
-                            noticeLinkedRefreshNeeded = true
+                            markOceanNoticeLinkedRefreshNeeded()
                             Log.ocean("海洋任务🌊[待完成:$todoTaskNum,待领取:$taskCanReceiveRewardNum]")
                         }
                     }
@@ -1799,7 +1823,7 @@ class AntOcean : ModelTask() {
                     "INDEX_GAME_ENTRY_NOTICE" -> {
                         if (haveNotice) {
                             val todoTaskNum = extendInfo?.optInt("todoTaskNum", 0) ?: 0
-                            noticeLinkedRefreshNeeded = true
+                            markOceanNoticeLinkedRefreshNeeded()
                             Log.ocean("海洋任务🌊[游戏入口待处理:$todoTaskNum]")
                             needQueryPopup = true
                         }
@@ -1807,7 +1831,7 @@ class AntOcean : ModelTask() {
 
                     "INTERACT_RECEIVE_PIECE" -> {
                         if (haveNotice) {
-                            noticeLinkedRefreshNeeded = true
+                            markOceanNoticeLinkedRefreshNeeded()
                             Log.ocean("海洋拼图🌊[存在可领取互动拼图]")
                         }
                     }

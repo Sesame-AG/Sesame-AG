@@ -56,6 +56,8 @@ import io.github.aoguai.sesameag.task.exchange.ExchangeEffectCatalog
 import io.github.aoguai.sesameag.task.exchange.ExchangeEffectNeed
 import io.github.aoguai.sesameag.task.exchange.ExchangeItem
 import io.github.aoguai.sesameag.task.exchange.ExchangeLimit
+import io.github.aoguai.sesameag.task.exchange.ExchangeOptionRow
+import io.github.aoguai.sesameag.task.exchange.ExchangeOptionsCache
 import io.github.aoguai.sesameag.task.exchange.ExchangeReplenishResult
 import io.github.aoguai.sesameag.task.exchange.ExchangeReplenisher
 import io.github.aoguai.sesameag.task.exchange.ExchangeSafety
@@ -438,7 +440,7 @@ class AntFarm : ModelTask() {
                 "autoExchangeList",
                 "装扮抽抽乐 | 自定义兑换列表",
                 LinkedHashMap()
-            ) { AntFarmIPChouChouLeBenefit.getList() }.withDesc(
+            ) { refreshIpChouChouLeExchangeOptionsForSettings() }.withDesc(
                 "只兑换列表中配置的活动奖励；不配置时按最优兑换策略处理。需开启“装扮抽抽乐 | 最优兑换”。"
             ).also {
                 autoExchangeList = it
@@ -1230,98 +1232,348 @@ class AntFarm : ModelTask() {
         }
     }
 
+    private data class OrnamentMallSnapshot(
+        val balance: Double,
+        val items: List<OrnamentMallItem>
+    )
+
+    private data class OrnamentMallItem(
+        val spuId: String,
+        val skuId: String,
+        val name: String,
+        val level: String,
+        val price: Double,
+        val offlineTime: Long,
+        val itemStatus: String,
+        val itemStatusList: JSONArray?
+    )
+
     /**
      * 处理装扮币商城逻辑
      */
     internal suspend fun handleOrnamentMall() {
         try {
-            AntFarmRpcCall.syncOrnamentCoin()
+            syncOrnamentCoinForMall()
 
-            val response = AntFarmRpcCall.getOrnamentItemList(10, 0)
-            val jo = JSONObject(response)
-            if (!ResChecker.checkRes(TAG, jo)) {
-                Log.farm("装扮商城💸[获取列表失败: ${jo.optString("desc")}]")
+            var snapshot = queryOrnamentMallSnapshot() ?: return
+            val configLevelIdx = normalizeOrnamentLevelIndex(autoExchangeOrnamentLevel?.value)
+            val configLevelStr = OrnamentLevel.levels[configLevelIdx]
+            val isQueryOnly = onlyQueryNewOrnaments?.value == true || configLevelIdx == OrnamentLevel.NONE
+
+            Log.farm("装扮商城💸[当前余额: ${snapshot.balance} 装扮币 | 设定等级: ${OrnamentLevel.nickNames[configLevelIdx]}${if (isQueryOnly) " (仅查询模式)" else ""}]")
+
+            if (isQueryOnly) {
+                val unownedItems = snapshot.items.filterNot { isOwnedOrnament(it) }
+                unownedItems.forEach { item ->
+                    Log.farm(
+                        "装扮商城🔍[发现未拥有: ${item.name} | 等级: ${item.level} | 价格: ${item.price} | " +
+                            "过期时间: ${formatOrnamentExpireTime(item.offlineTime)} | 状态: ${formatOrnamentStatus(item).ifBlank { "可兑换/待确认" }}]"
+                    )
+                }
+                if (unownedItems.isEmpty()) {
+                    Log.farm("装扮商城🔍[未发现新的未拥有装扮]")
+                }
                 return
             }
 
-            val accountInfo = jo.optJSONObject("mallAccountInfoVO")
-            val holdingCount = accountInfo?.optJSONObject("holdingCount")
-            var balance = holdingCount?.optDouble("amount", 0.0) ?: 0.0
-
-            val itemInfoVOList = jo.optJSONArray("itemInfoVOList") ?: return
-            val configLevelIdx = autoExchangeOrnamentLevel?.value ?: OrnamentLevel.NONE
-
-            val configLevelStr = OrnamentLevel.levels[configLevelIdx]
-            val isQueryOnly =
-                onlyQueryNewOrnaments?.value == true || configLevelIdx == OrnamentLevel.NONE
-
-            Log.farm("装扮商城💸[当前余额: $balance 装扮币 | 设定等级: ${OrnamentLevel.nickNames[configLevelIdx]}${if (configLevelIdx == OrnamentLevel.NONE) " (仅查询模式)" else ""}]")
-
+            val processedSpuIds = linkedSetOf<String>()
             var foundMatch = false
-            for (i in 0 until itemInfoVOList.length()) {
-                val itemJo = itemInfoVOList.getJSONObject(i)
-                val spuName = itemJo.optString("spuName")
-                val spuId = itemJo.optString("spuId")
-                val itemStatus = itemJo.optString("itemStatus")
-                val minPrice = itemJo.optJSONObject("minPrice")?.optDouble("amount", 0.0) ?: 0.0
-                val offlineTime = itemJo.optLong("offlineTime", 0L)
-
-                val spuExtendInfoStr = itemJo.optString("spuExtendInfo")
-                val spuExtendInfo =
-                    if (spuExtendInfoStr.isNotEmpty()) JSONObject(spuExtendInfoStr) else JSONObject()
-                val dressUpLevel = spuExtendInfo.optString("dressUpLevel", "UNKNOWN")
-
-                val isOwned = itemStatus == "REACH_USER_HOLD_LIMIT"
-
-                if (isQueryOnly) {
-                    if (!isOwned) {
-                        val expireStr = if (offlineTime > 0) TimeUtil.getFormatTime(
-                            offlineTime,
-                            "yyyy-MM-dd HH:mm:ss"
-                        ) else "无"
-                        Log.farm("装扮商城🔍[发现未拥有: $spuName | 等级: $dressUpLevel | 价格: $minPrice | 过期时间: $expireStr]")
-                    }
-                    continue
-                }
-
-                if (isOwned) continue
-
-                if (configLevelStr != "ALL" && configLevelStr != dressUpLevel) continue
-
+            while (true) {
+                val item = snapshot.items.firstOrNull {
+                    it.spuId !in processedSpuIds &&
+                        !isOwnedOrnament(it) &&
+                        matchesOrnamentLevel(it, configLevelStr)
+                } ?: break
+                processedSpuIds.add(item.spuId)
                 foundMatch = true
-                if (balance < minPrice) {
-                    Log.farm("装扮商城💸[$spuName] 余额不足 (需要: $minPrice, 当前: $balance)"                    )
+
+                val blockedReason = blockedOrnamentExchangeReason(item)
+                if (blockedReason.isNotBlank()) {
+                    Log.farm("装扮商城💸[${item.name}]跳过：$blockedReason")
+                    continue
+                }
+                if (item.skuId.isBlank()) {
+                    Log.farm("装扮商城💸[${item.name}]跳过：缺少 skuId")
+                    continue
+                }
+                if (snapshot.balance < item.price) {
+                    Log.farm("装扮商城💸[${item.name}]余额不足 (需要: ${item.price}, 当前: ${snapshot.balance})")
+                    continue
+                }
+                if (!verifyOrnamentDetailBeforeExchange(item)) {
                     continue
                 }
 
-                // 执行兑换
-                Log.farm("装扮商城💸[准备兑换 $spuName ($dressUpLevel), 价格: $minPrice]")
-
-                val skuModelList = itemJo.optJSONArray("skuModelList")
-                if (skuModelList == null || skuModelList.length() == 0) continue
-                val skuId = skuModelList.getJSONObject(0).optString("skuId")
-
-                AntFarmRpcCall.getOrnamentItemDetail(spuId)
+                Log.farm("装扮商城💸[准备兑换 ${item.name} (${item.level}), 价格: ${item.price}]")
                 delay(1000)
 
-                val exchangeRes = AntFarmRpcCall.exchangeOrnamentBenefit(spuId, skuId)
-                val resJo = JSONObject(exchangeRes)
-                if (resJo.optBoolean("success")) {
-                    Log.farm("装扮商城💸[兑换成功: $spuName]")
-                    balance -= minPrice
+                val exchangeJo = runCatching {
+                    JSONObject(AntFarmRpcCall.exchangeOrnamentBenefit(item.spuId, item.skuId))
+                }.onFailure {
+                    Log.printStackTrace(TAG, "exchangeOrnamentBenefit err:", it)
+                }.getOrNull() ?: continue
+                if (isOrnamentRpcSuccess(exchangeJo)) {
                     delay(2000)
+                    val refreshedSnapshot = queryOrnamentMallSnapshot()
+                    if (refreshedSnapshot == null) {
+                        Log.farm("装扮商城💸[已调用兑换但未回查确认: ${item.name} | ${formatOrnamentRpcResult(exchangeJo)}]")
+                        continue
+                    }
+                    val refreshedItem = refreshedSnapshot.items.firstOrNull { it.spuId == item.spuId }
+                    if (refreshedItem == null || isOwnedOrnament(refreshedItem)) {
+                        Log.farm("装扮商城💸[兑换成功并回查确认: ${item.name} | 当前余额: ${refreshedSnapshot.balance}]")
+                    } else {
+                        Log.farm(
+                            "装扮商城💸[已调用兑换但未回查确认: ${item.name} | " +
+                                "回查状态: ${formatOrnamentStatus(refreshedItem).ifBlank { refreshedItem.itemStatus.ifBlank { "UNKNOWN" } }}]"
+                        )
+                    }
+                    snapshot = refreshedSnapshot
                 } else {
-                    Log.farm("装扮商城💸[兑换失败: $spuName, 原因: ${resJo.optString("resultDesc")}]")
+                    Log.farm("装扮商城💸[兑换失败: ${item.name} | ${formatOrnamentRpcResult(exchangeJo)}]")
                 }
             }
 
-            if (onlyQueryNewOrnaments?.value != true && configLevelIdx != OrnamentLevel.NONE && !foundMatch) {
+            if (!foundMatch) {
                 Log.farm("装扮商城💸[当前选择等级(${OrnamentLevel.nickNames[configLevelIdx]})中没有发现未兑换的装扮]")
             }
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "handleOrnamentMall err:", t)
         }
     }
+
+    private fun syncOrnamentCoinForMall() {
+        runCatching {
+            JSONObject(AntFarmRpcCall.syncOrnamentCoin())
+        }.onSuccess { jo ->
+            if (!isOrnamentRpcSuccess(jo)) {
+                Log.farm("装扮商城💸[同步装扮币失败，继续尝试查询商城: ${formatOrnamentRpcResult(jo)}]")
+            }
+        }.onFailure {
+            Log.printStackTrace(TAG, "syncOrnamentCoinForMall err:", it)
+        }
+    }
+
+    private fun queryOrnamentMallSnapshot(pageSize: Int = 10, maxPages: Int = 20): OrnamentMallSnapshot? {
+        val items = mutableListOf<OrnamentMallItem>()
+        val seenSpuIds = linkedSetOf<String>()
+        val seenStartIndexes = linkedSetOf<Int>()
+        var balance = 0.0
+        var startIndex = 0
+        var pageCount = 0
+
+        while (pageCount < maxPages && seenStartIndexes.add(startIndex)) {
+            val jo = runCatching {
+                JSONObject(AntFarmRpcCall.getOrnamentItemList(pageSize, startIndex))
+            }.onFailure {
+                Log.printStackTrace(TAG, "queryOrnamentMallSnapshot err:", it)
+            }.getOrNull() ?: return null
+
+            if (!isOrnamentRpcSuccess(jo)) {
+                Log.farm("装扮商城💸[获取列表失败: startIndex=$startIndex | ${formatOrnamentRpcResult(jo)}]")
+                return null
+            }
+
+            jo.optJSONObject("mallAccountInfoVO")
+                ?.optJSONObject("holdingCount")
+                ?.takeIf { it.has("amount") }
+                ?.let { balance = it.optDouble("amount", balance) }
+
+            val itemInfoVOList = jo.optJSONArray("itemInfoVOList")
+            if (itemInfoVOList == null || itemInfoVOList.length() == 0) {
+                break
+            }
+
+            var newItemCount = 0
+            for (i in 0 until itemInfoVOList.length()) {
+                val itemJo = itemInfoVOList.optJSONObject(i) ?: continue
+                val item = parseOrnamentMallItem(itemJo) ?: continue
+                if (seenSpuIds.add(item.spuId)) {
+                    items.add(item)
+                    newItemCount++
+                }
+            }
+
+            pageCount++
+            if (newItemCount == 0) {
+                Log.farm("装扮商城💸[分页未发现新装扮，停止继续查询: startIndex=$startIndex]")
+                break
+            }
+
+            val responseNextIndex = if (jo.has("nextStartIndex")) jo.optInt("nextStartIndex", -1) else -1
+            val nextStartIndex = if (responseNextIndex > startIndex) {
+                responseNextIndex
+            } else {
+                startIndex + itemInfoVOList.length()
+            }
+            val hasMore = if (jo.has("hasMore")) jo.optBoolean("hasMore", false) else itemInfoVOList.length() >= pageSize
+            if (!hasMore || nextStartIndex <= startIndex) {
+                if (hasMore && nextStartIndex <= startIndex) {
+                    Log.farm("装扮商城💸[分页 nextStartIndex 未前进，停止继续查询: startIndex=$startIndex]")
+                }
+                break
+            }
+            startIndex = nextStartIndex
+        }
+
+        if (pageCount >= maxPages) {
+            Log.farm("装扮商城💸[分页达到上限${maxPages}页，停止继续查询]")
+        }
+        return OrnamentMallSnapshot(balance, items)
+    }
+
+    private fun parseOrnamentMallItem(itemJo: JSONObject): OrnamentMallItem? {
+        val spuId = itemJo.optString("spuId").trim()
+        if (spuId.isBlank()) {
+            return null
+        }
+        val spuExtendInfo = runCatching {
+            itemJo.optString("spuExtendInfo")
+                .takeIf { it.isNotBlank() }
+                ?.let { JSONObject(it) }
+        }.getOrNull()
+        val skuModelList = itemJo.optJSONArray("skuModelList")
+        return OrnamentMallItem(
+            spuId = spuId,
+            skuId = skuModelList?.optJSONObject(0)?.optString("skuId")?.trim().orEmpty(),
+            name = itemJo.optString("spuName").trim().ifBlank { spuId },
+            level = spuExtendInfo?.optString("dressUpLevel")?.trim().orEmpty().ifBlank { "UNKNOWN" },
+            price = itemJo.optJSONObject("minPrice")?.optDouble("amount", 0.0) ?: 0.0,
+            offlineTime = itemJo.optLong("offlineTime", 0L),
+            itemStatus = itemJo.optString("itemStatus").trim(),
+            itemStatusList = itemJo.optJSONArray("itemStatusList")
+        )
+    }
+
+    private fun normalizeOrnamentLevelIndex(rawIndex: Int?): Int {
+        val index = rawIndex ?: OrnamentLevel.NONE
+        return if (index in OrnamentLevel.levels.indices) index else OrnamentLevel.NONE
+    }
+
+    private fun matchesOrnamentLevel(item: OrnamentMallItem, configLevel: String): Boolean {
+        return configLevel == "ALL" || item.level == configLevel
+    }
+
+    private fun isOwnedOrnament(item: OrnamentMallItem): Boolean {
+        return item.itemStatus == PropStatus.REACH_USER_HOLD_LIMIT.name ||
+            ornamentStatusListContains(item, PropStatus.REACH_USER_HOLD_LIMIT.name)
+    }
+
+    private fun blockedOrnamentExchangeReason(item: OrnamentMallItem): String {
+        val blockedStatuses = listOf(
+            PropStatus.REACH_LIMIT.name,
+            PropStatus.REACH_USER_HOLD_LIMIT.name,
+            PropStatus.NO_ENOUGH_POINT.name
+        )
+        val status = blockedStatuses.firstOrNull {
+            item.itemStatus == it || ornamentStatusListContains(item, it)
+        } ?: return ""
+        return runCatching { PropStatus.valueOf(status).nickName()?.toString() }
+            .getOrNull()
+            ?: status
+    }
+
+    private fun ornamentStatusListContains(item: OrnamentMallItem, status: String): Boolean {
+        val list = item.itemStatusList ?: return false
+        for (i in 0 until list.length()) {
+            if (list.optString(i) == status) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun verifyOrnamentDetailBeforeExchange(item: OrnamentMallItem): Boolean {
+        val detailJo = runCatching {
+            JSONObject(AntFarmRpcCall.getOrnamentItemDetail(item.spuId))
+        }.onFailure {
+            Log.printStackTrace(TAG, "verifyOrnamentDetailBeforeExchange err:", it)
+        }.getOrNull() ?: return false
+        if (!isOrnamentRpcSuccess(detailJo)) {
+            Log.farm(
+                "装扮商城💸[详情复核失败: ${item.name} | spuId=${item.spuId} | 等级=${item.level} | " +
+                    "价格=${item.price} | 状态=${formatOrnamentStatus(item).ifBlank { item.itemStatus.ifBlank { "UNKNOWN" } }} | " +
+                    formatOrnamentRpcResult(detailJo) + "]"
+            )
+            return false
+        }
+        return true
+    }
+
+    private fun isOrnamentRpcSuccess(jo: JSONObject): Boolean {
+        return ExchangeSafetyRules.isSuccessResponse(jo) || ResChecker.checkRes(TAG, jo)
+    }
+
+    private fun formatOrnamentExpireTime(offlineTime: Long): String {
+        return if (offlineTime > 0) TimeUtil.getFormatTime(offlineTime, "yyyy-MM-dd HH:mm:ss") else "无"
+    }
+
+    private fun formatOrnamentStatus(item: OrnamentMallItem): String {
+        val statuses = linkedSetOf<String>()
+        item.itemStatus.takeIf { it.isNotBlank() }?.let { statuses.add(it) }
+        val list = item.itemStatusList
+        if (list != null) {
+            for (i in 0 until list.length()) {
+                list.optString(i).takeIf { it.isNotBlank() }?.let { statuses.add(it) }
+            }
+        }
+        return statuses.map { status ->
+            runCatching { PropStatus.valueOf(status).nickName()?.toString() }
+                .getOrNull()
+                ?: status
+        }.joinToString("、")
+    }
+
+    private fun formatOrnamentRpcResult(jo: JSONObject): String {
+        val parts = mutableListOf<String>()
+        if (jo.has("success")) {
+            parts.add("success=${jo.optBoolean("success")}")
+        }
+        listOf("resultCode", "code", "memo", "resultDesc", "desc").forEach { key ->
+            jo.optString(key).takeIf { it.isNotBlank() }?.let { parts.add("$key=$it") }
+        }
+        return parts.joinToString(" | ").ifBlank { jo.toString() }
+    }
+
+    private fun refreshIpChouChouLeExchangeOptionsForSettings(): List<MapperEntity> {
+        if (!HookReadyChecker.isCurrentProcessReadyForRpc(UserMap.currentUid)) {
+            if (!HookReadyChecker.isTargetAppReadyForRpc(UserMap.currentUid)) {
+                val cachedRows = ExchangeOptionsCache.loadForSettingsCache(
+                    UserMap.currentUid,
+                    ExchangeOptionsRefreshBridge.TARGET_FARM_IP_CHOUCHOULE
+                )
+                if (cachedRows.isNotEmpty()) {
+                    Log.farm("IP抽抽乐商店💸目标应用未就绪，设置页使用结构化缓存列表#${cachedRows.size}")
+                    return cachedRows
+                }
+                val legacyRows = AntFarmIPChouChouLeBenefit.getList()
+                Log.farm("IP抽抽乐商店💸目标应用未就绪，设置页使用本地旧快照列表#${legacyRows.size}")
+                return legacyRows
+            }
+            val refreshResult = ExchangeOptionsRefreshBridge.requestRefreshOptions(
+                ExchangeOptionsRefreshBridge.TARGET_FARM_IP_CHOUCHOULE,
+                UserMap.currentUid
+            )
+            if (refreshResult.success) {
+                Log.farm("IP抽抽乐商店💸设置页使用目标应用刷新列表#${refreshResult.options.size}")
+                return refreshResult.options
+            }
+            Log.farm("IP抽抽乐商店💸远程刷新失败，不使用旧缓存#${refreshResult.message}")
+            return emptyList()
+        }
+        val rows = runCatching {
+            ChouChouLe().refreshIpChouChouLeExchangeOptionsFromRpc()
+        }.onFailure {
+            Log.printStackTrace(TAG, "refreshIpChouChouLeExchangeOptionsForSettings.currentRpc err:", it)
+        }.getOrElse {
+            emptyList()
+        }
+        Log.farm("IP抽抽乐商店💸设置页刷新结构化列表#${rows.size}")
+        return rows
+    }
+
+    internal fun refreshIpChouChouLeExchangeOptionsForRemote(): List<ExchangeOptionRow> =
+        ChouChouLe().refreshIpChouChouLeExchangeOptionsFromRpc()
 
 
     private fun buildParadiseCoinExchangeItem(
@@ -1356,29 +1608,46 @@ class AntFarm : ModelTask() {
 
     private fun refreshParadiseCoinExchangeOptionsForSettings(): List<MapperEntity> {
         if (!HookReadyChecker.isCurrentProcessReadyForRpc(UserMap.currentUid)) {
-            if (!HookReadyChecker.isTargetAppReadyForRpc(UserMap.currentUid) ||
-                !ExchangeOptionsRefreshBridge.requestRefresh(
-                    ExchangeOptionsRefreshBridge.TARGET_FARM_PARADISE,
-                    UserMap.currentUid
+            if (!HookReadyChecker.isTargetAppReadyForRpc(UserMap.currentUid)) {
+                val cachedRows = ExchangeOptionsCache.loadForSettingsCache(
+                    UserMap.currentUid,
+                    ExchangeOptionsRefreshBridge.TARGET_FARM_PARADISE
                 )
-            ) {
-                Log.farm("小鸡乐园币💸目标应用未就绪，设置页使用缓存列表")
-                return ParadiseCoinBenefit.getList()
+                Log.farm("小鸡乐园币💸目标应用未就绪，设置页使用结构化缓存列表#${cachedRows.size}")
+                return cachedRows
             }
-            val benefitMap = IdMapManager.getInstance(ParadiseCoinBenefitIdMap::class.java)
-            benefitMap.load(UserMap.currentUid)
-            Log.farm("小鸡乐园币💸设置页加载目标应用刷新列表#${benefitMap.map.size}")
-            return ParadiseCoinBenefit.getList()
+            val refreshResult = ExchangeOptionsRefreshBridge.requestRefreshOptions(
+                ExchangeOptionsRefreshBridge.TARGET_FARM_PARADISE,
+                UserMap.currentUid
+            )
+            if (refreshResult.success) {
+                Log.farm("小鸡乐园币💸设置页使用目标应用刷新列表#${refreshResult.options.size}")
+                return refreshResult.options
+            }
+            Log.farm("小鸡乐园币💸远程刷新失败，不使用旧缓存#${refreshResult.message}")
+            return emptyList()
         }
+        val rows = runCatching {
+            refreshParadiseCoinExchangeOptionsFromRpc()
+        }.onFailure {
+            Log.printStackTrace(TAG, "refreshParadiseCoinExchangeOptionsForSettings.currentRpc err:", it)
+        }.getOrElse {
+            emptyList()
+        }
+        Log.farm("小鸡乐园币💸设置页刷新结构化列表#${rows.size}")
+        return rows
+    }
+
+    private fun refreshParadiseCoinExchangeOptionsFromRpc(): List<ExchangeOptionRow> {
         try {
             val jo = JSONObject(AntFarmRpcCall.getMallHome())
             if (!ResChecker.checkRes(TAG, jo)) {
                 Log.error(TAG, "小鸡乐园币💸[设置页刷新权益列表失败]")
-                return ParadiseCoinBenefit.getList()
+                throw IllegalStateException("小鸡乐园币刷新权益列表失败")
             }
-            val mallItemSimpleList = jo.optJSONArray("mallItemSimpleList") ?: return ParadiseCoinBenefit.getList()
+            val mallItemSimpleList = jo.optJSONArray("mallItemSimpleList") ?: return emptyList()
             val benefitMap = IdMapManager.getInstance(ParadiseCoinBenefitIdMap::class.java)
-            val mapperList = mutableListOf<MapperEntity>()
+            val rows = mutableListOf<ExchangeOptionRow>()
             for (i in 0..<mallItemSimpleList.length()) {
                 val mallItemInfo = mallItemSimpleList.optJSONObject(i) ?: continue
                 val spuName = mallItemInfo.optString("spuName")
@@ -1391,19 +1660,19 @@ class AntFarm : ModelTask() {
                 val itemStatusList = mallItemInfo.optJSONArray("itemStatusList")
                 val exchangeItem = buildParadiseCoinExchangeItem(spuId, spuName.ifBlank { spuId }, minPrice, controlTag, itemStatusList)
                 benefitMap.add(spuId, exchangeItem.displayName())
-                mapperList.add(exchangeItem.toMapperEntity())
+                rows.add(exchangeItem.toOptionRow())
             }
             benefitMap.save(UserMap.currentUid)
-            return mapperList.ifEmpty { ParadiseCoinBenefit.getList() }
+            ExchangeOptionsCache.save(UserMap.currentUid, ExchangeOptionsRefreshBridge.TARGET_FARM_PARADISE, rows)
+            return rows
         } catch (t: Throwable) {
-            Log.printStackTrace(TAG, "refreshParadiseCoinExchangeOptionsForSettings err:", t)
-            return ParadiseCoinBenefit.getList()
+            Log.printStackTrace(TAG, "refreshParadiseCoinExchangeOptionsFromRpc err:", t)
+            throw t
         }
     }
 
-    internal fun refreshParadiseCoinExchangeOptionsForRemote() {
-        refreshParadiseCoinExchangeOptionsForSettings()
-    }
+    internal fun refreshParadiseCoinExchangeOptionsForRemote(): List<ExchangeOptionRow> =
+        refreshParadiseCoinExchangeOptionsFromRpc()
 
     internal fun replenishExchangeByNeed(
         need: ExchangeEffectNeed,

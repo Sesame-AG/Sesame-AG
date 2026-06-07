@@ -11,13 +11,17 @@ import org.json.JSONObject
  * @property rpcEntity RPC 请求实体
  * @property fromTag 收取来源标识
  * @property skipPropCheck 是否跳过道具检查（用于蹲点收取快速通道）
+ * @property bizType 收取能量 RPC 的业务类型，用于二次收取时保留原始上下文
+ * @property rpcSource 收取能量 RPC 的来源，用于二次收取时保留原始上下文
  */
 data class CollectEnergyEntity(
     val userId: String,
     var userHome: JSONObject? = null,
     var rpcEntity: RpcEntity? = null,
     var fromTag: String? = null,
-    var skipPropCheck: Boolean = false
+    var skipPropCheck: Boolean = false,
+    val bizType: String = "GREEN",
+    val rpcSource: String? = null
 ) {
     /** 收集次数 */
     private var collectCount: Int = 0

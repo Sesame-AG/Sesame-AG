@@ -1,6 +1,10 @@
 package io.github.aoguai.sesameag.task.exchange
 
+import com.fasterxml.jackson.core.type.TypeReference
 import io.github.aoguai.sesameag.entity.MapperEntity
+import io.github.aoguai.sesameag.util.Files
+import io.github.aoguai.sesameag.util.JsonUtil
+import io.github.aoguai.sesameag.util.Log
 import org.json.JSONObject
 
 enum class ExchangeSafety {
@@ -259,50 +263,130 @@ data class ExchangeItem(
         return if (parts.isEmpty()) name else "$name[${parts.joinToString(" | ")}]"
     }
 
-    fun toMapperEntity(): MapperEntity {
-        val item = this
-        return object : MapperEntity() {
-            @JvmField
-            val sourceModule: String = item.displayMeta.sourceModule
+    fun toOptionRow(): ExchangeOptionRow = ExchangeOptionRow(this)
+}
 
-            @JvmField
-            val rawName: String = item.name
+class ExchangeOptionRow() : MapperEntity() {
+    @JvmField
+    var sourceModule: String = ""
 
-            @JvmField
-            val costText: String = listOf(item.cost.pointText, item.cost.cashText)
-                .filter { it.isNotBlank() }
-                .joinToString(" + ")
+    @JvmField
+    var rawName: String = ""
 
-            @JvmField
-            val statusText: String = listOf(item.limit.stockText, item.limit.validText, item.limit.statusText)
-                .filter { it.isNotBlank() }
-                .joinToString(" | ")
+    @JvmField
+    var costText: String = ""
 
-            @JvmField
-            val safety: String = item.safety.name
+    @JvmField
+    var statusText: String = ""
 
-            @JvmField
-            val safetyReason: String = item.safetyReason
+    @JvmField
+    var safety: String = ""
 
-            @JvmField
-            val effectSummary: String = item.displayMeta.effectSummary
-                .ifBlank { item.effectTags.joinToString("；") { tag -> "${tag.targetModule}:${tag.reason.ifBlank { tag.need.name }}" } }
+    @JvmField
+    var safetyReason: String = ""
 
-            @JvmField
-            val effectTargets: List<String> = item.effectTags.map { it.targetModule }.distinct()
+    @JvmField
+    var effectSummary: String = ""
 
-            @JvmField
-            val triggerText: String = item.displayMeta.triggerText
-                .ifBlank { item.effectTags.map { it.triggerText }.firstOrNull { it.isNotBlank() }.orEmpty() }
+    @JvmField
+    var effectTargets: List<String> = emptyList()
 
-            @JvmField
-            val excludeReason: String = item.displayMeta.excludeReason
+    @JvmField
+    var triggerText: String = ""
 
-            init {
-                id = item.id
-                name = item.displayName()
-            }
+    @JvmField
+    var excludeReason: String = ""
+
+    constructor(item: ExchangeItem) : this() {
+        id = item.id
+        name = item.displayName()
+        sourceModule = item.displayMeta.sourceModule
+        rawName = item.name
+        costText = listOf(item.cost.pointText, item.cost.cashText)
+            .filter { it.isNotBlank() }
+            .joinToString(" + ")
+        statusText = listOf(item.limit.stockText, item.limit.validText, item.limit.statusText)
+            .filter { it.isNotBlank() }
+            .joinToString(" | ")
+        safety = item.safety.name
+        safetyReason = item.safetyReason
+        effectSummary = item.displayMeta.effectSummary
+            .ifBlank { item.effectTags.joinToString("；") { tag -> "${tag.targetModule}:${tag.reason.ifBlank { tag.need.name }}" } }
+        effectTargets = item.effectTags.map { it.targetModule }.distinct()
+        triggerText = item.displayMeta.triggerText
+            .ifBlank { item.effectTags.map { it.triggerText }.firstOrNull { it.isNotBlank() }.orEmpty() }
+        excludeReason = item.displayMeta.excludeReason
+    }
+
+    fun asLogOnlyCacheRow(reason: String): ExchangeOptionRow {
+        return ExchangeOptionRow().also { row ->
+            row.id = id
+            row.name = name
+            row.sourceModule = sourceModule
+            row.rawName = rawName
+            row.costText = costText
+            row.statusText = statusText
+            row.safety = ExchangeSafety.LOG_ONLY.name
+            row.safetyReason = reason
+            row.effectSummary = effectSummary
+            row.effectTargets = effectTargets
+            row.triggerText = triggerText
+            row.excludeReason = excludeReason.ifBlank { reason }
         }
+    }
+}
+
+object ExchangeOptionsCache {
+    private const val TAG = "ExchangeOptionsCache"
+    private const val FILE_PREFIX = "exchange_options_"
+    private const val FILE_SUFFIX = ".json"
+    private const val CACHE_REASON = "本地缓存，未经过本次目标应用刷新复核"
+
+    fun save(userId: String?, target: String, rows: List<ExchangeOptionRow>): Boolean {
+        val normalizedUserId = userId?.trim().orEmpty()
+        if (normalizedUserId.isEmpty()) {
+            return false
+        }
+        return runCatching {
+            val file = Files.getTargetFileofUser(normalizedUserId, fileName(target)) ?: return false
+            Files.write2File(JsonUtil.formatJson(rows, false), file)
+        }.onFailure {
+            Log.printStackTrace(TAG, "save err:", it)
+        }.getOrDefault(false)
+    }
+
+    fun load(userId: String?, target: String): List<ExchangeOptionRow> {
+        val normalizedUserId = userId?.trim().orEmpty()
+        if (normalizedUserId.isEmpty()) {
+            return emptyList()
+        }
+        return runCatching {
+            val file = Files.getTargetFileofUser(normalizedUserId, fileName(target)) ?: return emptyList()
+            val body = Files.readFromFile(file)
+            if (body.isBlank()) {
+                emptyList()
+            } else {
+                JsonUtil.parseObject(
+                    body,
+                    object : TypeReference<List<ExchangeOptionRow>>() {}
+                ).filter { it.id.isNotBlank() }
+            }
+        }.onFailure {
+            Log.printStackTrace(TAG, "load err:", it)
+        }.getOrDefault(emptyList())
+    }
+
+    fun loadForSettingsCache(userId: String?, target: String): List<ExchangeOptionRow> {
+        return load(userId, target).map { it.asLogOnlyCacheRow(CACHE_REASON) }
+    }
+
+    private fun fileName(target: String): String {
+        val safeTarget = target
+            .trim()
+            .map { ch -> if (ch.isLetterOrDigit() || ch == '_' || ch == '-') ch else '_' }
+            .joinToString("")
+            .ifBlank { "unknown" }
+        return "$FILE_PREFIX$safeTarget$FILE_SUFFIX"
     }
 }
 

@@ -230,12 +230,17 @@ object HookUtil {
         Log.printStackTrace(TAG, it)
     }.getOrNull()
 
-    fun getUserId(classLoader: ClassLoader): String? = runCatching {
-        val userObject = getUserObject(classLoader) ?: error("用户对象为空")
-        getFieldValue(userObject, "userId") as? String
-    }.onFailure {
-        Log.printStackTrace(TAG, it)
-    }.getOrNull()
+    fun getUserId(classLoader: ClassLoader): String? {
+        val userObject = getUserObject(classLoader) ?: run {
+            Log.runtime(TAG, "getUserId 跳过：用户对象为空")
+            return null
+        }
+        return runCatching {
+            getFieldValue(userObject, "userId") as? String
+        }.onFailure {
+            Log.printStackTrace(TAG, it)
+        }.getOrNull()
+    }
 
     fun captureCurrentUserEntity(classLoader: ClassLoader?): UserEntity? {
         val activeClassLoader = classLoader ?: return null

@@ -40,7 +40,9 @@ private val sesameCreditDefaultBlacklist = setOf(
     "zml_xiangjiangshikaipao_renwu", // 参数错误：promiseActivityExtCheck
     "去玩向僵尸开炮",          // 参数错误：promiseActivityExtCheck
     "AP17345296|芝麻树-蚂蚁阿福逛一逛唤活任务", // 芝麻树 NONE_SIGNUP 未知状态
-    "zml_eleme_diaoyu_erfang|去淘宝闪购果园" // OP_REPEAT_CHECK 频控任务
+    "zml_eleme_diaoyu_erfang|去淘宝闪购果园", // OP_REPEAT_CHECK 频控任务
+    "zml_longjizhicheng_renwu|去玩龙迹之城", // 参数错误：promiseActivityExtCheck
+    "zml_jihewangguo_renwu|去玩几何王国" // 参数错误：promiseActivityExtCheck
 )
 
 private val sesameAlchemyDefaultBlacklist = setOf(
@@ -57,7 +59,11 @@ private val sesameAlchemyDefaultBlacklist = setOf(
     "玩游戏完成10个订单",
     "玩任意游戏30秒",       // 缺少 promiseActivityExtCheck 闭环：ILLEGAL_ARGUMENT
     "坚持去玩休闲小游戏",   // 参数错误：ILLEGAL_ARGUMENT
-    "租游戏账号得芝麻粒"    // 参数错误：ILLEGAL_ARGUMENT
+    "租游戏账号得芝麻粒",   // 参数错误：ILLEGAL_ARGUMENT
+    "去玩浪漫餐厅",         // 参数错误：promiseActivityExtCheck
+    "去玩疯狂水世界",       // 参数错误：promiseActivityExtCheck
+    "去玩斗破苍穹",       // 参数错误：promiseActivityExtCheck
+    "hjwf_baoweixiangrikui_renwu|去玩保卫向日葵" // 参数错误：promiseActivityExtCheck
 )
 
 private val orchardDefaultBlacklist = setOf(
@@ -126,7 +132,8 @@ private val oceanDefaultBlacklist = setOf(
     "LMCT_QDRW_HAIYANG",       // finishTask 返回 400000040，不支持rpc调用
     "mokuai_senlin_hydrw|随机任务：玩一玩得拼图", // finishTask 返回 400000040，不支持rpc调用
     "MHXCZ_QDRW_HAIYANG|随机任务：玩一玩梦幻消除战", // finishTask 返回 400000040，不支持rpc调用
-    "随机任务：玩一玩浪漫餐厅"  // finishTask 返回 400000040，不支持rpc调用
+    "随机任务：玩一玩浪漫餐厅", // finishTask 返回 400000040，不支持rpc调用
+    "FKSSJ_QDRWCG_HAIYANG|随机任务：玩一玩疯狂水世界" // finishTask 返回 400000040，不支持rpc调用
 )
 
 private val forestDefaultBlacklist = setOf(
@@ -211,12 +218,6 @@ private val forestDefaultBlacklist = setOf(
 private val fishPondDefaultBlacklist = setOf(
     // 福气鱼池：游戏、订阅、分享、翻倍广告等任务缺少稳定自动完成闭环
     "FISHPOND_NCLY_GAME",
-    "FISHPOND_NCLY_GAME_BWXRK_30S",
-    "FISHPOND_NCLY_GAME_SGBHSD_30S",
-    "FISHPOND_NCLY_GAME_NCDDP_PLAY1",
-    "FISHPOND_NCLY_GAME_CGNNC_PLAY1",
-    "FISHPOND_NCLY_GAME_MSQYJ_PLAY",
-    "FISHPOND_NCLY_GAME_NCLSW_PLAY",
     "NORMAL_RENMENYOUXI",
     "TASK_SUBSCRIBE",
     "ANTFISHPOND_WECHAT_SHARE",
@@ -240,8 +241,8 @@ private val fishPondDefaultBlacklist = setOf(
 
 private val stallDefaultBlacklist = setOf(
     // 蚂蚁新村
-    "ANTSTALL_TASK_XCXYX_sanguobinghe|玩三冰历史最高战力提升1万",
-    "ANTSTALL_TASK_XCXYX_baoweixiangrikui|玩保卫向日葵通关1次",
+    "ANTSTALL_TASK_XCXYX", // 新村小游戏任务前缀，避免按游戏标题无限补黑名单
+    "ANTSTALL_TASK_nongchangleyuan", // 农场乐园/解压小游戏任务
     "ANTSTALL_NORMAL_DAILY_DONATE_COUNT|助力就业岗位",
     "ANTSTALL_TASK_xcjmjyjuankuan2026|帮乡村姐妹家乡就业",
     "ANTSTALL_TASK_kuaishouhuanduan|去快手逛一逛",
@@ -260,7 +261,9 @@ private val yuebaoDefaultBlacklist = setOf(
 
 private val goldTicketDefaultBlacklist = emptySet<String>()
 
-private val dodoDefaultBlacklist = emptySet<String>()
+private val dodoDefaultBlacklist = setOf(
+    "SGBHSD_QDRW" // 三国冰河时代类任务前缀，缺少稳定完成闭环
+)
 
 private val memberDefaultBlacklist = setOf(
     // 会员

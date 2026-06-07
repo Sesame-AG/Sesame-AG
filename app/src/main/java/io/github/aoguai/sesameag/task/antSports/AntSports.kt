@@ -3,6 +3,7 @@ package io.github.aoguai.sesameag.task.antSports
 import android.annotation.SuppressLint
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
+import io.github.aoguai.sesameag.entity.MapperEntity
 import io.github.aoguai.sesameag.entity.SportsEnergyExchange
 import io.github.aoguai.sesameag.entity.friend.FriendCapabilityState
 import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
@@ -41,6 +42,8 @@ import io.github.aoguai.sesameag.task.exchange.ExchangeEffectCatalog
 import io.github.aoguai.sesameag.task.exchange.ExchangeEffectNeed
 import io.github.aoguai.sesameag.task.exchange.ExchangeItem
 import io.github.aoguai.sesameag.task.exchange.ExchangeLimit
+import io.github.aoguai.sesameag.task.exchange.ExchangeOptionRow
+import io.github.aoguai.sesameag.task.exchange.ExchangeOptionsCache
 import io.github.aoguai.sesameag.task.exchange.ExchangeReplenishResult
 import io.github.aoguai.sesameag.task.exchange.ExchangeSafety
 import io.github.aoguai.sesameag.task.exchange.ExchangeSafetyRules
@@ -454,8 +457,6 @@ class AntSports : ModelTask() {
                 LinkedHashSet<String?>()
             ) {
                 refreshSportsEnergyExchangeOptionsForSettings()
-                    .map { it.item.toMapperEntity() }
-                    .ifEmpty { SportsEnergyExchange.getList() }
             }.withDesc("勾选允许处理的运动能量兑换项，需开启“运动 | 能量兑换”。").also { sportsEnergyExchangeList = it }
         )
 
@@ -684,22 +685,7 @@ class AntSports : ModelTask() {
         }
     }
 
-    private fun refreshSportsEnergyExchangeOptionsForSettings(): List<SportsEnergyExchangeCandidate> {
-        if (!HookReadyChecker.isCurrentProcessReadyForRpc(UserMap.currentUid)) {
-            if (!HookReadyChecker.isTargetAppReadyForRpc(UserMap.currentUid) ||
-                !ExchangeOptionsRefreshBridge.requestRefresh(
-                    ExchangeOptionsRefreshBridge.TARGET_SPORTS_ENERGY,
-                    UserMap.currentUid
-                )
-            ) {
-                Log.sports("运动能量兑换🎁目标应用未就绪，设置页使用缓存列表")
-                return emptyList()
-            }
-            val exchangeMap = IdMapManager.getInstance(SportsEnergyExchangeMap::class.java)
-            exchangeMap.load(UserMap.currentUid)
-            Log.sports("运动能量兑换🎁设置页加载目标应用刷新列表#${exchangeMap.map.size}")
-            return emptyList()
-        }
+    private fun refreshSportsEnergyExchangeCandidatesFromRpc(throwOnError: Boolean = false): List<SportsEnergyExchangeCandidate> {
         try {
             val categoryTypes = linkedSetOf("")
             runCatching {
@@ -734,7 +720,7 @@ class AntSports : ModelTask() {
             categoryTypes.forEach { categoryType ->
                 var pageNum = 1
                 var adSession = ""
-                while (pageNum <= 3) {
+                while (pageNum <= 20) {
                     val response = JSONObject(
                         AntSportsRpcCall.NeverlandRpcCall.queryItemList(
                             categoryType = categoryType,
@@ -773,8 +759,49 @@ class AntSports : ModelTask() {
             return candidates
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "refreshSportsEnergyExchangeOptionsForSettings err:", t)
+            if (throwOnError) {
+                throw t
+            }
             return emptyList()
         }
+    }
+
+    private fun refreshSportsEnergyExchangeOptionsFromRpc(): List<ExchangeOptionRow> {
+        val rows = refreshSportsEnergyExchangeCandidatesFromRpc(throwOnError = true).map { it.item.toOptionRow() }
+        ExchangeOptionsCache.save(UserMap.currentUid, ExchangeOptionsRefreshBridge.TARGET_SPORTS_ENERGY, rows)
+        return rows
+    }
+
+    private fun refreshSportsEnergyExchangeOptionsForSettings(): List<MapperEntity> {
+        if (!HookReadyChecker.isCurrentProcessReadyForRpc(UserMap.currentUid)) {
+            if (!HookReadyChecker.isTargetAppReadyForRpc(UserMap.currentUid)) {
+                val cachedRows = ExchangeOptionsCache.loadForSettingsCache(
+                    UserMap.currentUid,
+                    ExchangeOptionsRefreshBridge.TARGET_SPORTS_ENERGY
+                )
+                Log.sports("运动能量兑换🎁目标应用未就绪，设置页使用结构化缓存列表#${cachedRows.size}")
+                return cachedRows
+            }
+            val refreshResult = ExchangeOptionsRefreshBridge.requestRefreshOptions(
+                ExchangeOptionsRefreshBridge.TARGET_SPORTS_ENERGY,
+                UserMap.currentUid
+            )
+            if (refreshResult.success) {
+                Log.sports("运动能量兑换🎁设置页使用目标应用刷新列表#${refreshResult.options.size}")
+                return refreshResult.options
+            }
+            Log.sports("运动能量兑换🎁远程刷新失败，不使用旧缓存#${refreshResult.message}")
+            return emptyList()
+        }
+        val rows = runCatching {
+            refreshSportsEnergyExchangeOptionsFromRpc()
+        }.onFailure {
+            Log.printStackTrace(TAG, "refreshSportsEnergyExchangeOptionsForSettings.currentRpc err:", it)
+        }.getOrElse {
+            emptyList()
+        }
+        Log.sports("运动能量兑换🎁设置页刷新结构化列表#${rows.size}")
+        return rows
     }
 
     private fun sportsEnergyExchange() {
@@ -785,7 +812,7 @@ class AntSports : ModelTask() {
                 ?.filter { it.isNotEmpty() }
                 ?.toSet()
                 ?: emptySet()
-            val candidates = refreshSportsEnergyExchangeOptionsForSettings()
+            val candidates = refreshSportsEnergyExchangeCandidatesFromRpc()
             if (candidates.isEmpty()) {
                 return
             }
@@ -813,9 +840,8 @@ class AntSports : ModelTask() {
         }
     }
 
-    internal fun refreshSportsEnergyExchangeOptionsForRemote() {
-        refreshSportsEnergyExchangeOptionsForSettings()
-    }
+    internal fun refreshSportsEnergyExchangeOptionsForRemote(): List<ExchangeOptionRow> =
+        refreshSportsEnergyExchangeOptionsFromRpc()
 
     internal fun replenishExchangeByNeed(
         need: ExchangeEffectNeed,
@@ -835,7 +861,7 @@ class AntSports : ModelTask() {
             return ExchangeReplenishResult.NOT_SELECTED
         }
         return runCatching {
-            val candidates = refreshSportsEnergyExchangeOptionsForSettings()
+            val candidates = refreshSportsEnergyExchangeCandidatesFromRpc()
             var matchedSelected = false
             var attempted = false
             var exchangedCount = 0
@@ -4715,11 +4741,6 @@ class AntSports : ModelTask() {
                 Log.sports("走路挑战赛线上赛[黑名单跳过]")
                 return
             }
-            if (Status.hasFlagToday(StatusFlags.FLAG_ANTSPORTS_WALK_CHALLENGE_UNAVAILABLE_TODAY)) {
-                Log.sports("走路挑战赛线上赛[今日已停用，跳过重复报名]")
-                return
-            }
-
             val joinedQuery = queryJoinedWalkChallenge()
             if (!joinedQuery.success) {
                 return
@@ -4727,6 +4748,11 @@ class AntSports : ModelTask() {
             var joinedGame = joinedQuery.game
 
             if (joinedGame == null) {
+                if (Status.hasFlagToday(StatusFlags.FLAG_ANTSPORTS_WALK_CHALLENGE_SIGNUP_BLOCKED_TODAY)) {
+                    Log.sports("走路挑战赛线上赛[今日报名不可继续，跳过重复报名]")
+                    return
+                }
+
                 val game = findAvailableWalkChallengeGame()
                 if (game == null) {
                     Log.sports("走路挑战赛线上赛[未找到可报名比赛]")
@@ -4769,7 +4795,7 @@ class AntSports : ModelTask() {
                         errorMsg.contains("系统出错") ||
                         errorMsg.contains("系統出錯")
                     ) {
-                        Status.setFlagToday(StatusFlags.FLAG_ANTSPORTS_WALK_CHALLENGE_UNAVAILABLE_TODAY)
+                        Status.setFlagToday(StatusFlags.FLAG_ANTSPORTS_WALK_CHALLENGE_SIGNUP_BLOCKED_TODAY)
                         Log.sports("走路挑战赛线上赛[暂不可用][code=${errorCode.ifEmpty { "UNKNOWN" }}][msg=$errorMsg] raw=$res"
                         )
                         return
@@ -4784,6 +4810,7 @@ class AntSports : ModelTask() {
             }
 
             if (joinedGame == null) {
+                Status.setFlagToday(StatusFlags.FLAG_ANTSPORTS_WALK_CHALLENGE_SIGNUP_BLOCKED_TODAY)
                 Log.sports("走路挑战赛线上赛[报名状态未确认，跳过今日运动提交]")
                 return
             }

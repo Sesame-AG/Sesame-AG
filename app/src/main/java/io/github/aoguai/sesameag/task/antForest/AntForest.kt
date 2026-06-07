@@ -56,6 +56,8 @@ import io.github.aoguai.sesameag.task.exchange.ExchangeEffectCatalog
 import io.github.aoguai.sesameag.task.exchange.ExchangeEffectNeed
 import io.github.aoguai.sesameag.task.exchange.ExchangeItem
 import io.github.aoguai.sesameag.task.exchange.ExchangeLimit
+import io.github.aoguai.sesameag.task.exchange.ExchangeOptionRow
+import io.github.aoguai.sesameag.task.exchange.ExchangeOptionsCache
 import io.github.aoguai.sesameag.task.exchange.ExchangeReplenishResult
 import io.github.aoguai.sesameag.task.exchange.ExchangeReplenisher
 import io.github.aoguai.sesameag.task.exchange.ExchangeSafety
@@ -89,7 +91,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Runnable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Semaphore
@@ -711,7 +712,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             SelectAndCountModelField(
                 "vitalityExchangeList", "活力值 | 兑换列表", LinkedHashMap<String?, Int?>(),
                 this::refreshVitalityExchangeOptionsForSettings,
-                "记得填兑换次数..亲爱的"
+                "记得填兑换次数"
             ).withDesc("配置活力值商店兑换项及每日兑换次数。").also { vitalityExchangeList = it })
         modelFields.addField(BooleanModelField("userPatrol", "保护地巡护 | 开启", false).withDesc(
             "执行保护地巡护，消耗步数机会获取动物碎片。"
@@ -1010,31 +1011,14 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             }
 
             if (energyOnlyModeAtStart) {
-                var energyRound = 0
-                while (currentCoroutineContext().isActive) {
-                    TaskCommon.update()
-                    if (!TaskCommon.IS_ENERGY_TIME) {
-                        Log.forest("当前不在只收能量时间段，退出只收能量循环")
-                        break
-                    }
-                    energyRound++
-                    Log.forest("⏸ 当前为只收能量时间【${BaseModel.energyTime.value}】，开始第${energyRound}轮只收能量链路")
+                TaskCommon.update()
+                if (TaskCommon.IS_ENERGY_TIME) {
+                    Log.forest("⏸ 当前为只收能量时间【${BaseModel.energyTime.value}】，执行本次只收能量链路")
                     runEnergyOnlyCollectionWorkflow(tc)
                     clearRoundCaches()
-
-                    TaskCommon.update()
-                    if (!TaskCommon.IS_ENERGY_TIME) {
-                        Log.forest("只收能量时间已结束，本轮只收能量链路完成后退出循环")
-                        break
-                    }
-
-                    val sleepMillis = (cycleinterval?.value ?: cycleinterval?.defaultValue ?: 0).toLong()
-                    if (sleepMillis > 0) {
-                        Log.forest("✨ 只收能量时间第${energyRound}轮完成，等待 $sleepMillis 毫秒后开始下一轮")
-                        delay(sleepMillis)
-                    } else {
-                        Log.forest("✨ 只收能量时间第${energyRound}轮完成，循环间隔为0，立即开始下一轮")
-                    }
+                    Log.forest("✨ 本次只收能量链路完成，交回统一调度")
+                } else {
+                    Log.forest("当前不在只收能量时间段，跳过只收能量链路并交回统一调度")
                 }
                 tc.stop()
                 return
@@ -1780,36 +1764,49 @@ class AntForest : ModelTask(), EnergyCollectCallback {
 
     private fun refreshVitalityExchangeOptionsForSettings(): List<MapperEntity> {
         if (!HookReadyChecker.isCurrentProcessReadyForRpc(UserMap.currentUid)) {
-            if (!HookReadyChecker.isTargetAppReadyForRpc(UserMap.currentUid) ||
-                !ExchangeOptionsRefreshBridge.requestRefresh(
-                    ExchangeOptionsRefreshBridge.TARGET_FOREST_VITALITY,
-                    UserMap.currentUid
+            if (!HookReadyChecker.isTargetAppReadyForRpc(UserMap.currentUid)) {
+                val cachedRows = ExchangeOptionsCache.loadForSettingsCache(
+                    UserMap.currentUid,
+                    ExchangeOptionsRefreshBridge.TARGET_FOREST_VITALITY
                 )
-            ) {
-                Log.forest("活力值兑换🎁目标应用未启动，设置页使用缓存列表")
-                return VitalityStore.list
+                Log.forest("活力值兑换🎁目标应用未启动，设置页使用结构化缓存列表#${cachedRows.size}")
+                return cachedRows
             }
-            Log.forest("活力值兑换🎁目标应用已远程刷新列表")
-            IdMapManager.getInstance(VitalityRewardsMap::class.java).load(UserMap.currentUid)
-            return VitalityStore.list
+            val refreshResult = ExchangeOptionsRefreshBridge.requestRefreshOptions(
+                ExchangeOptionsRefreshBridge.TARGET_FOREST_VITALITY,
+                UserMap.currentUid
+            )
+            if (refreshResult.success) {
+                Log.forest("活力值兑换🎁设置页使用目标应用刷新列表#${refreshResult.options.size}")
+                return refreshResult.options
+            }
+            Log.forest("活力值兑换🎁远程刷新失败，不使用旧缓存#${refreshResult.message}")
+            return emptyList()
         }
+        val rows = refreshVitalityExchangeOptionsFromRpc()
+        Log.forest("活力值兑换🎁设置页刷新结构化列表#${rows.size}")
+        return rows
+    }
+
+    internal fun refreshVitalityExchangeOptionsForRemote(): List<ExchangeOptionRow> =
+        refreshVitalityExchangeOptionsFromRpc()
+
+    private fun refreshVitalityExchangeOptionsFromRpc(): List<ExchangeOptionRow> {
         return runCatching {
             Vitality.initVitality("SC_ASSETS")
-            buildVitalityExchangeMapperList().ifEmpty { VitalityStore.list }
+            val rows = buildVitalityExchangeOptionRows()
+            ExchangeOptionsCache.save(UserMap.currentUid, ExchangeOptionsRefreshBridge.TARGET_FOREST_VITALITY, rows)
+            rows
         }.onFailure {
-            Log.printStackTrace(TAG, "refreshVitalityExchangeOptionsForSettings err:", it)
+            Log.printStackTrace(TAG, "refreshVitalityExchangeOptionsFromRpc err:", it)
         }.getOrElse {
-            VitalityStore.list
+            emptyList()
         }
     }
 
-    internal fun refreshVitalityExchangeOptionsForRemote() {
-        Vitality.initVitality("SC_ASSETS")
-    }
-
-    private fun buildVitalityExchangeMapperList(): List<MapperEntity> {
+    private fun buildVitalityExchangeOptionRows(): List<ExchangeOptionRow> {
         return Vitality.skuInfo.entries
-            .mapNotNull { (skuId, skuModel) -> buildVitalityExchangeItem(skuId, skuModel).toMapperEntity() }
+            .mapNotNull { (skuId, skuModel) -> buildVitalityExchangeItem(skuId, skuModel).toOptionRow() }
     }
 
     private fun buildVitalityExchangeItem(skuId: String, skuModel: JSONObject): ExchangeItem {
@@ -2507,11 +2504,13 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 val subList: MutableList<Long> =
                     bubbleIds.subList(i, min(i + MAX_BATCH_SIZE, bubbleIds.size))
                 val collectEnergyEntity = CollectEnergyEntity(
-                    safeUserId,
-                    userHomeObj,
-                    AntForestRpcCall.batchEnergyRpcEntity(bizType, safeUserId, subList, rpcSource),
-                    fromTag,
-                    skipPropCheck  // 🚀 传递快速通道标记
+                    userId = safeUserId,
+                    userHome = userHomeObj,
+                    rpcEntity = AntForestRpcCall.batchEnergyRpcEntity(bizType, safeUserId, subList, rpcSource),
+                    fromTag = fromTag,
+                    skipPropCheck = skipPropCheck,  // 🚀 传递快速通道标记
+                    bizType = bizType,
+                    rpcSource = rpcSource
                 )
                 collectEnergy(collectEnergyEntity)
                 failedBubbleIds.addAll(collectEnergyEntity.failedBubbleIds)
@@ -2520,11 +2519,13 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         } else {
             for (id in bubbleIds) {
                 val collectEnergyEntity = CollectEnergyEntity(
-                    safeUserId,
-                    userHomeObj,
-                    AntForestRpcCall.energyRpcEntity(bizType, safeUserId, id, rpcSource),
-                    fromTag,
-                    skipPropCheck  // 🚀 传递快速通道标记
+                    userId = safeUserId,
+                    userHome = userHomeObj,
+                    rpcEntity = AntForestRpcCall.energyRpcEntity(bizType, safeUserId, id, rpcSource),
+                    fromTag = fromTag,
+                    skipPropCheck = skipPropCheck,  // 🚀 传递快速通道标记
+                    bizType = bizType,
+                    rpcSource = rpcSource
                 )
                 collectEnergy(collectEnergyEntity)
                 failedBubbleIds.addAll(collectEnergyEntity.failedBubbleIds)
@@ -2762,7 +2763,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         var consecutiveEmpty = 0
         var shouldCooldown = false
         var firstTakeLook = true
-        var firstTakeLookExposedUserId = selfId.orEmpty()
+        var firstTakeLookExposedUserId = ""
 
         // 本地去重集合：防止单次运行中服务器重复返回同一个有保护罩的人
         val visitedInSession = mutableSetOf<String>()
@@ -2777,6 +2778,22 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             }
         }
 
+        fun extractTakeLookExposeFriendId(combineBizObj: JSONObject): String? {
+            val rootFriendId = combineBizObj
+                .optJSONObject("combineHandlerVOMap")
+                ?.optJSONObject("takeLookExpose")
+                ?.optString("friendUserId")
+                ?.takeIf { it.isNotBlank() }
+            if (!rootFriendId.isNullOrBlank()) return rootFriendId
+
+            return combineBizObj
+                .optJSONObject("resData")
+                ?.optJSONObject("combineHandlerVOMap")
+                ?.optJSONObject("takeLookExpose")
+                ?.optString("friendUserId")
+                ?.takeIf { it.isNotBlank() }
+        }
+
         try {
             try {
                 val combineBizResult = AntForestRpcCall.queryTakeLookCombineBiz(
@@ -2787,11 +2804,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 )
                 if (combineBizResult.isNotBlank()) {
                     val combineBizObj = JSONObject(combineBizResult)
-                    val exposedFriendId = combineBizObj
-                        .optJSONObject("combineHandlerVOMap")
-                        ?.optJSONObject("takeLookExpose")
-                        ?.optString("friendUserId")
-                        ?.takeIf { it.isNotBlank() }
+                    val exposedFriendId = extractTakeLookExposeFriendId(combineBizObj)
                     if (!exposedFriendId.isNullOrBlank()) {
                         firstTakeLookExposedUserId = exposedFriendId
                         Log.forest("找能量预曝光目标已更新")
@@ -3503,9 +3516,10 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     }
                     if (!newBubbleIdList.isEmpty()) {
                         collectEnergyEntity.rpcEntity = AntForestRpcCall.batchEnergyRpcEntity(
-                            "",
+                            collectEnergyEntity.bizType,
                             userId,
-                            newBubbleIdList
+                            newBubbleIdList,
+                            collectEnergyEntity.rpcSource
                         )
                         collectEnergyEntity.setNeedDouble()
                         collectEnergyEntity.resetTryCount()
@@ -5281,32 +5295,10 @@ class AntForest : ModelTask(), EnergyCollectCallback {
 
     /**
      * 保护罩剩余时间判断
-     * 以整数 HHmm 指定保护罩续写阈值。
-     * 例如：2355 表示 23 小时 55 分钟，0955 可直接写为 955。
-     * 校验规则：0 ≤ HH ≤ 99，0 ≤ mm ≤ 59；非法值将回退为默认值。
+     * 新规则允许保护罩剩余有效期低于7天时延长使用。
      */
     @SuppressLint("DefaultLocale")
     private fun shouldRenewShield(shieldEnd: Long, nowMillis: Long): Boolean {
-        // 解析阈值配置
-        var hours: Int
-        var minutes: Int
-        try {
-            val abs = abs(SHIELD_RENEW_THRESHOLD_HHMM)
-            hours = abs / 100 // 提取小时部分
-            minutes = abs % 100 // 提取分钟部分
-            // 可以添加分钟有效性检查
-            if (minutes > 59) {
-                Log.forest("[保护罩] 分钟数无效: $minutes, 使用默认值")
-                hours = 23
-                minutes = 59
-            }
-        } catch (e: Exception) {
-            Log.forest("[保护罩] 解析阈值配置异常: " + e.message + ", 使用默认值")
-            hours = 23
-            minutes = 59
-        }
-        val thresholdMs = hours * TimeFormatter.ONE_HOUR_MS + minutes * TimeFormatter.ONE_MINUTE_MS
-
         // 检测异常数据
         if (shieldEnd > 0 && shieldEnd < nowMillis - 365 * TimeFormatter.ONE_DAY_MS) {
             Log.forest("[保护罩] ⚠️ 检测到异常时间数据(${TimeUtil.getCommonDate(shieldEnd)})，跳过检查")
@@ -5326,19 +5318,19 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             return true
         }
         val remain = shieldEnd - nowMillis
-        val needRenew = remain <= thresholdMs
+        val needRenew = remain < SHIELD_RENEW_THRESHOLD_MS
         // 格式化剩余时间和阈值时间为更直观的显示
         val remainTimeStr = TimeFormatter.formatRemainingTime(remain)
-        val thresholdTimeStr = String.format("%02d小时%02d分", hours, minutes)
+        val thresholdTimeStr = TimeFormatter.formatRemainingTime(SHIELD_RENEW_THRESHOLD_MS)
         if (needRenew) {
             Log.forest(String.format(
-                    "[保护罩] 🔄 需要续写 - 剩余时间[%s] ≤ 续写阈值[%s]",
+                    "[保护罩] 🔄 需要续写 - 剩余时间[%s] < 续写阈值[%s]",
                     remainTimeStr, thresholdTimeStr
                 )
             )
         } else {
             Log.forest(String.format(
-                    "[保护罩] ✅ 无需续写 - 剩余时间[%s] > 续写阈值[%s]",
+                    "[保护罩] ✅ 无需续写 - 剩余时间[%s] ≥ 续写阈值[%s]",
                     remainTimeStr, thresholdTimeStr
                 )
             )
@@ -6405,13 +6397,13 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 val selected = sameFactorCandidates.first()
                 Log.forest(
                     "当前${formatRobMultiplierFactor(active.factor)}倍卡剩余${formatTimeDifference(activeRemainingMs)}，" +
-                            "满足少于14天延期条件，选择[${selected.propName}]"
+                            "满足少于30天延期条件，选择[${selected.propName}]"
                 )
                 return selected
             }
             Log.forest(
                 "当前${formatRobMultiplierFactor(active.factor)}倍卡剩余${formatTimeDifference(activeRemainingMs)}，" +
-                        "不少于14天，跳过同倍率延期"
+                        "不少于30天，跳过同倍率延期"
             )
         }
 
@@ -7607,7 +7599,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         private const val GIFT7TH_SIGN_SOURCE = "chInfo_ch_appcenter__chsub_9patch"
         private const val FOREST_SIGN_TASK_TYPE = "__FOREST_SIGN__"
         private const val LEGACY_FOREST_GAME_TASK_TYPE = "mokuai_senlin_hlz"
-        private const val ROB_MULTIPLIER_PROLONG_THRESHOLD_MS = 14 * 24 * 60 * 60 * 1000L
+        private const val ROB_MULTIPLIER_PROLONG_THRESHOLD_MS = 30 * TimeFormatter.ONE_DAY_MS
         private const val ROB_MULTIPLIER_FACTOR_EPS = 0.0001
 
         @JvmField
@@ -7616,10 +7608,8 @@ class AntForest : ModelTask(), EnergyCollectCallback {
 
         private val offsetTimeMath = Average(5)
 
-
-        // 保持向后兼容
-        /** 保护罩续写阈值（HHmm），例如 2359 表示 23小时59分  */
-        private const val SHIELD_RENEW_THRESHOLD_HHMM = 2359
+        /** 保护罩剩余有效期低于7天时可延长使用。 */
+        private const val SHIELD_RENEW_THRESHOLD_MS = 7 * TimeFormatter.ONE_DAY_MS
         var giveEnergyRainList: FriendSelectionModelField? = null //能量雨赠送列表
         var medicalHealthOption: SelectModelField? = null //医疗健康选项
         var ecoLifeOption: SelectModelField? = null

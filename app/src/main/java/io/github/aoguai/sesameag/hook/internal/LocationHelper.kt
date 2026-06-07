@@ -2,10 +2,7 @@ package io.github.aoguai.sesameag.hook.internal
 
 import io.github.aoguai.sesameag.util.DataStore
 import io.github.aoguai.sesameag.util.Log
-import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
@@ -14,11 +11,6 @@ object LocationHelper {
     private const val TAG = "LocationInfoHelper"
     private var classLoader: ClassLoader? = null
     private const val LOCATION_KEY = "cached_location"
-
-    // 保留旧的回调接口以兼容 Java 代码，但已标记为 Deprecated
-    fun interface LocationCallback {
-        fun onLocationResult(location: JSONObject?)
-    }
 
     fun init(loader: ClassLoader) {
         classLoader = loader
@@ -73,20 +65,6 @@ object LocationHelper {
         } catch (e: Throwable) {
             Log.error(TAG, "获取经纬度异常: ${e.message}")
             createAndSaveError("获取失败: ${e.message}")
-        }
-    }
-
-    /**
-     * 兼容旧版：回调风格 (内部使用协程)
-     * 供 Java 代码或尚未迁移的 Kotlin 代码使用
-     */
-    @OptIn(DelicateCoroutinesApi::class)
-    fun requestLocation(callback: LocationCallback) {
-        // 使用 GlobalScope 启动协程替代 new Thread
-        // 注意：在 ApplicationHook 中最好使用受控的 Scope，这里作为单例工具类暂时用 GlobalScope
-        GlobalScope.launch(Dispatchers.Main) {
-            val result = requestLocationSuspend()
-            callback.onLocationResult(result)
         }
     }
 

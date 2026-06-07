@@ -219,9 +219,9 @@ object StatusFlags {
     /** 运动首页气泡任务：按 taskId 维度的当日冷却前缀 */
     const val FLAG_ANTSPORTS_HOME_BUBBLE_COOLDOWN_PREFIX = "AntSports::homeBubbleCooldown::"
 
-    /** 走路挑战赛线上赛报名：服务端当日不可用，停止重复报名 */
-    const val FLAG_ANTSPORTS_WALK_CHALLENGE_UNAVAILABLE_TODAY =
-        "AntSports::walkChallengeOnlineGameUnavailableToday"
+    /** 走路挑战赛线上赛报名：今日报名不可继续，停止重复报名 */
+    const val FLAG_ANTSPORTS_WALK_CHALLENGE_SIGNUP_BLOCKED_TODAY =
+        "AntSports::walkChallengeSignupBlockedToday"
 
     /** 走路挑战赛线上赛：今日已提交一次运动记录 */
     const val FLAG_ANTSPORTS_WALK_CHALLENGE_PROGRESS_DONE =
@@ -242,6 +242,9 @@ object StatusFlags {
 
     /** 神奇海洋：帮助好友清理垃圾今日已达到上限 */
     const val FLAG_ANTOCEAN_HELP_CLEAN_ALL_FRIEND_LIMIT = "Ocean::HELP_CLEAN_ALL_FRIEND_LIMIT"
+
+    /** 神奇海洋：今日任务列表已确认无可执行项 */
+    const val FLAG_ANTOCEAN_TASKS_DONE = "AntOcean::tasksDone"
 
     // ============================================================
     // 农场 / 新村 / 团队

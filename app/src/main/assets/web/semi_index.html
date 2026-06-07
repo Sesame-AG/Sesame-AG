@@ -758,6 +758,25 @@
             return label ? `${label} (${normalizedKey})` : normalizedKey;
         };
 
+        const getSemiChangeValue = (...args) => {
+            for (const arg of args) {
+                if (arg == null) continue;
+                if (typeof arg !== 'object') {
+                    return arg;
+                }
+                if (arg.target && 'value' in arg.target && arg.target.value != null) {
+                    return arg.target.value;
+                }
+                if (arg.currentTarget && 'value' in arg.currentTarget && arg.currentTarget.value != null) {
+                    return arg.currentTarget.value;
+                }
+                if ('value' in arg && arg.value != null) {
+                    return arg.value;
+                }
+            }
+            return args[0];
+        };
+
         const buildFriendSheetIndex = (friends, groups) => {
             const normalizedGroups = Array.isArray(groups) ? groups : [];
             const groupById = {};
@@ -1538,7 +1557,7 @@
                     const pending = sheetLoadTokenRef.current;
                     if (!pending || !payload || payload.requestId !== pending.requestId) return;
                     const selectedForSort = pending.selectedIds || new Set();
-                    const listData = normalizeSheetList(payload.expandValue);
+                    const listData = normalizeSheetList(payload.expandValue, pending.sheetConfig);
                     listData.sort((a, b) => {
                         const isA = selectedForSort.has(a.id);
                         const isB = selectedForSort.has(b.id);
@@ -1758,11 +1777,21 @@
 
             // --- 列表弹窗逻辑 (关键修改部分) ---
 
-            const normalizeSheetList = (rawList) => {
+            const isExchangeSheetConfig = (config) => {
+                const title = String(config?.title || '');
+                const fieldCode = String(config?.fieldCode || '');
+                return `${title} ${fieldCode}`.includes('兑换') ||
+                    fieldCode.toLowerCase().includes('exchange');
+            };
+
+            const normalizeSheetList = (rawList, config = sheetConfig) => {
                 if (!Array.isArray(rawList)) return [];
+                const shouldFallbackLogOnly = isExchangeSheetConfig(config);
                 return rawList.map(item => {
                     const id = String(item?.id ?? '').trim();
                     const name = String(item?.rawName ?? item?.name ?? item?.id ?? '').trim();
+                    const rawSafety = String(item?.safety ?? '').trim().toUpperCase();
+                    const safety = rawSafety || (shouldFallbackLogOnly ? 'LOG_ONLY' : '');
                     const effectTargets = Array.isArray(item?.effectTargets)
                         ? item.effectTargets.map(target => String(target || '').trim()).filter(Boolean)
                         : [];
@@ -1773,8 +1802,9 @@
                         sourceModule: String(item?.sourceModule ?? '').trim(),
                         costText: String(item?.costText ?? '').trim(),
                         statusText: String(item?.statusText ?? '').trim(),
-                        safety: String(item?.safety ?? '').trim().toUpperCase(),
-                        safetyReason: String(item?.safetyReason ?? '').trim(),
+                        safety,
+                        safetyReason: String(item?.safetyReason ?? '').trim() ||
+                            (shouldFallbackLogOnly && !rawSafety ? '本地缓存项缺少安全分级，请刷新目标应用列表后再自动兑换' : ''),
                         effectSummary: String(item?.effectSummary ?? '').trim(),
                         effectTargets,
                         triggerText: String(item?.triggerText ?? '').trim(),
@@ -1783,11 +1813,11 @@
                 }).filter(Boolean);
             };
 
-            const loadListSheetSyncFallback = (modelCode, fieldCode, selectedForSort) => {
+            const loadListSheetSyncFallback = (modelCode, fieldCode, selectedForSort, config) => {
                 window.requestAnimationFrame(() => {
                     window.setTimeout(() => {
                         try {
-                            const listData = normalizeSheetList(getFieldData(modelCode, fieldCode));
+                            const listData = normalizeSheetList(getFieldData(modelCode, fieldCode), config);
                             listData.sort((a, b) => {
                                 const isA = selectedForSort.has(a.id);
                                 const isB = selectedForSort.has(b.id);
@@ -1837,7 +1867,8 @@
                 setSheetVisible(true);
 
                 const requestId = `${modelCode}_${code}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-                sheetLoadTokenRef.current = { requestId, selectedIds: newSelectedIds };
+                const nextSheetConfig = { modelCode, fieldCode: code, type, title: name, desc: desc };
+                sheetLoadTokenRef.current = { requestId, selectedIds: newSelectedIds, sheetConfig: nextSheetConfig };
                 let asyncRequested = false;
                 if (window.HOOK && window.HOOK.requestFieldOptions) {
                     try {
@@ -1847,7 +1878,7 @@
                     }
                 }
                 if (!asyncRequested) {
-                    loadListSheetSyncFallback(modelCode, code, newSelectedIds);
+                    loadListSheetSyncFallback(modelCode, code, newSelectedIds, nextSheetConfig);
                 }
             };
 
@@ -2072,19 +2103,41 @@
             ].filter(Boolean).join(' ').toLowerCase();
 
             const matchesSheetSearch = (item) => {
-                const keyword = sheetSearch.trim().toLowerCase();
+                const keyword = String(sheetSearch || '').trim().toLowerCase();
                 return !keyword || getSheetSearchText(item).includes(keyword);
             };
 
             const matchesSheetSafetyFilter = (item) => {
-                if (sheetSafetyFilter === 'all') return true;
-                if (sheetSafetyFilter === 'effect') {
-                    return Boolean(item.effectSummary || (item.effectTargets || []).length > 0);
+                const filter = String(sheetSafetyFilter || 'all');
+                if (filter === 'all') return true;
+                const safetyText = String(item.safety || '').trim().toUpperCase();
+                const searchableText = getSheetSearchText(item);
+                const isExchangeSheet = `${sheetConfig.title || ''} ${sheetConfig.fieldCode || ''}`.includes('兑换') ||
+                    String(sheetConfig.fieldCode || '').toLowerCase().includes('exchange');
+                const hasLogOnlyText = searchableText.includes('仅提醒');
+                const hasUnavailableText = searchableText.includes('不可兑换');
+                const hasEffect = Boolean(item.effectSummary || (item.effectTargets || []).length > 0) ||
+                    searchableText.includes('补兑') ||
+                    searchableText.includes('用于：') ||
+                    searchableText.includes('用于:');
+                if (filter === 'effect') {
+                    return hasEffect;
                 }
-                if (sheetSafetyFilter === 'auto') return item.safety === 'AUTO';
-                if (sheetSafetyFilter === 'log_only') return item.safety === 'LOG_ONLY';
-                if (sheetSafetyFilter === 'unavailable') return item.safety === 'UNAVAILABLE';
+                if (filter === 'auto') return safetyText === 'AUTO';
+                if (filter === 'log_only') return safetyText === 'LOG_ONLY' || hasLogOnlyText ||
+                    (!safetyText && isExchangeSheet && !hasUnavailableText);
+                if (filter === 'unavailable') return safetyText === 'UNAVAILABLE' || hasUnavailableText;
                 return true;
+            };
+
+            const handleSheetSearchChange = (...args) => {
+                const value = getSemiChangeValue(...args);
+                setSheetSearch(value == null ? '' : String(value));
+            };
+
+            const handleSheetSafetyFilterChange = (...args) => {
+                const value = getSemiChangeValue(...args);
+                setSheetSafetyFilter(value == null ? 'all' : String(value));
             };
 
             const getFilteredSheetList = () => sheetList
@@ -2973,14 +3026,14 @@
                                 placeholder="搜索名称、来源、用途、触发点或原因..."
                                 value={sheetSearch}
                                 disabled={sheetLoading}
-                                onChange={setSheetSearch}
+                                onChange={handleSheetSearchChange}
                             />
                             <div className="sheet-filter-row">
                                 <RadioGroup
                                     type="button"
                                     value={sheetSafetyFilter}
                                     disabled={sheetLoading}
-                                    onChange={(e) => setSheetSafetyFilter(e.target.value)}
+                                    onChange={handleSheetSafetyFilterChange}
                                 >
                                     {SHEET_SAFETY_FILTERS.map(filter => (
                                         <Radio key={filter.key} value={filter.key}>{filter.label}</Radio>
