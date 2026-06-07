@@ -22,8 +22,6 @@ env:
   ARTIFACT_PASSWORD: Sesame-AG
   RELEASE_TAG_RAW: ${{ github.ref_name }}
   TARGET_SOURCE_BRANCH: dev
-  TARGET_MODULE_REPO: Xposed-Modules-Repo/io.github.aoguai.sesameag
-  PUBLISH_TO_XPOSED_REPO: "false"
 
 concurrency:
   group: release-${{ github.ref_name }}
