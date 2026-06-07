@@ -5,7 +5,7 @@ on:
   push:
     tags:
       - "[0-9]*-*"
-
+  workflow_dispatch:
 env:
   CI: "true"
   JAVA_DISTRIBUTION: "oracle"
