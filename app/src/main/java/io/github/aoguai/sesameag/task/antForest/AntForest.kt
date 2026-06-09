@@ -1255,7 +1255,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             val friendId = wateringBubble.getString("userId")
             val id = wateringBubble.getLong("id")
             val uid = selfId ?: return
-            val response = AntForestRpcCall.collectEnergy("baohuhuizeng", uid, id)
+            val response = AntForestRpcCall.collectEnergy("jiaoshui", uid, id)
             val friendName = getAndCacheUserName(friendId)
             val displayName = friendName ?: UserMap.getMaskName(friendId) ?: friendId
             processCollectResult(
