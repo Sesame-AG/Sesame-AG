@@ -4,8 +4,8 @@ run-name: Release Build - ${{ github.ref_name }}
 on:
   push:
     tags:
-      - "*"                     # 任意 tag 触发，你也可以保留原来的 "[0-9]*-*"
-  workflow_dispatch:            # 支持手动触发
+      - "*"                     # 任意 tag 均可，建议格式如 v1.0.0
+  workflow_dispatch:
 
 env:
   CI: "true"
@@ -36,12 +36,12 @@ jobs:
       - name: Set Timezone to Asia/Shanghai
         run: sudo timedatectl set-timezone Asia/Shanghai
 
-      - name: Checkout (disable submodules to avoid .gitmodules error)
+      - name: Checkout (disable submodules)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: ${{ github.ref }}
-          submodules: false          # 关键：避免子模块配置错误
+          submodules: false          # 避免 .gitmodules 错误
 
       - name: Validate Project Toolchain Baseline
         shell: bash
