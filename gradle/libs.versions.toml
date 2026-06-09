@@ -2,13 +2,13 @@
 activity-compose = "1.12.1"
 
 android = "4.1.1.4"
-android-plugin = "9.0.1"
+android-plugin = "8.7.2"
 cmdAndroid = "0.8.2"
 constraintlayout = "2.2.1"
 
 fastjson = "2.0.60"
 hiddenapibypass = "6.1"
-kotlin = "2.2.10"
+kotlin = "2.0.21"
 kotlinxCoroutinesCore = "1.10.2"
 kotlinxSerializationJson = "1.9.0"
 lifecycleLivedataKtx = "2.10.0"

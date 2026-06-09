@@ -5,7 +5,7 @@ pluginManagement {
         google()
     }
     plugins {
-        kotlin("jvm") version "2.2.21"  // 使用与libs.versions.toml中kotlin-plugin相同的版本
+        kotlin("jvm") version "2.0.21"  // 使用与libs.versions.toml中kotlin-plugin相同的版本
     }
 }
 
@@ -14,8 +14,14 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        maven { url = uri("https://jitpack.io") }
-        maven("https://maven.aliyun.com/repository/spring")
+        maven {
+            url = uri("http://jitpack.io")
+            isAllowInsecureProtocol = true
+        }
+        maven {
+            url = uri("http://maven.aliyun.com/repository/spring")
+            isAllowInsecureProtocol = true
+        }
         mavenLocal {
             content {
                 includeGroup("io.github.libxposed")
@@ -27,7 +33,7 @@ dependencyResolutionManagement {
     }
 }
 plugins {
-    id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
+    //id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
 }
 include(":app")
 
