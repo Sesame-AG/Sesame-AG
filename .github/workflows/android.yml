@@ -129,11 +129,11 @@ jobs:
           git fetch origin "refs/heads/${TARGET_SOURCE_BRANCH}:refs/remotes/origin/${TARGET_SOURCE_BRANCH}" --force
 
           missing=()
+          [[ -n "${ANDROID_SIGNING_KEY}" ]] || missing+=("ANDROID_SIGNING_KEY")
+          [[ -n "${ANDROID_KEY_ALIAS}" ]] || missing+=("ANDROID_KEY_ALIAS")
+          [[ -n "${ANDROID_KEYSTORE_PASSWORD}" ]] || missing+=("ANDROID_KEYSTORE_PASSWORD")
+          [[ -n "${ANDROID_KEY_PASSWORD}" ]] || missing+=("ANDROID_KEY_PASSWORD")
           if [[ "${PUBLISH_TO_XPOSED_REPO}" == "true" ]]; then
-            [[ -n "${ANDROID_SIGNING_KEY}" ]] || missing+=("ANDROID_SIGNING_KEY")
-            [[ -n "${ANDROID_KEY_ALIAS}" ]] || missing+=("ANDROID_KEY_ALIAS")
-            [[ -n "${ANDROID_KEYSTORE_PASSWORD}" ]] || missing+=("ANDROID_KEYSTORE_PASSWORD")
-            [[ -n "${ANDROID_KEY_PASSWORD}" ]] || missing+=("ANDROID_KEY_PASSWORD")
             [[ -n "${TARGET_REPO_PAT}" ]] || missing+=("TARGET_REPO_PAT")
           fi
 
@@ -303,29 +303,7 @@ jobs:
             cp "${apk}" "${STAGING_DIR}/"
           done
 
-      - name: Package APK Artifact
-        id: package_artifact
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "${ASSET_DIR}"
-          artifact_path="${GITHUB_WORKSPACE}/${ASSET_DIR}/Sesame-AG-${RELEASE_TAG_RAW}.zip"
-          (
-            cd "${STAGING_DIR}"
-            zip -r -P "${ARTIFACT_PASSWORD}" "${artifact_path}" .
-          )
-          echo "artifact_path=${artifact_path}" >> "$GITHUB_OUTPUT"
-
-      - name: Upload APK Artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: Sesame-AG-${{ github.ref_name }}
-          archive: false
-          path: ${{ steps.package_artifact.outputs.artifact_path }}
-          if-no-files-found: error
-
       - name: Sign APKs
-        if: env.PUBLISH_TO_XPOSED_REPO == 'true'
         id: sign_apks
         uses: ilharp/sign-android-release@v2
         with:
@@ -336,36 +314,11 @@ jobs:
           keyPassword: ${{ secrets.ANDROID_KEY_PASSWORD }}
           buildToolsVersion: ${{ env.ANDROID_BUILD_TOOLS }}
 
-      - name: Prepare Release Assets
-        if: env.PUBLISH_TO_XPOSED_REPO == 'true'
-        id: prepare_assets
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "${ASSET_DIR}"
-          IFS=':' read -r -a files <<< "${{ steps.sign_apks.outputs.signedFiles }}"
-          copied=0
-          for file in "${files[@]}"; do
-            [[ -n "${file}" ]] || continue
-            cp "${file}" "${ASSET_DIR}/"
-            (
-              cd "${ASSET_DIR}"
-              sha256sum "$(basename "${file}")" > "CHECKSUMS-$(basename "${file}").sha256"
-            )
-            copied=$((copied + 1))
-          done
-          if [[ ${copied} -eq 0 ]]; then
-            echo "No signed APKs were produced" >&2
-            exit 1
-          fi
-          echo "asset_dir=${ASSET_DIR}" >> "$GITHUB_OUTPUT"
-
       - name: Generate Release Notes
-        if: env.PUBLISH_TO_XPOSED_REPO == 'true'
         id: release_notes
         shell: bash
         env:
-          GITHUB_API_TOKEN: ${{ secrets.TARGET_REPO_PAT }}
+          GITHUB_API_TOKEN: ${{ secrets.TARGET_REPO_PAT || github.token }}
           REPOSITORY: ${{ github.repository }}
           XPOSED_TAG: ${{ needs.preflight.outputs.xposed_tag }}
         run: |
@@ -565,6 +518,54 @@ jobs:
           } > "${body_path}"
 
           echo "body_path=${body_path}" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare Release Assets
+        id: prepare_assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${ASSET_DIR}"
+          IFS=':' read -r -a files <<< "${{ steps.sign_apks.outputs.signedFiles }}"
+          copied=0
+          for file in "${files[@]}"; do
+            [[ -n "${file}" ]] || continue
+            cp "${file}" "${ASSET_DIR}/"
+            (
+              cd "${ASSET_DIR}"
+              sha256sum "$(basename "${file}")" > "CHECKSUMS-$(basename "${file}").sha256"
+            )
+            copied=$((copied + 1))
+          done
+          if [[ ${copied} -eq 0 ]]; then
+            echo "No signed APKs were produced" >&2
+            exit 1
+          fi
+          if [[ "${PUBLISH_TO_XPOSED_REPO}" != "true" ]]; then
+            cp "${{ steps.release_notes.outputs.body_path }}" "${ASSET_DIR}/RELEASE_NOTES-${RELEASE_TAG_RAW}.md"
+          fi
+          echo "asset_dir=${ASSET_DIR}" >> "$GITHUB_OUTPUT"
+
+      - name: Package APK Artifact
+        if: env.PUBLISH_TO_XPOSED_REPO != 'true'
+        id: package_artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact_path="${RUNNER_TEMP}/Sesame-AG-${RELEASE_TAG_RAW}.zip"
+          (
+            cd "${ASSET_DIR}"
+            zip -r -P "${ARTIFACT_PASSWORD}" "${artifact_path}" .
+          )
+          echo "artifact_path=${artifact_path}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK Artifact
+        if: env.PUBLISH_TO_XPOSED_REPO != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: Sesame-AG-${{ github.ref_name }}
+          archive: false
+          path: ${{ steps.package_artifact.outputs.artifact_path }}
+          if-no-files-found: error
 
       - name: Sync Release to Target Repository
         if: env.PUBLISH_TO_XPOSED_REPO == 'true'
