@@ -170,6 +170,20 @@ object ApplicationHookConstants {
                 runningMainTask.stopTask()
             }
             stopAllTask()
+            // 离线/风控发生时实时通知用户（含滑块验证 auth_like），补齐“风控无感知”缺口。
+            if (BaseModel.errNotify.value == true) {
+                val title = when (reason) {
+                    "auth_like" -> "检测到风控/验证，已暂停"
+                    "rpc_error_threshold" -> "RPC 连续失败，已暂停"
+                    else -> "模块已进入离线，已暂停"
+                }
+                runCatching {
+                    io.github.aoguai.sesameag.util.Notify.sendAlert(
+                        title,
+                        detail?.takeIf { it.isNotBlank() } ?: "请打开支付宝完成验证或查看错误日志"
+                    )
+                }
+            }
         }
 
         AccountSessionCoordinator.refreshWorkflowState(
