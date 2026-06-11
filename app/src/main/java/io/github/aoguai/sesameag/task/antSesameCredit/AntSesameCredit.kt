@@ -39,6 +39,7 @@ import io.github.aoguai.sesameag.util.CoroutineUtils
 import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.ResChecker
+import io.github.aoguai.sesameag.util.RpcOfflineRisk
 import io.github.aoguai.sesameag.util.TaskBlacklist
 import io.github.aoguai.sesameag.util.TaskBlacklist.autoAddToBlacklist
 import io.github.aoguai.sesameag.util.maps.IdMapManager
@@ -649,7 +650,8 @@ class AntSesameCredit : ModelTask() {
                     detail = sesameCreditActionDetail(item, "join")
                 )
             }
-            if (!ResChecker.checkRes(TAG, responseObj)) {
+            if (!AntSesameCreditRpcCall.isRpcSuccess(joinRes)) {
+                RpcOfflineRisk.enterOfflineIfNeeded(TAG, responseObj)
                 val failureType = classifySesameTaskFailure(errorCode, resultView)
                 val continueCurrentRound = shouldContinueSesameCurrentRoundOnFailure(
                     failureType,
@@ -3029,9 +3031,13 @@ class AntSesameCredit : ModelTask() {
             var joinRes = AntSesameCreditRpcCall.joinSesameTask(taskTemplateId, primarySceneCode)
             var joinJo = JSONObject(joinRes)
             val joinResultCode = joinJo.optString("resultCode", joinJo.optString("errorCode", ""))
-            if (!ResChecker.checkRes(TAG, joinJo) &&
+            val noFallbackBusinessCodes = setOf(
+                "PROMISE_TODAY_FINISH_TIMES_LIMIT",
+                "PROMISE_HAS_PROCESSING_TEMPLATE"
+            )
+            if (!AntSesameCreditRpcCall.isRpcSuccess(joinRes) &&
                 !primarySceneCode.isNullOrBlank() &&
-                "PROMISE_TODAY_FINISH_TIMES_LIMIT" != joinResultCode
+                joinResultCode !in noFallbackBusinessCodes
             ) {
                 Log.sesame("$logPrefix[领取任务扩展参数失败，回退简版参数]#$taskTitle")
                 joinRes = AntSesameCreditRpcCall.joinSesameTask(taskTemplateId)
