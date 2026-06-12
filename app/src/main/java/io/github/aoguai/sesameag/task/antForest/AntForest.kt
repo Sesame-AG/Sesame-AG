@@ -4210,6 +4210,37 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             taskBaseInfo.optString("taskNode").equals("CHILD", true)
     }
 
+    private fun isGreenPracticeChildBlacklisted(taskType: String, taskTitle: String): Boolean {
+        return TaskBlacklist.isTaskInBlacklist(forestTaskBlacklistModule, taskType) ||
+            TaskBlacklist.isTaskInBlacklist(forestTaskBlacklistModule, taskTitle)
+    }
+
+    private fun hasActionableGreenPracticeChild(taskInfo: JSONObject): Boolean {
+        val taskBaseInfo = taskInfo.optJSONObject("taskBaseInfo") ?: return false
+        val parentSceneCode = taskBaseInfo.optString("sceneCode")
+        val childTaskTypeList = taskInfo.optJSONArray("childTaskTypeList") ?: return false
+        for (i in 0 until childTaskTypeList.length()) {
+            val childTask = childTaskTypeList.optJSONObject(i) ?: continue
+            val childBaseInfo = childTask.optJSONObject("taskBaseInfo") ?: continue
+            val childTaskType = childBaseInfo.optString("taskType")
+            val childSceneCode = childBaseInfo.optString("sceneCode").ifBlank { parentSceneCode }
+            val childStatus = childBaseInfo.optString("taskStatus")
+            if (childTaskType.isBlank() ||
+                childSceneCode.isBlank() ||
+                childStatus != TaskStatus.TODO.name ||
+                !isGreenPracticeChildTask(childBaseInfo, childTaskType)
+            ) {
+                continue
+            }
+
+            val childTaskTitle = getForestTaskTitle(childBaseInfo, childTaskType)
+            if (!isGreenPracticeChildBlacklisted(childTaskType, childTaskTitle)) {
+                return true
+            }
+        }
+        return false
+    }
+
     private fun handleGreenPracticeTask(taskInfo: JSONObject): Boolean {
         val taskBaseInfo = taskInfo.optJSONObject("taskBaseInfo") ?: return false
         val taskType = taskBaseInfo.optString("taskType")
@@ -4259,9 +4290,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             }
 
             val childTaskTitle = getForestTaskTitle(childBaseInfo, childTaskType)
-            if (TaskBlacklist.isTaskInBlacklist(forestTaskBlacklistModule, childTaskType) ||
-                TaskBlacklist.isTaskInBlacklist(forestTaskBlacklistModule, childTaskTitle)
-            ) {
+            if (isGreenPracticeChildBlacklisted(childTaskType, childTaskTitle)) {
                 continue
             }
 
@@ -4840,6 +4869,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
     ) : TaskFlowAdapter {
         override val moduleName: String = forestTaskBlacklistModule
         override val flowName: String = "森林任务"
+        private val greenPracticeManualOnlyLogged = mutableSetOf<String>()
 
         override fun query(): JSONObject {
             val responseArray = JSONArray()
@@ -4956,7 +4986,13 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 TaskStatus.TODO.name,
                 "WAIT_COMPLETE" -> when {
                     isGreenPracticeChildItem(item) -> TaskFlowPhase.BUSINESS_ACTION
-                    isGreenPracticeParentItem(item) -> TaskFlowPhase.READY_TO_COMPLETE
+                    isGreenPracticeParentItem(item) -> {
+                        if (isGreenPracticeParentWithoutAutoAction(item)) {
+                            TaskFlowPhase.UNSUPPORTED
+                        } else {
+                            TaskFlowPhase.READY_TO_COMPLETE
+                        }
+                    }
                     hasForestTaskChildren(item) -> TaskFlowPhase.BUSINESS_ACTION
                     else -> TaskFlowPhase.READY_TO_COMPLETE
                 }
@@ -4971,8 +5007,17 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         }
 
         override fun shouldSkip(item: TaskFlowItem): Boolean {
-            return Thread.currentThread().isInterrupted ||
-                isGreenPracticeChildItem(item)
+            if (Thread.currentThread().isInterrupted || isGreenPracticeChildItem(item)) {
+                return true
+            }
+            if (isGreenPracticeParentWithoutAutoAction(item)) {
+                val logKey = item.id.ifBlank { item.title }
+                if (greenPracticeManualOnlyLogged.add(logKey)) {
+                    Log.forest("森林任务[${item.title}] 绿色践行剩余任务需真实行为或已在黑名单，保留待手动完成后领奖")
+                }
+                return true
+            }
+            return false
         }
 
         override fun receive(item: TaskFlowItem): TaskFlowActionResult {
@@ -5073,6 +5118,19 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         private fun isGreenPracticeChildItem(item: TaskFlowItem): Boolean {
             val taskBaseInfo = item.raw?.optJSONObject("taskBaseInfo") ?: return false
             return isGreenPracticeChildTask(taskBaseInfo, item.type)
+        }
+
+        private fun isGreenPracticeParentWithoutAutoAction(item: TaskFlowItem): Boolean {
+            val raw = item.raw ?: return false
+            val taskBaseInfo = raw.optJSONObject("taskBaseInfo") ?: return false
+            if (!isGreenPracticeParentTask(taskBaseInfo, item.type)) {
+                return false
+            }
+            if (item.status != TaskStatus.TODO.name && item.status != "WAIT_COMPLETE") {
+                return false
+            }
+            val taskInfo = raw.optJSONObject("taskInfo") ?: return false
+            return !hasActionableGreenPracticeChild(taskInfo)
         }
     }
 

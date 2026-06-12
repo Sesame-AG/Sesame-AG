@@ -369,6 +369,8 @@ class ApplicationHook {
                             if (!init) {
                                 if (persistentAlarmLaunch) {
                                     handlePersistentAlarmLaunch("login_onResume:init")
+                                } else if (initHandler("onResume")) {
+                                    init = true
                                 }
                                 return@submitEntry
                             }
@@ -720,6 +722,42 @@ class ApplicationHook {
             return result
         }
 
+        /**
+         * 冷启动首次好友实时同步的后移延时(毫秒)。
+         * 用于规避支付宝社交库(AliAccountDaoOp)在冷启动期未加载完时 getAllFriends() 返回“非空但不完整”
+         * 快照被误判为可信全量。可按实测调大；现有“重新登录”延时为 20s 作参考。
+         */
+        private const val FRIEND_CENTER_FIRST_SYNC_DEFER_MS: Long = 30_000L
+
+        /**
+         * 后移“从支付宝侧获取好友实时快照”的时机：init 阶段不再同步拉取，改为延时后在后台执行，
+         * 让社交库就绪概率更高时再读取。手动刷新(force=true)走广播同步路径，不经此后移。
+         */
+        private fun scheduleDeferredFriendCenterSync(userId: String, reason: String) {
+            val safeUserId = userId.trim()
+            if (safeUserId.isEmpty()) return
+            UnifiedScheduler.scheduleLongDelay(
+                FRIEND_CENTER_FIRST_SYNC_DEFER_MS,
+                "好友中心首次同步"
+            ) {
+                // scheduleLongDelay 系统计时模式在 Main 执行，这里只做轻量派发，
+                // 把 hookUser(反射+DB读+JSON写)放到后台单线程入口执行，避免阻塞主线程。
+                ApplicationHookConstants.submitEntry("friend_center_first_sync") {
+                    // 后移期间账号可能切换 → 执行前重新校验当前账号，避免给旧账号误同步。
+                    val activeUserId = AccountSessionCoordinator.currentUserId() ?: currentUid
+                    val liveUserId = runCatching { classLoader?.let { HookUtil.getUserId(it) } }.getOrNull()
+                    if (safeUserId != activeUserId || (liveUserId != null && liveUserId != safeUserId)) {
+                        record(
+                            TAG,
+                            "好友中心首次同步已取消：账号已切换(expect=$safeUserId, active=$activeUserId, live=$liveUserId)"
+                        )
+                        return@submitEntry
+                    }
+                    refreshFriendsFromAlipayIfNeeded(safeUserId, force = false, source = "$reason:deferred")
+                }
+            }
+        }
+
         @Volatile
         var rpcBridge: RpcBridge? = null
         private val rpcBridgeLock = Any()
@@ -978,7 +1016,14 @@ class ApplicationHook {
                 pendingInitReason = null
                 UserMap.setCurrentUserId(userId)
                 load(userId)
-                refreshFriendsFromAlipayIfNeeded(userId, force = false, source = reason)
+                // 冷启动期支付宝社交库(AliAccountDaoOp)可能尚未加载完，过早 getAllFriends() 会拿到
+                // “非空但不完整”的好友快照，被 mergeFromUserMap(allowPruneMissing=true) 误剪为 REMOVED 并持久化。
+                // 这里先同步加载本地已持久化的好友身份(上次完整快照)，供本会话首轮任务使用；
+                // 真正从支付宝侧获取实时快照后移到社交库就绪概率更高的时机再做。手动刷新(force=true)不走此路径，仍立即执行。
+                runCatching { UserMap.load(userId) }.onFailure {
+                    printStackTrace(TAG, "初始化加载本地好友快照失败", it)
+                }
+                scheduleDeferredFriendCenterSync(userId, reason)
                 record(TAG, "Sesame-AG 开始初始化...")
 
                 Config.load(userId)

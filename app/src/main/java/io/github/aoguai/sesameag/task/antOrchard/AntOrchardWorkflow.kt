@@ -39,7 +39,6 @@ internal suspend fun AntOrchard.runOrchardRewardWorkflow(indexJson: JSONObject, 
         syncTaobaoLimitBalloon()
         doOrchardDailyTask(userId)
         receiveLeyuanDailyTaskAwards()
-        handleYebExpGoldTasks()
     }
 
     receiveMoneyTreeReward()

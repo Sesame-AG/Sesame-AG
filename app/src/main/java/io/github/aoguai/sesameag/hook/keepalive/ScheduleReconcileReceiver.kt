@@ -3,6 +3,7 @@ package io.github.aoguai.sesameag.hook.keepalive
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.util.Log
 
 class ScheduleReconcileReceiver : BroadcastReceiver() {
@@ -31,18 +32,24 @@ class ScheduleReconcileReceiver : BroadcastReceiver() {
             Log.record(TAG, "收到锁屏启动广播，等待用户解锁后的 BOOT_COMPLETED 再恢复持久调度")
             return
         }
-        try {
-            Log.record(TAG, "收到系统恢复广播: $action")
-            val result = PersistentScheduleRegistry.reconcile(
-                ctx,
-                mode = PersistentReconcileMode.RESCHEDULE_ONLY
-            )
-            Log.record(
-                TAG,
-                "持久调度重排完成 due=${result.dueSchedules.size} rescheduled=${result.rescheduledCount} expired=${result.expiredCount}"
-            )
-        } catch (t: Throwable) {
-            Log.printStackTrace(TAG, "系统恢复广播处理失败", t)
+        // reconcile 含整表磁盘读写，onReceive 在主线程，必须转后台执行避免阻塞。
+        val pendingResult = goAsync()
+        ApplicationHookConstants.submitEntry("persistent_reconcile") {
+            try {
+                Log.record(TAG, "收到系统恢复广播: $action")
+                val result = PersistentScheduleRegistry.reconcile(
+                    ctx,
+                    mode = PersistentReconcileMode.RESCHEDULE_ONLY
+                )
+                Log.record(
+                    TAG,
+                    "持久调度重排完成 due=${result.dueSchedules.size} rescheduled=${result.rescheduledCount} expired=${result.expiredCount}"
+                )
+            } catch (t: Throwable) {
+                Log.printStackTrace(TAG, "系统恢复广播处理失败", t)
+            } finally {
+                runCatching { pendingResult.finish() }
+            }
         }
     }
 }

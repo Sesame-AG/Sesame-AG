@@ -3186,16 +3186,20 @@ class AntFarm : ModelTask() {
             }
         }
 
+        override fun shouldSkipByTodayState(item: TaskFlowItem): Boolean {
+            if (Status.hasFlagToday(StatusFlags.FLAG_FARM_TASK_LIMIT_PREFIX + item.type)) {
+                logFarmTaskSkipOnce(item, "今日已达该任务上限，跳过")
+                return true
+            }
+            return false
+        }
+
         override fun shouldSkip(item: TaskFlowItem): Boolean {
             if (Thread.currentThread().isInterrupted) {
                 return true
             }
             if (item.type == "tab3_gyg" && enableChouchoule?.value != true) {
                 logFarmTaskSkipOnce(item, "抽抽乐未开启，跳过饲料任务收敛检查")
-                return true
-            }
-            if (Status.hasFlagToday(StatusFlags.FLAG_FARM_TASK_LIMIT_PREFIX + item.type)) {
-                logFarmTaskSkipOnce(item, "今日已达该任务上限，跳过")
                 return true
             }
             if (mapPhase(item) == TaskFlowPhase.READY_TO_COMPLETE &&

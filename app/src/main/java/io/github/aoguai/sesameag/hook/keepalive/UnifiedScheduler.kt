@@ -16,7 +16,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -186,12 +185,11 @@ object UnifiedScheduler {
             try {
                 delay(finalDelay)
                 if (isActive) {
-                    withContext(Dispatchers.Main) {
-                        try {
-                            block()
-                        } catch (e: Exception) {
-                            Log.error(TAG, "❌ 任务执行异常 [$taskName]: ${e.message}")
-                        }
+                    // 调度回调不触碰 UI，保持在后台调度执行，避免占用宿主主线程造成 ANR。
+                    try {
+                        block()
+                    } catch (e: Exception) {
+                        Log.error(TAG, "❌ 任务执行异常 [$taskName]: ${e.message}")
                     }
                 }
             } catch (e: CancellationException) {

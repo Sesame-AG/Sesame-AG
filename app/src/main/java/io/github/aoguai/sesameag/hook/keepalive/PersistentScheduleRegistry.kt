@@ -18,6 +18,11 @@ object PersistentScheduleRegistry {
     @Volatile
     private var storageReady = false
 
+    // 内存缓存：注册表的真实来源。读路径(get/list/markFired 等)只读缓存副本，
+    // 避免每次从磁盘整表解析；写路径写穿透到磁盘，保留进程被杀后的持久恢复能力。
+    private val cacheLock = Any()
+    private var cache: MutableList<PersistentSchedule>? = null
+
     data class ReconcileResult(
         val dueSchedules: List<PersistentSchedule>,
         val rescheduledCount: Int,
@@ -285,17 +290,33 @@ object PersistentScheduleRegistry {
 
     private fun loadMutable(): MutableList<PersistentSchedule> {
         if (!ensureStorage()) return mutableListOf()
-        return try {
+        // 命中缓存直接返回副本，避免每次从磁盘整表解析。
+        synchronized(cacheLock) {
+            cache?.let { return it.map { s -> s }.toMutableList() }
+        }
+        // 缓存缺失：在锁外读取 DataStore，避免与 DataStore 文件监听回调(invalidateCache)形成锁顺序死锁。
+        val loaded = try {
             DataStore.getOrCreate(STORE_KEY, scheduleListType)
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "读取持久调度列表失败", t)
             mutableListOf()
         }
+        synchronized(cacheLock) {
+            if (cache == null) {
+                cache = loaded.toMutableList()
+            }
+        }
+        return loaded.map { it }.toMutableList()
     }
 
     private fun save(schedules: List<PersistentSchedule>) {
         if (!ensureStorage()) return
-        DataStore.put(STORE_KEY, schedules)
+        val snapshot = schedules.toMutableList()
+        // 先更新缓存，再在锁外写穿透到 DataStore（持久化保留进程被杀后的恢复能力）。
+        synchronized(cacheLock) {
+            cache = snapshot
+        }
+        DataStore.put(STORE_KEY, snapshot)
     }
 
     private fun ensureStorage(): Boolean {
@@ -309,8 +330,19 @@ object PersistentScheduleRegistry {
                 java.io.File(Files.CONFIG_DIR, "DataStore.json").exists()
             if (initialized) {
                 storageReady = true
+                // 跨进程：当底层 DataStore 文件被其它进程改动并重载时，失效本地缓存，
+                // 下次读取重新从 DataStore 取最新数据，避免缓存陈旧导致调度丢失/误取消。
+                runCatching {
+                    DataStore.setOnChangeListener { invalidateCache() }
+                }
             }
             initialized
+        }
+    }
+
+    private fun invalidateCache() {
+        synchronized(cacheLock) {
+            cache = null
         }
     }
 }

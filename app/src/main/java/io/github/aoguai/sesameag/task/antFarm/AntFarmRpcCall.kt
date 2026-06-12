@@ -1493,8 +1493,22 @@ object AntFarmRpcCall {
      */
     @JvmStatic
     fun getItemList(activityId: String?, pageSize: Int, startIndex: Int): String {
-        val data = "[{\"activityId\":\"$activityId\",\"pageSize\":$pageSize,\"requestType\":\"RPC\",\"sceneCode\":\"ANTFARM_IP_DRAW_MALL\",\"source\":\"antfarm.villa\",\"startIndex\":$startIndex}]"
+        val data = "[{\"activityId\":\"$activityId\",\"pageSize\":$pageSize,\"requestType\":\"RPC\",\"sceneCode\":\"ANTFARM_IP_DRAW_MALL\",\"source\":\"antfarm_villa\",\"startIndex\":$startIndex}]"
         return requestString("com.alipay.antiep.itemList", data)
+    }
+
+    /**
+     * 查询物品详情（IP抽抽乐）
+     */
+    @JvmStatic
+    fun getIpDrawMallItemDetail(spuId: String?): String {
+        val args = JSONObject().apply {
+            put("requestType", "RPC")
+            put("sceneCode", "ANTFARM_IP_DRAW_MALL")
+            put("source", "antfarm_villa")
+            put("spuId", spuId ?: "")
+        }
+        return requestString("com.alipay.antiep.itemDetail", "[$args]")
     }
 
     /**
@@ -1549,6 +1563,7 @@ object AntFarmRpcCall {
             context.put("activityId", activityId)
 
             requestDataItem.put("context", context)
+            requestDataItem.put("buyCount", 1)
             requestDataItem.put("requestId", requestId)
             requestDataItem.put("requestType", "RPC")
             requestDataItem.put("sceneCode", sceneCode)

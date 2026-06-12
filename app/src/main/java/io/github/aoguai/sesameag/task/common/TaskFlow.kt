@@ -153,6 +153,14 @@ interface TaskFlowAdapter {
 
     fun mapPhase(item: TaskFlowItem): TaskFlowPhase
 
+    fun isFlowHandledToday(): Boolean = false
+
+    fun onFlowHandledToday() {
+        logInfo("$flowName[今日完成标记已存在，跳过任务流]")
+    }
+
+    fun shouldSkipByTodayState(item: TaskFlowItem): Boolean = false
+
     fun shouldSkip(item: TaskFlowItem): Boolean = false
 
     fun receive(item: TaskFlowItem): TaskFlowActionResult = unsupportedAction(item, TaskFlowAction.RECEIVE)
@@ -167,6 +175,7 @@ interface TaskFlowAdapter {
         var visibleTaskCount = 0
         var pendingTransitions = 0
         for (item in items) {
+            if (shouldSkipByTodayState(item)) continue
             val phase = mapPhase(item)
             if ((phase != TaskFlowPhase.REWARD_READY && isBlacklisted(item)) || shouldSkip(item)) continue
             visibleTaskCount++
@@ -252,6 +261,18 @@ class TaskFlowEngine(
         var noProgressSuccessAny = false
 
         while (round <= roundLimit) {
+            if (adapter.isFlowHandledToday()) {
+                adapter.onFlowHandledToday()
+                return buildRunResult(
+                    completed = true,
+                    progressed = progressedAny,
+                    stopped = false,
+                    rounds = 0,
+                    actionAttempted = actionAttemptedAny,
+                    noProgressSuccess = noProgressSuccessAny
+                )
+            }
+
             if (ApplicationHookConstants.isOffline()) {
                 adapter.logInfo("${adapter.flowName}[检测到离线模式，中断任务流]")
                 return buildRunResult(
@@ -327,6 +348,9 @@ class TaskFlowEngine(
                 }
 
                 val item = candidate.item
+                if (adapter.shouldSkipByTodayState(item)) {
+                    continue
+                }
                 if (shouldSkipBlacklisted(item)) {
                     continue
                 }
@@ -387,6 +411,7 @@ class TaskFlowEngine(
                 failedActionKeys.add(actionKey)
                 val shouldStopAfterFailure =
                     result.stopCurrentRound ||
+                        decision == TaskFlowDecision.STOP_TODAY_OR_CURRENT_CHAIN ||
                         (decision == TaskFlowDecision.RETRY_LATER && !result.continueCurrentRoundOnFailure)
                 roundActions.add(
                     TaskFlowRoundAction(
@@ -481,6 +506,9 @@ class TaskFlowEngine(
         var completedTasks = 0
         var availableTasks = 0
         for (item in items) {
+            if (adapter.shouldSkipByTodayState(item)) {
+                continue
+            }
             if (shouldSkipBlacklisted(item)) {
                 continue
             }
@@ -503,6 +531,7 @@ class TaskFlowEngine(
     private fun buildActionCandidates(items: List<TaskFlowItem>): List<TaskFlowActionCandidate> {
         val candidates = mutableListOf<TaskFlowActionCandidate>()
         for ((index, item) in items.withIndex()) {
+            if (adapter.shouldSkipByTodayState(item)) continue
             if (shouldSkipBlacklisted(item)) continue
             if (adapter.shouldSkip(item)) continue
 

@@ -4,7 +4,6 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
-import io.github.aoguai.sesameag.model.BaseModel.Companion.showToast
 import io.github.aoguai.sesameag.model.BaseModel.Companion.toastPerfix
 
 object ToastUtil {
@@ -28,9 +27,15 @@ object ToastUtil {
     }
 
     fun showToast(context: Context?, message: String?) {
-        // 1. 修复逻辑错误：处理前缀拼接
+        showToastInternal(context, message, "showToast")
+    }
+
+    fun showUiToast(context: Context?, message: String?) {
+        showToastInternal(context, message, "showUiToast")
+    }
+
+    private fun showToastInternal(context: Context?, message: String?, source: String) {
         var finalMessage = message
-        val shouldShow = showToast.value == true
         val prefix = toastPerfix.value
 
       //  Log.record(TAG, "prefix::$prefix")
@@ -40,10 +45,24 @@ object ToastUtil {
             finalMessage = "$prefix:$message"
         }
 
-        Log.record(TAG, "showToast::$shouldShow::$finalMessage")
+        Log.record(TAG, "$source::$finalMessage")
 
-        if (shouldShow) {
-            Toast.makeText(context, finalMessage, Toast.LENGTH_SHORT).show()
+        val targetContext = context?.applicationContext
+        if (targetContext == null) {
+            Log.error(TAG, "$source context is null, cannot show toast $finalMessage")
+            return
+        }
+
+        try {
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+                Toast.makeText(targetContext, finalMessage, Toast.LENGTH_SHORT).show()
+            } else {
+                Handler(Looper.getMainLooper()).post {
+                    Toast.makeText(targetContext, finalMessage, Toast.LENGTH_SHORT).show()
+                }
+            }
+        } catch (t: Throwable) {
+            Log.printStackTrace(TAG, "$source err:", t)
         }
     }
 

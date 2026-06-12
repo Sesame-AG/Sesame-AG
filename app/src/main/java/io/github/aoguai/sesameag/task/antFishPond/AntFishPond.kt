@@ -290,6 +290,10 @@ class AntFishPond : ModelTask() {
         override val moduleName: String = TASK_BLACKLIST_MODULE
         override val flowName: String = "福气鱼池任务"
 
+        override fun isFlowHandledToday(): Boolean {
+            return Status.hasFlagToday(StatusFlags.FLAG_ANTFISHPOND_TASKS_DONE)
+        }
+
         override fun query(): JSONObject {
             val response = AntFishPondRpcCall.listTask()
             if (response.isBlank()) {

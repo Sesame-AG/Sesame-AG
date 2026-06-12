@@ -131,10 +131,16 @@ class ChouChouLe {
         val skuStatus: String,
         val skuStatusList: JSONArray?,
         val skuExtendInfo: String,
+        val userTotalLeftAmount: Int,
         val isIp: Boolean,
         val isNewEgg: Boolean,
         val safety: ExchangeSafety,
         val safetyReason: String
+    )
+
+    private data class IpDrawMallItemDetail(
+        val item: IpDrawMallItem,
+        val balanceCent: Int?
     )
 
     fun run(antFarm: AntFarm) {
@@ -979,7 +985,7 @@ class ChouChouLe {
                 val blockReason = blockedIpDrawMallItemReason(currentItem)
                 if (blockReason.isNotBlank()) {
                     Log.farm("[自动兑换]: [${currentItem.name}] 跳过：$blockReason")
-                    if (!isCustom && isIpDrawNoEnoughPointStatus(currentItem)) {
+                    if (!isCustom && shouldStopDefaultExchangeForNoEnoughPoint(currentItem)) {
                         return
                     }
                     continue
@@ -990,6 +996,29 @@ class ChouChouLe {
                 }
                 if (currentItem.spuId.isBlank() || currentItem.skuId.isBlank()) {
                     Log.farm("[自动兑换]: [${currentItem.name}] 跳过：缺少 spuId/skuId")
+                    continue
+                }
+                val detail = queryIpDrawMallItemDetail(currentItem)
+                if (detail == null) {
+                    Log.farm("[自动兑换]: [${currentItem.name}] 跳过：缺少详情复核闭环")
+                    continue
+                }
+                currentItem = detail.item
+                detail.balanceCent?.let { snapshot = snapshot.copy(balanceCent = it) }
+                val detailBlockReason = blockedIpDrawMallItemReason(currentItem)
+                if (detailBlockReason.isNotBlank()) {
+                    Log.farm("[自动兑换]: [${currentItem.name}] 跳过：$detailBlockReason")
+                    if (!isCustom && shouldStopDefaultExchangeForNoEnoughPoint(currentItem)) {
+                        return
+                    }
+                    continue
+                }
+                if (currentItem.safety != ExchangeSafety.AUTO) {
+                    Log.farm("[自动兑换]: [${currentItem.name}] 跳过：${currentItem.safetyReason.ifBlank { currentItem.safety.name }}")
+                    continue
+                }
+                if (currentItem.userTotalLeftAmount == 0) {
+                    Log.farm("[自动兑换]: [${currentItem.name}] 跳过：已达兑换限制")
                     continue
                 }
                 if (currentItem.priceCent > 0 && snapshot.balanceCent < currentItem.priceCent) {
@@ -1043,13 +1072,14 @@ class ChouChouLe {
                     }
 
                     GlobalThreadPools.sleepCompat(800L)
+                    val beforeExchangeItem = currentItem
                     val refreshedSnapshot = queryIpDrawMallSnapshot(IpDrawActivity(activityId, endTime))
                     if (refreshedSnapshot == null) {
                         Log.farm("[自动兑换]: 已调用兑换但未回查确认 [${currentItem.name}] | ${formatIpDrawRpcResult(exchangeJo)}")
                         break
                     }
                     val refreshedItem = refreshedSnapshot.items.firstOrNull { it.skuId == currentItem.skuId }
-                    if (!isIpDrawExchangeConfirmed(snapshot, refreshedSnapshot, refreshedItem)) {
+                    if (!isIpDrawExchangeConfirmed(snapshot, refreshedSnapshot, beforeExchangeItem, refreshedItem)) {
                         val statusText = refreshedItem?.let { formatIpDrawStatus(it).ifBlank { it.itemStatus.ifBlank { it.skuStatus } } }.orEmpty()
                         Log.farm("[自动兑换]: 已调用兑换但未回查确认 [${currentItem.name}] | 回查状态: ${statusText.ifBlank { "UNKNOWN" }}")
                         snapshot = refreshedSnapshot
@@ -1186,6 +1216,40 @@ class ChouChouLe {
         return IpDrawMallSnapshot(activity.activityId, activity.endTime, balanceCent, items)
     }
 
+    private fun queryIpDrawMallItemDetail(item: IpDrawMallItem): IpDrawMallItemDetail? {
+        if (item.spuId.isBlank()) {
+            return null
+        }
+        val jo = runCatching {
+            JSONObject(AntFarmRpcCall.getIpDrawMallItemDetail(item.spuId))
+        }.onFailure {
+            Log.printStackTrace(TAG, "queryIpDrawMallItemDetail err:", it)
+        }.getOrNull() ?: return null
+
+        if (!isIpDrawExchangeSuccess(jo)) {
+            Log.farm("IP抽抽乐商店💸[获取详情失败: ${item.name} | ${formatIpDrawRpcResult(jo)}]")
+            return null
+        }
+
+        val detailItemJo = jo.optJSONObject("spuItemInfoVO")
+        if (detailItemJo == null) {
+            Log.farm("IP抽抽乐商店💸[获取详情失败: ${item.name} | 缺少商品详情]")
+            return null
+        }
+
+        val detailItem = parseIpDrawMallItems(detailItemJo).firstOrNull { it.skuId == item.skuId }
+        if (detailItem == null) {
+            Log.farm("IP抽抽乐商店💸[获取详情失败: ${item.name} | 未匹配 skuId=${item.skuId}]")
+            return null
+        }
+
+        val balanceCent = jo.optJSONObject("mallAccountInfoVO")
+            ?.optJSONObject("holdingCount")
+            ?.takeIf { it.has("cent") }
+            ?.optInt("cent")
+        return IpDrawMallItemDetail(detailItem, balanceCent)
+    }
+
     private fun isIpDrawActivityActive(activity: IpDrawActivity): Boolean {
         if (activity.endTime > 0 && System.currentTimeMillis() > activity.endTime) {
             Log.farm("IP抽抽乐商店💸[活动已结束: ${activity.activityId}]")
@@ -1217,8 +1281,13 @@ class ChouChouLe {
             val limitCount = parseIpDrawLimitCount(skuExtendInfo)
             val skuStatus = sku.optString("itemStatus").trim().ifBlank { sku.optString("skuStatus").trim() }
             val skuStatusList = sku.optJSONArray("itemStatusList") ?: sku.optJSONArray("skuStatusList")
+            val userTotalLeftAmount = if (sku.has("userTotalLeftAmount")) sku.optInt("userTotalLeftAmount", -1) else -1
             val statusText = formatIpDrawStatus(itemStatus, itemStatusList, skuStatus, skuStatusList)
-            val blockedReason = blockedIpDrawMallItemReason(itemStatus, itemStatusList, skuStatus, skuStatusList)
+            val blockedReason = if (userTotalLeftAmount == 0) {
+                "已达兑换限制"
+            } else {
+                blockedIpDrawMallItemReason(itemStatus, itemStatusList, skuStatus, skuStatusList)
+            }
             val safetyDecision = if (blockedReason.isNotBlank()) {
                 ExchangeSafety.UNAVAILABLE to blockedReason
             } else {
@@ -1239,6 +1308,7 @@ class ChouChouLe {
                     skuStatus = skuStatus,
                     skuStatusList = skuStatusList,
                     skuExtendInfo = skuExtendInfo,
+                    userTotalLeftAmount = userTotalLeftAmount,
                     isIp = skuExtendInfo.contains("\"controlTag\":\"IP限定装扮\"") || skuExtendInfo.contains("IP限定装扮"),
                     isNewEgg = displayName.contains("新蛋卡"),
                     safety = safetyDecision.first,
@@ -1336,7 +1406,7 @@ class ChouChouLe {
             if (item.safety != ExchangeSafety.AUTO) continue
             val blockReason = blockedIpDrawMallItemReason(item)
             if (blockReason.isNotBlank()) {
-                if (isIpDrawNoEnoughPointStatus(item)) {
+                if (shouldStopDefaultExchangeForNoEnoughPoint(item)) {
                     Log.farm("[自动兑换]: 最高价值项 [${item.name}] 碎片不足，等攒够再换，终止本次兑换")
                     return emptyList()
                 }
@@ -1379,9 +1449,16 @@ class ChouChouLe {
     private fun isIpDrawExchangeConfirmed(
         beforeSnapshot: IpDrawMallSnapshot,
         afterSnapshot: IpDrawMallSnapshot,
+        beforeItem: IpDrawMallItem,
         refreshedItem: IpDrawMallItem?
     ): Boolean {
         if (afterSnapshot.balanceCent < beforeSnapshot.balanceCent) {
+            return true
+        }
+        if (refreshedItem != null &&
+            beforeItem.userTotalLeftAmount > 0 &&
+            refreshedItem.userTotalLeftAmount in 0 until beforeItem.userTotalLeftAmount
+        ) {
             return true
         }
         if (refreshedItem == null) {
@@ -1404,7 +1481,14 @@ class ChouChouLe {
         return statuses.any { it == "NO_ENOUGH_POINT" }
     }
 
+    private fun shouldStopDefaultExchangeForNoEnoughPoint(item: IpDrawMallItem): Boolean {
+        return isIpDrawNoEnoughPointStatus(item) && !isIpDrawTerminalExchangeStatus(item)
+    }
+
     private fun blockedIpDrawMallItemReason(item: IpDrawMallItem): String {
+        if (item.userTotalLeftAmount == 0) {
+            return "已达兑换限制"
+        }
         return blockedIpDrawMallItemReason(item.itemStatus, item.itemStatusList, item.skuStatus, item.skuStatusList)
     }
 

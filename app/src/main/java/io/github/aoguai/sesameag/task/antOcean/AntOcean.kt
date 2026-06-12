@@ -1324,6 +1324,10 @@ class AntOcean : ModelTask() {
         override val moduleName: String = TASK_BLACKLIST_MODULE
         override val flowName: String = "神奇海洋任务"
 
+        override fun isFlowHandledToday(): Boolean {
+            return Status.hasFlagToday(StatusFlags.FLAG_ANTOCEAN_TASKS_DONE) && !oceanTasksDoneInvalidatedThisRun
+        }
+
         override fun query(): JSONObject {
             val response = AntOceanRpcCall.queryTaskList()
             return JsonUtil.parseJSONObjectOrNull(response) ?: JSONObject()
@@ -1398,7 +1402,7 @@ class AntOcean : ModelTask() {
             }
         }
 
-        override fun shouldSkip(item: TaskFlowItem): Boolean {
+        override fun shouldSkipByTodayState(item: TaskFlowItem): Boolean {
             if (Status.hasFlagToday(StatusFlags.FLAG_ANTOCEAN_HELP_CLEAN_ALL_FRIEND_LIMIT) &&
                 isHelpFriendCleanTask(item.type, item.title) &&
                 !isRewardReadyStatus(item.status) &&

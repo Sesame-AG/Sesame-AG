@@ -192,7 +192,7 @@ class LogViewerViewModel(application: Application) : AndroidViewModel(applicatio
             Log.error(tag, errorMsg)
             withContext(Dispatchers.Main) {
                 _uiState.update { it.copy(isLoading = false) }
-                ToastUtil.showToast(getApplication(), errorMsg)
+                ToastUtil.showUiToast(getApplication(), errorMsg)
             }
         }
     }
@@ -380,17 +380,17 @@ class LogViewerViewModel(application: Application) : AndroidViewModel(applicatio
             try {
                 if (Files.clearFile(File(path))) {
                     withContext(Dispatchers.Main) {
-                        ToastUtil.showToast(context, "文件已清空")
+                        ToastUtil.showUiToast(context, "文件已清空")
                     }
                 } else {
                     withContext(Dispatchers.Main) {
-                        ToastUtil.showToast(context, "清空失败")
+                        ToastUtil.showUiToast(context, "清空失败")
                     }
                 }
             } catch (e: Exception) {
                 Log.printStackTrace(tag, "Clear error", e)
                 withContext(Dispatchers.Main) {
-                    ToastUtil.showToast(context, "清空异常: ${e.message}")
+                    ToastUtil.showUiToast(context, "清空异常: ${e.message}")
                 }
             }
         }
@@ -404,7 +404,7 @@ class LogViewerViewModel(application: Application) : AndroidViewModel(applicatio
             try {
                 val sourceFile = File(path)
                 if (!sourceFile.exists()) {
-                    ToastUtil.showToast(context, "源文件不存在")
+                    ToastUtil.showUiToast(context, "源文件不存在")
                     return@launch
                 }
                 val exportFile = withContext(Dispatchers.IO) {
@@ -413,15 +413,15 @@ class LogViewerViewModel(application: Application) : AndroidViewModel(applicatio
 
                 if (exportFile != null && exportFile.exists()) {
                     val msg = "${context.getString(R.string.file_exported)} ${exportFile.path}"
-                    ToastUtil.showToast(context, msg)
+                    ToastUtil.showUiToast(context, msg)
                 } else {
-                    ToastUtil.showToast(context, "导出失败")
+                    ToastUtil.showUiToast(context, "导出失败")
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.printStackTrace(tag, "Export error", e)
-                ToastUtil.showToast(context, "导出异常: ${e.message}")
+                ToastUtil.showUiToast(context, "导出异常: ${e.message}")
             } finally {
                 _uiState.update { it.copy(isExporting = false) }
             }

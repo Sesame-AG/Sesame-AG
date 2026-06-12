@@ -45,8 +45,9 @@ object Notify {
 
     private var lastUpdateTime: Long = 0
     private var nextExecTimeCache: Long = 0
-    private var titleText: String = ""
-    private var contentText: String = ""
+    // 三个来源字段互不覆盖，由 render() 统一合成标题与内容，避免标题被相互抢占。
+    private var statusText: String = "模块运行中"
+    private var lastExecText: String = ""
 
     private fun checkPermission(context: Context): Boolean {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -100,10 +101,10 @@ object Notify {
             notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             createChannels(notificationManager!!)
 
-            titleText = "模块启动中"
-            contentText = "暂无执行记录"
+            statusText = "模块启动中"
+            lastExecText = ""
+            nextExecTimeCache = 0
             lastUpdateTime = System.currentTimeMillis()
-
             val intent = Intent(Intent.ACTION_VIEW).apply {
                 data = "alipays://platformapi/startapp?appId=".toUri()
             }
@@ -118,8 +119,8 @@ object Notify {
                 .setCategory(NotificationCompat.CATEGORY_STATUS)
                 .setSmallIcon(android.R.drawable.sym_def_app_icon)
                 .setLargeIcon(BitmapFactory.decodeResource(context.resources, android.R.drawable.sym_def_app_icon))
-                .setContentTitle(titleText)
-                .setContentText(contentText)
+                .setContentTitle(statusText)
+                .setContentText("暂无执行记录")
                 .setSubText(SUB_TEXT)
                 .setAutoCancel(false)
                 .setContentIntent(pendingIntent)
@@ -129,8 +130,8 @@ object Notify {
                 runningBuilder!!.setOngoing(true)
             }
 
-            NotificationManagerCompat.from(context).notify(RUNNING_NOTIFICATION_ID, runningBuilder!!.build())
             isNotificationStarted = true
+            render(force = true)
         } catch (e: Exception) {
             Log.printStackTrace(e)
         }
@@ -158,13 +159,8 @@ object Notify {
             return
         }
         try {
-            val pauseTime = RuntimeInfo.getInstance().getLong(RuntimeInfo.RuntimeInfoKey.ForestPauseTime)
-            titleText = if (pauseTime > System.currentTimeMillis()) {
-                "异常暂停，恢复时间 ${TimeUtil.getCommonDate(pauseTime)}"
-            } else {
-                status?.takeIf { it.isNotBlank() } ?: "模块运行中"
-            }
-            sendText(force = true)
+            statusText = status?.takeIf { it.isNotBlank() } ?: "模块运行中"
+            render(force = true)
         } catch (e: Exception) {
             Log.printStackTrace(e)
         }
@@ -179,12 +175,7 @@ object Notify {
             if (nextExecTime != -1L) {
                 nextExecTimeCache = nextExecTime
             }
-            titleText = if (nextExecTimeCache > 0) {
-                "下次执行 ${TimeUtil.getTimeStr(nextExecTimeCache)}"
-            } else {
-                "模块运行中"
-            }
-            sendText(force = false)
+            render(force = false)
         } catch (e: Exception) {
             Log.printStackTrace(e)
         }
@@ -197,20 +188,23 @@ object Notify {
         }
         try {
             val body = content?.trim().orEmpty()
-            contentText = if (body.isBlank()) {
+            lastExecText = if (body.isBlank()) {
                 "上次执行 ${TimeUtil.getTimeStr(System.currentTimeMillis())}"
             } else {
                 "上次执行 ${TimeUtil.getTimeStr(System.currentTimeMillis())}\n$body"
             }
-            sendText(force = false)
+            render(force = false)
         } catch (e: Exception) {
             Log.printStackTrace(e)
         }
     }
 
+    /**
+     * 统一合成常驻通知：标题反映当前运行/暂停状态，内容用 BigTextStyle 同时展示
+     * “下次执行”和“上次执行”，三个来源字段互不覆盖。
+     */
     @JvmStatic
-    private fun sendText(force: Boolean) {
-        val ctx = context ?: return
+    private fun render(force: Boolean) {
         val builder = runningBuilder ?: return
         val manager = notificationManager ?: return
         if (!isNotificationStarted) {
@@ -221,10 +215,27 @@ object Notify {
                 return
             }
             lastUpdateTime = System.currentTimeMillis()
-            builder.setContentTitle(titleText)
-            if (contentText.isNotEmpty()) {
-                builder.setContentText(contentText)
+
+            val pauseTime = RuntimeInfo.getInstance().getLong(RuntimeInfo.RuntimeInfoKey.ForestPauseTime)
+            val title = if (pauseTime > System.currentTimeMillis()) {
+                "异常暂停，恢复时间 ${TimeUtil.getCommonDate(pauseTime)}"
+            } else {
+                statusText.ifBlank { "模块运行中" }
             }
+
+            val lines = buildList {
+                if (nextExecTimeCache > 0) {
+                    add("下次执行 ${TimeUtil.getTimeStr(nextExecTimeCache)}")
+                }
+                if (lastExecText.isNotBlank()) {
+                    add(lastExecText)
+                }
+            }
+            val content = if (lines.isEmpty()) "模块运行中" else lines.joinToString("\n")
+
+            builder.setContentTitle(title)
+            builder.setContentText(lines.firstOrNull() ?: content)
+            builder.setStyle(NotificationCompat.BigTextStyle().bigText(content))
             manager.notify(RUNNING_NOTIFICATION_ID, builder.build())
         } catch (e: Exception) {
             Log.printStackTrace(e)

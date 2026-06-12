@@ -381,7 +381,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             withContext(Dispatchers.Main) {
-                ToastUtil.showToast(
+                ToastUtil.showUiToast(
                     context,
                     if (failedCount == 0) "所有日志已清空" else "部分日志清空失败：$failedCount"
                 )

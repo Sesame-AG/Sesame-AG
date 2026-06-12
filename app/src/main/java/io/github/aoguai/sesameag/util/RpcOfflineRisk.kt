@@ -4,6 +4,7 @@ import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import org.json.JSONObject
 
 object RpcOfflineRisk {
+    private const val TAG = "风控"
     private val directRiskCodes = setOf("1009")
     private val offlineModeCodes = setOf("I07")
 
@@ -56,10 +57,14 @@ object RpcOfflineRisk {
             return false
         }
         if (!ApplicationHookConstants.isOffline()) {
+            val detail = buildDetail(source, code, message)
+            // 风控/验证(含滑块)命中时显式落错误日志，保留触发响应的原始线索，
+            // 避免仅静默进入离线模式而在日志中查不到任何风控痕迹。
+            Log.error(TAG, "命中风控/验证拦截，进入离线 | $detail")
             ApplicationHookConstants.enterOffline(
                 ApplicationHookConstants.getOfflineCooldownMs(),
                 "auth_like",
-                buildDetail(source, code, message)
+                detail
             )
         }
         return true

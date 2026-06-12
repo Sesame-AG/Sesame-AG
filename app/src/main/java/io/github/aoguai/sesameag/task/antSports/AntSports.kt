@@ -1602,6 +1602,10 @@ class AntSports : ModelTask() {
         override val moduleName: String = SPORTS_TASK_BLACKLIST_MODULE
         override val flowName: String = "运动任务面板"
 
+        override fun isFlowHandledToday(): Boolean {
+            return Status.hasFlagToday(StatusFlags.FLAG_ANTSPORTS_DAILY_TASKS_DONE)
+        }
+
         override fun query(): JSONObject {
             return JSONObject(AntSportsRpcCall.queryCoinTaskPanel())
         }
@@ -1665,16 +1669,19 @@ class AntSports : ModelTask() {
             var visibleTaskCount = 0
             var pendingTransitions = 0
             for (item in items) {
-                if (isBlacklisted(item) || shouldSkip(item)) continue
+                if (shouldSkipByTodayState(item)) continue
+                val phase = mapPhase(item)
+                if ((phase != TaskFlowPhase.REWARD_READY && isBlacklisted(item)) || shouldSkip(item)) continue
                 visibleTaskCount++
-                when (item.status) {
-                    "WAIT_RECEIVE" -> pendingTransitions += 1
-                    "WAIT_COMPLETE" -> {
+                when (phase) {
+                    TaskFlowPhase.REWARD_READY -> pendingTransitions += 1
+                    TaskFlowPhase.READY_TO_COMPLETE -> {
                         val currentNum = item.current ?: 0
                         val limitConfigNum = item.limit ?: (currentNum + 1)
                         val remainingNum = max(1, limitConfigNum - currentNum)
                         pendingTransitions += remainingNum * 2
                     }
+                    else -> Unit
                 }
             }
             return max(1, pendingTransitions + visibleTaskCount)

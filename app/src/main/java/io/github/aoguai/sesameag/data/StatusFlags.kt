@@ -138,6 +138,18 @@ object StatusFlags {
     /** 今日蚂蚁保保障金是否已处理 */
     const val FLAG_ANTMEMBER_INSURED_GOLD_DONE = "AntMember::insuredGoldDone"
 
+    /** 余额宝体验金：任务完成前缀 */
+    const val FLAG_ANTMEMBER_YEB_EXP_GOLD_TASK_PREFIX = "AntMember::yebExpGoldTask::"
+
+    /** 余额宝体验金：今日签到已处理 */
+    const val FLAG_ANTMEMBER_YEB_EXP_GOLD_SIGN_DONE = "AntMember::yebExpGoldSignDone"
+
+    /** 余额宝体验金：今日兑换检查已处理 */
+    const val FLAG_ANTMEMBER_YEB_EXP_GOLD_EXCHANGE_DONE = "AntMember::yebExpGoldExchangeDone"
+
+    /** 余额宝体验金：今日待使用券已转换 */
+    const val FLAG_ANTMEMBER_YEB_EXP_GOLD_VOUCHER_CONVERT_DONE = "AntMember::yebExpGoldVoucherConvertDone"
+
     // ============================================================
     // 芝麻信用 / 芝麻粒
     // ============================================================
@@ -264,15 +276,6 @@ object StatusFlags {
 
     /** 摇钱树：今日是否已收取金币树奖励 */
     const val FLAG_ANTORCHARD_MONEY_TREE_COLLECTED = "ANTORCHARD_MONEY_TREE_COLLECTED"
-
-    /** 摇钱树体验金任务：任务完成前缀 */
-    const val FLAG_ANTORCHARD_YEB_EXP_GOLD_TASK_PREFIX = "ANTORCHARD_YEB_EXP_GOLD_TASK::"
-
-    /** 摇钱树体验金：今日签到已处理 */
-    const val FLAG_ANTORCHARD_YEB_EXP_GOLD_SIGN_DONE = "ANTORCHARD_YEB_EXP_GOLD_SIGN_DONE"
-
-    /** 摇钱树体验金：今日兑换检查已处理 */
-    const val FLAG_ANTORCHARD_YEB_EXP_GOLD_EXCHANGE_DONE = "ANTORCHARD_YEB_EXP_GOLD_EXCHANGE_DONE"
 
     /** 农场好友助力：好友关系无效前缀 */
     const val FLAG_ANTORCHARD_ASSIST_RELATION_INVALID_PREFIX = "orchard::assistRelationInvalid::"

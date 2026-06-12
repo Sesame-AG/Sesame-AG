@@ -165,8 +165,6 @@ object Log {
 
     @JvmStatic
     fun record(msg: String, type: Int = 1) {
-        logRaw(LogChannel.RUNTIME, Severity.DEBUG, msg)
-
         val taggedMessage = extractTaggedModuleMessage(msg)
         if (taggedMessage != null) {
             write(taggedMessage.channel, Severity.INFO, taggedMessage.message, type)
