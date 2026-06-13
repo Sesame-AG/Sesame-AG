@@ -3604,31 +3604,26 @@ class AntForest : ModelTask(), EnergyCollectCallback {
 
     /**
      * 更新使用中的的道具剩余时间
+     *
+     * @param joHomePage 首页 JSON 对象，如果为 null 则发起网络请求获取
+     * @return 最新的主页对象
      */
-    @Throws(JSONException::class)
     internal fun updateSelfHomePage(
+        joHomePage: JSONObject? = null,
         collectRobMultiplierEnergy: Boolean = false,
         robMultiplierEnergySource: String? = null,
+        silent: Boolean = false,
         homePageSource: String? = null
-    ) {
-        val s = AntForestRpcCall.queryHomePage(homePageSource)
-        val joHomePage = JSONObject(s)
-        updateSelfHomePage(joHomePage, collectRobMultiplierEnergy, robMultiplierEnergySource)
-    }
-
-    /**
-     * 更新使用中的的道具剩余时间
-     *
-     * @param joHomePage 首页 JSON 对象
-     */
-    internal fun updateSelfHomePage(
-        joHomePage: JSONObject,
-        collectRobMultiplierEnergy: Boolean = false,
-        robMultiplierEnergySource: String? = null
-    ) {
+    ): JSONObject? {
+        val homeObj = joHomePage ?: run {
+            val s = AntForestRpcCall.queryHomePage(homePageSource)
+            GlobalThreadPools.sleepCompat(100)
+            if (s.isBlank()) return null
+            JSONObject(s)
+        }
         try {
-            val teamUsingUserProps = if (isTeam(joHomePage)) {
-                joHomePage.optJSONObject("teamHomeResult")
+            val teamUsingUserProps = if (isTeam(homeObj)) {
+                homeObj.optJSONObject("teamHomeResult")
                     ?.optJSONObject("mainMember")
                     ?.optJSONArray("usingUserProps")
             } else {
@@ -3638,7 +3633,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             val seenPropKeys = mutableSetOf<String>()
             fun appendUsingProps(props: JSONArray?) {
                 if (props == null) return
-                for (index in 0..<props.length()) {
+                for (index in 0 until props.length()) {
                     val prop = props.optJSONObject(index) ?: continue
                     val key = prop.optString("propId")
                         .ifBlank { "${prop.optString("propGroup")}:${prop.optString("propType")}" }
@@ -3648,31 +3643,31 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 }
             }
             appendUsingProps(teamUsingUserProps)
-            appendUsingProps(joHomePage.optJSONArray("usingUserPropsNew"))
-            appendUsingProps(joHomePage.optJSONArray("loginUserUsingPropNew"))
-            for (i in 0..<usingUserProps.length()) {
+            appendUsingProps(homeObj.optJSONArray("usingUserPropsNew"))
+            appendUsingProps(homeObj.optJSONArray("loginUserUsingPropNew"))
+            for (i in 0 until usingUserProps.length()) {
                 val userUsingProp = usingUserProps.getJSONObject(i)
                 val propGroup = userUsingProp.getString("propGroup")
                 val propName = userUsingProp.optString("propName")
                 when (propGroup) {
                     "doubleClick" -> {
                         doubleEndTime = userUsingProp.getLong("endTime")
-                        Log.forest("$propName 剩余时间⏰：" + formatTimeDifference(doubleEndTime - System.currentTimeMillis()))
+                        if (!silent) Log.forest("$propName 剩余时间⏰：" + formatTimeDifference(doubleEndTime - System.currentTimeMillis()))
                     }
 
                     "stealthCard" -> {
                         stealthEndTime = userUsingProp.getLong("endTime")
-                        Log.forest("$propName 剩余时间⏰️：" + formatTimeDifference(stealthEndTime - System.currentTimeMillis()))
+                        if (!silent) Log.forest("$propName 剩余时间⏰️：" + formatTimeDifference(stealthEndTime - System.currentTimeMillis()))
                     }
 
                     "shield" -> {
                         shieldEndTime = userUsingProp.getLong("endTime")
-                        Log.forest("$propName 剩余时间⏰：" + formatTimeDifference(shieldEndTime - System.currentTimeMillis()))
+                        if (!silent) Log.forest("$propName 剩余时间⏰：" + formatTimeDifference(shieldEndTime - System.currentTimeMillis()))
                     }
 
                     "energyBombCard" -> {
                         energyBombCardEndTime = userUsingProp.getLong("endTime")
-                        Log.forest("$propName 剩余时间⏰：" + formatTimeDifference(energyBombCardEndTime - System.currentTimeMillis()))
+                        if (!silent) Log.forest("$propName 剩余时间⏰：" + formatTimeDifference(energyBombCardEndTime - System.currentTimeMillis()))
                     }
 
                     "robExpandCard" -> {
@@ -3691,7 +3686,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                         } else {
                             ""
                         }
-                        Log.forest("$propName 剩余时间⏰：" + formatTimeDifference(robMultiplierCardEndTime - System.currentTimeMillis()) + factorSuffix)
+                        if (!silent) Log.forest("$propName 剩余时间⏰：" + formatTimeDifference(robMultiplierCardEndTime - System.currentTimeMillis()) + factorSuffix)
                         if (!extInfo.isEmpty()) {
                             val extInfoObj = runCatching { JSONObject(extInfo) }.getOrNull()
                             if (extInfoObj == null) {
@@ -3743,22 +3738,30 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                                     val remainSuffix = if (remainEnergy.isNotEmpty()) "#剩余${remainEnergy}g" else ""
                                     Log.forest("N倍卡能量🌳[" + collectEnergy + "g][$propName]$remainSuffix")
                                 } else if (jo.optString("resultCode") == "COLLECT_EXPAND_ENERGY_NOT_ENOUGH") {
-                                    Log.forest("$propName 剩余${jo.optString("leftEnergy", leftEnergy.toString())}g，整数部分不足1g，跳过N倍卡能量领取"
-                                    )
+                                    Log.forest("$propName 剩余${jo.optString("leftEnergy", leftEnergy.toString())}g，不足1g无法领取")
                                 }
-                            } else if (leftEnergy > 0.0 || overLimitToday) {
-                                Log.forest("$propName 剩余${leftEnergy}g，未达到领取阈值${robMultiplierLimit.toInt()}g，跳过N倍卡能量领取")
+                            } else {
+                                if (overLimitToday) {
+                                    Log.forest("$propName 今日翻倍能量领取已达上限(20000g)")
+                                } else if (leftEnergy > 0.0) {
+                                    if (leftEnergy >= 1.0) {
+                                        Log.forest("$propName 剩余${leftEnergy}g，未达到领取阈值(${robMultiplierLimit.toInt()}g)，跳过领取")
+                                    } else {
+                                        Log.forest("$propName 剩余${leftEnergy}g，不足1g无法领取")
+                                    }
+                                }
                             }
                         }
                     }
                     else -> {
-                         Log.forest("跳过非目标道具:$userUsingProp")
+                        if (!silent) Log.forest("跳过非目标道具:$userUsingProp")
                     }
                 }
             }
         } catch (th: Throwable) {
             Log.printStackTrace(TAG, "updateDoubleTime err", th)
         }
+        return homeObj
     }
 
     /**
@@ -5165,25 +5168,25 @@ class AntForest : ModelTask(), EnergyCollectCallback {
      * 在收集能量之前使用道具。
      * 这个方法检查是否需要使用增益卡
      * 并在需要时使用相应的道具。
-     *
-     * @param userId 用户的ID。
      */
     /**
      * 在收集能量之前决定是否使用增益类道具卡
      * @param userId 用户ID
      * @param skipPropCheck 是否跳过道具检查（快速收取通道）
+     * @return 最新的主页对象
      */
-    internal fun usePropBeforeCollectEnergy(userId: String?, skipPropCheck: Boolean = false) {
+    internal fun usePropBeforeCollectEnergy(userId: String?, skipPropCheck: Boolean = false): JSONObject? {
+        var latestHome: JSONObject? = null
         try {
             // 🚀 快速收取通道：跳过道具检查，直接返回
             if (skipPropCheck) {
                 Log.forest("⚡ 快速收取通道：跳过道具检查，加速蹲点收取")
-                return
+                return null
             }
             val now = System.currentTimeMillis()
             if (now - lastUsePropCheckTime < 5000) {
                 Log.forest("道具检查刚在5秒内完成，复用当前状态，跳过重复请求")
-                return
+                return null
             }
             lastUsePropCheckTime = now
 
@@ -5236,7 +5239,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     val bagObject = queryPropList()
                     if (bagObject == null) {
                         Log.forest("背包查询为空，跳过本轮道具检查")
-                        return
+                        return null
                     }
                     // Log.runtime(TAG, "bagObject=" + (bagObject == null ? "null" : bagObject.toString()));
                     if (needDouble) useDoubleCard(bagObject) // 使用双击卡
@@ -5246,7 +5249,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     if (needStealth) useStealthCard(bagObject) // 使用隐身卡
 
                     if (needBubbleBoostCard) {
-                        handleBubbleBoostTrigger(bagObject)
+                        latestHome = handleBubbleBoostTrigger(bagObject)
                     }
                     if (needShield) {
                         Log.forest("尝试使用保护罩罩")
@@ -5262,21 +5265,21 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         } catch (e: Exception) {
             Log.printStackTrace(e)
         }
+        return latestHome
     }
 
-    private fun handleBubbleBoostTrigger(bagObject: JSONObject?) {
-        val spec = bubbleBoostTime?.getTriggerSpec() ?: return
+    private fun handleBubbleBoostTrigger(bagObject: JSONObject?): JSONObject? {
+        val spec = bubbleBoostTime?.getTriggerSpec() ?: return null
         if (spec.disabled) {
             Log.forest("加速器时间触发已关闭，跳过")
-            return
+            return null
         }
 
         val consumedIndex = getTriggerIndex(StatusFlags.FLAG_ANTFOREST_BUBBLE_BOOST_TRIGGER_INDEX)
         val decision = TimeTriggerEvaluator.evaluateNow(spec, consumedIndex = consumedIndex)
         if (decision.allowNow) {
             consumeTriggerSlot(StatusFlags.FLAG_ANTFOREST_BUBBLE_BOOST_TRIGGER_INDEX, decision.matchedSlotIndex)
-            useBubbleBoostCard(bagObject)
-            return
+            return useBubbleBoostCard(bagObject)
         }
 
         if (!TimeTriggerEvaluator.scheduleNext(
@@ -5289,6 +5292,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         ) {
             logTriggerWaiting("加速器", decision)
         }
+        return null
     }
 
     private fun executeBubbleBoostTriggerFromSchedule() {
@@ -6936,13 +6940,14 @@ class AntForest : ModelTask(), EnergyCollectCallback {
      * 使用加速卡道具
      * 功能：加速能量球成熟时间，让等待中的能量球提前成熟，并立即收取自己的能量
      */
-    private fun useBubbleBoostCard(bag: JSONObject? = queryPropList()) {
+    private fun useBubbleBoostCard(bag: JSONObject? = queryPropList()): JSONObject? {
+        var latestHome: JSONObject? = null
         try {
             // 先检查自己是否有未成熟的能量球
             val selfHomeObj = querySelfHome()
             if (selfHomeObj == null) {
                 Log.forest("无法获取自己主页信息，跳过使用加速卡")
-                return
+                return null
             }
             // 检查是否有未来才会成熟的能量球（bubbleCount > 0且produceTime > serverTime）
             val serverTime = selfHomeObj.optLong("now", System.currentTimeMillis())
@@ -6965,7 +6970,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             }
             if (!hasWaitingBubbles) {
                 Log.forest("自己当前没有未来才会成熟的能量球，不使用加速卡")
-                return
+                return selfHomeObj
             }
 
             var jo = selectPreferredBoostProp(bag)
@@ -6979,7 +6984,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 // 因为紧接着调用的 collectSelfEnergyImmediately 会再次查询主页，那次查询会包含最新的道具状态和能量球状态
                 if (usePropBag(jo, needRefreshHome = false)) {
                     Log.forest("使用加速卡🌪[$propName]")
-                    collectSelfEnergyImmediately("加速卡")
+                    latestHome = collectSelfEnergyImmediately("加速卡")
                 }
             } else {
                 val refreshedBag = replenishSelectedRewardsForMissingProp(
@@ -6990,23 +6995,27 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 val exchangedProp = selectPreferredBoostProp(refreshedBag)
                 if (exchangedProp != null && usePropBag(exchangedProp, needRefreshHome = false)) {
                     Log.forest("使用补兑加速卡🌪[${getPropName(exchangedProp)}]")
-                    collectSelfEnergyImmediately("补兑加速卡")
+                    latestHome = collectSelfEnergyImmediately("补兑加速卡")
                 } else {
                     Log.forest("背包中无可用加速卡")
+                    latestHome = selfHomeObj
                 }
             }
         } catch (th: Throwable) {
             Log.printStackTrace(TAG, "useBubbleBoostCard err", th)
         }
+        return latestHome
     }
 
     /**
      * 立即收取自己能量（专用方法）
      */
-    private fun collectSelfEnergyImmediately(tag: String = "立即收取") {
+    private fun collectSelfEnergyImmediately(tag: String = "立即收取"): JSONObject? {
+        var refreshedHome: JSONObject? = null
         try {
             // querySelfHome 内部会处理 updateSelfHomePage 逻辑，确保道具倒计时等状态同步
             val selfHomeObj = querySelfHome()
+            refreshedHome = selfHomeObj
             if (selfHomeObj != null) {
                 Log.forest("🎯 $tag：开始收取自己能量...")
                 val availableBubbles: MutableList<Long> = ArrayList()
@@ -7030,6 +7039,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         } catch (e: Exception) {
             Log.printStackTrace(TAG, "collectSelfEnergyImmediately err", e)
         }
+        return refreshedHome
     }
 
     /**

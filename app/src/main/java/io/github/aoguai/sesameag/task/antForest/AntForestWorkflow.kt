@@ -8,17 +8,19 @@ import org.json.JSONObject
 private val FOREST_TAG: String = AntForest::class.java.simpleName
 
 internal suspend fun AntForest.runForestPreparationAndCollectionWorkflow(tc: TimeCounter): JSONObject? {
-    updateSelfHomePage()
+    Log.forest("🌳 【正常流程】查询森林主页数据...")
+    val initialHome = querySelfHome()
+    tc.countDebug("主页对象信息")
+
+    updateSelfHomePage(initialHome)
     tc.countDebug("查询道具状态")
 
-    usePropBeforeCollectEnergy(UserMap.currentUid)
+    val latestHomeAfterProps = usePropBeforeCollectEnergy(UserMap.currentUid)
     tc.countDebug("使用自己道具卡")
 
     val collectEnergyEnabled = isCollectEnergyEnabled()
 
-    Log.forest("🌳 【正常流程】查询自己的森林主页...")
-    var selfHomeObj = querySelfHome()
-    tc.countDebug("获取自己主页对象信息")
+    var selfHomeObj = latestHomeAfterProps ?: initialHome
     if (selfHomeObj != null) {
         if (collectEnergyEnabled) {
             collectEnergy(UserMap.currentUid, selfHomeObj, "self")
@@ -85,6 +87,7 @@ internal fun AntForest.runEnergyOnlyCollectionWorkflow(tc: TimeCounter): JSONObj
 
     Log.forest("🌳 【只收能量】查询自己的森林主页...")
     val selfHomeObj = querySelfHome()
+    updateSelfHomePage(selfHomeObj)
     if (selfHomeObj != null) {
         if (collectEnergyEnabled) {
             collectEnergy(UserMap.currentUid, selfHomeObj, "self")
