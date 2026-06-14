@@ -1050,14 +1050,15 @@ private fun AntFarm.checkAndClaimProgressAwards(rankJo: JSONObject, starsToHighe
         // 判定是否进入赛季最后一天 (结束当天的 00:00:00 至 结束时间点)
         val isLastDay = TimeUtil.isSameDay(now, endTime)
 
-        // 判定：当前待领取的星星足以让你直接满级
-        val isKillShot = unreceivedStars >= starsToHighest
+        // 判定：加上今日捐赠保底获得的 1 🌟，待领取的星星足以让你直接满级
+        val isKillShot = unreceivedStars >= (starsToHighest - 1)
 
         if (isKillShot || isLastDay) {
             if (isLastDay && !isKillShot) {
                 Log.record(TAG, "📅 赛季收官：当前已进入最后一天，领取累计捐蛋奖励 (待领: $unreceivedStars 🌟)")
             } else {
-                Log.record(TAG, "🎯 累计捐蛋奖励：当前差 ${starsToHighest}🌟，待领 ${unreceivedStars}🌟，可直接直达巅峰！")
+                val msg = if (unreceivedStars >= starsToHighest) "可直接直达巅峰" else "加上今日保底 1🌟 可直达巅峰"
+                Log.record(TAG, "🎯 累计捐蛋奖励：当前差 ${starsToHighest}🌟，待领 ${unreceivedStars}🌟，$msg！")
             }
 
             val res = AntFarmRpcCall.receiveDonationCompetitionProgressAward()
