@@ -21,11 +21,11 @@ object SystemWakeScheduler {
     internal const val EXTRA_SCHEDULE_ID = "schedule_id"
     internal const val EXTRA_PERSISTENT_ALARM_LAUNCH = "persistent_alarm_launch"
 
-    fun schedule(context: Context, schedule: PersistentSchedule): Boolean {
+    fun schedule(context: Context, schedule: PersistentSchedule, silent: Boolean = false): Boolean {
         val alarmContexts = resolveAlarmContexts(context)
         if (alarmContexts.isEmpty()) return false
         alarmContexts.forEachIndexed { index, alarmContext ->
-            if (scheduleOnContext(alarmContext, schedule)) {
+            if (scheduleOnContext(alarmContext, schedule, silent)) {
                 return true
             }
             if (index == 0 && alarmContexts.size > 1) {
@@ -35,7 +35,7 @@ object SystemWakeScheduler {
         return false
     }
 
-    private fun scheduleOnContext(alarmContext: Context, schedule: PersistentSchedule): Boolean {
+    private fun scheduleOnContext(alarmContext: Context, schedule: PersistentSchedule, silent: Boolean): Boolean {
         val alarmManager = alarmContext.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
         if (alarmManager == null) {
             Log.error(TAG, "无法获取 AlarmManager，持久调度失败: ${schedule.name}")
@@ -51,10 +51,14 @@ object SystemWakeScheduler {
                 }
             if (PermissionUtil.checkAlarmPermissions(alarmContext)) {
                 scheduleExact(alarmManager, triggerAt, pendingIntent)
-                Log.runtime(TAG, "已注册精确系统闹钟[${schedule.name}] ${TimeUtil.getCommonDate(triggerAt)}")
+                if (!silent) {
+                    Log.runtime(TAG, "已注册精确系统闹钟[${schedule.name}] ${TimeUtil.getCommonDate(triggerAt)}")
+                }
             } else {
                 scheduleFallback(alarmManager, triggerAt, schedule.toleranceMs, pendingIntent)
-                Log.runtime(TAG, "精确闹钟权限缺失，已降级注册系统闹钟[${schedule.name}] ${TimeUtil.getCommonDate(triggerAt)}")
+                if (!silent) {
+                    Log.runtime(TAG, "精确闹钟权限缺失，已降级注册系统闹钟[${schedule.name}] ${TimeUtil.getCommonDate(triggerAt)}")
+                }
             }
             true
         } catch (t: Throwable) {
@@ -63,7 +67,7 @@ object SystemWakeScheduler {
         }
     }
 
-    fun cancel(context: Context, schedule: PersistentSchedule) {
+    fun cancel(context: Context, schedule: PersistentSchedule, silent: Boolean = false) {
         resolveAlarmContexts(context).forEach { alarmContext ->
             val alarmManager = alarmContext.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return@forEach
             val pendingIntent = buildPendingIntent(
@@ -74,7 +78,9 @@ object SystemWakeScheduler {
             try {
                 alarmManager.cancel(pendingIntent)
                 pendingIntent.cancel()
-                Log.runtime(TAG, "已取消系统闹钟[${schedule.name}] package=${alarmContext.packageName}")
+                if (!silent) {
+                    Log.runtime(TAG, "已取消系统闹钟[${schedule.name}] package=${alarmContext.packageName}")
+                }
             } catch (t: Throwable) {
                 Log.printStackTrace(TAG, "取消系统闹钟失败[${schedule.name}]", t)
             }

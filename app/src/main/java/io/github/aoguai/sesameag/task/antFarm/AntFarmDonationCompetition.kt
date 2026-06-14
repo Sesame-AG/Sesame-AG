@@ -160,7 +160,7 @@ private fun AntFarm.receiveCompetitionAwards(): Int {
         val endTime = jo.optJSONObject("donationCompetitionActivityConf")?.optLong("endTime") ?: 0L
 
         Log.record(TAG, "--- 🏆 排位赛赛季简报 ---")
-        Log.record(TAG, "📅 赛季结束：${TimeUtil.getCommonDate(endTime)}")
+        Log.record(TAG, "📅 赛季结束：${TimeUtil.getFormatTime(endTime, "yyyy-MM-dd HH:mm:ss")}")
         Log.record(TAG, "📈 当前段位：$currentLevelName")
         Log.record(TAG, "🏹 下一段位：$nextLevelName (差 ${starsToNext}🌟)")
         Log.record(TAG, "👑 最高段位：$highestLevelName (总差距 ${starsToHighest}🌟)")

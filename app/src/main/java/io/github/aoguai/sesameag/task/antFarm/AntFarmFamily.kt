@@ -740,7 +740,7 @@ data object AntFarmFamily {
             }
             val jo = JSONObject(AntFarmRpcCall.familyEatTogether(groupId, familyUserIds.toJSONArray(), array))
             if (ResChecker.checkRes(TAG, jo)) {
-                Log.farm("家庭任务🏠请客" + periodName + "#消耗美食" + familyUserIds.size + "份")
+                Log.farm("家庭任务🏠请客" + periodName + "#消耗美食" + familyUserIds.size + "份（最近美食库存与特殊食品/补蛋共用）")
                 GlobalThreadPools.sleepCompat(500L)
                 syncFamilyStatusIntimacy(groupId)
             }

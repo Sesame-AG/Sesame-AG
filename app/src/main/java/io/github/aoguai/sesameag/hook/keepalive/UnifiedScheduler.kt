@@ -134,6 +134,15 @@ object UnifiedScheduler {
         return PersistentScheduleRegistry.removeByName(context, name)
     }
 
+    fun cancelPersistentByNameExceptDedupeKey(
+        context: Context?,
+        name: String,
+        keepDedupeKey: String,
+        silent: Boolean = false
+    ): Int {
+        return PersistentScheduleRegistry.removeByNameExceptDedupeKey(context, name, keepDedupeKey, silent)
+    }
+
     fun reconcilePersistentSchedules(
         context: Context,
         mode: PersistentReconcileMode = PersistentReconcileMode.RESCHEDULE_ONLY

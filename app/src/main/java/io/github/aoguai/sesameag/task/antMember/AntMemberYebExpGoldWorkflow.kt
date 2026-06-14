@@ -43,6 +43,11 @@ internal fun AntMember.handleYebExpGoldTasks() {
                 Log.member("跳过黑名单任务[$title]")
                 continue
             }
+            val unsupportedReason = getUnsupportedYebExpGoldTaskReason(task, title)
+            if (unsupportedReason != null) {
+                blacklistUnsupportedYebExpGoldTask(title, taskId, unsupportedReason)
+                continue
+            }
             val successFlag = StatusFlags.FLAG_ANTMEMBER_YEB_EXP_GOLD_TASK_PREFIX + taskId
             if (Status.hasFlagToday(successFlag)) {
                 continue
@@ -222,6 +227,11 @@ private fun collectYebExpGoldManualTasks(
         if (isYebExpGoldTaskBlacklisted(title, taskId)) {
             continue
         }
+        val unsupportedReason = getUnsupportedYebExpGoldTaskReason(task, title)
+        if (unsupportedReason != null) {
+            blacklistUnsupportedYebExpGoldTask(title, taskId, unsupportedReason)
+            continue
+        }
         if (task.optString("simplifiedStatus").lowercase() == "not_sign" &&
             !shouldAutoReceiveYebExpGoldTask(task)
         ) {
@@ -327,6 +337,46 @@ private fun getYebExpGoldTodaySignItem(queryResponse: JSONObject): JSONObject? {
     return null
 }
 
+private fun getUnsupportedYebExpGoldTaskReason(task: JSONObject, title: String): String? {
+    val morphoDetail = getYebExpGoldMorphoDetail(task)
+    val link = task.optString("link")
+        .ifBlank { morphoDetail?.optString("link").orEmpty() }
+        .ifBlank { morphoDetail?.optString("taskGotoUrl").orEmpty() }
+    val buttonText = task.optString("buttonText")
+        .ifBlank { morphoDetail?.optString("buttonText").orEmpty() }
+    val taskMainTitle = morphoDetail?.optString("taskMainTitle").orEmpty()
+    val riskText = "$title $taskMainTitle $buttonText $link"
+    return when {
+        containsAnyYebExpGold(riskText, "widget", "小组件", "组件") ->
+            "小组件任务无自动闭环"
+        containsAnyYebExpGold(riskText, "存入", "攒入", "攒一笔", "开户", "开通", "下1单") ->
+            "存入/开户/下单类任务无自动闭环"
+        containsAnyYebExpGold(riskText, "app-download", "download", "下载", "外部app") ->
+            "外部App/下载任务无自动闭环"
+        containsAnyYebExpGold(riskText, "理财", "基金", "证券", "股票", "银行卡") ->
+            "理财/证券/绑卡引导无自动闭环"
+        else -> null
+    }
+}
+
+private fun getYebExpGoldMorphoDetail(task: JSONObject): JSONObject? {
+    val taskExtProps = task.optJSONObject("taskExtProps") ?: return null
+    return when (val detail = taskExtProps.opt("TASK_MORPHO_DETAIL")) {
+        is JSONObject -> detail
+        is String -> runCatching { JSONObject(detail) }.getOrNull()
+        else -> null
+    }
+}
+
+private fun containsAnyYebExpGold(value: String, vararg keywords: String): Boolean {
+    return keywords.any { value.contains(it, ignoreCase = true) }
+}
+
+private fun blacklistUnsupportedYebExpGoldTask(title: String, taskId: String, reason: String) {
+    TaskBlacklist.addToBlacklist(YEB_TASK_BLACKLIST_MODULE, taskId, title)
+    Log.member("余额宝体验金💰[无稳定闭环，已加入黑名单]#$title(taskId=$taskId, reason=$reason)")
+}
+
 private fun shouldAutoReceiveYebExpGoldTask(task: JSONObject): Boolean {
     val buttonText = task.optString("buttonText")
     return buttonText.contains("领取") || buttonText.contains("领奖") || buttonText.contains("领")
@@ -339,6 +389,11 @@ private fun tryCompleteYebExpGoldTask(
 ): Boolean {
     val title = getYebExpGoldTaskTitle(task, taskId)
     if (taskId.isBlank()) {
+        return false
+    }
+    val unsupportedReason = getUnsupportedYebExpGoldTaskReason(task, title)
+    if (unsupportedReason != null) {
+        blacklistUnsupportedYebExpGoldTask(title, taskId, unsupportedReason)
         return false
     }
 

@@ -1601,6 +1601,7 @@ class AntSports : ModelTask() {
     private inner class SportsPanelTaskFlowAdapter : TaskFlowAdapter {
         override val moduleName: String = SPORTS_TASK_BLACKLIST_MODULE
         override val flowName: String = "运动任务面板"
+        private val unsupportedLoggedKeys = mutableSetOf<String>()
 
         override fun isFlowHandledToday(): Boolean {
             return Status.hasFlagToday(StatusFlags.FLAG_ANTSPORTS_DAILY_TASKS_DONE)
@@ -1652,7 +1653,17 @@ class AntSports : ModelTask() {
         }
 
         override fun shouldSkip(item: TaskFlowItem): Boolean {
-            return item.type == "SETTLEMENT"
+            val taskDetail = item.raw ?: return false
+            val unsupportedReason = resolveSportsPanelUnsupportedReason(taskDetail, item.status) ?: return false
+            val key = item.id.ifBlank { item.title }
+            if (unsupportedLoggedKeys.add("${item.status}:$key:$unsupportedReason")) {
+                blacklistClassifiedSportsTask(key, item.title, "UNSUPPORTED_NO_CLOSURE")
+                Log.sports(
+                    "运动任务面板[无稳定闭环，已加入黑名单] ${item.title}" +
+                        "(taskId=$key, status=${item.status}, reason=$unsupportedReason)"
+                )
+            }
+            return true
         }
 
         override fun receive(item: TaskFlowItem): TaskFlowActionResult {
@@ -2087,6 +2098,65 @@ class AntSports : ModelTask() {
         return "$taskId:$currentNum:$bizId"
     }
 
+    private fun resolveSportsPanelUnsupportedReason(taskDetail: JSONObject, status: String): String? {
+        val taskAction = taskDetail.optString("taskAction", "JUMP").ifBlank { "JUMP" }
+        val taskType = taskDetail.optString("taskType", "")
+        val taskName = taskDetail.optString("taskName", "")
+        val taskUrl = taskDetail.optString("taskUrl", "")
+        val assetId = taskDetail.optString("assetId", "").trim()
+
+        if (status == "WAIT_RECEIVE") {
+            return if (assetId.isBlank()) "WAIT_RECEIVE缺少assetId" else null
+        }
+        if (status != "WAIT_COMPLETE") {
+            return null
+        }
+        if (taskType == "SETTLEMENT") {
+            return "SETTLEMENT结算任务无自动闭环"
+        }
+        if (taskDetail.optBoolean("needSignUp", false)) {
+            return "needSignUp任务需要报名/授权链路"
+        }
+        if (taskAction.equals("SHOW_AD", ignoreCase = true)) {
+            val hasCompleteTaskClosure = !resolveSportsPanelCompleteRequestTaskType(taskDetail, taskAction).isNullOrBlank()
+            val hasAdFinishClosure = taskDetail.optBoolean("adTask", false) &&
+                resolveSportsPanelAdTaskBizId(taskDetail).isNotBlank()
+            return if (hasCompleteTaskClosure || hasAdFinishClosure) null else "SHOW_AD缺少taskType或bizId闭环参数"
+        }
+        if (!taskAction.equals("JUMP", ignoreCase = true)) {
+            return "未知taskAction=$taskAction"
+        }
+        if (taskDetail.optBoolean("adTask", false)) {
+            return if (resolveSportsPanelAdTaskBizId(taskDetail).isBlank()) {
+                "广告任务缺少bizId闭环参数"
+            } else {
+                null
+            }
+        }
+
+        val riskText = "$taskName $taskType ${decodeUrlComponentRepeated(taskUrl)}"
+        val unsupportedKeywords = listOf(
+            "widget",
+            "小组件",
+            "组件",
+            "授权",
+            "subscribe",
+            "signUp",
+            "报名",
+            "外部",
+            "下载",
+            "openapp",
+            "dlAppId",
+            "packageOutBizId",
+            "SETTLEMENT"
+        )
+        return if (unsupportedKeywords.any { riskText.contains(it, ignoreCase = true) }) {
+            "跳转目标属于小组件/授权/外部App/结算类"
+        } else {
+            null
+        }
+    }
+
     /**
      * @brief 领取单个任务奖励
      *
@@ -2164,7 +2234,6 @@ class AntSports : ModelTask() {
             val currentNum = taskDetail.getInt("currentNum")
             val limitConfigNum = taskDetail.getInt("limitConfigNum")
             val remainingNum = limitConfigNum - currentNum
-            val needSignUp = taskDetail.optBoolean("needSignUp", false)
             val taskAction = taskDetail.optString("taskAction", "JUMP").ifBlank { "JUMP" }
             val requestTaskType = resolveSportsPanelCompleteRequestTaskType(taskDetail, taskAction)
             val adTaskBizId = resolveSportsPanelAdTaskBizId(taskDetail)
@@ -2175,17 +2244,16 @@ class AntSports : ModelTask() {
                 return TaskFlowActionResult.success()
             }
 
-            // 需要先签到
-            if (needSignUp) {
-                if (!signUpForTask(taskId, taskName)) {
-                    return TaskFlowActionResult.failure(
-                        failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
-                        message = "任务报名失败",
-                        rpc = "AntSportsRpcCall.signUpTask",
-                        detail = "taskId=$taskId taskName=$taskName"
-                    )
-                }
-                GlobalThreadPools.sleepCompat(2000)
+            val unsupportedReason = resolveSportsPanelUnsupportedReason(taskDetail, "WAIT_COMPLETE")
+            if (unsupportedReason != null) {
+                blacklistClassifiedSportsTask(taskId, taskName, "UNSUPPORTED_NO_CLOSURE")
+                return TaskFlowActionResult.failure(
+                    failureType = TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE,
+                    code = "UNSUPPORTED_NO_CLOSURE",
+                    message = "未抓到稳定完成闭环",
+                    rpc = "SportsPanelTaskFlowAdapter.complete",
+                    detail = "taskId=$taskId taskName=$taskName reason=$unsupportedReason"
+                )
             }
 
             val useVerifiedNewCompleteRpc =
@@ -2195,6 +2263,7 @@ class AntSports : ModelTask() {
                 taskAction.equals("JUMP", ignoreCase = true) &&
                     taskDetail.optBoolean("adTask", false) &&
                     adTaskPayloadBizId.isNotBlank()
+            val useJumpCompleteRpc = taskAction.equals("JUMP", ignoreCase = true) && !useAdTaskFinishRpc
             val result = when {
                 useVerifiedNewCompleteRpc -> JSONObject(
                     AntSportsRpcCall.completeTask(
@@ -2204,7 +2273,13 @@ class AntSports : ModelTask() {
                     )
                 )
                 useAdTaskFinishRpc -> JSONObject(AntSportsRpcCall.finishAdTask(adTaskFinishPayload))
-                else -> JSONObject(AntSportsRpcCall.completeExerciseTasks(taskId))
+                useJumpCompleteRpc -> JSONObject(
+                    AntSportsRpcCall.completeTask(
+                        taskId = taskId,
+                        taskAction = taskAction
+                    )
+                )
+                else -> JSONObject()
             }
 
             val progressText = "#(${min(currentNum + 1, limitConfigNum)}/$limitConfigNum)"
@@ -2212,7 +2287,8 @@ class AntSports : ModelTask() {
                 val completeSource = when {
                     useVerifiedNewCompleteRpc -> "completeTask"
                     useAdTaskFinishRpc -> "adtask.finish"
-                    else -> "completeTask(JUMP)"
+                    useJumpCompleteRpc -> "completeTask(JUMP)"
+                    else -> "unsupported"
                 }
                 Log.sports("做任务得能量🎈[完成任务：$taskName，得$prizeAmount💰，方式：$completeSource]$progressText"
                 )
@@ -2223,7 +2299,8 @@ class AntSports : ModelTask() {
                 val completeSource = when {
                     useVerifiedNewCompleteRpc -> "AntSportsRpcCall.completeTask"
                     useAdTaskFinishRpc -> "AntSportsRpcCall.finishAdTask"
-                    else -> "AntSportsRpcCall.completeExerciseTasks"
+                    useJumpCompleteRpc -> "AntSportsRpcCall.completeTask"
+                    else -> "SportsPanelTaskFlowAdapter.complete"
                 }
                 if (shouldTemporarilyStopSportsTask(errorCode, errorMsg)) {
                     return TaskFlowActionResult.failure(
@@ -2292,7 +2369,7 @@ class AntSports : ModelTask() {
             TaskFlowActionResult.failure(
                 failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
                 message = e.message.orEmpty(),
-                rpc = "AntSportsRpcCall.completeExerciseTasks",
+                rpc = "SportsPanelTaskFlowAdapter.complete",
                 detail = "taskName=$taskName"
             )
         }

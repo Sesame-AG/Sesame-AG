@@ -7,6 +7,8 @@ import io.github.aoguai.sesameag.util.DataStore
 import io.github.aoguai.sesameag.util.Files
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.TimeUtil
+import org.json.JSONArray
+import org.json.JSONObject
 
 object PersistentScheduleRegistry {
     private const val TAG = "PersistentScheduleRegistry"
@@ -22,6 +24,14 @@ object PersistentScheduleRegistry {
     // 避免每次从磁盘整表解析；写路径写穿透到磁盘，保留进程被杀后的持久恢复能力。
     private val cacheLock = Any()
     private var cache: MutableList<PersistentSchedule>? = null
+    private val alarmEnsureLock = Any()
+    private val ensuredAlarmKeys = mutableSetOf<String>()
+
+    private enum class AlarmScheduleResult {
+        SCHEDULED,
+        ALREADY_CONFIRMED,
+        FAILED
+    }
 
     data class ReconcileResult(
         val dueSchedules: List<PersistentSchedule>,
@@ -47,10 +57,11 @@ object PersistentScheduleRegistry {
         removed.firstOrNull { isSameScheduledTask(it, normalized) }?.let { existing ->
             return existing
         }
-        if (SystemWakeScheduler.schedule(context, normalized)) {
+        val action = if (removed.isEmpty()) "新增持久调度" else "替换持久调度"
+        if (ensureSystemAlarm(context, normalized, action, skipIfAlreadyEnsured = false) != AlarmScheduleResult.FAILED) {
             removed
                 .filter { it.id != normalized.id }
-                .forEach { SystemWakeScheduler.cancel(context, it) }
+                .forEach { cancelSystemAlarm(context, it, silent = true) }
             schedules.removeAll(removed.toSet())
             schedules.add(normalized)
             save(schedules)
@@ -75,7 +86,7 @@ object PersistentScheduleRegistry {
         if (removed.isEmpty()) return false
         schedules.removeAll(removed.toSet())
         save(schedules)
-        context?.let { ctx -> removed.forEach { SystemWakeScheduler.cancel(ctx, it) } }
+        context?.let { ctx -> removed.forEach { cancelSystemAlarm(ctx, it) } }
         return true
     }
 
@@ -87,7 +98,7 @@ object PersistentScheduleRegistry {
         if (removed.isEmpty()) return 0
         schedules.removeAll(removed.toSet())
         save(schedules)
-        context?.let { ctx -> removed.forEach { SystemWakeScheduler.cancel(ctx, it) } }
+        context?.let { ctx -> removed.forEach { cancelSystemAlarm(ctx, it) } }
         return removed.size
     }
 
@@ -99,7 +110,24 @@ object PersistentScheduleRegistry {
         if (removed.isEmpty()) return 0
         schedules.removeAll(removed.toSet())
         save(schedules)
-        context?.let { ctx -> removed.forEach { SystemWakeScheduler.cancel(ctx, it) } }
+        context?.let { ctx -> removed.forEach { cancelSystemAlarm(ctx, it) } }
+        return removed.size
+    }
+
+    fun removeByNameExceptDedupeKey(
+        context: Context?,
+        name: String,
+        keepDedupeKey: String,
+        silent: Boolean = false
+    ): Int {
+        if (name.isBlank() || keepDedupeKey.isBlank()) return 0
+        if (!ensureStorage()) return 0
+        val schedules = loadMutable()
+        val removed = schedules.filter { it.name == name && it.dedupeKey != keepDedupeKey }
+        if (removed.isEmpty()) return 0
+        schedules.removeAll(removed.toSet())
+        save(schedules)
+        context?.let { ctx -> removed.forEach { cancelSystemAlarm(ctx, it, silent = silent) } }
         return removed.size
     }
 
@@ -120,7 +148,7 @@ object PersistentScheduleRegistry {
         if (schedules.isEmpty()) return
         save(emptyList())
         context?.let { ctx ->
-            schedules.forEach { SystemWakeScheduler.cancel(ctx, it) }
+            schedules.forEach { cancelSystemAlarm(ctx, it) }
         }
     }
 
@@ -143,14 +171,14 @@ object PersistentScheduleRegistry {
                     scheduleOwnerUserId == safeOwnerUserId &&
                     schedule.sessionEpoch == sessionEpoch
             if (!isCurrentSessionSchedule) {
-                SystemWakeScheduler.cancel(context, schedule)
+                cancelSystemAlarm(context, schedule)
                 continue
             }
 
             if (schedule.state == PersistentScheduleState.SCHEDULED && schedule.triggerAtMs > now) {
-                SystemWakeScheduler.schedule(context, schedule)
+                ensureSystemAlarm(context, schedule, "恢复持久调度", skipIfAlreadyEnsured = true)
             } else {
-                SystemWakeScheduler.cancel(context, schedule)
+                cancelSystemAlarm(context, schedule)
             }
             retained.add(schedule)
         }
@@ -165,7 +193,7 @@ object PersistentScheduleRegistry {
         val schedule = get(id)
         markFired(id, now)
         if (context != null && schedule != null) {
-            SystemWakeScheduler.cancel(context, schedule)
+            cancelSystemAlarm(context, schedule)
         }
     }
 
@@ -177,7 +205,7 @@ object PersistentScheduleRegistry {
         val schedule = get(id)
         markFailed(id, error, now)
         if (context != null && schedule != null) {
-            SystemWakeScheduler.cancel(context, schedule)
+            cancelSystemAlarm(context, schedule)
         }
     }
 
@@ -185,7 +213,7 @@ object PersistentScheduleRegistry {
         val schedule = get(id)
         updateSchedule(id) { it.withScheduleState(PersistentScheduleState.EXPIRED, now) }
         if (context != null && schedule != null) {
-            SystemWakeScheduler.cancel(context, schedule)
+            cancelSystemAlarm(context, schedule)
         }
     }
 
@@ -225,7 +253,7 @@ object PersistentScheduleRegistry {
             }
 
             if (!isCurrentSessionSchedule) {
-                SystemWakeScheduler.cancel(context, schedule)
+                cancelSystemAlarm(context, schedule)
                 continue
             }
 
@@ -238,21 +266,23 @@ object PersistentScheduleRegistry {
                         Log.record(TAG, "发现到期持久任务[${schedule.name}] ${TimeUtil.getCommonDate(schedule.triggerAtMs)}")
                     } else {
                         expired++
-                        SystemWakeScheduler.cancel(context, schedule)
+                        cancelSystemAlarm(context, schedule)
                         retained.add(schedule.withScheduleState(PersistentScheduleState.EXPIRED, now))
                         Log.runtime(TAG, "恢复重排跳过已到期持久任务[${schedule.name}] ${TimeUtil.getCommonDate(schedule.triggerAtMs)}")
                     }
                 } else {
                     expired++
-                    SystemWakeScheduler.cancel(context, schedule)
+                    cancelSystemAlarm(context, schedule)
                     retained.add(schedule.withScheduleState(PersistentScheduleState.EXPIRED, now))
                     Log.record(TAG, "持久任务已过期[${schedule.name}] ${TimeUtil.getCommonDate(schedule.triggerAtMs)}")
                 }
                 continue
             }
 
-            if (SystemWakeScheduler.schedule(context, schedule)) {
-                rescheduled++
+            when (ensureSystemAlarm(context, schedule, "恢复持久调度", skipIfAlreadyEnsured = true)) {
+                AlarmScheduleResult.SCHEDULED -> rescheduled++
+                AlarmScheduleResult.ALREADY_CONFIRMED,
+                AlarmScheduleResult.FAILED -> Unit
             }
             retained.add(schedule)
         }
@@ -273,9 +303,101 @@ object PersistentScheduleRegistry {
             left.triggerAtMs == right.triggerAtMs &&
             left.toleranceMs == right.toleranceMs &&
             left.dedupeKey == right.dedupeKey &&
-            left.payloadJson == right.payloadJson &&
-            left.ownerUserId == right.ownerUserId &&
+            canonicalPayloadJson(left.payloadJson) == canonicalPayloadJson(right.payloadJson) &&
+            left.ownerUserId?.trim().orEmpty() == right.ownerUserId?.trim().orEmpty() &&
             left.sessionEpoch == right.sessionEpoch
+    }
+
+    private fun ensureSystemAlarm(
+        context: Context,
+        schedule: PersistentSchedule,
+        action: String,
+        skipIfAlreadyEnsured: Boolean
+    ): AlarmScheduleResult {
+        val key = alarmKey(schedule)
+        if (skipIfAlreadyEnsured && isAlarmEnsured(key)) {
+            return AlarmScheduleResult.ALREADY_CONFIRMED
+        }
+        if (!SystemWakeScheduler.schedule(context, schedule, silent = true)) {
+            return AlarmScheduleResult.FAILED
+        }
+        rememberAlarm(schedule)
+        Log.runtime(
+            TAG,
+            "$action[${schedule.name}] ${TimeUtil.getCommonDate(schedule.triggerAtMs)} dedupeKey=${schedule.dedupeKey}"
+        )
+        return AlarmScheduleResult.SCHEDULED
+    }
+
+    private fun cancelSystemAlarm(context: Context, schedule: PersistentSchedule, silent: Boolean = false) {
+        forgetAlarm(schedule)
+        SystemWakeScheduler.cancel(context, schedule, silent = silent)
+    }
+
+    private fun isAlarmEnsured(key: String): Boolean {
+        return synchronized(alarmEnsureLock) { ensuredAlarmKeys.contains(key) }
+    }
+
+    private fun rememberAlarm(schedule: PersistentSchedule) {
+        synchronized(alarmEnsureLock) {
+            ensuredAlarmKeys.add(alarmKey(schedule))
+        }
+    }
+
+    private fun forgetAlarm(schedule: PersistentSchedule) {
+        synchronized(alarmEnsureLock) {
+            ensuredAlarmKeys.remove(alarmKey(schedule))
+        }
+    }
+
+    private fun alarmKey(schedule: PersistentSchedule): String {
+        return listOf(
+            schedule.id,
+            schedule.kind,
+            schedule.name,
+            schedule.triggerAtMs.toString(),
+            schedule.toleranceMs.toString(),
+            schedule.dedupeKey,
+            canonicalPayloadJson(schedule.payloadJson),
+            schedule.ownerUserId?.trim().orEmpty(),
+            schedule.sessionEpoch.toString()
+        ).joinToString("|")
+    }
+
+    private fun canonicalPayloadJson(payloadJson: String): String {
+        val trimmed = payloadJson.trim().ifBlank { "{}" }
+        return try {
+            canonicalJsonValue(JSONObject(trimmed))
+        } catch (_: Throwable) {
+            trimmed
+        }
+    }
+
+    private fun canonicalJsonValue(value: Any?): String {
+        return when (value) {
+            null, JSONObject.NULL -> "null"
+            is JSONObject -> {
+                val keys = mutableListOf<String>()
+                val iterator = value.keys()
+                while (iterator.hasNext()) {
+                    keys.add(iterator.next())
+                }
+                keys.sorted().joinToString(prefix = "{", postfix = "}") { key ->
+                    JSONObject.quote(key) + ":" + canonicalJsonValue(value.opt(key))
+                }
+            }
+
+            is JSONArray -> {
+                (0 until value.length()).joinToString(prefix = "[", postfix = "]") { index ->
+                    canonicalJsonValue(value.opt(index))
+                }
+            }
+
+            is String -> JSONObject.quote(value)
+            is Number,
+            is Boolean -> value.toString()
+            else -> JSONObject.quote(value.toString())
+        }
     }
 
     private fun updateSchedule(id: String, updater: (PersistentSchedule) -> PersistentSchedule) {
@@ -343,6 +465,9 @@ object PersistentScheduleRegistry {
     private fun invalidateCache() {
         synchronized(cacheLock) {
             cache = null
+        }
+        synchronized(alarmEnsureLock) {
+            ensuredAlarmKeys.clear()
         }
     }
 }

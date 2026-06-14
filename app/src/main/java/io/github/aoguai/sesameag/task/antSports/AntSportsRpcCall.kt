@@ -111,7 +111,7 @@ object AntSportsRpcCall {
      * @remark 对应API：com.alipay.sportshealth.biz.rpc.SportsHealthCoinTaskRpc.queryCoinTaskPanel
      */
     fun queryCoinTaskPanel(): String {
-        val args1 = """[{"apiVersion":"energy","canAddHome":false,"chInfo":"medical_health","clientAuthStatus":"not_support","clientOS":"android","features":$FEATURES,"topTaskId":""}]"""
+        val args1 = """[{"canAddHome":false,"chInfo":"medical_health","clientAuthStatus":"not_support","clientOS":"android","features":$FEATURES,"topTaskId":""}]"""
         return RequestManager.requestString(QUERY_COIN_TASK_PANEL_RPC, args1)
     }
 
@@ -382,7 +382,7 @@ object AntSportsRpcCall {
      * @remark 对应API：com.alipay.sportshealth.biz.rpc.sportsHealthHomeRpc.queryEnergyBubbleModule
      */
     fun queryEnergyBubbleModule(): String {
-        val args1 = """[{"apiVersion":"energy","bubbleId":"","canAddHome":false,"chInfo":"$HOME_CH_INFO","clientAuthStatus":"not_support","clientOS":"android","distributionChannel":"","features":$FEATURES,"outBizNo":""}]"""
+        val args1 = """[{"apiVersion":"MERGE_SERVICE","bubbleId":"","canAddHome":false,"chInfo":"$HOME_CH_INFO","clientAuthStatus":"not_support","clientOS":"android","distributionChannel":"","features":$FEATURES,"outBizNo":""}]"""
         return RequestManager.requestString(QUERY_ENERGY_BUBBLE_MODULE_RPC, args1)
     }
 

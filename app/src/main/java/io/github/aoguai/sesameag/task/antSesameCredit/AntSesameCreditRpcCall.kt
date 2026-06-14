@@ -234,6 +234,28 @@ object AntSesameCreditRpcCall {
     }
 
     /**
+     * 芝麻粒积分宝箱查询：data.hasBox=true 且 data.status=WAIT_CLAIM 时可开启
+     */
+    @JvmStatic
+    fun queryPointTreasureBox(): String {
+        return RequestManager.requestString(
+            "com.antgroup.zmxy.zmmemberop.biz.rpc.PointHomeRpcManager.queryTreasureBox",
+            "[{}]"
+        )
+    }
+
+    /**
+     * 开启芝麻粒积分宝箱：成功返回 data.rewardAmount，开启后服务端将 status 置为 HANGING（进入冷却）
+     */
+    @JvmStatic
+    fun openPointTreasureBox(): String {
+        return RequestManager.requestString(
+            "com.antgroup.zmxy.zmmemberop.biz.rpc.PointHomeRpcManager.openTreasureBox",
+            "[{}]"
+        )
+    }
+
+    /**
      * 查询最近一次被操作的芝麻任务
      */
     @JvmStatic

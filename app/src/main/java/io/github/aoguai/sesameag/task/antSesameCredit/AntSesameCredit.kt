@@ -1161,9 +1161,16 @@ class AntSesameCredit : ModelTask() {
             if (items.isEmpty()) {
                 flagState = Status.TodayFlagState.NO_MORE_ACTION_TODAY
                 Log.sesame("芝麻信用💳[当前无待收取芝麻粒]")
+                // 即使无待收取芝麻粒，积分宝箱也可能处于 WAIT_CLAIM，可独立开启
+                handlePointTreasureBox("芝麻信用💳")
                 return@run
             }
             collectSesameFeedbackItems(items, withOneClick, "芝麻信用💳")
+            if (ApplicationHookConstants.isOffline()) {
+                return@run
+            }
+            // 收取芝麻粒后积分宝箱常 autoTriggerAfterCollect，尝试开启（领奖优先，服务端 status 自门控）
+            handlePointTreasureBox("芝麻信用💳")
             if (ApplicationHookConstants.isOffline()) {
                 return@run
             }
@@ -1177,6 +1184,38 @@ class AntSesameCredit : ModelTask() {
             Log.printStackTrace("$TAG.collectSesame", t)
         } finally {
             setFlagToday(StatusFlags.FLAG_SESAME_COLLECT_DONE, flagState)
+        }
+    }
+
+    /**
+     * 芝麻粒积分宝箱：queryTreasureBox 返回 data.hasBox=true 且 status=WAIT_CLAIM 时调用 openTreasureBox 开启领取。
+     * 开启后服务端把 status 置为 HANGING（30 分钟冷却），故由服务端 status 自门控，不写本地完成态。
+     * 失败按风控/业务显式记录与离线判定，不静默成功化。
+     */
+    private suspend fun handlePointTreasureBox(source: String) {
+        if (ApplicationHookConstants.isOffline()) {
+            return
+        }
+        try {
+            val queryJo = JSONObject(AntSesameCreditRpcCall.queryPointTreasureBox())
+            if (!ResChecker.checkRes(TAG, queryJo)) {
+                RpcOfflineRisk.enterOfflineIfNeeded("$TAG.treasureBox.query", queryJo)
+                return
+            }
+            val data = queryJo.optJSONObject("data") ?: return
+            if (!data.optBoolean("hasBox", false) || "WAIT_CLAIM" != data.optString("status")) {
+                return
+            }
+            val openJo = JSONObject(AntSesameCreditRpcCall.openPointTreasureBox())
+            if (!ResChecker.checkRes(TAG, openJo)) {
+                RpcOfflineRisk.enterOfflineIfNeeded("$TAG.treasureBox.open", openJo)
+                Log.error("$TAG.handlePointTreasureBox", "开启积分宝箱失败:$openJo")
+                return
+            }
+            val reward = openJo.optJSONObject("data")?.optInt("rewardAmount", 0) ?: 0
+            Log.sesame("$source[开启积分宝箱]#获得${reward}粒")
+        } catch (t: Throwable) {
+            Log.printStackTrace("$TAG.handlePointTreasureBox", t)
         }
     }
 

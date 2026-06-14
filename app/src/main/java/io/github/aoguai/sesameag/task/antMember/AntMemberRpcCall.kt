@@ -142,7 +142,15 @@ object AntMemberRpcCall {
     fun merchantSign(): String {
         return RequestManager.requestString(
             "alipay.mrchservbase.mrchpoint.sqyj.homepage.signin.v1",
-            "[{}]"
+            """[{"signScene":"TASK_LIST_SIGN"}]"""
+        )
+    }
+
+    @JvmStatic
+    fun merchantHomePage(): String {
+        return RequestManager.requestString(
+            "alipay.mrchservbase.mrchpoint.sqyj.homepage.v5",
+            """[{"context":{"dispenseTaskItemCode":"ZDH_CONTINUE_QY_ZJ","isGuide":"true","miniAppVersion":20260601,"underTakeTrace":"NULL"}}]"""
         )
     }
 
@@ -1183,6 +1191,21 @@ object AntMemberRpcCall {
             )
         } catch (e: Exception) {
             ""
+        }
+    }
+
+    @JvmStatic
+    fun welfareCenterUpdate(modeBitMask: Int = 9): String? {
+        return try {
+            val args = JSONObject().apply {
+                put("modeBitMask", modeBitMask)
+            }
+            RequestManager.requestString(
+                "com.alipay.finaggexpbff.needle.welfareCenter.update",
+                JSONArray().put(args).toString()
+            )
+        } catch (e: Exception) {
+            null
         }
     }
 

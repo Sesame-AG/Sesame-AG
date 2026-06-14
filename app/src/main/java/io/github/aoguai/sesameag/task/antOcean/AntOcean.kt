@@ -17,7 +17,6 @@ import io.github.aoguai.sesameag.util.FriendGuard
 import io.github.aoguai.sesameag.task.ModelTask
 import io.github.aoguai.sesameag.task.TaskCommon
 import io.github.aoguai.sesameag.task.TaskStatus
-import io.github.aoguai.sesameag.task.antForest.AntForestRpcCall
 import io.github.aoguai.sesameag.task.common.TaskFlowAction
 import io.github.aoguai.sesameag.task.common.TaskFlowActionResult
 import io.github.aoguai.sesameag.task.common.TaskFlowAdapter
@@ -549,7 +548,7 @@ class AntOcean : ModelTask() {
             return
         }
         Log.ocean("神奇海洋🌊[$reason]刷新主页，检查新增能量球")
-        refreshedHomePage.optJSONArray("bubbleVOList")?.let { collectEnergy(it) }
+        extractBubbleVOList(refreshedHomePage)?.let { collectEnergy(it) }
         rememberSelfOceanState(refreshedHomePage.optJSONObject("userInfoVO"))
     }
 
@@ -679,9 +678,7 @@ class AntOcean : ModelTask() {
     private suspend fun queryHomePage() {
         try {
             val joHomePage = queryHomePageData(showTaskPanel = true) ?: return
-            if (joHomePage.has("bubbleVOList")) {
-                collectEnergy(joHomePage.getJSONArray("bubbleVOList"))
-            }
+            extractBubbleVOList(joHomePage)?.let { collectEnergy(it) }
             val userInfoVO = joHomePage.optJSONObject("userInfoVO")
             rememberSelfOceanState(userInfoVO)
             if (cleanOcean?.value == true) {
@@ -703,7 +700,7 @@ class AntOcean : ModelTask() {
             if (cleanOcean?.value == true) {
                 queryUserRanking() // 清理
             }
-            refreshOceanHomeIfNeeded("清理流程")
+            refreshOceanHomeIfNeeded("能量/清理流程")
         } catch (t: Throwable) {
             Log.runtime(TAG, "queryHomePage err:")
             Log.printStackTrace(TAG, t)
@@ -729,38 +726,48 @@ class AntOcean : ModelTask() {
         }
     }
 
+    // 最新 queryHomePage 把能量球挪到了 resData.bubbleVOList（userInfoVO 等仍在顶层）；优先取 resData，回退顶层兼容旧结构
+    private fun extractBubbleVOList(homePage: JSONObject): JSONArray? {
+        return homePage.optJSONObject("resData")?.optJSONArray("bubbleVOList")
+            ?: homePage.optJSONArray("bubbleVOList")
+    }
+
     private fun collectEnergy(bubbleVOList: JSONArray) {
-        try {
-            for (i in 0 until bubbleVOList.length()) {
-                val bubble = bubbleVOList.getJSONObject(i)
-                if ("ocean" != bubble.getString("channel")) {
+        // 逐条处理：单个能量球字段缺失/结构变化只跳过该条并记录，不再因一个异常中断整段收取（根因A）
+        for (i in 0 until bubbleVOList.length()) {
+            try {
+                val bubble = bubbleVOList.optJSONObject(i) ?: continue
+                if ("ocean" != bubble.optString("channel")) {
                     continue
                 }
-                if ("AVAILABLE" == bubble.getString("collectStatus")) {
-                    val bubbleId = bubble.getLong("id")
-                    val userId = bubble.getString("userId")
-                    val s = AntForestRpcCall.collectEnergy("", userId, bubbleId)
-                    val jo = JsonUtil.parseJSONObjectOrNull(s) ?: continue
-                    if (ResChecker.checkRes(TAG, jo)) {
-                        val retBubbles = jo.optJSONArray("bubbles")
-                        if (retBubbles != null) {
-                            for (j in 0 until retBubbles.length()) {
-                                val retBubble = retBubbles.optJSONObject(j)
-                                if (retBubble != null) {
-                                    val collectedEnergy = retBubble.getInt("collectedEnergy")
-                                    Log.ocean("神奇海洋🌊收取[${UserMap.getMaskName(userId)}]#${collectedEnergy}g")
-                                    Toast.show("海洋能量🌊收取[${UserMap.getMaskName(userId)}]#${collectedEnergy}g")
-                                }
-                            }
-                        }
-                    } else {
-                        Log.runtime(TAG, jo.getString("resultDesc"))
-                    }
+                if ("AVAILABLE" != bubble.optString("collectStatus")) {
+                    continue
                 }
+                val bubbleId = bubble.optLong("id")
+                val userId = bubble.optString("userId")
+                if (bubbleId <= 0L || userId.isBlank()) {
+                    continue
+                }
+                val s = AntOceanRpcCall.collectEnergy(bubbleId.toString(), userId)
+                val jo = JsonUtil.parseJSONObjectOrNull(s) ?: continue
+                if (ResChecker.checkRes(TAG, jo)) {
+                    val retBubbles = jo.optJSONArray("bubbles")
+                    if (retBubbles != null) {
+                        for (j in 0 until retBubbles.length()) {
+                            val retBubble = retBubbles.optJSONObject(j) ?: continue
+                            val collectedEnergy = retBubble.optInt("collectedEnergy")
+                            Log.ocean("神奇海洋🌊收取[${UserMap.getMaskName(userId)}]#${collectedEnergy}g")
+                            Toast.show("海洋能量🌊收取[${UserMap.getMaskName(userId)}]#${collectedEnergy}g")
+                        }
+                        markOceanHomeRefreshNeeded()
+                    }
+                } else {
+                    Log.runtime(TAG, jo.optString("resultDesc"))
+                }
+            } catch (t: Throwable) {
+                Log.runtime(TAG, "collectEnergy item err:")
+                Log.printStackTrace(TAG, t)
             }
-        } catch (t: Throwable) {
-            Log.runtime(TAG, "queryHomePage err:")
-            Log.printStackTrace(TAG, t)
         }
     }
 

@@ -1228,6 +1228,21 @@ object AntForestRpcCall {
 
     @JvmStatic
     @Throws(JSONException::class)
+    fun listTaskByIdsopengreen(sceneCode: String, source: String, taskTypeList: Collection<String>): String {
+        val requestData = JSONObject().apply {
+            put("requestType", "RPC")
+            put("sceneCode", sceneCode)
+            put("source", source)
+            put("taskTypeList", JSONArray().apply {
+                taskTypeList.filter { it.isNotBlank() }.forEach { put(it) }
+            })
+        }
+        Log.forest("listTaskByIdsopengreen - 场景: $sceneCode, source: $source, taskTypes: ${taskTypeList.joinToString()}")
+        return RequestManager.requestString("com.alipay.antieptask.listTaskByIdsopengreen", "[$requestData]")
+    }
+
+    @JvmStatic
+    @Throws(JSONException::class)
     fun drawopengreen(activityId: String, sceneCode: String, source: String, userId: String): String {
         val requestData = JSONObject().apply {
             put("activityId", activityId)
@@ -1266,6 +1281,24 @@ object AntForestRpcCall {
             put("taskType", taskType)
         }
         Log.forest("receiveTaskAwardopengreen - 任务: $taskType, source: $source")
+        return RequestManager.requestString("com.alipay.antieptask.receiveTaskAwardopengreen", "[$requestData]")
+    }
+
+    @JvmStatic
+    @Throws(JSONException::class)
+    fun receiveTaskAwardopengreen(task: JSONObject): String {
+        val requestData = JSONObject(task.toString()).apply {
+            val bizInfoValue = opt("bizInfo")
+            if (bizInfoValue is String && bizInfoValue.isNotBlank()) {
+                runCatching { put("bizInfo", JSONObject(bizInfoValue)) }
+            }
+            if (!has("ignoreLimit")) put("ignoreLimit", true)
+            if (!has("requestType")) put("requestType", "RPC")
+        }
+        val sceneCode = requestData.optString("sceneCode")
+        val source = requestData.optString("source")
+        val taskType = requestData.optString("taskType")
+        Log.forest("receiveTaskAwardopengreen(raw) - 任务: $taskType, sceneCode: $sceneCode, source: $source")
         return RequestManager.requestString("com.alipay.antieptask.receiveTaskAwardopengreen", "[$requestData]")
     }
 

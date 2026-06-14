@@ -4139,6 +4139,43 @@ class AntMember : ModelTask() {
         )
     }
 
+    private fun refreshGoldTicketWelfareCenter(source: String): Boolean {
+        return try {
+            val updateResponse = AntMemberRpcCall.welfareCenterUpdate(9)
+            if (updateResponse.isNullOrBlank()) {
+                Log.error("黄金票🎫[$source] welfareCenter.update 无返回")
+                return false
+            }
+            val updateJson = JSONObject(updateResponse)
+            if (stopMemberMarketingForRpcRisk("AntMember.goldTicket.welfareUpdate", updateJson)) {
+                return false
+            }
+            if (!ResChecker.checkRes(TAG, updateJson)) {
+                val message = updateJson.optString("resultDesc", updateJson.optString("memo", updateJson.toString()))
+                Log.error("黄金票🎫[$source] welfareCenter.update 失败: $message")
+                return false
+            }
+            val welfareHome = AntMemberRpcCall.queryWelfareHome()
+            if (welfareHome.isNullOrBlank()) {
+                Log.error("黄金票🎫[$source] welfareCenter.index 回查无返回")
+                return false
+            }
+            val welfareJson = JSONObject(welfareHome)
+            if (stopMemberMarketingForRpcRisk("AntMember.goldTicket.welfareRequery", welfareJson)) {
+                return false
+            }
+            if (!ResChecker.checkRes(TAG, welfareJson)) {
+                val message = welfareJson.optString("resultDesc", welfareJson.optString("memo", welfareJson.toString()))
+                Log.error("黄金票🎫[$source] welfareCenter.index 回查失败: $message")
+                return false
+            }
+            true
+        } catch (e: Exception) {
+            Log.printStackTrace(TAG, e)
+            false
+        }
+    }
+
     /**
      * 黄金票签到逻辑
      *
@@ -4160,6 +4197,8 @@ class AntMember : ModelTask() {
             val collectCount = doGoldTicketIndexCollect("签到尝试")
             var refreshedHome = queryGoldTicketHomeUpsert()
             if (refreshedHome != null && !isGoldTicketCanSign(refreshedHome)) {
+                refreshGoldTicketWelfareCenter("首页收取签到")
+                refreshedHome = queryGoldTicketHomeUpsert() ?: refreshedHome
                 Log.member(
                     if (collectCount > 0) "黄金票🎫[签到成功]#通过首页收取完成签到"
                     else "黄金票🎫[签到成功]"
@@ -4177,6 +4216,7 @@ class AntMember : ModelTask() {
                     if (ResChecker.checkRes(TAG, signJson)) {
                         val signResult = signJson.optJSONObject("result")
                         val amount = signResult?.optJSONObject("prize")?.optString("amount").orEmpty()
+                        refreshGoldTicketWelfareCenter("签到")
                         refreshedHome = queryGoldTicketHomeUpsert()
                         signSuccess = refreshedHome != null && !isGoldTicketCanSign(refreshedHome)
                         if (signSuccess || amount.isNotBlank()) {
@@ -6811,6 +6851,14 @@ class AntMember : ModelTask() {
                 if (doMerchantZcjSignIn()) {
                     handled = true
                 }
+                val homeBeforeSign = queryMerchantHomePage("签到前")
+                val signInAvailable = homeBeforeSign?.optJSONObject("data")
+                    ?.takeIf { it.has("signIn") }
+                    ?.optBoolean("signIn", false)
+                if (signInAvailable == false) {
+                    Log.member("商家服务🏬[每日签到]#首页未显示可签到，今日按已处理")
+                    return@run true
+                }
                 val s = AntMemberRpcCall.merchantSign()
                 var jo = JSONObject(s)
                 if (stopMemberMarketingForRpcRisk("AntMember.merchant.sign", jo)) {
@@ -6825,11 +6873,13 @@ class AntMember : ModelTask() {
                 jo = jo.getJSONObject("data")
                 val signResult = jo.optString("signInResult")
                 val reward = jo.optString("todayReward")
-                if ("SUCCESS" == signResult) {
+                if ("SUCCESS" == signResult || "SIGNINED" == signResult) {
+                    queryMerchantHomePage("签到后")
                     Log.member("商家服务🏬[每日签到]#获得积分$reward")
                     return@run true
                 } else {
                     // 对于「已签到 / 不可签到」等情况，直接视为今日已处理，避免反复请求触发风控
+                    queryMerchantHomePage("签到后")
                     Log.member("商家服务🏬[每日签到]#未返回SUCCESS(signInResult=$signResult,todayReward=$reward)")
                     Log.member(s)
                     return@run true
@@ -6838,6 +6888,24 @@ class AntMember : ModelTask() {
                 Log.printStackTrace(TAG, "kmdkSignIn err:", t)
             }
             handled
+        }
+
+        private fun queryMerchantHomePage(scene: String): JSONObject? = CoroutineUtils.run {
+            try {
+                val response = JSONObject(AntMemberRpcCall.merchantHomePage())
+                if (stopMemberMarketingForRpcRisk("AntMember.merchant.homePage", response)) {
+                    return@run null
+                }
+                val evaluation = evaluateMerchantRpc(response)
+                if (!evaluation.success) {
+                    logMerchantRpcFailure("首页回查[$scene]", response, evaluation)
+                    return@run null
+                }
+                return@run response
+            } catch (t: Throwable) {
+                Log.printStackTrace(TAG, "queryMerchantHomePage err:", t)
+            }
+            null
         }
 
         /**

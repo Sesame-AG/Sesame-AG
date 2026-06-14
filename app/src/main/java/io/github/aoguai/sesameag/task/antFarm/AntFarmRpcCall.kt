@@ -526,6 +526,14 @@ object AntFarmRpcCall {
     }
 
     @JvmStatic
+    fun listCookbook(): String {
+        return requestString(
+            "com.alipay.antfarm.listCookbook",
+            "[{\"requestType\":\"RPC\",\"sceneCode\":\"ANTFARM\",\"source\":\"ACHIEVEMENT\",\"version\":\"unknown\"}]"
+        )
+    }
+
+    @JvmStatic
     fun collectDailyLimitedFoodMaterial(dailyLimitedFoodMaterialAmount: Int): String {
         return requestString(
             "com.alipay.antfarm.collectDailyLimitedFoodMaterial",

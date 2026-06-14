@@ -2164,14 +2164,18 @@ class AntFarm : ModelTask() {
                 if (usedCount >= 2) {
                     Log.farm("今日加饭卡已使用${usedCount}/2，跳过使用")
                 } else {
-                    val result = useFarmTool(ownerFarmId, ToolType.BIG_EATER_TOOL)
-                    if (result) {
-                        Log.farm("使用道具🎭[加饭卡]！")
-                        DataStore.put(usedKey, usedCount + 1)
-                        // 刷新状态
-                        syncAnimalStatus(ownerFarmId)
-                    } else {
-                        Log.farm("⚠️使用道具🎭[加饭卡]失败，可能卡片不足或状态异常~")
+                    when (useFarmToolDetailed(ownerFarmId, ToolType.BIG_EATER_TOOL)) {
+                        FarmToolUseResult.SUCCESS -> {
+                            Log.farm("使用道具🎭[加饭卡]！")
+                            DataStore.put(usedKey, usedCount + 1)
+                            // 刷新状态
+                            syncAnimalStatus(ownerFarmId)
+                        }
+
+                        FarmToolUseResult.SKIPPED -> Unit
+                        FarmToolUseResult.FAILED -> {
+                            Log.farm("⚠️使用道具🎭[加饭卡]失败，可能卡片不足或状态异常~")
+                        }
                     }
                 }
             }
@@ -4368,6 +4372,12 @@ class AntFarm : ModelTask() {
         USER_LIMIT
     }
 
+    private enum class FarmToolUseResult {
+        SUCCESS,
+        SKIPPED,
+        FAILED
+    }
+
     internal val accelerateToolCount: Int
         get() = farmTools.find { it.toolType == ToolType.ACCELERATETOOL }?.toolCount ?: 0
 
@@ -4664,14 +4674,18 @@ class AntFarm : ModelTask() {
     }
 
     internal fun useFarmTool(targetFarmId: String?, toolType: ToolType): Boolean {
+        return useFarmToolDetailed(targetFarmId, toolType) == FarmToolUseResult.SUCCESS
+    }
+
+    private fun useFarmToolDetailed(targetFarmId: String?, toolType: ToolType): FarmToolUseResult {
         try {
             if (invalidToolTypesThisRound.contains(toolType)) {
                 Log.farm("道具🎭[${toolType.nickName()}]本轮已被判定为无效，跳过继续尝试")
-                return false
+                return FarmToolUseResult.SKIPPED
             }
             if (toolType == ToolType.FENCETOOL && hasFence) {
                 Log.farm("🛡️ 篱笆效果尚在（剩余${fenceCountDown / 60}分钟），跳过重复使用")
-                return false
+                return FarmToolUseResult.SKIPPED
             }
             val allowReplenish = canReplenishFarmTool(toolType)
             var tool = findFarmTool(toolType, forceRefresh = toolType != ToolType.ACCELERATETOOL)
@@ -4685,7 +4699,7 @@ class AntFarm : ModelTask() {
                 }
                 if (tool == null) {
                     Log.farm("背包中未找到道具🎭[${toolType.nickName()}]，跳过使用")
-                    return false
+                    return FarmToolUseResult.SKIPPED
                 }
             }
             if (tool.toolCount <= 0) {
@@ -4698,7 +4712,7 @@ class AntFarm : ModelTask() {
                 }
                 if (tool == null || tool.toolCount <= 0) {
                     Log.farm("背包中道具🎭[${toolType.nickName()}]数量为0，跳过使用")
-                    return false
+                    return FarmToolUseResult.SKIPPED
                 }
             }
 
@@ -4711,13 +4725,17 @@ class AntFarm : ModelTask() {
             val memo = jo.optString("memo")
             val resultCode = jo.optString("resultCode")
             if (resultCode == "348" || memo.contains("道具使用无效")) {
-                return confirmFarmToolResultAfterInvalid(
+                return if (confirmFarmToolResultAfterInvalid(
                     targetFarmId,
                     toolType,
                     toolCountBefore,
                     wasBigEaterActive,
                     wasAcceleratingActive
-                )
+                )) {
+                    FarmToolUseResult.SUCCESS
+                } else {
+                    FarmToolUseResult.FAILED
+                }
             }
             if (ResChecker.checkRes(TAG, jo)) {
                 val hasNextToolId = jo.optString("lastToolId", "").isNotBlank()
@@ -4730,7 +4748,7 @@ class AntFarm : ModelTask() {
                 if (toolType != ToolType.ACCELERATETOOL || !hasNextToolId) {
                     listFarmTool()
                 }
-                return true
+                return FarmToolUseResult.SUCCESS
             } else {
                 // 针对加速卡：当日达到上限(resultCode=3D16)后，设置当日标记，避免后续重复尝试
                 if (toolType == ToolType.ACCELERATETOOL && resultCode == "3D16") {
@@ -4739,11 +4757,12 @@ class AntFarm : ModelTask() {
                 }
                 Log.farm(memo.ifBlank { "使用道具🎭[${toolType.nickName()}]失败" })
                 Log.farm(s)
+                return FarmToolUseResult.FAILED
             }
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "useFarmTool err:",t)
         }
-        return false
+        return FarmToolUseResult.FAILED
     }
 
     internal suspend fun feedFriend() {
@@ -5312,6 +5331,11 @@ class AntFarm : ModelTask() {
         val deltaProduce: Double = 0.0
     )
 
+    private data class SpecialFoodCuisineRefresh(
+        val cuisineList: JSONArray?,
+        val refreshed: Boolean
+    )
+
     /**
      * 使用特殊美食 - 批量模式（支持连吃10个）
      * @param cuisineList 待使用的美食列表
@@ -5329,14 +5353,43 @@ class AntFarm : ModelTask() {
     ): Int {
         var usedCount = 0
         try {
-            val stockList = buildSpecialFoodStocks(cuisineList)
+            val refreshedCuisine = refreshSpecialFoodCuisineList("使用前")
+            val sourceCuisineList = refreshedCuisine.cuisineList ?: cuisineList
+            val stockList = buildSpecialFoodStocks(sourceCuisineList)
             val totalInventory = totalSpecialFoodStock(stockList)
-            var remainingToEat = if (maxUsage == -1) totalInventory else min(maxUsage, totalInventory)
+            Log.farm("美食处理：统计到美食库共有美食 $totalInventory 个")
+            if (totalInventory <= 0) {
+                Log.farm("美食处理：服务端库存为空或数量为0，跳过useFarmFood")
+                return 0
+            }
+
+            val usedTodayBefore = Status.getIntFlagToday(usageCountFlag) ?: 0
+            val remainingDailyQuota = when {
+                usageDailyLimit < 0 -> totalInventory
+                usageDailyLimit == 0 -> 0
+                else -> (usageDailyLimit - usedTodayBefore).coerceAtLeast(0)
+            }
+            if (remainingDailyQuota <= 0) {
+                Status.setFlagToday(usageLimitFlag)
+                Log.farm("${usageLabel}今日已使用${usedTodayBefore}个，达到每日上限${usageDailyLimit}个，跳过")
+                return 0
+            }
+
+            val requestedUsage = when {
+                maxUsage == -1 -> totalInventory
+                maxUsage <= 0 -> 0
+                else -> maxUsage
+            }
+            if (requestedUsage <= 0) {
+                Log.farm("美食处理：本次目标使用数量为0，跳过useFarmFood")
+                return 0
+            }
+
+            var remainingToEat = min(min(requestedUsage, totalInventory), remainingDailyQuota)
             if (remainingToEat <= 0) return 0
 
             val targetMode = targetEggGap > 0.0
             var remainingTarget = targetEggGap.coerceAtLeast(0.0)
-            Log.farm("美食处理：统计到美食库共有美食 $totalInventory 个")
             if (targetMode) {
                 Log.farm("${usageLabel}目标补蛋：目标差额${formatSpecialFoodProduce(remainingTarget)}颗，最多使用${remainingToEat}个")
             } else {
@@ -5393,6 +5446,70 @@ class AntFarm : ModelTask() {
             Log.farm("${usageLabel}今日已累计使用${newUsedToday}个")
         }
         return usedCount
+    }
+
+    private fun refreshSpecialFoodCuisineList(reason: String): SpecialFoodCuisineRefresh {
+        var latestCuisineList: JSONArray? = null
+        var refreshed = false
+        val userId = UserMap.currentUid
+        if (userId.isNullOrBlank()) {
+            return SpecialFoodCuisineRefresh(null, false)
+        }
+
+        runCatching {
+            JSONObject(AntFarmRpcCall.enterFarm(userId, userId))
+        }.onSuccess { farmHome ->
+            if (ResChecker.checkRes(TAG, farmHome)) {
+                updateSpecialFoodFarmSnapshot(farmHome)
+                farmHome.optJSONArray("cuisineList")?.let {
+                    latestCuisineList = it
+                    refreshed = true
+                }
+            } else {
+                Log.farm("美食库存回查[$reason] enterFarm失败 raw=$farmHome")
+            }
+        }.onFailure {
+            Log.printStackTrace(TAG, "美食库存回查[$reason] enterFarm异常:", it)
+        }
+
+        runCatching {
+            JSONObject(AntFarmRpcCall.enterKitchen(userId))
+        }.onSuccess { kitchen ->
+            if (ResChecker.checkRes(TAG, kitchen)) {
+                kitchen.optJSONArray("cuisineList")?.let {
+                    latestCuisineList = it
+                    refreshed = true
+                }
+            } else {
+                Log.farm("美食库存回查[$reason] enterKitchen失败 raw=$kitchen")
+            }
+        }.onFailure {
+            Log.printStackTrace(TAG, "美食库存回查[$reason] enterKitchen异常:", it)
+        }
+
+        runCatching {
+            JSONObject(AntFarmRpcCall.listCookbook())
+        }.onSuccess { cookbook ->
+            if (!ResChecker.checkRes(TAG, cookbook)) {
+                Log.farm("美食菜谱回查[$reason] listCookbook失败 raw=$cookbook")
+            }
+        }.onFailure {
+            Log.printStackTrace(TAG, "美食菜谱回查[$reason] listCookbook异常:", it)
+        }
+
+        return SpecialFoodCuisineRefresh(latestCuisineList, refreshed)
+    }
+
+    private fun updateSpecialFoodFarmSnapshot(response: JSONObject) {
+        val farmProduce = response.optJSONObject("farmVO")?.optJSONObject("farmProduce")
+            ?: response.optJSONObject("farmProduce")
+            ?: response.optJSONObject("foodEffect")
+        val latestBenevolenceScore = farmProduce?.optDouble("benevolenceScore", Double.NaN) ?: Double.NaN
+        val targetProduce = farmProduce?.optDouble("targetProduce", Double.NaN) ?: Double.NaN
+        when {
+            !latestBenevolenceScore.isNaN() -> benevolenceScore = latestBenevolenceScore
+            !targetProduce.isNaN() -> benevolenceScore = targetProduce
+        }
     }
 
     private fun buildSpecialFoodStocks(cuisineList: JSONArray): MutableList<SpecialFoodStock> {
@@ -5596,9 +5713,17 @@ class AntFarm : ModelTask() {
         remainingTarget: Double?,
         usageLabel: String
     ): SpecialFoodBatchResult {
-        val currentBatchArray = buildSpecialFoodRequest(plan.uses)
         val usedNames = formatSpecialFoodUses(plan.uses)
         val usedCount = countSpecialFoodUses(plan.uses)
+        if (usedCount <= 0 || plan.uses.any { it.count <= 0 }) {
+            Log.farm("${usageLabel} useFarmFood 请求已拦截：本批次没有可消耗库存")
+            return SpecialFoodBatchResult(success = false)
+        }
+        val currentBatchArray = buildSpecialFoodRequest(plan.uses)
+        if (currentBatchArray.length() == 0) {
+            Log.farm("${usageLabel} useFarmFood 请求已拦截：请求体为空")
+            return SpecialFoodBatchResult(success = false)
+        }
         val estimatedText = plan.estimatedProduce?.let { formatSpecialFoodProduce(it) } ?: "未知"
         val targetText = remainingTarget?.let { "，目标差额${formatSpecialFoodProduce(it)}颗" } ?: ""
         if (plan.unknownProbe) {
@@ -5631,7 +5756,13 @@ class AntFarm : ModelTask() {
             benevolenceScore = targetProduce
         }
         learnSpecialFoodProduce(plan.uses, deltaProduce)
-        updateSpecialFoodStockAfterUse(stockList, joRes, plan.uses)
+        val refreshedCuisine = refreshSpecialFoodCuisineList("使用后")
+        if (refreshedCuisine.refreshed && refreshedCuisine.cuisineList != null) {
+            stockList.clear()
+            stockList.addAll(buildSpecialFoodStocks(refreshedCuisine.cuisineList))
+        } else {
+            updateSpecialFoodStockAfterUse(stockList, joRes, plan.uses)
+        }
 
         val targetProduceText = if (targetProduce.isNaN()) "" else "，使用后进度${formatSpecialFoodProduce(targetProduce)}"
         Log.farm(
@@ -5647,6 +5778,9 @@ class AntFarm : ModelTask() {
     private fun buildSpecialFoodRequest(uses: List<SpecialFoodUse>): JSONArray {
         val request = JSONArray()
         for (use in uses) {
+            if (use.count <= 0) {
+                continue
+            }
             val snack = JSONObject()
             snack.put("cookbookId", use.cookbookId)
             snack.put("cuisineId", use.cuisineId)
@@ -7426,7 +7560,7 @@ class AntFarm : ModelTask() {
             val jo =
                 JSONObject(AntFarmRpcCall.familyEatTogether(familyGroupId, friendUserIdList, array))
             if (ResChecker.checkRes(TAG, jo)) {
-                Log.farm("庄园家庭🏠" + periodName + "请客#消耗美食" + friendUserIdList.length() + "份")
+                Log.farm("庄园家庭🏠" + periodName + "请客#消耗美食" + friendUserIdList.length() + "份（最近美食库存与特殊食品/补蛋共用）")
                 syncFamilyStatusIntimacy(familyGroupId)
             }
         } catch (e: CancellationException) {
@@ -7691,15 +7825,23 @@ class AntFarm : ModelTask() {
             Log.farm("🚀 开始执行手动使用特殊美食任务，目标数量: $count")
             val jo = enterFarm()
             if (jo != null) {
-                val cuisineList = jo.getJSONArray("cuisineList")
+                val cuisineList = jo.optJSONArray("cuisineList")
+                if (cuisineList == null) {
+                    Log.farm("❌ 手动使用特殊美食失败：cuisineList 为空")
+                    return
+                }
                 AntFarmRpcCall.queryLoveCabin(UserMap.currentUid)
                 syncAnimalStatus(ownerFarmId)
 
                 if (AnimalFeedStatus.SLEEPY.name == ownerAnimal.animalFeedStatus) {
                     Log.farm("❌ 小鸡正在睡觉，无法使用美食")
                 } else {
-                    useSpecialFood(cuisineList, count)
-                    Log.farm("✅ 手动使用特殊美食任务处理完毕")
+                    val usedCount = useSpecialFood(cuisineList, count)
+                    if (usedCount > 0) {
+                        Log.farm("✅ 手动使用特殊美食任务处理完毕，实际使用${usedCount}个")
+                    } else {
+                        Log.farm("⚠️ 手动使用特殊美食未消耗库存")
+                    }
                 }
             } else {
                 Log.farm("❌ 进入庄园失败，无法执行任务")
