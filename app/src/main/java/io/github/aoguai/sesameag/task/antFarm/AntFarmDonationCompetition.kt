@@ -102,6 +102,20 @@ internal fun AntFarm.handleDonationCompetition() {
             return
         }
 
+        val activityConf = jo.optJSONObject("donationCompetitionActivityConf")
+        val seasonEndTime = activityConf?.optLong("endTime") ?: 0L
+        if (seasonEndTime in 1..now) {
+            Log.record(TAG, "🏁 当前赛季已于 ${TimeUtil.getFormatTime(seasonEndTime, "yyyy-MM-dd HH:mm:ss")} 结束，停止处理")
+            return
+        }
+
+        if (receiveDonationCompetitionAward?.value == true) {
+            val snapshot = queryDonationAwardSnapshot()
+            if (snapshot != null && snapshot.starsToHighest > 0) {
+                checkAndClaimProgressAwards(jo, snapshot.starsToHighest)
+            }
+        }
+
         scheduleDonationCompetitionTask(endCal.timeInMillis)
 
     } catch (e: Exception) {
@@ -1001,4 +1015,62 @@ private fun AntFarm.fetchCuisineListForCompetition(): JSONArray? {
         Log.printStackTrace(TAG, "fetchCuisineListForCompetition err:", e)
         null
     }
+}
+
+/**
+ * 专门处理累计捐蛋进度奖励
+ * @return 本次领取的星星总数
+ */
+private fun AntFarm.checkAndClaimProgressAwards(rankJo: JSONObject, starsToHighest: Int): Int {
+    if (receiveDonationCompetitionAward?.value != true) return 0
+    try {
+        val progress = rankJo.optJSONObject("seasonDonationProgress") ?: return 0
+        val nodes = progress.optJSONArray("nodes") ?: return 0
+
+        var unreceivedStars = 0
+        for (i in 0 until nodes.length()) {
+            val node = nodes.getJSONObject(i)
+            val awardNum = node.optInt("awardNum")
+            if (node.optString("awardType") == "STAR") {
+                if (node.optString("status").equals("UNRECEIVED", ignoreCase = true)) {
+                    unreceivedStars += awardNum
+                }
+            }
+        }
+
+        if (unreceivedStars <= 0) return 0
+
+        val now = System.currentTimeMillis()
+        val activityConf = rankJo.optJSONObject("donationCompetitionActivityConf")
+        val endTime = activityConf?.optLong("endTime") ?: 0L
+
+        // 如果当前时间已经超过赛季结束时间，绝对不允许调用领奖接口
+        if (endTime in 1..now) return 0
+
+        // 判定是否进入赛季最后一天 (结束当天的 00:00:00 至 结束时间点)
+        val isLastDay = TimeUtil.isSameDay(now, endTime)
+
+        // 判定：当前待领取的星星足以让你直接满级
+        val isKillShot = unreceivedStars >= starsToHighest
+
+        if (isKillShot || isLastDay) {
+            if (isLastDay && !isKillShot) {
+                Log.record(TAG, "📅 赛季收官：当前已进入最后一天，领取累计捐蛋奖励 (待领: $unreceivedStars 🌟)")
+            } else {
+                Log.record(TAG, "🎯 累计捐蛋奖励：当前差 ${starsToHighest}🌟，待领 ${unreceivedStars}🌟，可直接直达巅峰！")
+            }
+
+            val res = AntFarmRpcCall.receiveDonationCompetitionProgressAward()
+            if (ResChecker.checkRes(TAG, res)) {
+                Log.record(TAG, "🎉 成功领取赛季累计进度奖励 (+$unreceivedStars 🌟)")
+                receiveCompetitionAwards()
+                return unreceivedStars
+            }
+        } else {
+            Log.record(TAG, "⏳ 进度奖暂存：当前差 ${starsToHighest}🌟，待领 ${unreceivedStars}🌟，尚未达到满级临界点，暂不领取")
+        }
+    } catch (e: Exception) {
+        Log.printStackTrace(TAG, "checkAndClaimProgressAwards err:", e)
+    }
+    return 0
 }
