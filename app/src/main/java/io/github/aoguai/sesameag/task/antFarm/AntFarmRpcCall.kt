@@ -1714,5 +1714,19 @@ object AntFarmRpcCall {
         }
         return RequestManager.requestString("com.alipay.antfarm.receiveDonationLevelReward", "[$args]")
     }
+
+    @JvmStatic
+    fun receiveDonationCompetitionProgressAward(): String {
+        val args = JSONObject().apply {
+            put("requestType", "NORMAL")
+            put("sceneCode", "ANTFARM")
+            put("source", "H5")
+            put("version", VERSION)
+        }
+        return RequestManager.requestString(
+            "com.alipay.antfarm.receiveDonationCompetitionProgressAward",
+            "[$args]"
+        )
+    }
 }
 
