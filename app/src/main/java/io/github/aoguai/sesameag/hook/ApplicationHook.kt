@@ -1266,7 +1266,7 @@ class ApplicationHook {
             updateRunningStatus(message)
             ApplicationHookConstants.clearPendingTriggers("legal_unaccepted")
             AccountSessionCoordinator.refreshWorkflowState(appContext, "legal_unaccepted", legalAccepted = false)
-            return false
+            return true
         }
 
         private fun stopHandler() {
