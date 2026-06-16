@@ -3,10 +3,11 @@ package io.github.aoguai.sesameag.task.antForest
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.core.type.TypeReference
 import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
-import io.github.aoguai.sesameag.util.DataStore
 import io.github.aoguai.sesameag.util.FriendGuard
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.TimeUtil
+import io.github.aoguai.sesameag.util.UserDataStore
+import io.github.aoguai.sesameag.util.UserDataStoreManager
 import io.github.aoguai.sesameag.util.maps.UserMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -95,26 +96,22 @@ object EnergyWaitingPersistence {
     private val lastPersistedTaskCount = AtomicInteger(-1)
 
     /**
-     * 获取当前账号的 DataStore 存储键
-     * 每个账号使用独立的键，避免多账号切换时数据混淆
-     *
-     * @return 包含当前用户 uid 的存储键，如果 uid 为空则使用默认键
+     * 获取当前账号的 UserDataStore 实例
      */
-    private fun getDataStoreKey(): String {
+    private fun getStore(): UserDataStore? {
         val currentUid = AccountSessionCoordinator.currentUserId() ?: UserMap.currentUid
-        return if (currentUid.isNullOrEmpty()) {
-            "energy_waiting_tasks_default"
-        } else {
-            "energy_waiting_tasks_$currentUid"
-        }
+        return UserDataStoreManager.getInstance(currentUid)
     }
 
+    private fun getDataStoreKey(): String = "energy_waiting_tasks"
+
     /**
-     * 保存蹲点任务到 DataStore（异步）
+     * 保存蹲点任务到 UserDataStore（异步）
      *
      * @param tasks 当前活跃的蹲点任务
      */
     fun saveTasks(tasks: Map<String, EnergyWaitingManager.WaitingTask>) {
+        val store = getStore() ?: return
         val persistDataList = tasks.values.map { task ->
             WaitingTaskPersistData.fromWaitingTask(task)
         }
@@ -127,7 +124,7 @@ object EnergyWaitingPersistence {
                         return@withLock
                     }
 
-                    DataStore.put(dataStoreKey, persistDataList)
+                    store.put(dataStoreKey, persistDataList)
                     val currentCount = persistDataList.size
                     val previousCount = lastPersistedTaskCount.getAndSet(currentCount)
                     val statusText = when {
@@ -143,7 +140,7 @@ object EnergyWaitingPersistence {
                         else ->
                             "持久化同步：当前有效蹲点任务仍为${currentCount}个"
                     }
-                    Log.forest("$statusText (key: $dataStoreKey)")
+                    Log.forest("$statusText (uid: ${store.uid})")
                 }
             } catch (e: Exception) {
                 Log.printStackTrace(TAG, "保存蹲点任务失败:", e)
@@ -152,7 +149,7 @@ object EnergyWaitingPersistence {
     }
 
     /**
-     * 从 DataStore 加载蹲点任务
+     * 从 UserDataStore 加载蹲点任务
      *
      * @return 恢复的任务列表（已过滤过期任务）
      */
@@ -160,13 +157,14 @@ object EnergyWaitingPersistence {
         return try {
             val activeSession = AccountSessionCoordinator.currentSession()
                 ?: return emptyList()
+            val store = getStore() ?: return emptyList()
             val dataStoreKey = getDataStoreKey()
             val typeRef = object : TypeReference<List<WaitingTaskPersistData>>() {}
-            val persistDataList = DataStore.getOrCreate(dataStoreKey, typeRef)
+            val persistDataList = store.getOrCreate(dataStoreKey, typeRef)
 
             if (persistDataList.isEmpty()) {
                 lastPersistedTaskCount.set(0)
-                Log.forest("持久化存储中无蹲点任务 (key: $dataStoreKey)")
+                Log.forest("持久化存储中无蹲点任务 (uid: ${store.uid})")
                 return emptyList()
             }
 
@@ -217,11 +215,12 @@ object EnergyWaitingPersistence {
      * 清空持久化存储中的所有任务
      */
     fun clearTasks() {
+        val store = getStore() ?: return
         try {
             val dataStoreKey = getDataStoreKey()
-            DataStore.put(dataStoreKey, emptyList<WaitingTaskPersistData>())
+            store.put(dataStoreKey, emptyList<WaitingTaskPersistData>())
             lastPersistedTaskCount.set(0)
-            Log.forest("清空持久化存储 (key: $dataStoreKey)")
+            Log.forest("清空持久化存储 (uid: ${store.uid})")
         } catch (e: Exception) {
             Log.error(TAG, "清空持久化存储失败: ${e.message}")
         }
