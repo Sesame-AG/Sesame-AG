@@ -10,6 +10,7 @@ import io.github.aoguai.sesameag.util.DataStore
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.ResChecker
 import io.github.aoguai.sesameag.util.TimeUtil
+import io.github.aoguai.sesameag.util.UserDataStoreManager
 import io.github.aoguai.sesameag.util.maps.UserMap
 import kotlinx.coroutines.delay
 import org.json.JSONArray
@@ -38,7 +39,8 @@ private data class DonationAwardSnapshot(
     val currentLevelName: String,
     val starsToHighest: Int,
     val totalStarsToHighest: Int,
-    val allRewardsReceived: Boolean
+    val allRewardsReceived: Boolean,
+    val hasUnclaimedAwards: Boolean = false
 )
 
 private data class StableDonationPlan(
@@ -60,6 +62,11 @@ private data class DonationRankTarget(
 
 internal fun AntFarm.handleDonationCompetition() {
     if (donationCompetition?.value != true) return
+
+    val store = UserDataStoreManager.getCurrentInstance()
+    if (store?.hasPersistentFlag("AntFarm::DonationCompetitionFinished") == true) {
+        return
+    }
 
     if (receiveDonationCompetitionAward?.value == true &&
         !Status.hasFlagToday(StatusFlags.FLAG_FARM_DONATION_COMPETITION_AWARD_RECEIVED)
@@ -109,9 +116,17 @@ internal fun AntFarm.handleDonationCompetition() {
             return
         }
 
-        if (receiveDonationCompetitionAward?.value == true) {
-            val snapshot = queryDonationAwardSnapshot()
-            if (snapshot != null && snapshot.starsToHighest > 0) {
+        val snapshot = queryDonationAwardSnapshot()
+        if (snapshot != null) {
+            if (snapshot.starsToHighest <= 0 && !snapshot.hasUnclaimedAwards) {
+                Log.record(TAG, "🏆 已到达最高段位并拿满奖励，本赛季不再参与排名竞争")
+                if (seasonEndTime > now) {
+                    Log.record(TAG, "📅 已设置持久化拦截，本赛季结束前将不再运行捐蛋排位赛")
+                    store?.setPersistentFlag("AntFarm::DonationCompetitionFinished", seasonEndTime)
+                }
+                return
+            }
+            if (receiveDonationCompetitionAward?.value == true && snapshot.starsToHighest > 0) {
                 checkAndClaimProgressAwards(jo, snapshot.starsToHighest)
             }
         }
@@ -233,8 +248,9 @@ private fun AntFarm.isStableDonationCompetitionMode(): Boolean {
 }
 
 private fun AntFarm.hasCompletedStableDonationCompetition(): Boolean {
+    if (UserDataStoreManager.getCurrentInstance()?.hasPersistentFlag("AntFarm::DonationCompetitionFinished") == true) return true
     val snapshot = queryDonationAwardSnapshot() ?: return false
-    if (!snapshot.allRewardsReceived || snapshot.starsToHighest > 0) return false
+    if (snapshot.hasUnclaimedAwards || snapshot.starsToHighest > 0) return false
     Log.record(TAG, "排位赛稳定模式：最高段位奖励已领取完成，跳过排位赛处理")
     return true
 }
@@ -271,15 +287,20 @@ private fun parseDonationAwardSnapshot(jo: JSONObject): DonationAwardSnapshot? {
     var totalStarsToHighest = 0
     var validAwardCount = 0
     var receivedAwardCount = 0
+    var hasUnclaimed = false
 
     for (i in 0 until awardList.length()) {
         val levelItem = awardList.optJSONObject(i) ?: continue
         val upNum = levelItem.optInt("levelStarUpNum", 0)
+        val status = levelItem.optString("status")
         if (levelItem.optString("rightsId").isNotBlank()) {
             validAwardCount++
-            if (levelItem.optString("status").equals("received", ignoreCase = true)) {
+            if (status.equals("received", ignoreCase = true)) {
                 receivedAwardCount++
             }
+        }
+        if (status.equals("unreceived", ignoreCase = true)) {
+            hasUnclaimed = true
         }
         if (upNum >= TOP_LEVEL_STAR_SENTINEL) continue
 
@@ -298,7 +319,8 @@ private fun parseDonationAwardSnapshot(jo: JSONObject): DonationAwardSnapshot? {
         currentLevelName = currentLevelName,
         starsToHighest = starsToHighest,
         totalStarsToHighest = totalStarsToHighest,
-        allRewardsReceived = validAwardCount > 0 && receivedAwardCount == validAwardCount
+        allRewardsReceived = validAwardCount > 0 && receivedAwardCount == validAwardCount,
+        hasUnclaimedAwards = hasUnclaimed
     )
 }
 
