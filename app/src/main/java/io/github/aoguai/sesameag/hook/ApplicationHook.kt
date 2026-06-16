@@ -1029,9 +1029,9 @@ class ApplicationHook {
                 Config.load(userId)
                 val activeUserSnapshot = AccountSessionCoordinator.ensureActiveUserSnapshot(userId, activeClassLoader)
                 val legalAccepted = Config.isLoaded() && Config.isLegalAcceptedForCurrentVersion()
+                // 不再以 LEGAL 勾选状态强制阻止工作流：只要有执行权限且非离线即可允许工作流
                 val workflowAllowed =
                     WorkflowRootGuard.hasGrantedRoot() &&
-                        legalAccepted &&
                         !ApplicationHookConstants.isOffline()
                 AccountSessionCoordinator.applySession(
                     context = appContext,
@@ -1256,16 +1256,11 @@ class ApplicationHook {
             }
             if (Config.isLegalAcceptedForCurrentVersion()) {
                 AccountSessionCoordinator.refreshWorkflowState(appContext, "legal_accepted", legalAccepted = true)
-                return true
+            } else {
+                // 即使未勾选，也不阻止工作流运行；仅刷新状态以供界面/日志显示
+                AccountSessionCoordinator.refreshWorkflowState(appContext, "legal_unaccepted", legalAccepted = false)
+                record(TAG, "⚠️ 未勾选已阅读 LICENSE 与 LEGAL 说明，但允许工作流继续")
             }
-
-            pendingInit = false
-            pendingInitReason = null
-            val message = "未勾选已阅读 LICENSE 与 LEGAL 说明，已禁止工作流"
-            record(TAG, "⛔ $message")
-            updateRunningStatus(message)
-            ApplicationHookConstants.clearPendingTriggers("legal_unaccepted")
-            AccountSessionCoordinator.refreshWorkflowState(appContext, "legal_unaccepted", legalAccepted = false)
             return true
         }
 

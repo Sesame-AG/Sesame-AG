@@ -427,7 +427,11 @@ class Config private constructor() {
                     }
                 }
             }
-            INSTANCE.legalAcceptedAppVersion = acceptedVersion
+            // 注意：如果配置 JSON 中没有该字段（acceptedVersion == null），则保持已有值不被覆盖，
+            // 避免因手动或格式化操作丢失该字段导致已勾选项被重置。
+            if (acceptedVersion != null) {
+                INSTANCE.legalAcceptedAppVersion = acceptedVersion
+            }
         }
 
         private fun resolveReadableConfigFile(userId: String?): File? {
