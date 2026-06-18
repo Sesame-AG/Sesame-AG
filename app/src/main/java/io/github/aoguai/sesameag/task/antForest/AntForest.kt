@@ -7326,7 +7326,8 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 val drawRights = drawRightsSource.drawRights
 
                 // 换算实际宝箱次数
-                val canUseCount = getForestDrawQuotaCanUse(drawRights)
+                val rawCanUseCount = getForestDrawQuotaCanUse(drawRights)
+                val canUseCount = rawCanUseCount.coerceAtMost(10)
                 val limitCount = getForestDrawQuotaLimit(drawRights)
                 val usedCount = getForestDrawUsedCount(drawRights)
                 var openedCount = 0
@@ -7334,6 +7335,9 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 // 1. 处理待开启奖励 (批量开启)
                 if (canUseCount > 0) {
                     Log.forest("正在批量开启 $canUseCount 个宝箱...")
+                    if (rawCanUseCount > canUseCount) {
+                        Log.forest("森林乐园可开宝箱 $rawCanUseCount 个，本轮按上限只开 $canUseCount 个")
+                    }
 
                     var remain = canUseCount
                     var totalEnergy = 0

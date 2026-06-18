@@ -221,6 +221,7 @@ class AntOrchard : ModelTask() {
 
         var totalWatered = Status.getIntFlagToday(statusKey) ?: 0
         var fertilizerReplenishTried = false
+        var popupReplenishTried = false
 
         if (!waterToLimit && totalWatered >= targetLimit) {
             Log.orchard("$sceneName: 今日已完成施肥目标 $totalWatered/$targetLimit")
@@ -293,6 +294,13 @@ class AntOrchard : ModelTask() {
                             }
                             if (replenishResult == ExchangeReplenishResult.RETRY_LATER) {
                                 Log.orchard("$sceneName 肥料补兑暂不可用，保留后续调度重试")
+                            }
+                        }
+                        if (!popupReplenishTried) {
+                            popupReplenishTried = true
+                            if (tryCompleteWaterButtonUpgradePopup()) {
+                                extraInfoGet(from = "entry", scene = targetScene)
+                                continue
                             }
                         }
                         Log.orchard("$sceneName 肥料不足: 当前 ${happyPoint ?: 0} < 消耗 $singleWateringCost")
@@ -473,6 +481,54 @@ class AntOrchard : ModelTask() {
             }
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "extraInfoGet err:", t)
+        }
+    }
+
+    private fun tryCompleteWaterButtonUpgradePopup(): Boolean {
+        val title = "施肥弹窗大额奖励"
+        return try {
+            val response = JSONObject(AntOrchardRpcCall.refinedOperation("BABAFARM_WATER_BTN_UPGRADE"))
+            if (!ResChecker.checkRes(TAG, response)) {
+                Log.orchard("$title 查询失败: ${response.toString()}")
+                return false
+            }
+
+            val contentList = response.optJSONArray("contentList") ?: return false
+            for (i in 0 until contentList.length()) {
+                val content = contentList.optJSONObject(i) ?: continue
+                if (content.optString("spaceCode") != "BABAFARM_WATER_BTN_UPGRADE") continue
+
+                val jumpUrl = content.optJSONObject("bizExtInfo")?.optString("jumpUrl").orEmpty()
+                if (jumpUrl.isBlank()) continue
+
+                val popupTask = JSONObject().apply {
+                    put("taskId", "BABAFARM_WATER_BTN_UPGRADE")
+                    put("actionType", "JUMP")
+                    put("rightsTimesLimit", 1)
+                    put("taskDisplayConfig", JSONObject().put("targetUrl", jumpUrl))
+                }
+                val item = TaskFlowItem(
+                    id = "BABAFARM_WATER_BTN_UPGRADE",
+                    title = title,
+                    status = "TODO",
+                    type = "WATER_POPUP",
+                    raw = content
+                )
+                val config = buildOrchardBrowseTaskConfig(popupTask, title) ?: continue
+                val roundResult = executeOrchardBrowseRound(config, item, 1)
+                if (roundResult.finishedCount > 0) {
+                    Log.orchard("$title📺完成${roundResult.finishedCount}次浏览补肥")
+                    return true
+                }
+                val failure = roundResult.failure
+                if (failure != null) {
+                    Log.orchard("$title 完成失败: ${failure.message.ifBlank { failure.raw }}")
+                }
+            }
+            false
+        } catch (t: Throwable) {
+            Log.printStackTrace(TAG, "tryCompleteWaterButtonUpgradePopup err:", t)
+            false
         }
     }
 

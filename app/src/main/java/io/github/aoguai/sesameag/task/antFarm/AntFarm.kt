@@ -63,7 +63,6 @@ import io.github.aoguai.sesameag.task.exchange.ExchangeReplenisher
 import io.github.aoguai.sesameag.task.exchange.ExchangeSafety
 import io.github.aoguai.sesameag.task.exchange.ExchangeSafetyRules
 import io.github.aoguai.sesameag.util.CoroutineUtils
-import io.github.aoguai.sesameag.util.DataStore
 import io.github.aoguai.sesameag.util.FriendGuard
 import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.LogChannel
@@ -76,6 +75,7 @@ import io.github.aoguai.sesameag.util.TimeCounter
 import io.github.aoguai.sesameag.util.TimeTriggerEvaluator
 import io.github.aoguai.sesameag.util.TimeTriggerParseOptions
 import io.github.aoguai.sesameag.util.TimeUtil
+import io.github.aoguai.sesameag.util.UserDataStoreManager
 import io.github.aoguai.sesameag.util.friend.FriendCapabilityRecorder
 import io.github.aoguai.sesameag.util.friend.FriendRepository
 import io.github.aoguai.sesameag.util.maps.IdMapManager
@@ -1024,6 +1024,32 @@ class AntFarm : ModelTask() {
             ?: UserMap.currentUid?.takeIf { it.isNotBlank() }
             ?: "default"
         return "farm_child_${owner}::$childId"
+    }
+
+    private fun currentUserDataStore() = UserDataStoreManager.getInstance(
+        AccountSessionCoordinator.currentUserId() ?: UserMap.currentUid
+    )
+
+    private fun bigEaterUsedCountKey(today: String): String {
+        return "$BIG_EATER_USED_COUNT_KEY_PREFIX$today"
+    }
+
+    private fun getBigEaterUsedCount(today: String): Int {
+        return currentUserDataStore()?.get(bigEaterUsedCountKey(today), Int::class.javaObjectType) ?: 0
+    }
+
+    private fun putBigEaterUsedCount(today: String, count: Int) {
+        currentUserDataStore()?.put(bigEaterUsedCountKey(today), count)
+    }
+
+    private fun getFarmAnswerCache(): MutableMap<String, String> {
+        return currentUserDataStore()
+            ?.getOrCreate<MutableMap<String, String>>(FARM_ANSWER_CACHE_KEY)
+            ?: mutableMapOf()
+    }
+
+    private fun putFarmAnswerCache(cache: Map<String, String>) {
+        currentUserDataStore()?.put(FARM_ANSWER_CACHE_KEY, cache)
     }
 
     internal fun registerPersistentChildTask(
@@ -2148,18 +2174,14 @@ class AntFarm : ModelTask() {
                 Log.farm("服务端标记已使用加饭卡，跳过使用")
                 // 这里可选：尝试与本地计数对齐（仅在计数为0时+1，避免重复累加）
                 val today = LocalDate.now().toString()
-                val uid = UserMap.currentUid
-                val usedKey = "AF_BIG_EATER_USED_COUNT|$uid|$today"
-                val usedCount = DataStore.get(usedKey, Int::class.java) ?: 0
+                val usedCount = getBigEaterUsedCount(today)
                 if (usedCount == 0) {
-                    DataStore.put(usedKey, 1)
+                    putBigEaterUsedCount(today, 1)
                 }
             } else {
-                // 使用 DataStore 记录“当日已用次数”，每日上限为 2 次（按账号维度）
+                // 使用 UserDataStore 记录“当日已用次数”，每日上限为 2 次（按账号维度）
                 val today = LocalDate.now().toString()
-                val uid = UserMap.currentUid
-                val usedKey = "AF_BIG_EATER_USED_COUNT|$uid|$today"
-                val usedCount = DataStore.get(usedKey, Int::class.java) ?: 0
+                val usedCount = getBigEaterUsedCount(today)
 
                 if (usedCount >= 2) {
                     Log.farm("今日加饭卡已使用${usedCount}/2，跳过使用")
@@ -2167,7 +2189,7 @@ class AntFarm : ModelTask() {
                     when (useFarmToolDetailed(ownerFarmId, ToolType.BIG_EATER_TOOL)) {
                         FarmToolUseResult.SUCCESS -> {
                             Log.farm("使用道具🎭[加饭卡]！")
-                            DataStore.put(usedKey, usedCount + 1)
+                            putBigEaterUsedCount(today, usedCount + 1)
                             // 刷新状态
                             syncAnimalStatus(ownerFarmId)
                         }
@@ -2910,7 +2932,7 @@ class AntFarm : ModelTask() {
         try {
             val today = TimeUtil.getDateStr2()
             val tomorrow = TimeUtil.getDateStr2(1)
-            val farmAnswerCache = DataStore.getOrCreate<MutableMap<String, String>>(FARM_ANSWER_CACHE_KEY) as MutableMap<String, String>
+            val farmAnswerCache = getFarmAnswerCache()
             cleanOldAnswers(farmAnswerCache, today)
             // 检查是否今天已经答过题
             if (Status.hasFlagToday(StatusFlags.FLAG_FARM_QUESTION_ANSWERED)) {
@@ -2988,7 +3010,7 @@ class AntFarm : ModelTask() {
                 } else {
                     AnswerAI.removeCachedAnswer(title, LogChannel.FARM.loggerName)
                     if (farmAnswerCache.remove(cacheKey) != null) {
-                        DataStore.put(FARM_ANSWER_CACHE_KEY, farmAnswerCache)
+                        putFarmAnswerCache(farmAnswerCache)
                     }
                 }
                 Log.farm("饲料任务答题：" + (if (correct) "正确" else "错误") + "领取饲料［" + extInfo.getString("award") + "g］")
@@ -3010,7 +3032,7 @@ class AntFarm : ModelTask() {
     private fun updateTomorrowAnswerCache(operationConfigList: JSONArray, date: String?) {
         try {
             Log.farm("updateTomorrowAnswerCache 开始更新缓存")
-            val farmAnswerCache = DataStore.getOrCreate<MutableMap<String, String>>(FARM_ANSWER_CACHE_KEY)
+            val farmAnswerCache = getFarmAnswerCache()
             for (j in 0..<operationConfigList.length()) {
                 val operationConfig = operationConfigList.getJSONObject(j)
                 val type = operationConfig.getString("type")
@@ -3027,7 +3049,7 @@ class AntFarm : ModelTask() {
                     }
                 }
             }
-            DataStore.put(FARM_ANSWER_CACHE_KEY, farmAnswerCache)
+            putFarmAnswerCache(farmAnswerCache)
             Log.farm("updateTomorrowAnswerCache 缓存更新完毕")
         } catch (e: Exception) {
             Log.printStackTrace(TAG, "updateTomorrowAnswerCache 错误:", e)
@@ -3046,7 +3068,7 @@ class AntFarm : ModelTask() {
             val todayInt = convertDateToInt(today) // 如 "2025-04-05" → 20250405
             // 设置保留天数（例如7天）
             val daysToKeep = 7
-            val cleanedMap: MutableMap<String?, String?> = HashMap()
+            val cleanedMap: MutableMap<String, String> = HashMap()
             for (entry in farmAnswerCache.entries) {
                 val key: String = entry.key
                 if (key.contains("|")) {
@@ -3062,7 +3084,7 @@ class AntFarm : ModelTask() {
                     }
                 }
             }
-            DataStore.put(FARM_ANSWER_CACHE_KEY, cleanedMap)
+            putFarmAnswerCache(cleanedMap)
             Log.farm("cleanOldAnswers 清理缓存完毕")
         } catch (e: Exception) {
             Log.printStackTrace(TAG, "cleanOldAnswers error:", e)
@@ -7760,6 +7782,7 @@ class AntFarm : ModelTask() {
 
         private const val RPC_LIST_FARM_TOOL = "com.alipay.antfarm.listFarmTool"
 
+        private const val BIG_EATER_USED_COUNT_KEY_PREFIX = "antFarmBigEaterUsedCount::"
         private const val FARM_ANSWER_CACHE_KEY = "farmAnswerQuestionCache"
     }
 

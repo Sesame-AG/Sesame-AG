@@ -257,8 +257,54 @@ class OfficialAIService(
         requestJson: JSONObject,
         headers: Map<String, String>
     ): String {
-        val mediaType = CONTENT_TYPE.toMediaType()
-        val body = requestJson.toString().toRequestBody(mediaType)
+        val requestText = requestJson.toString()
+        val sanitizedUrl = sanitizeUrl(url)
+        var lastException: IOException? = null
+
+        for (attempt in 1..AI_HTTP_MAX_ATTEMPTS) {
+            Log.common(
+                TAG,
+                "AI请求开始：${apiFormat.displayName} / model=$modelNameInternal / url=$sanitizedUrl / attempt=$attempt"
+            )
+            try {
+                client.newCall(buildJsonRequest(url, requestText, headers)).execute().use { response ->
+                    val responseText = response.body?.string().orEmpty()
+                    if (response.isSuccessful) {
+                        Log.common(
+                            TAG,
+                            "AI请求成功：${apiFormat.displayName} / HTTP ${response.code} / responseLength=${responseText.length}"
+                        )
+                        return responseText
+                    }
+
+                    Log.error(
+                        TAG,
+                        "AI请求失败：${apiFormat.displayName} / HTTP ${response.code} / ${sanitizeResponse(responseText)}"
+                    )
+                    if (!shouldRetryAiHttp(response.code, attempt)) {
+                        return ""
+                    }
+                }
+            } catch (e: IOException) {
+                lastException = e
+                if (!shouldRetryAiIOException(attempt)) {
+                    throw e
+                }
+                Log.error(TAG, "AI请求网络异常，将重试一次：${apiFormat.displayName} / ${e.message}")
+            }
+            Thread.sleep(AI_HTTP_RETRY_DELAY_MS)
+        }
+
+        lastException?.let { throw it }
+        return ""
+    }
+
+    private fun buildJsonRequest(
+        url: String,
+        requestText: String,
+        headers: Map<String, String>
+    ): Request {
+        val body = requestText.toRequestBody(CONTENT_TYPE.toMediaType())
         val requestBuilder = Request.Builder()
             .url(url)
             .post(body)
@@ -268,16 +314,15 @@ class OfficialAIService(
             requestBuilder.addHeader(name, value)
         }
 
-        Log.common(TAG, "AI请求开始：${apiFormat.displayName} / model=$modelNameInternal / url=${sanitizeUrl(url)}")
-        client.newCall(requestBuilder.build()).execute().use { response ->
-            val responseText = response.body?.string().orEmpty()
-            if (!response.isSuccessful) {
-                Log.error(TAG, "AI请求失败：${apiFormat.displayName} / HTTP ${response.code} / ${sanitizeResponse(responseText)}")
-                return ""
-            }
-            Log.common(TAG, "AI请求成功：${apiFormat.displayName} / HTTP ${response.code} / responseLength=${responseText.length}")
-            return responseText
-        }
+        return requestBuilder.build()
+    }
+
+    private fun shouldRetryAiHttp(code: Int, attempt: Int): Boolean {
+        return attempt < AI_HTTP_MAX_ATTEMPTS && code in AI_HTTP_RETRY_CODES
+    }
+
+    private fun shouldRetryAiIOException(attempt: Int): Boolean {
+        return attempt < AI_HTTP_MAX_ATTEMPTS
     }
 
     private fun buildOpenAIStyleMessages(text: String): JSONArray {
@@ -509,5 +554,8 @@ class OfficialAIService(
         private const val TIME_OUT_SECONDS = 180
         private const val MAX_LOG_RESPONSE_LENGTH = 500
         private const val MAX_LOG_URL_LENGTH = 200
+        private const val AI_HTTP_MAX_ATTEMPTS = 2
+        private const val AI_HTTP_RETRY_DELAY_MS = 800L
+        private val AI_HTTP_RETRY_CODES = setOf(429, 502, 503)
     }
 }

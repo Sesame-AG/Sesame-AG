@@ -20,6 +20,7 @@ import io.github.aoguai.sesameag.util.SesameAgUtil
 import io.github.aoguai.sesameag.util.Files
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.ToastUtil
+import io.github.aoguai.sesameag.util.UserDataStoreManager
 import io.github.aoguai.sesameag.util.maps.UserMap
 import rikka.shizuku.Shizuku
 
@@ -85,7 +86,12 @@ class ExtendViewModel : ViewModel() {
 
         // 2. 清空图片
         menuItems.add(MenuItem(context.getString(R.string.clear_photo)) {
-            val currentCount = DataStore
+            val store = UserDataStoreManager.getCurrentInstance()
+            if (store == null) {
+                ToastUtil.showToast(context, "用户为空，无法读取光盘行动图片缓存")
+                return@MenuItem
+            }
+            val currentCount = store
                 .getOrCreate("plate", object : TypeReference<List<Map<String, String>>>() {})
                 .size
             currentDialog = ExtendDialog.ClearPhotoConfirm(currentCount)
@@ -138,7 +144,13 @@ class ExtendViewModel : ViewModel() {
     }
 
     fun clearPhotos(context: Context) {
-        DataStore.remove("plate")
+        val store = UserDataStoreManager.getCurrentInstance()
+        if (store == null) {
+            ToastUtil.showToast(context, "用户为空，无法清空光盘行动图片缓存")
+            dismissDialog()
+            return
+        }
+        store.remove("plate")
         ToastUtil.showToast(context, "光盘行动图片清空成功")
         dismissDialog()
     }
@@ -148,11 +160,17 @@ class ExtendViewModel : ViewModel() {
             "before" to "before${SesameAgUtil.getRandomString(10)}",
             "after" to "after${SesameAgUtil.getRandomString(10)}"
         )
-        val existingPhotos = DataStore.getOrCreate(
+        val store = UserDataStoreManager.getCurrentInstance()
+        if (store == null) {
+            ToastUtil.showToast(context, "用户为空，无法写入光盘行动图片缓存")
+            dismissDialog()
+            return
+        }
+        val existingPhotos = store.getOrCreate(
             "plate",
             object : TypeReference<MutableList<Map<String, String>>>() {})
         existingPhotos.add(newPhotoEntry)
-        DataStore.put("plate", existingPhotos)
+        store.put("plate", existingPhotos)
         ToastUtil.showToast(context, "写入成功$newPhotoEntry")
         dismissDialog()
     }

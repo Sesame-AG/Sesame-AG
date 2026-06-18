@@ -252,10 +252,16 @@ class TaskFlowEngine(
     private val adapter: TaskFlowAdapter,
     private val roundSleepMs: Long = 1000L
 ) {
+    private companion object {
+        const val MAX_DYNAMIC_ROUND_LIMIT = 64
+        const val DYNAMIC_ROUND_LIMIT_EXTRA = 6
+    }
+
     fun run(): TaskFlowRunResult {
         val failedActionKeys = mutableSetOf<String>()
         var round = 1
         var roundLimit = 1
+        var hardRoundLimit = 1
         var progressedAny = false
         var actionAttemptedAny = false
         var noProgressSuccessAny = false
@@ -331,6 +337,9 @@ class TaskFlowEngine(
             val items = adapter.extractItems(response)
             if (round == 1) {
                 roundLimit = adapter.estimateRoundLimit(items)
+                    .coerceAtLeast(1)
+                    .coerceAtMost(MAX_DYNAMIC_ROUND_LIMIT)
+                hardRoundLimit = calculateHardRoundLimit(roundLimit)
             }
 
             val snapshot = buildSnapshot(items)
@@ -348,16 +357,7 @@ class TaskFlowEngine(
                 }
 
                 val item = candidate.item
-                if (adapter.shouldSkipByTodayState(item)) {
-                    continue
-                }
-                if (shouldSkipBlacklisted(item)) {
-                    continue
-                }
-
-                if (adapter.shouldSkip(item)) {
-                    continue
-                }
+                if (shouldSkipItem(item)) continue
 
                 val action = candidate.initialAction
 
@@ -464,6 +464,14 @@ class TaskFlowEngine(
                 )
             }
 
+            val extendedRoundLimit = extendRoundLimitIfNeeded(round, roundLimit, hardRoundLimit, progressed)
+            if (extendedRoundLimit != roundLimit) {
+                adapter.logInfo(
+                    "${adapter.flowName}[动态任务仍有进展，轮次上限延长:$roundLimit->$extendedRoundLimit/$hardRoundLimit]"
+                )
+                roundLimit = extendedRoundLimit
+            }
+
             GlobalThreadPools.sleepCompat(roundSleepMs)
             round++
         }
@@ -478,6 +486,29 @@ class TaskFlowEngine(
             noProgressSuccess = noProgressSuccessAny,
             interrupted = ApplicationHookConstants.isOffline()
         )
+    }
+
+    private fun calculateHardRoundLimit(initialRoundLimit: Int): Int {
+        val normalizedInitialLimit = max(1, initialRoundLimit)
+        val extendedRoundLimit = max(
+            normalizedInitialLimit * 3,
+            normalizedInitialLimit + DYNAMIC_ROUND_LIMIT_EXTRA
+        )
+        return extendedRoundLimit
+            .coerceAtMost(MAX_DYNAMIC_ROUND_LIMIT)
+            .coerceAtLeast(normalizedInitialLimit)
+    }
+
+    private fun extendRoundLimitIfNeeded(
+        round: Int,
+        roundLimit: Int,
+        hardRoundLimit: Int,
+        progressed: Boolean
+    ): Int {
+        if (!progressed || round < roundLimit || roundLimit >= hardRoundLimit) {
+            return roundLimit
+        }
+        return (roundLimit + 1).coerceAtMost(hardRoundLimit)
     }
 
     private fun buildRunResult(
@@ -506,13 +537,7 @@ class TaskFlowEngine(
         var completedTasks = 0
         var availableTasks = 0
         for (item in items) {
-            if (adapter.shouldSkipByTodayState(item)) {
-                continue
-            }
-            if (shouldSkipBlacklisted(item)) {
-                continue
-            }
-            if (adapter.shouldSkip(item)) continue
+            if (shouldSkipItem(item)) continue
 
             val phase = adapter.mapPhase(item)
             totalTasks++
@@ -531,9 +556,7 @@ class TaskFlowEngine(
     private fun buildActionCandidates(items: List<TaskFlowItem>): List<TaskFlowActionCandidate> {
         val candidates = mutableListOf<TaskFlowActionCandidate>()
         for ((index, item) in items.withIndex()) {
-            if (adapter.shouldSkipByTodayState(item)) continue
-            if (shouldSkipBlacklisted(item)) continue
-            if (adapter.shouldSkip(item)) continue
+            if (shouldSkipItem(item)) continue
 
             val phase = adapter.mapPhase(item)
             val action = phase.toAction()
@@ -551,6 +574,12 @@ class TaskFlowEngine(
             compareBy<TaskFlowActionCandidate> { actionPriority(it.initialAction) }
                 .thenBy { it.index }
         )
+    }
+
+    private fun shouldSkipItem(item: TaskFlowItem): Boolean {
+        if (adapter.shouldSkipByTodayState(item)) return true
+        if (shouldSkipBlacklisted(item)) return true
+        return adapter.shouldSkip(item)
     }
 
     private fun shouldSkipBlacklisted(item: TaskFlowItem): Boolean {

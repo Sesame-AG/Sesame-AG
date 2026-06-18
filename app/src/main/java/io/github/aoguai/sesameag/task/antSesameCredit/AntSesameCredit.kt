@@ -460,6 +460,120 @@ class AntSesameCredit : ModelTask() {
         }
     }
 
+    internal fun handleNewTaskCenterTasks() {
+        try {
+            if (ApplicationHookConstants.isOffline()) {
+                Log.sesame("成长锦囊新任务中心因离线模式跳过")
+                return
+            }
+
+            runCatching {
+                val moduleConfig = JSONObject(AntSesameCreditRpcCall.Zmxy.queryNewTaskCenterModuleConfigs())
+                if (!ResChecker.checkRes(TAG, moduleConfig)) {
+                    Log.sesame("成长锦囊新任务中心配置查询失败: ${newTaskCenterErrorDesc(moduleConfig)}")
+                }
+            }.onFailure {
+                Log.printStackTrace(TAG, "handleNewTaskCenterTasks.queryModuleConfigs err:", it)
+            }
+
+            val signStatus = runCatching {
+                JSONObject(AntSesameCreditRpcCall.Zmxy.newTaskCenterSignStatusQuery())
+            }.onFailure {
+                Log.printStackTrace(TAG, "handleNewTaskCenterTasks.signStatusQuery err:", it)
+            }.getOrNull()
+
+            if (signStatus != null && ResChecker.checkRes(TAG, signStatus)) {
+                handleNewTaskCenterSign(signStatus)
+            } else if (signStatus != null) {
+                Log.sesame("成长锦囊新任务中心签到状态查询失败: ${newTaskCenterErrorDesc(signStatus)}")
+            }
+
+            val taskList = runCatching {
+                JSONObject(AntSesameCreditRpcCall.Zmxy.newTaskCenterQueryTaskList())
+            }.onFailure {
+                Log.printStackTrace(TAG, "handleNewTaskCenterTasks.queryTaskList err:", it)
+            }.getOrNull()
+            if (taskList != null && ResChecker.checkRes(TAG, taskList)) {
+                inspectNewTaskCenterTaskList(taskList)
+            } else if (taskList != null) {
+                Log.sesame("成长锦囊新任务中心任务列表查询失败: ${newTaskCenterErrorDesc(taskList)}")
+            }
+
+            runCatching {
+                val pop = JSONObject(AntSesameCreditRpcCall.Zmxy.newTaskCenterQueryPop())
+                if (!ResChecker.checkRes(TAG, pop)) {
+                    Log.sesame("成长锦囊新任务中心弹窗查询失败: ${newTaskCenterErrorDesc(pop)}")
+                }
+            }.onFailure {
+                Log.printStackTrace(TAG, "handleNewTaskCenterTasks.queryPop err:", it)
+            }
+        } catch (t: Throwable) {
+            Log.printStackTrace(TAG, "handleNewTaskCenterTasks err:", t)
+        }
+    }
+
+    private fun handleNewTaskCenterSign(signStatus: JSONObject) {
+        val signInfo = signStatus.optJSONObject("signInfo") ?: return
+        val action = signInfo.optString("buttonActionEnum")
+        val signed = signInfo.optBoolean("todaySignedFlag", false) ||
+            signInfo.optString("signStatus").equals("SIGNED", ignoreCase = true)
+        if (signed || !action.equals("DO_SIGN", ignoreCase = true)) {
+            Log.sesame("成长锦囊新任务中心签到状态: ${signInfo.optString("buttonText").ifBlank { action.ifBlank { "已处理" } }}")
+            return
+        }
+
+        Log.sesame("成长锦囊新任务中心[待签到]#doSign抓包包含动态bizNo/token，当前无稳定参数来源，暂不自动签到")
+    }
+
+    private fun inspectNewTaskCenterTaskList(taskListResponse: JSONObject) {
+        val taskGroupList = taskListResponse.optJSONArray("taskGroupList") ?: return
+        for (groupIndex in 0 until taskGroupList.length()) {
+            val group = taskGroupList.optJSONObject(groupIndex) ?: continue
+            val taskList = group.optJSONArray("taskList") ?: continue
+            for (taskIndex in 0 until taskList.length()) {
+                val task = taskList.optJSONObject(taskIndex) ?: continue
+                val taskCode = task.optString("taskCode")
+                val taskName = task.optString("taskName").ifBlank { task.optString("taskDesc").ifBlank { taskCode } }
+                val taskType = task.optString("taskType")
+                val taskScene = task.optString("taskScene")
+                val riskText = "$taskName ${task.optString("taskDesc")} ${task.optString("flowDescText")} $taskScene ${task.optString("taskUrl")}"
+                if (taskType.equals("NORMAL_TASK", ignoreCase = true) ||
+                    containsAnyNewTaskCenterRisk(riskText)
+                ) {
+                    TaskBlacklist.addToBlacklist(sesameCreditTaskBlacklistModule, taskCode, taskName)
+                    Log.sesame("成长锦囊新任务中心[无稳定闭环，已加入黑名单]#$taskName(taskCode=$taskCode,type=$taskType)")
+                    continue
+                }
+                if (taskType.equals("VIEW_TASK", ignoreCase = true)) {
+                    Log.sesame("成长锦囊新任务中心[浏览任务待观察]#$taskName(taskCode=$taskCode)，未发现可直接完成RPC，暂不自动推进")
+                }
+            }
+        }
+    }
+
+    private fun containsAnyNewTaskCenterRisk(value: String): Boolean {
+        return listOf(
+            "借呗",
+            "支用",
+            "借一笔",
+            "社保",
+            "养老金",
+            "充值",
+            "支付",
+            "缴费",
+            "开通",
+            "订阅"
+        ).any { value.contains(it, ignoreCase = true) }
+    }
+
+    private fun newTaskCenterErrorDesc(response: JSONObject): String {
+        return response.optString("resultDesc")
+            .ifBlank { response.optString("resultView") }
+            .ifBlank { response.optString("errorMsg") }
+            .ifBlank { response.optString("memo") }
+            .ifBlank { response.toString() }
+    }
+
     /**
      * 芝麻信用任务
      */
@@ -522,6 +636,7 @@ class AntSesameCredit : ModelTask() {
         private var joinLimitReached = hasFlagToday(StatusFlags.FLAG_SESAME_JOIN_LIMIT_REACHED)
         private var joinLimitLogged = false
         private val joinedRecordIds = mutableMapOf<String, String>()
+        private val processingTemplateRefreshKeys = mutableSetOf<String>()
         private val loggedSkipKeys = mutableSetOf<String>()
 
         override fun query(): JSONObject {
@@ -636,6 +751,7 @@ class AntSesameCredit : ModelTask() {
             val resultView = responseObj.optString("resultView").ifEmpty {
                 responseObj.optString("errorMessage", joinRes)
             }
+            val joinSuccess = AntSesameCreditRpcCall.isRpcSuccess(joinRes)
             if ("PROMISE_TODAY_FINISH_TIMES_LIMIT" == errorCode) {
                 joinLimitReached = true
                 setFlagToday(StatusFlags.FLAG_SESAME_JOIN_LIMIT_REACHED)
@@ -650,7 +766,29 @@ class AntSesameCredit : ModelTask() {
                     detail = sesameCreditActionDetail(item, "join")
                 )
             }
-            if (!AntSesameCreditRpcCall.isRpcSuccess(joinRes)) {
+            if (!joinSuccess && isSesameProcessingTemplate(errorCode, resultView)) {
+                if (!processingTemplateRefreshKeys.add(taskTemplateId)) {
+                    return TaskFlowActionResult.failure(
+                        failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                        code = errorCode,
+                        message = "已有进行中生活记录但刷新后未返回recordId: $resultView",
+                        rpc = "AntSesameCreditRpcCall.joinSesameTask",
+                        raw = joinRes,
+                        detail = sesameCreditActionDetail(item, "join")
+                    )
+                }
+                Log.sesame("芝麻信用💳[已有进行中生活记录，刷新任务列表后继续]#${item.title}")
+                return TaskFlowActionResult(
+                    success = true,
+                    code = errorCode,
+                    message = resultView,
+                    rpc = "AntSesameCreditRpcCall.joinSesameTask",
+                    raw = joinRes,
+                    detail = sesameCreditActionDetail(item, "join") + " processingTemplateRefresh=true",
+                    refreshAfterAction = true
+                )
+            }
+            if (!joinSuccess) {
                 RpcOfflineRisk.enterOfflineIfNeeded(TAG, responseObj)
                 val failureType = classifySesameTaskFailure(errorCode, resultView)
                 val continueCurrentRound = shouldContinueSesameCurrentRoundOnFailure(
@@ -748,6 +886,9 @@ class AntSesameCredit : ModelTask() {
         }
 
         override fun afterSuccess(item: TaskFlowItem, action: TaskFlowAction, result: TaskFlowActionResult) {
+            if (isSesameProcessingTemplateRefresh(result)) {
+                return
+            }
             completedActionCount++
             if (action == TaskFlowAction.SIGNUP) {
                 Log.sesame("芝麻信用💳[领取任务成功]#${item.title}")
@@ -3055,6 +3196,17 @@ class AntSesameCredit : ModelTask() {
 
                 else -> TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW
             }
+        }
+
+        private fun isSesameProcessingTemplate(errorCode: String, resultView: String): Boolean {
+            val code = errorCode.trim()
+            val message = resultView.trim()
+            return code == "PROMISE_HAS_PROCESSING_TEMPLATE" ||
+                message.contains("存在进行中的生活记录")
+        }
+
+        private fun isSesameProcessingTemplateRefresh(result: TaskFlowActionResult): Boolean {
+            return result.detail.contains("processingTemplateRefresh=true")
         }
 
         private fun containsAnySesame(value: String, vararg keywords: String): Boolean {

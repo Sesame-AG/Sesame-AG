@@ -4,12 +4,14 @@ package io.github.aoguai.sesameag.task.other.credit2101
 import android.annotation.SuppressLint
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
+import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
 import io.github.aoguai.sesameag.hook.internal.LocationHelper
 import io.github.aoguai.sesameag.model.modelFieldExt.SelectAndCountModelField
-import io.github.aoguai.sesameag.util.DataStore
 import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.ResChecker
+import io.github.aoguai.sesameag.util.UserDataStoreManager
+import io.github.aoguai.sesameag.util.maps.UserMap
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -77,6 +79,10 @@ object Credit2101 {
     }
     // 私有变量：用于存放整个选项控件
     private var mCreditOptions: SelectAndCountModelField? = null
+
+    private fun currentUserDataStore() = UserDataStoreManager.getInstance(
+        AccountSessionCoordinator.currentUserId() ?: UserMap.currentUid
+    )
 
     private fun hasEnabledEventOptions(): Boolean {
         val configMap = mCreditOptions?.value ?: return false
@@ -1510,6 +1516,12 @@ object Credit2101 {
 
             Log.sesame("信用2101📖[故事事件] 开始批量提交")
 
+            val userStore = currentUserDataStore()
+            if (userStore == null) {
+                Log.sesame("信用2101📖[故事事件] 当前用户为空，跳过故事事件状态读写")
+                return
+            }
+
             // 批量完成故事事件
             val results = mutableListOf<String>()
             for (storyId in STORY_IDS) {
@@ -1517,7 +1529,7 @@ object Credit2101 {
                 val dataKey = "credit2101_story_${storyId}"
 
                 // 检查是否已经处理过这个storyId
-                val isProcessed = DataStore.get(dataKey, Boolean::class.java) ?: false
+                val isProcessed = userStore.get(dataKey, Boolean::class.java) ?: false
                 if (isProcessed) {
                     Log.sesame("信用2101📖[故事事件${storyId}] 已处理过，跳过")
                     continue
@@ -1532,25 +1544,25 @@ object Credit2101 {
                         val resultCode = resultJson.optString("resultCode", "")
                         if (resultJson.optString("resultMsg", "").contains("资产流水重复处理")) {
                             // 标记为已处理（遇到重复错误说明已经处理过了）
-                            DataStore.put(dataKey, true)
+                            userStore.put(dataKey, true)
                             Log.sesame("信用2101📖[故事事件${storyId}] 检测到重复处理，标记为已处理")
                             break
                         } else if (ResChecker.checkRes(TAG, result)) {
                             // 处理成功，标记为已处理
-                            DataStore.put(dataKey, true)
+                            userStore.put(dataKey, true)
                             Log.sesame("信用2101📖[故事事件${storyId}] 处理成功，标记为已处理")
                         } else {
                             Log.sesame("信用2101📖[故事事件${storyId}] 处理失败: $resultCode")
                         }
                     } catch (_: Exception) {
                         // JSON解析失败，但也要标记避免重复尝试
-                        DataStore.put(dataKey, true)
+                        userStore.put(dataKey, true)
                         Log.sesame("信用2101📖[故事事件${storyId}] JSON解析失败，标记为已处理避免重试")
                     }
 
                 } catch (e: Exception) {
                     // 单个storyId处理失败，也要标记避免重复尝试
-                    DataStore.put(dataKey, true)
+                    userStore.put(dataKey, true)
                     results.add("""{"success":false,"resultMsg":"处理异常: ${e.message}"}""")
                     Log.sesame("信用2101📖[故事事件${storyId}] 处理异常，标记为已处理: ${e.message}")
                 }

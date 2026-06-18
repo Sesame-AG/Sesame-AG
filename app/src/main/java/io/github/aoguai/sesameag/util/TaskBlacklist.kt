@@ -1,7 +1,6 @@
 package io.github.aoguai.sesameag.util
 
 import com.fasterxml.jackson.core.type.TypeReference
-import kotlin.collections.any
 
 /**
  * 通用任务黑名单管理器
@@ -172,24 +171,18 @@ object TaskBlacklist {
     fun autoAddToBlacklist(moduleName: String?, taskId: String, taskTitle: String = "", errorCode: String) {
         if (moduleName.isNullOrBlank() || taskId.isBlank()) return
 
-        var shouldAutoAdd = false
-        var reason = ""
-
-        when {
-            errorCode == "400000040" -> { shouldAutoAdd = true; reason = "不支持rpc调用" }
-            errorCode == "20020012" -> { shouldAutoAdd = true; reason = "任务ID为空或无效" }
-            errorCode == "ILLEGAL_ARGUMENT" -> { shouldAutoAdd = true; reason = "参数错误" }
-            errorCode == "TASK_ID_INVALID" -> { shouldAutoAdd = true; reason = "任务ID非法" }
-            errorCode == "PROMISE_TEMPLATE_NOT_EXIST" || errorCode == "生活记录模板不存在" -> {
-                shouldAutoAdd = true; reason = "模板不存在"
-            }
-            errorCode == "FAKE_SUCCESS" -> { shouldAutoAdd = true; reason = "检测到伪成功" }
+        val reason = when (errorCode) {
+            "400000040" -> "不支持rpc调用"
+            "20020012" -> "任务ID为空或无效"
+            "ILLEGAL_ARGUMENT" -> "参数错误"
+            "TASK_ID_INVALID" -> "任务ID非法"
+            "PROMISE_TEMPLATE_NOT_EXIST", "生活记录模板不存在" -> "模板不存在"
+            "FAKE_SUCCESS" -> "检测到伪成功"
+            else -> return
         }
 
-        if (shouldAutoAdd) {
-            addToBlacklist(moduleName, taskId, taskTitle)
-            val taskInfo = if (taskTitle.isNotBlank()) "$taskId - $taskTitle" else taskId
-            Log.record(TAG, "模块[$moduleName]任务[$taskInfo]因$reason 自动加入黑名单")
-        }
+        addToBlacklist(moduleName, taskId, taskTitle)
+        val taskInfo = if (taskTitle.isNotBlank()) "$taskId - $taskTitle" else taskId
+        Log.record(TAG, "模块[$moduleName]任务[$taskInfo]因$reason 自动加入黑名单")
     }
 }

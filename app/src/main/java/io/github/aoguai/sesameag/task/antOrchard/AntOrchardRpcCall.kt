@@ -28,6 +28,13 @@ object AntOrchardRpcCall {
         )
     }
 
+    fun refinedOperation(actionId: String, source: String = "gonggexiguan"): String {
+        return RequestManager.requestString(
+            "com.alipay.antorchard.refinedOperation",
+            "[{\"actionId\":\"$actionId\",\"appMode\":\"normal\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ORCHARD\",\"source\":\"$source\",\"version\":\"$VERSION\"}]"
+        )
+    }
+
     fun extraInfoSet(source: String = DEFAULT_SOURCE): String {
         return RequestManager.requestString(
             "com.alipay.antorchard.extraInfoSet",

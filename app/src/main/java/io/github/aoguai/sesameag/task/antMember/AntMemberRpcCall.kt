@@ -10,6 +10,7 @@ import java.util.UUID
 object AntMemberRpcCall {
 
     private const val GAME_CENTER_SOURCE = "ch_appcollect__chsub_my-recentlyUsed"
+    private const val GAME_CENTER_P2E_SOURCE = "ch_appcenter__chsub_recentUSE"
     private const val METHOD_QUERY_MULTI_SCENE_WAIT_TO_GAIN_LIST =
         "com.alipay.insgiftbff.insgiftMain.queryMultiSceneWaitToGainList"
     private const val METHOD_GAIN_MY_AND_FAMILY_SUM_INSURED =
@@ -568,6 +569,109 @@ object AntMemberRpcCall {
         }
         return RequestManager.requestString(
             "com.alipay.gamecenteruprod.biz.rpc.p2e.queryHomePage",
+            JSONArray().put(args).toString()
+        )
+    }
+
+    /**
+     * 游戏中心赚现金任务列表
+     */
+    @JvmStatic
+    fun queryGameCenterP2eTaskList(sessionId: String = System.currentTimeMillis().toString()): String {
+        val args = JSONObject().apply {
+            put("deviceLevel", "high")
+            put("panelLaunchableCheckMap", JSONObject().put("SET_HEAD_TASK", true))
+            put("sessionId", sessionId)
+            put("setHeadPanelCheck", true)
+            put("source", GAME_CENTER_P2E_SOURCE)
+            put("unityDeviceLevel", "high")
+        }
+        return RequestManager.requestString(
+            "com.alipay.gamecenteruprod.biz.rpc.p2e.queryTaskList",
+            JSONArray().put(args).toString()
+        )
+    }
+
+    /**
+     * 游戏中心赚现金曝光任务上报
+     */
+    @JvmStatic
+    fun reportGameCenterP2eExposedTasks(tasks: JSONArray): String {
+        val exposedTaskList = JSONArray()
+        for (i in 0 until tasks.length()) {
+            val task = tasks.optJSONObject(i) ?: continue
+            val taskId = task.optString("taskId")
+            val taskType = task.optString("taskType")
+            if (taskId.isBlank() || taskType.isBlank()) {
+                continue
+            }
+            exposedTaskList.put(
+                JSONObject()
+                    .put("taskId", taskId)
+                    .put("taskType", taskType)
+            )
+        }
+        val args = JSONObject().apply {
+            put("exposedTaskList", exposedTaskList)
+        }
+        return RequestManager.requestString(
+            "com.alipay.gamecenteruprod.biz.rpc.p2e.reportExposedTasks",
+            JSONArray().put(args).toString()
+        )
+    }
+
+    /**
+     * 游戏中心赚现金平台任务报名
+     */
+    @JvmStatic
+    fun gameCenterP2ePlatformTaskSignUp(taskId: String, taskToken: String): String {
+        val args = JSONObject().apply {
+            put("actionChannel", "taskList")
+            put("activityId", "P2E_PLATFORM_TASK")
+            put("source", GAME_CENTER_P2E_SOURCE)
+            put("taskId", taskId)
+            put("taskToken", taskToken)
+        }
+        return RequestManager.requestString(
+            "com.alipay.gamecenteruprod.biz.rpc.platformTaskSignUp",
+            JSONArray().put(args).toString()
+        )
+    }
+
+    /**
+     * 游戏中心赚现金平台任务完成
+     */
+    @JvmStatic
+    fun gameCenterP2ePlatformTaskComplete(taskId: String, taskToken: String): String {
+        val args = JSONObject().apply {
+            put("actionChannel", "taskList")
+            put("activityId", "P2E_PLATFORM_TASK")
+            put("source", GAME_CENTER_P2E_SOURCE)
+            put("taskId", taskId)
+            put("taskToken", taskToken)
+        }
+        return RequestManager.requestString(
+            "com.alipay.gamecenteruprod.biz.rpc.platformTaskComplete",
+            JSONArray().put(args).toString()
+        )
+    }
+
+    /**
+     * 游戏中心赚现金任务领奖
+     */
+    @JvmStatic
+    fun gameCenterP2eTaskReceive(task: JSONObject): String {
+        val args = JSONObject().apply {
+            put("actionChannel", "taskList")
+            put("activityId", task.optString("activityId").ifBlank { "P2E_PLATFORM_TASK" })
+            put("oriChInfo", GAME_CENTER_P2E_SOURCE)
+            put("source", GAME_CENTER_P2E_SOURCE)
+            put("taskId", task.optString("taskId"))
+            put("taskToken", task.optString("taskToken"))
+            put("taskType", task.optString("taskType"))
+        }
+        return RequestManager.requestString(
+            "com.alipay.gamecenteruprod.biz.rpc.p2e.gameP2eTaskReceive",
             JSONArray().put(args).toString()
         )
     }
@@ -1283,10 +1387,13 @@ object AntMemberRpcCall {
     }
 
     @JvmStatic
-    fun receiveSticker(year: String, month: String, stickerIds: List<String>): String {
+    fun receiveSticker(year: String, month: String, stickerIds: List<String>, stickerCfgIds: List<String>): String {
         if (stickerIds.isEmpty()) return ""
         val args = JSONObject().apply {
             put("month", month)
+            put("stickerCfgIds", JSONArray().apply {
+                stickerCfgIds.filter { it.isNotBlank() }.distinct().forEach { put(it) }
+            })
             put("stickerIds", JSONArray().apply {
                 stickerIds.forEach { put(it) }
             })

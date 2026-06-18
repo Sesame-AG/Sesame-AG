@@ -9,7 +9,8 @@ import io.github.aoguai.sesameag.model.ModelGroup
 import io.github.aoguai.sesameag.model.ModelType
 import io.github.aoguai.sesameag.task.antForest.AntForest
 import io.github.aoguai.sesameag.util.Log
-import io.github.aoguai.sesameag.util.Notify.updateRunningStatus
+import io.github.aoguai.sesameag.util.Notify.finishTaskRunning
+import io.github.aoguai.sesameag.util.Notify.startTaskRunning
 import io.github.aoguai.sesameag.util.Notify.updateRunningNextExec
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
@@ -106,6 +107,14 @@ abstract class ModelTask : Model() {
 
     /** 获取任务字段配置，子类必须实现  */
     abstract override fun getFields(): ModelFields?
+
+    private fun runningStatusName(): String? {
+        val name = getName()?.trim()?.takeIf { it.isNotBlank() } ?: return null
+        return when (name) {
+            "主任务", "MAIN_TASK" -> null
+            else -> name
+        }
+    }
 
     private fun recordModuleCheckMessage(msg: String) {
         when (getName()) {
@@ -289,10 +298,11 @@ abstract class ModelTask : Model() {
                             Log.record(TAG, "任务 ${getName()} 不满足执行条件")
                             return@withLock
                         }
+                        val runningName = runningStatusName()
                         try {
                             isRunning = true
                             addRunCents()
-                            updateRunningStatus("${getName()?.ifBlank { "任务" } ?: "任务"} 运行中")
+                            startTaskRunning(runningName)
                             executeMultiRoundTask(rounds)
                         } catch (_: CancellationException) {
                             // 协程取消属于正常控制流程（如停止任务/切换用户），不视为错误
@@ -301,6 +311,7 @@ abstract class ModelTask : Model() {
                             Log.printStackTrace("startTask err: ${getName()}", e)
                         } finally {
                             isRunning = false
+                            finishTaskRunning(runningName)
                             updateRunningNextExec(-1)
                         }
                     }
@@ -480,19 +491,16 @@ abstract class ModelTask : Model() {
         private var schedulerId: Int = -1
 
         companion object {
-            /** 统计当前正在等待（delay中）的子任务数量 */
-            private val waitingCount = AtomicInteger(0)
             /** 存储当前正在等待（delay中）的子任务 */
             private val waitingTasks = ConcurrentHashMap<String, ChildModelTask>()
-
 
             /** 获取当前等待中的任务总数 */
             @JvmStatic
             fun getWaitingCount(): Int = waitingTasks.size
+
             /** 获取当前所有正在等待的任务列表 */
             @JvmStatic
             fun getWaitingTasks(): List<ChildModelTask> = waitingTasks.values.toList()
-
         }
 
         // 兼容构造函数
@@ -525,23 +533,19 @@ abstract class ModelTask : Model() {
             if (isCancelled) return
             var isSuccess = false
             val delayTime = execTime - System.currentTimeMillis()
-            var isCounted = false // 标记是否已计入统计
+            var isWaitingRegistered = false
             try {
                 if (delayTime > 0) {
-                    // 进入等待状态，增加统计
-                    waitingCount.incrementAndGet()
                     waitingTasks[id] = this
-                    isCounted = true
+                    isWaitingRegistered = true
 
                     // 程序计时模式下注册空调度任务作为保活；系统计时模式只保留普通 delay 等待。
                     schedulerId = UnifiedScheduler.scheduleKeepAlive(delayTime, "WakeLock:$id")
 
                     delay(delayTime)
 
-                    // 等待结束，减少统计
-                    waitingCount.decrementAndGet()
                     waitingTasks.remove(id)
-                    isCounted = false
+                    isWaitingRegistered = false
                 }
 
                 if (isCancelled) return
@@ -571,9 +575,7 @@ abstract class ModelTask : Model() {
                     throw e
                 }
             } finally {
-                // 【关键】确保无论发生什么情况，只要加了计数就必须减掉
-                if (isCounted) {
-                    waitingCount.decrementAndGet()
+                if (isWaitingRegistered) {
                     waitingTasks.remove(id, this)
                 }
                 if (schedulerId != -1) {
@@ -589,27 +591,8 @@ abstract class ModelTask : Model() {
 
         /**
          * 默认执行逻辑
-         * 
-         * 当子任务没有提供suspendRunnable时调用此方法。
-         * 子类可以重写此方法来提供自定义的任务执行逻辑。
-         * 
-         * 设计模式：模板方法模式
-         * - 基类定义算法骨架
-         * - 子类可以重写特定步骤
-         * 
-         * 示例用法:
-         * ```
-         * class MyTask(id: String) : ChildModelTask(id) {
-         *     override suspend fun defaultRun() {
-         *         // 自定义任务逻辑
-         *         Log.record("执行自定义任务: $id")
-         *         // 执行业务逻辑...
-         *     }
-         * }
-         * ```
          */
         protected open suspend fun defaultRun() {
-            // 默认空实现
             Log.debug("子任务[$id]使用默认空实现运行")
         }
 

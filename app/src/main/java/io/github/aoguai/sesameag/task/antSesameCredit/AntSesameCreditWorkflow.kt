@@ -57,6 +57,7 @@ internal suspend fun AntSesameCredit.prepareSesameWorkflows(
                     Log.sesame("芝麻信用任务被离线或验证状态中断，保留后续重试机会")
                 } else {
                     handleGrowthGuideTasks()
+                    handleNewTaskCenterTasks()
                     Log.sesame("芝麻信用任务已执行，稍后统一领取涨分进度球")
                 }
             }

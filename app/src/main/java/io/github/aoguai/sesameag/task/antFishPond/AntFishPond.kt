@@ -65,7 +65,11 @@ class AntFishPond : ModelTask() {
             handledTaskAwards.clear()
             handledVisitFinishes.clear()
 
-            queryIndex(logProgress = true)
+            val indexJson = queryIndex(logProgress = true)
+            if (indexJson != null && markExchangeReached(indexJson)) {
+                Log.fishpond("福气鱼池已达到兑换条件，本轮停止其他鱼池任务操作")
+                return
+            }
 
             if (fishPondTask.value == true) {
                 handleSubplots()
@@ -111,7 +115,6 @@ class AntFishPond : ModelTask() {
         if (logProgress) {
             logFishProgress(jo)
         }
-        markExchangeReached(jo)
         return jo
     }
 
@@ -810,9 +813,10 @@ class AntFishPond : ModelTask() {
         if (!canExchange) {
             return false
         }
-        if (!Status.hasFlagToday(StatusFlags.FLAG_ANTFISHPOND_EXCHANGE_REACHED)) {
+        val alreadyReached = Status.hasFlagToday(StatusFlags.FLAG_ANTFISHPOND_EXCHANGE_REACHED)
+        if (!alreadyReached) {
             Status.setFlagToday(StatusFlags.FLAG_ANTFISHPOND_EXCHANGE_REACHED)
-            Log.fishpond("福气鱼池已达到兑换条件；当前未接入兑换红包 RPC，停止自动兑换")
+            Log.fishpond("福气鱼池已达到兑换条件；默认仅记录可兑换状态，不自动撞兑换接口")
         }
         return true
     }

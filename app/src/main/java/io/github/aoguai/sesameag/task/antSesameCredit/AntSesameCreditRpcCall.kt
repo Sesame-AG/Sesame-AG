@@ -531,6 +531,51 @@ object AntSesameCreditRpcCall {
             )
         }
 
+        @JvmStatic
+        fun queryNewTaskCenterModuleConfigs(): String {
+            val args = JSONObject()
+                .put("bizType", "NEW_TASK_CENTER")
+                .put("chInfo", "zhimaxinyong")
+            return RequestManager.requestString(
+                "alipay.membertangram.biz.rpc.common.queryModuleConfigs",
+                JSONArray().put(args).toString()
+            )
+        }
+
+        @JvmStatic
+        fun newTaskCenterSignStatusQuery(): String {
+            val args = JSONObject()
+                .put("activityId", "SIGN_TASK_CENTER")
+                .put("source", "zhimaxinyong")
+            return RequestManager.requestString(
+                "alipay.membertangram.biz.rpc.newtaskcenter.signStatusQuery",
+                JSONArray().put(args).toString()
+            )
+        }
+
+        @JvmStatic
+        fun newTaskCenterQueryTaskList(): String {
+            val args = JSONObject()
+                .put("activityId", "SIGN_TASK_CENTER")
+                .put("source", "zhimaxinyong")
+                .put("topTaskCodeList", JSONArray())
+                .put("xlightTaskDegrade", false)
+            return RequestManager.requestString(
+                "alipay.membertangram.biz.rpc.newtaskcenter.queryTaskList",
+                JSONArray().put(args).toString()
+            )
+        }
+
+        @JvmStatic
+        fun newTaskCenterQueryPop(): String {
+            val args = JSONObject()
+                .put("activityId", "SIGN_TASK_CENTER")
+            return RequestManager.requestString(
+                "alipay.membertangram.biz.rpc.newtaskcenter.queryPop",
+                JSONArray().put(args).toString()
+            )
+        }
+
         object Alchemy {
             @JvmStatic
             fun alchemyQueryCheckIn(sceneCode: String): String {

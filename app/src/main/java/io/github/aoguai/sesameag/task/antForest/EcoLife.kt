@@ -4,12 +4,11 @@ import com.fasterxml.jackson.core.type.TypeReference
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.hook.Toast
-import io.github.aoguai.sesameag.util.DataStore
-import io.github.aoguai.sesameag.util.DataStore.put
 import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.RandomUtil
 import io.github.aoguai.sesameag.util.ResChecker
+import io.github.aoguai.sesameag.util.UserDataStoreManager
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -153,7 +152,9 @@ object EcoLife {
             val typeRef: TypeReference<MutableList<MutableMap<String?, String?>>> =
                 object : TypeReference<MutableList<MutableMap<String?, String?>>>() {
                 }
-            val allPhotos: MutableList<MutableMap<String?, String?>> = DataStore.getOrCreate("plate", typeRef)
+            val userStore = UserDataStoreManager.getCurrentInstance()
+            val allPhotos: MutableList<MutableMap<String?, String?>> =
+                userStore?.getOrCreate("plate", typeRef) ?: mutableListOf()
             Log.forest("[DEBUG] guangPanPhoto 数据内容: $allPhotos")
             // 查询今日任务状态
             var str = AntForestRpcCall.ecolifeQueryDish(source, safeDayPoint)
@@ -191,7 +192,7 @@ object EcoLife {
                     }
                     if (!exists) {
                         allPhotos.add(photo!!)
-                        put("plate", allPhotos)
+                        userStore?.put("plate", allPhotos)
                     }
                 }
             }

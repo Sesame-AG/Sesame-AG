@@ -1171,6 +1171,11 @@ class ApplicationHook {
                 } catch (_: Throwable) {
                     // ignore
                 }
+                try {
+                    io.github.aoguai.sesameag.util.UserDataStoreManager.shutdownAll()
+                } catch (_: Throwable) {
+                    // ignore
+                }
                 shutdownAndRestart()
                 stopHandler()
 

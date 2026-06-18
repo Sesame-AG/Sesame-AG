@@ -45,9 +45,16 @@ object Notify {
 
     private var lastUpdateTime: Long = 0
     private var nextExecTimeCache: Long = 0
-    // 三个来源字段互不覆盖，由 render() 统一合成标题与内容，避免标题被相互抢占。
-    private var statusText: String = "模块运行中"
+    @Volatile
+    private var globalStatusText: String? = null
     private var lastExecText: String = ""
+    private val runningTaskLock = Any()
+    private val runningTaskNames = LinkedHashSet<String>()
+
+    private const val STARTUP_TITLE = "模块启动中"
+    private const val RUNNING_TITLE = "模块运行中"
+    private const val WAITING_TITLE = "等待下次执行"
+    private const val MULTI_RUNNING_PREFIX = "多个任务运行中："
 
     private fun checkPermission(context: Context): Boolean {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -90,6 +97,37 @@ object Notify {
         manager.createNotificationChannel(alertChannel)
     }
 
+    private fun normalizeTaskName(taskName: String?): String? {
+        return taskName?.trim()?.takeIf { it.isNotBlank() }
+    }
+
+    private fun clearRunningTasks() {
+        synchronized(runningTaskLock) {
+            runningTaskNames.clear()
+        }
+    }
+
+    private fun addRunningTask(taskName: String?) {
+        val normalizedName = normalizeTaskName(taskName) ?: return
+        synchronized(runningTaskLock) {
+            runningTaskNames.remove(normalizedName)
+            runningTaskNames.add(normalizedName)
+        }
+    }
+
+    private fun removeRunningTask(taskName: String?) {
+        val normalizedName = normalizeTaskName(taskName) ?: return
+        synchronized(runningTaskLock) {
+            runningTaskNames.remove(normalizedName)
+        }
+    }
+
+    private fun snapshotRunningTasks(): List<String> {
+        return synchronized(runningTaskLock) {
+            runningTaskNames.toList()
+        }
+    }
+
     @JvmStatic
     fun startRunning(context: Context) {
         try {
@@ -101,9 +139,10 @@ object Notify {
             notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             createChannels(notificationManager!!)
 
-            statusText = "模块启动中"
+            globalStatusText = null
             lastExecText = ""
             nextExecTimeCache = 0
+            clearRunningTasks()
             lastUpdateTime = System.currentTimeMillis()
             val intent = Intent(Intent.ACTION_VIEW).apply {
                 data = "alipays://platformapi/startapp?appId=".toUri()
@@ -119,7 +158,7 @@ object Notify {
                 .setCategory(NotificationCompat.CATEGORY_STATUS)
                 .setSmallIcon(android.R.drawable.sym_def_app_icon)
                 .setLargeIcon(BitmapFactory.decodeResource(context.resources, android.R.drawable.sym_def_app_icon))
-                .setContentTitle(statusText)
+                .setContentTitle(STARTUP_TITLE)
                 .setContentText("暂无执行记录")
                 .setSubText(SUB_TEXT)
                 .setAutoCancel(false)
@@ -147,6 +186,10 @@ object Notify {
             NotificationManagerCompat.from(ctx).cancel(RUNNING_NOTIFICATION_ID)
             notificationManager = null
             runningBuilder = null
+            globalStatusText = null
+            lastExecText = ""
+            nextExecTimeCache = 0
+            clearRunningTasks()
             isNotificationStarted = false
         } catch (e: Exception) {
             Log.printStackTrace(e)
@@ -159,7 +202,33 @@ object Notify {
             return
         }
         try {
-            statusText = status?.takeIf { it.isNotBlank() } ?: "模块运行中"
+            globalStatusText = status?.takeIf { it.isNotBlank() }
+            render(force = true)
+        } catch (e: Exception) {
+            Log.printStackTrace(e)
+        }
+    }
+
+    @JvmStatic
+    fun startTaskRunning(taskName: String?) {
+        if (!isNotificationStarted) {
+            return
+        }
+        try {
+            addRunningTask(taskName)
+            render(force = true)
+        } catch (e: Exception) {
+            Log.printStackTrace(e)
+        }
+    }
+
+    @JvmStatic
+    fun finishTaskRunning(taskName: String?) {
+        if (!isNotificationStarted) {
+            return
+        }
+        try {
+            removeRunningTask(taskName)
             render(force = true)
         } catch (e: Exception) {
             Log.printStackTrace(e)
@@ -217,10 +286,24 @@ object Notify {
             lastUpdateTime = System.currentTimeMillis()
 
             val pauseTime = RuntimeInfo.getInstance().getLong(RuntimeInfo.RuntimeInfoKey.ForestPauseTime)
-            val title = if (pauseTime > System.currentTimeMillis()) {
-                "异常暂停，恢复时间 ${TimeUtil.getCommonDate(pauseTime)}"
-            } else {
-                statusText.ifBlank { "模块运行中" }
+            val explicitStatus = globalStatusText?.takeIf { it.isNotBlank() }
+            val runningTasks = snapshotRunningTasks()
+            val title = when {
+                pauseTime > System.currentTimeMillis() -> {
+                    "异常暂停，恢复时间 ${TimeUtil.getCommonDate(pauseTime)}"
+                }
+                explicitStatus != null -> {
+                    explicitStatus
+                }
+                runningTasks.isNotEmpty() -> {
+                    if (runningTasks.size == 1) {
+                        "${runningTasks.first()} 运行中"
+                    } else {
+                        MULTI_RUNNING_PREFIX + runningTasks.joinToString("、")
+                    }
+                }
+                nextExecTimeCache > 0 -> WAITING_TITLE
+                else -> STARTUP_TITLE
             }
 
             val lines = buildList {
@@ -231,7 +314,7 @@ object Notify {
                     add(lastExecText)
                 }
             }
-            val content = if (lines.isEmpty()) "模块运行中" else lines.joinToString("\n")
+            val content = if (lines.isEmpty()) RUNNING_TITLE else lines.joinToString("\n")
 
             builder.setContentTitle(title)
             builder.setContentText(lines.firstOrNull() ?: content)
