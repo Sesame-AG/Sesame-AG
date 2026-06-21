@@ -64,6 +64,7 @@
             --semi-color-primary-active: #5d9471;
             --semi-color-primary-light-default: var(--app-primary-weak);
         }
+
         html {
             font-size: 100%;
         }
@@ -710,7 +711,7 @@
         const SHEET_SAFETY_FILTERS = [
             { key: 'all', label: '全部' },
             { key: 'auto', label: '可自动兑换' },
-            { key: 'log_only', label: '仅提醒' },
+            { key: 'log_only', label: '仅展示/提醒' },
             { key: 'unavailable', label: '不可兑换' },
             { key: 'effect', label: '有增益补兑' }
         ];
@@ -1804,7 +1805,7 @@
                         statusText: String(item?.statusText ?? '').trim(),
                         safety,
                         safetyReason: String(item?.safetyReason ?? '').trim() ||
-                            (shouldFallbackLogOnly && !rawSafety ? '本地缓存项缺少安全分级，请刷新目标应用列表后再自动兑换' : ''),
+                            (shouldFallbackLogOnly && !rawSafety ? '当前仅展示上次缓存，尚未经过本次目标应用刷新复核；请先打开目标应用刷新列表后再勾选自动兑换' : ''),
                         effectSummary: String(item?.effectSummary ?? '').trim(),
                         effectTargets,
                         triggerText: String(item?.triggerText ?? '').trim(),
@@ -2114,7 +2115,7 @@
                 const searchableText = getSheetSearchText(item);
                 const isExchangeSheet = `${sheetConfig.title || ''} ${sheetConfig.fieldCode || ''}`.includes('兑换') ||
                     String(sheetConfig.fieldCode || '').toLowerCase().includes('exchange');
-                const hasLogOnlyText = searchableText.includes('仅提醒');
+                const hasLogOnlyText = searchableText.includes('仅提醒') || searchableText.includes('仅展示/提醒');
                 const hasUnavailableText = searchableText.includes('不可兑换');
                 const hasEffect = Boolean(item.effectSummary || (item.effectTargets || []).length > 0) ||
                     searchableText.includes('补兑') ||
@@ -2150,7 +2151,7 @@
                     return { label: item.effectSummary ? '可自动/补兑' : '可自动兑换', className: 'list-safety-auto' };
                 }
                 if (item.safety === 'LOG_ONLY') {
-                    return { label: '仅提醒', className: 'list-safety-log' };
+                    return { label: '仅展示/提醒', className: 'list-safety-log' };
                 }
                 if (item.safety === 'UNAVAILABLE') {
                     return { label: '不可兑换', className: 'list-safety-unavailable' };

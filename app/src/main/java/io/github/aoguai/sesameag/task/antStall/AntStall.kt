@@ -6,6 +6,7 @@ import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.entity.friend.FriendCapabilityState
 import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
 import io.github.aoguai.sesameag.hook.ApplicationHook
+import io.github.aoguai.sesameag.hook.keepalive.PersistentLaunchPolicy
 import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleDefaults
 import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleKind
 import io.github.aoguai.sesameag.hook.keepalive.UnifiedScheduler
@@ -116,11 +117,10 @@ class AntStall : ModelTask() {
                 .put("child_kind", PERSISTENT_CHILD_KIND)
                 .put("child_id", childId)
                 .put("group", group)
-                .put("launch_target", true)
             ownerUserId?.let { payload.put("owner_user_id", it) }
             payload.put("session_epoch", AccountSessionCoordinator.currentSessionEpoch())
 
-            UnifiedScheduler.schedulePersistentTrigger(
+            val schedule = UnifiedScheduler.schedulePersistentTrigger(
                 context = context,
                 name = "新村子任务:$group",
                 kind = PersistentScheduleKind.MODULE_CHILD,
@@ -131,6 +131,9 @@ class AntStall : ModelTask() {
                 ownerUserId = ownerUserId,
                 sessionEpoch = AccountSessionCoordinator.currentSessionEpoch()
             )
+            if (PersistentLaunchPolicy.isFrontLaunchDisabled(schedule.lastError)) {
+                Log.stall("新村持久子任务[$group][$childId]已因禁止系统调度前台拉起目标应用降级为仅进程存活时等待，需手动打开目标应用后恢复")
+            }
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "注册新村持久子任务失败[$group][$childId]", t)
         }

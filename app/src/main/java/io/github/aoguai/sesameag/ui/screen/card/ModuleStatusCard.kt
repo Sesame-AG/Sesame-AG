@@ -4,6 +4,8 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -31,18 +33,22 @@ import io.github.aoguai.sesameag.data.General
 import io.github.aoguai.sesameag.ui.screen.components.HtmlText
 import io.github.aoguai.sesameag.ui.viewmodel.MainViewModel
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun ModuleStatusCard(
     status: MainViewModel.ModuleStatus,
     expanded: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onDoubleClick: (() -> Unit)? = null
 ) {
     ElevatedCard(
-        onClick = onClick,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(8.dp),
+            .padding(8.dp)
+            .combinedClickable(
+                onClick = onClick,
+                onDoubleClick = { onDoubleClick?.invoke() }
+            ),
         colors = CardDefaults.elevatedCardColors(
             containerColor =
                 when (status) {
@@ -62,31 +68,31 @@ fun ModuleStatusCard(
                     is MainViewModel.ModuleStatus.Activated -> {
                         Icon(Icons.Outlined.CheckCircle, "已激活")
                         Column(Modifier.padding(start = 20.dp)) {
-                            Text(text = "Activated", style = MaterialTheme.typography.titleMedium)
-                            Text(text = "Version: ${BuildConfig.VERSION_NAME} ${BuildConfig.VERSION_CODE}", style = MaterialTheme.typography.bodyMedium)
+                            Text(text = "模块已激活", style = MaterialTheme.typography.titleMedium)
+                            Text(text = "版本 ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})", style = MaterialTheme.typography.bodyMedium)
                             Spacer(Modifier.height(4.dp))
-                            Text(text = "by ${status.frameworkName} ${status.frameworkVersion} API ${status.apiVersion}", style = MaterialTheme.typography.bodySmall)
+                            Text(text = "${status.frameworkName} ${status.frameworkVersion} · API ${status.apiVersion}", style = MaterialTheme.typography.bodySmall)
                         }
                     }
 
                     is MainViewModel.ModuleStatus.Unsupported -> {
                         Icon(Icons.Outlined.Warning, "不受支持")
                         Column(Modifier.padding(start = 20.dp)) {
-                            Text(text = "框架 API 不受支持", style = MaterialTheme.typography.titleMedium)
+                            Text(text = "框架 API 版本过低", style = MaterialTheme.typography.titleMedium)
                             Spacer(Modifier.height(4.dp))
-                            Text(text = "by ${status.frameworkName} ${status.frameworkVersion} API ${status.apiVersion}", style = MaterialTheme.typography.bodySmall)
-                            Text(text = "需要支持 libxposed API 101+ 的管理器", style = MaterialTheme.typography.bodyMedium)
-                            Text(text = "点击展开帮助", style = MaterialTheme.typography.bodySmall)
+                            Text(text = "${status.frameworkName} ${status.frameworkVersion} · API ${status.apiVersion}", style = MaterialTheme.typography.bodySmall)
+                            Text(text = "请改用支持 libxposed API 101+ 的管理器或框架", style = MaterialTheme.typography.bodyMedium)
+                            Text(text = "点击或双击卡片查看排查说明", style = MaterialTheme.typography.bodySmall)
                         }
                     }
 
                     is MainViewModel.ModuleStatus.NotActivated -> {
                         Icon(Icons.Outlined.Warning, "未激活")
                         Column(Modifier.padding(start = 20.dp)) {
-                            Text(text = "模块未激活", style = MaterialTheme.typography.titleMedium)
+                            Text(text = "模块未激活或管理器未连接", style = MaterialTheme.typography.titleMedium)
                             Spacer(Modifier.height(4.dp))
-                            Text(text = "请在支持 libxposed API 101+ 的管理器中激活", style = MaterialTheme.typography.bodyMedium)
-                            Text(text = "点击展开帮助", style = MaterialTheme.typography.bodySmall)
+                            Text(text = "首次安装后请在管理器中勾选模块，并确认目标应用已加入作用域", style = MaterialTheme.typography.bodyMedium)
+                            Text(text = "点击或双击卡片查看排查说明", style = MaterialTheme.typography.bodySmall)
                         }
                     }
 
@@ -113,6 +119,11 @@ fun ModuleStatusCard(
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         text = "当前模块仅支持 libxposed API 101+；若管理器或框架仍停留在 API 100，模块不会生效。",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "首次使用时，请先在管理器中激活模块、把目标应用加入作用域，然后重新打开目标应用或返回首页复查。",
                         style = MaterialTheme.typography.bodySmall
                     )
                     Text(text = "Lspatch/Npatch/FPA/Opatch 请忽略此状态", style = MaterialTheme.typography.titleSmall)

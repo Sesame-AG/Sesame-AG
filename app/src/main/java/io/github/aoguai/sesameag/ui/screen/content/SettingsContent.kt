@@ -90,7 +90,7 @@ fun SettingsContent(
             if (userList.isEmpty()) {
                 item {
                     Text(
-                        text = "暂无已载入的用户配置。",
+                        text = "还没有已载入的账号配置。请先打开目标应用并返回模块首页，让当前账号同步进来后再配置。",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.outline
                     )
@@ -126,7 +126,7 @@ fun SettingsContent(
                     icon = Icons.Rounded.AccountCircle,
                     onClick = {
                         when (userList.size) {
-                            0 -> Toast.makeText(context, "暂无已载入账号", Toast.LENGTH_SHORT).show()
+                            0 -> Toast.makeText(context, "请先打开目标应用并回到模块首页载入账号", Toast.LENGTH_SHORT).show()
                             1 -> openFriendCenter(userList.first())
                             else -> showFriendCenterUserDialog = true
                         }

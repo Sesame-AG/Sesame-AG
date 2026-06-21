@@ -226,7 +226,8 @@ class MainActivity : ComponentActivity() {
             AppTheme(dynamicColor = isDynamicColor) {
                 MainScreen(
                     oneWord = oneWord,
-                    activeUserName = activeUser?.showName ?: "未载入",
+                    activeUserName = activeUser?.showName ?: "未载入账号",
+                    hasActiveUser = activeUser != null,
                     moduleStatus = moduleStatus,
                     permissionHealth = permissionHealth,
                     viewModel = viewModel,
@@ -654,20 +655,20 @@ class MainActivity : ComponentActivity() {
             requesting = requesting
         )
         val targetExactAlarmDescription = when {
-            !targetInstalled -> "未检测到目标应用，无法检查目标包的精确闹钟状态"
-            targetExactAlarmGrantedThisVisibility -> "当前可见周期内已收到目标应用精确闹钟授权结果"
+            !targetInstalled -> "未检测到目标应用，安装并打开后才能检查目标应用的精确闹钟状态"
+            targetExactAlarmGrantedThisVisibility -> "本次返回模块后已收到目标应用精确闹钟授权结果"
             targetPermissionSnapshot?.targetExactAlarmAllowed == true -> "目标应用已上报精确闹钟可用"
-            targetExactAlarmDeniedThisVisibility -> "当前可见周期内未授予目标应用精确闹钟，请在目标应用设置页内完成授权"
+            targetExactAlarmDeniedThisVisibility -> "本次返回模块后仍未授予目标应用精确闹钟，请在目标应用系统设置页内完成授权"
             targetPermissionSnapshot?.targetExactAlarmAllowed == false -> {
-                "目标应用已上报精确闹钟未授权，请在目标应用设置页内完成授权"
+                "目标应用已上报精确闹钟未授权，请在目标应用系统设置页内完成授权"
             }
             targetBatteryIgnored -> "目标包已在电池优化白名单内，系统允许使用精确闹钟"
             targetExactAlarmManifest.isAlwaysGranted -> "当前目标包无需额外授权即可使用精确闹钟"
             targetExactAlarmManifest.requiresManualSettingsCheck -> {
-                "Android 未提供可靠的跨包精确闹钟状态查询，请在目标应用设置页内人工确认"
+                "Android 无法可靠读取跨包授权结果，请先打开目标应用触发授权，再到系统设置里人工确认"
             }
 
-            else -> "目标包未声明可由模块引导的精确闹钟授权入口"
+            else -> "目标包未声明可由模块引导的精确闹钟授权入口，通常需要在系统设置中手动确认"
         }
         val items = listOf(
             PermissionHealthItem(
@@ -679,7 +680,7 @@ class MainActivity : ComponentActivity() {
                 ),
                 policy = PermissionPolicy.AUTO_CRITICAL,
                 title = "模块文件访问",
-                description = "用于读取与写入配置、日志和调试数据",
+                description = "用于读取与写入配置、日志和调试数据；首次使用请先完成这一项",
                 actionLabel = "申请文件权限"
             ),
             PermissionHealthItem(
@@ -691,7 +692,7 @@ class MainActivity : ComponentActivity() {
                 ),
                 policy = PermissionPolicy.AUTO_CRITICAL,
                 title = "模块通知",
-                description = "用于显示运行、异常和命令服务通知",
+                description = "用于显示运行、异常和命令服务通知；授权后返回本页即可继续检查",
                 actionLabel = "申请通知权限"
             ),
             PermissionHealthItem(
@@ -699,7 +700,7 @@ class MainActivity : ComponentActivity() {
                 status = lsposedScopeStatus(targetInstalled, requesting),
                 policy = PermissionPolicy.AUTO_CRITICAL,
                 title = "LSPosed 目标应用作用域",
-                description = "目标应用必须位于模块作用域内",
+                description = "首次使用请把目标应用加入模块作用域，然后重新打开目标应用或返回本页复查",
                 actionLabel = if (targetInstalled) "申请作用域" else null
             ),
             PermissionHealthItem(
@@ -711,7 +712,7 @@ class MainActivity : ComponentActivity() {
                 ),
                 policy = PermissionPolicy.MANUAL_CARD,
                 title = "模块精确闹钟",
-                description = "用于提高模块侧持久调度的准点性",
+                description = "用于提高模块侧持久调度的准点性；系统弹出授权页后返回本页即可",
                 actionLabel = "申请精确闹钟"
             ),
             PermissionHealthItem(
@@ -734,7 +735,7 @@ class MainActivity : ComponentActivity() {
                 ),
                 policy = PermissionPolicy.MANUAL_CARD,
                 title = "模块电池优化豁免",
-                description = "降低模块侧后台服务和调度被系统限制的概率",
+                description = "降低模块侧后台服务和调度被系统限制的概率；通常需要在系统设置中确认",
                 actionLabel = "申请模块电池权限"
             ),
             PermissionHealthItem(
@@ -750,7 +751,7 @@ class MainActivity : ComponentActivity() {
                 },
                 policy = PermissionPolicy.MANUAL_CARD,
                 title = "目标应用电池优化豁免",
-                description = "降低目标应用进程和 Hook 工作流被系统限制的概率",
+                description = "降低目标应用进程和 Hook 工作流被系统限制的概率；处理完后请回到模块复查",
                 actionLabel = if (targetInstalled) "申请目标电池权限" else null
             ),
             PermissionHealthItem(
@@ -758,7 +759,7 @@ class MainActivity : ComponentActivity() {
                 status = shellExecutorStatus(requesting),
                 policy = PermissionPolicy.MANUAL_CARD,
                 title = "Root/Shizuku 执行器",
-                description = "命令服务可用时便于执行诊断和辅助命令",
+                description = "用于诊断和辅助命令，不影响普通自动任务；需要时再处理即可",
                 actionLabel = if (isShizukuPermissionMissing()) "申请 Shizuku 授权" else null
             )
         )

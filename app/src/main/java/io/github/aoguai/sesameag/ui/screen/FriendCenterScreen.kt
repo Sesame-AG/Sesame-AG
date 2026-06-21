@@ -218,7 +218,7 @@ fun FriendCenterScreen(
                         val refreshDescription = when {
                             state.refreshing -> "正在刷新好友"
                             state.checkingRefreshAvailability -> "正在检测目标应用"
-                            !state.refreshAvailable -> "请先启动支付宝后再刷新好友"
+                            !state.refreshAvailable -> "请先打开目标应用并回到模块，再刷新好友列表"
                             else -> "刷新好友"
                         }
                         IconButton(
@@ -309,7 +309,14 @@ fun FriendCenterScreen(
             if (showAllProfiles) {
                 if (state.profiles.isEmpty()) {
                     item {
-                        Text("无匹配好友。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            if (state.stats.total == 0 && state.searchQuery.isBlank() && state.filter == FriendCenterFilter.ALL) {
+                                "还没有好友快照。请先打开目标应用并点右上角刷新，再回到这里查看。"
+                            } else {
+                                "无匹配好友。"
+                            },
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 } else {
                     items(state.profiles, key = { it.userId }) { profile ->

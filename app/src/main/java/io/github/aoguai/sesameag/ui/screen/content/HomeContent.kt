@@ -38,6 +38,7 @@ import io.github.aoguai.sesameag.util.ToastUtil
 
 @Composable
 fun HomeContent(
+    hasActiveUser: Boolean,
     moduleStatus: MainViewModel.ModuleStatus,
     serviceStatus: ServiceStatus,
     permissionHealth: PermissionHealthSnapshot,
@@ -74,6 +75,17 @@ fun HomeContent(
                 )
             }
         }
+        if (!hasActiveUser) {
+            item {
+                Text(
+                    text = "尚未读取到当前目标应用账号。请先打开目标应用并完成登录，再返回模块首页载入账号与配置。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
         // 1. 模块状态
         item {
             ModuleStatusCard(
@@ -85,6 +97,14 @@ fun HomeContent(
                         moduleStatus is MainViewModel.ModuleStatus.Unsupported
                     ) {
                         isStatusCardExpanded = !isStatusCardExpanded//此处不可省略
+                    }
+                },
+                onDoubleClick = {
+                    if (
+                        moduleStatus is MainViewModel.ModuleStatus.NotActivated ||
+                        moduleStatus is MainViewModel.ModuleStatus.Unsupported
+                    ) {
+                        isStatusCardExpanded = !isStatusCardExpanded
                     }
                 }
             )
@@ -104,7 +124,8 @@ fun HomeContent(
                             }
                         }
                     )
-                }
+                },
+                onDoubleClick = { isServiceCardExpanded = !isServiceCardExpanded }
             )
         }
 

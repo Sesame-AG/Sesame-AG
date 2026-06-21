@@ -40,7 +40,7 @@ internal fun AntMember.handleYebExpGoldTasks() {
 
             val title = getYebExpGoldTaskTitle(task, taskId)
             if (isYebExpGoldTaskBlacklisted(title, taskId)) {
-                Log.member("跳过黑名单任务[$title]")
+                Log.member("任务在自动跳过列表(黑名单)中，跳过[$title]")
                 continue
             }
             val unsupportedReason = getUnsupportedYebExpGoldTaskReason(task, title)
@@ -264,7 +264,7 @@ private fun trySignInYebExpGold(
         .orEmpty()
     val title = if (amount.isBlank()) "余额宝体验金签到" else "余额宝体验金签到(${amount}元)"
     if (TaskBlacklist.isTaskInBlacklist(YEB_TASK_BLACKLIST_MODULE, title)) {
-        Log.member("跳过黑名单任务[$title]")
+        Log.member("任务在自动跳过列表(黑名单)中，跳过[$title]")
         Status.setFlagToday(StatusFlags.FLAG_ANTMEMBER_YEB_EXP_GOLD_SIGN_DONE)
         return false
     }
@@ -374,7 +374,7 @@ private fun containsAnyYebExpGold(value: String, vararg keywords: String): Boole
 
 private fun blacklistUnsupportedYebExpGoldTask(title: String, taskId: String, reason: String) {
     TaskBlacklist.addToBlacklist(YEB_TASK_BLACKLIST_MODULE, taskId, title)
-    Log.member("余额宝体验金💰[无稳定闭环，已加入黑名单]#$title(taskId=$taskId, reason=$reason)")
+    Log.member("余额宝体验金💰[当前暂无稳定自动完成闭环，已加入自动跳过列表(黑名单)]#$title(taskId=$taskId, reason=$reason)")
 }
 
 private fun shouldAutoReceiveYebExpGoldTask(task: JSONObject): Boolean {
@@ -449,7 +449,7 @@ private fun claimPendingYebExpGoldRewards(
 
         val title = getYebExpGoldCompletedTitle(rewardItem, taskMap[taskId], taskId)
         if (isYebExpGoldTaskBlacklisted(title, taskId)) {
-            Log.member("跳过黑名单任务[$title]")
+            Log.member("任务在自动跳过列表(黑名单)中，跳过[$title]")
             continue
         }
         val completeResponse = JSONObject(AntMemberYebExpGoldRpcCall.completeYebExpGoldTask(taskId))

@@ -191,6 +191,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
     private var dontCollectList: FriendSelectionModelField? = null // 不收取能量的用户列表
     internal var collectWateringBubble: BooleanModelField? = null // 收取浇水金球开关
     private var batchRobEnergy: BooleanModelField? = null // 批量收取能量开关
+    private var takeLookEnergy: BooleanModelField? = null // 找能量开关
     private var collectSelfEnergyType: ChoiceModelField? = null // 收自己能量方式
     private var collectSelfEnergyThreshold: IntegerModelField? = null // 收自己能量阈值
     private var robMultiplierCollectLimit: IntegerModelField? = null // 领取N倍卡能量阈值
@@ -381,7 +382,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
     }
 
     internal fun isTakeLookEnergyEnabled(): Boolean {
-        return isCollectEnergyEnabled()
+        return isCollectEnergyEnabled() && takeLookEnergy?.value != false
     }
 
     private fun hasRebornProtectWorkEnabled(): Boolean {
@@ -415,6 +416,12 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             ).withDesc("开启后在好友、PK好友页面收取多个成熟能量球时优先使用一键收取 RPC。").also { batchRobEnergy = it })
         modelFields.addField(
             BooleanModelField(
+                "takeLookEnergy",
+                "收集能量 | 是否启用找能量",
+                true
+            ).withDesc("关闭后跳过找能量接口，直接按现有流程继续好友与PK好友主页遍历。").also { takeLookEnergy = it })
+        modelFields.addField(
+            BooleanModelField(
                 "pkEnergy",
                 "能量PK榜 | 开启",
                 false
@@ -425,7 +432,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 "能量挑战赛 | 开启",
                 false
             ).withDesc("自动查询 1V1 能量挑战赛状态，并领取已结算的能量和勋章奖励。").also { energyPvpChallenge = it })
-        // 在 ModelFields 定义中修改
         modelFields.addField(
             ChoiceModelField(
                 "whackMoleMode",
@@ -1769,7 +1775,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     UserMap.currentUid,
                     ExchangeOptionsRefreshBridge.TARGET_FOREST_VITALITY
                 )
-                Log.forest("活力值兑换🎁目标应用未启动，设置页使用结构化缓存列表#${cachedRows.size}")
+                Log.forest("活力值兑换🎁目标应用未启动，设置页先展示上次缓存列表；请打开目标应用后再刷新#${cachedRows.size}")
                 return cachedRows
             }
             val refreshResult = ExchangeOptionsRefreshBridge.requestRefreshOptions(
@@ -2320,7 +2326,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
 
     /**
      * 提取能量球状态
-     * {{ 修改了该方法，在 AVAILABLE 和 WAITING 分支增加了阈值判断 }}
      *
      * @param userHomeObj      用户主页的JSON对象
      * @param serverTime       服务器时间
@@ -2497,7 +2502,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         val failedBubbleIds = linkedSetOf<Long>()
         val safeUserId = userId ?: return failedBubbleIds
         if (bubbleIds.isEmpty()) return failedBubbleIds
-        val isBatchCollect = batchRobEnergy?.value == true
+        val isBatchCollect = shouldUseBatchRobEnergyOnForestHomePage(fromTag, bubbleIds.size)
         if (isBatchCollect) {
             var i = 0
             while (i < bubbleIds.size) {
@@ -2508,7 +2513,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     userHome = userHomeObj,
                     rpcEntity = AntForestRpcCall.batchEnergyRpcEntity(bizType, safeUserId, subList, rpcSource),
                     fromTag = fromTag,
-                    skipPropCheck = skipPropCheck,  // 🚀 传递快速通道标记
+                    skipPropCheck = skipPropCheck,
                     bizType = bizType,
                     rpcSource = rpcSource
                 )
@@ -2523,7 +2528,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     userHome = userHomeObj,
                     rpcEntity = AntForestRpcCall.energyRpcEntity(bizType, safeUserId, id, rpcSource),
                     fromTag = fromTag,
-                    skipPropCheck = skipPropCheck,  // 🚀 传递快速通道标记
+                    skipPropCheck = skipPropCheck,
                     bizType = bizType,
                     rpcSource = rpcSource
                 )
@@ -2532,6 +2537,17 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             }
         }
         return failedBubbleIds
+    }
+
+    // “一键收取”配置只对应好友/PK 好友主页的批量按钮语义，不能外溢到找能量或蹲点链路。
+    private fun shouldUseBatchRobEnergyOnForestHomePage(fromTag: String?, bubbleCount: Int): Boolean {
+        if (batchRobEnergy?.value != true || bubbleCount <= 1) {
+            return false
+        }
+        return when (fromTag) {
+            "friend", "pk" -> true
+            else -> false
+        }
     }
 
     /**
@@ -2612,7 +2628,15 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             Log.forest("开始处理" + rankingName + "前20位好友...")
             val friendRanking = rankingObject.optJSONArray("friendRanking")
             if (friendRanking != null) {
-                processFriendsEnergyCoroutine(friendRanking, flag, "${rankingName}前20位")
+                if (flag == "pk") {
+                    val frontUserIds = mutableListOf<String?>()
+                    for (index in 0 until friendRanking.length()) {
+                        frontUserIds.add(friendRanking.optJSONObject(index)?.optString("userId"))
+                    }
+                    processFriendsEnergyCoroutine(frontUserIds, flag, "${rankingName}前20位")
+                } else {
+                    processFriendsEnergyCoroutine(friendRanking, flag, "${rankingName}前20位")
+                }
             }
             tc.countDebug("处理" + rankingName + "靠前的好友")
             // 分批并行处理后续的（协程版本）
@@ -2743,10 +2767,10 @@ class AntForest : ModelTask(), EnergyCollectCallback {
      * 使用找能量功能收取好友能量（协程版本 - 修正版）
      * 逻辑：服务器自动轮询，返回空 friendId 代表无更多目标
      */
-    internal fun collectEnergyByTakeLook(source: String? = null) {
+    internal fun collectEnergyByTakeLook(source: String? = null): JSONObject? {
         if (!isCollectEnergyEnabled()) {
             Log.forest("收集能量开关关闭，跳过找能量接口")
-            return
+            return null
         }
 
         // 1. 冷却检查
@@ -2754,7 +2778,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         if (currentTime < nextTakeLookTime) {
             val remaining = (nextTakeLookTime - currentTime) / 1000
             Log.forest("找能量冷却中，等待 ${remaining / 60}分${remaining % 60}秒")
-            return
+            return null
         }
 
         val tc = TimeCounter(TAG)
@@ -2764,18 +2788,23 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         var shouldCooldown = false
         var firstTakeLook = true
         var firstTakeLookExposedUserId = ""
+        val actualSource = source?.takeIf { it.isNotBlank() }
+        var takeLookSessionStarted = false
+        var takeLookEndRequested = false
+        var takeLookEndPayload: JSONObject? = null
 
         // 本地去重集合：防止单次运行中服务器重复返回同一个有保护罩的人
         val visitedInSession = mutableSetOf<String>()
 
         Log.forest("开始找能量 (服务器自动轮询)")
 
-        fun requestTakeLookEnd() {
-            if (source.isNullOrBlank()) {
-                AntForestRpcCall.takeLookEnd()
-            } else {
-                AntForestRpcCall.takeLookEnd(source)
+        fun requestTakeLookEndIfNeeded(): JSONObject? {
+            if (takeLookEndRequested) {
+                return takeLookEndPayload
             }
+            takeLookEndRequested = true
+            takeLookEndPayload = queryTakeLookEndPayload(actualSource)
+            return takeLookEndPayload
         }
 
         fun extractTakeLookExposeFriendId(combineBizObj: JSONObject): String? {
@@ -2818,9 +2847,10 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 // A. 调用接口
                 val takeLookStartedThisRound = firstTakeLook
                 val takeLookResult = try {
+                    takeLookSessionStarted = true
                     val resStr = AntForestRpcCall.takeLook(
                         buildTakeLookSkipUsers(),
-                        source,
+                        actualSource,
                         exposedUserId = if (takeLookStartedThisRound) firstTakeLookExposedUserId else "",
                         takeLookStart = takeLookStartedThisRound
                     )
@@ -2843,7 +2873,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 if (actionType.isNotBlank() && actionType != "FRIEND") {
                     Log.forest("找能量返回非好友动作[$actionType]，结束")
                     if (!takeLookEnded) {
-                        requestTakeLookEnd()
+                        requestTakeLookEndIfNeeded()
                     }
                     break@loop
                 }
@@ -2851,7 +2881,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     val actionSuffix = if (actionType.isBlank()) "" else "[$actionType]"
                     Log.forest("找能量返回${actionSuffix}无有效好友，结束")
                     if (!takeLookEnded) {
-                        requestTakeLookEnd()
+                        requestTakeLookEndIfNeeded()
                     }
                     break@loop
                 }
@@ -2868,6 +2898,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 }
 
                 // E. 本地重复检查 (防止死循环刷同一个有盾的人)
+                val fromAct = if (takeLookStartedThisRound) "TAKE_LOOK" else "TAKE_LOOK_FRIEND"
                 if (visitedInSession.contains(friendId)) {
                     Log.forest("本次已检查过用户($friendId)，跳过")
                     if (takeLookEnded) {
@@ -2904,8 +2935,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     continue@loop
                 }
                 // G. 查询主页详情
-                val fromAct = if (takeLookStartedThisRound) "TAKE_LOOK" else "TAKE_LOOK_FRIEND"
-                val friendHomeObj = queryTakeLookFriendHome(friendId, source, fromAct)
+                val friendHomeObj = queryTakeLookFriendHome(friendId, actualSource, fromAct)
                 if (friendHomeObj == null) {
                     if (takeLookEnded) {
                         Log.forest("找能量已达到官方结束状态，结束")
@@ -2929,7 +2959,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     // 后续 takeLook 请求会带上 skipUsers，排行榜补齐也会通过 processedUsersCache 跳过本轮已确认保护的好友
                 } else {
                     // I. 收取能量
-                    collectEnergy(friendId, friendHomeObj, "takeLook", rpcSource = source)
+                    collectEnergy(friendId, friendHomeObj, "takeLook", rpcSource = actualSource)
                     handleFriendExtraBenefits(friendId, friendHomeObj)
                     foundCount++
                     consecutiveEmpty = 0 // 重置空计数
@@ -2946,6 +2976,12 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         } catch (e: Exception) {
             Log.printStackTrace(TAG, "找能量流程异常", e)
         } finally {
+            if (takeLookSessionStarted && !takeLookEndRequested) {
+                takeLookEndPayload = requestTakeLookEndIfNeeded()
+            }
+            if (takeLookEndPayload != null) {
+                processTakeLookEndTaskList(actualSource, takeLookEndPayload)
+            }
             // 逻辑结束后的状态处理
             if (shouldCooldown) {
                 nextTakeLookTime = System.currentTimeMillis() + TAKE_LOOK_COOLDOWN_MS
@@ -2957,6 +2993,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             Log.forest(msg)
             tc.countDebug(msg)
         }
+        return takeLookEndPayload
     }
 
     /**
@@ -3180,8 +3217,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 //   Log.forest("    普通好友: [$userName$userId], 所有条件不满足，跳过")
                 return
             }
-            // 只要开启了收能量，就进去看看，以便添加蹲点
-            // 即使排行榜信息显示没有可收能量，也进去检查，以便添加蹲点任务
             Log.forest("  正在查询好友 [$userName$userId] 的主页...")
             val userHomeObj = collectEnergy(userId, queryFriendHome(userId, null), "friend")
             handleFriendExtraBenefits(userId, userHomeObj)
@@ -3491,11 +3526,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     if (collected > 0) {
                         val randomIndex = random.nextInt(emojiList.size)
                         val randomEmoji = emojiList[randomIndex]
-                        val collectType = when (collectEnergyEntity.fromTag) {
-                            "takeLook" -> "找能量一键收取️"
-                            "蹲点收取" -> "蹲点一键收取️"
-                            else -> "一键收取️"
-                        }
+                        val collectType = "一键收取️"
                         val str =
                             collectType + randomEmoji + collected + "g[" + getAndCacheUserName(
                                 userId
@@ -4915,19 +4946,42 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         }
     }
 
-    private fun queryEnergyRainTakeLookEndPayload(): JSONObject? {
-        return queryForestTaskSource("takeLookEnd(backFromEnergyRain)") {
-            AntForestRpcCall.takeLookEnd(AntForestRpcCall.BACK_FROM_ENERGY_RAIN_SOURCE)
+    private fun queryTakeLookEndPayload(source: String? = null): JSONObject? {
+        val actualSource = source?.takeIf { it.isNotBlank() }
+        val sourceName = if (actualSource.isNullOrBlank()) {
+            "takeLookEnd"
+        } else {
+            "takeLookEnd($actualSource)"
+        }
+        return queryForestTaskSource(sourceName) {
+            if (actualSource.isNullOrBlank()) {
+                AntForestRpcCall.takeLookEnd()
+            } else {
+                AntForestRpcCall.takeLookEnd(actualSource)
+            }
         }
     }
 
-    private fun receiveEnergyRainTakeLookEndAwards() {
+    private fun processTakeLookEndTaskList(source: String? = null, takeLookEndPayload: JSONObject? = null) {
         try {
             if (receiveForestTaskAward?.value != true) {
                 return
             }
-            val taskResponse = queryForestTaskSource("take_look_end_task_list(backFromEnergyRain)") {
-                AntForestRpcCall.queryTakeLookEndTaskList(AntForestRpcCall.BACK_FROM_ENERGY_RAIN_SOURCE)
+            if (takeLookEndPayload?.optBoolean("showTaskList", false) != true) {
+                return
+            }
+            val actualSource = source?.takeIf { it.isNotBlank() }
+            val sourceName = if (actualSource.isNullOrBlank()) {
+                "take_look_end_task_list"
+            } else {
+                "take_look_end_task_list($actualSource)"
+            }
+            val taskResponse = queryForestTaskSource(sourceName) {
+                if (actualSource.isNullOrBlank()) {
+                    AntForestRpcCall.queryTakeLookEndTaskList()
+                } else {
+                    AntForestRpcCall.queryTakeLookEndTaskList(actualSource)
+                }
             } ?: return
 
             val deferredForestRightsTasks = linkedMapOf<String, DeferredForestRightsTask>()
@@ -4939,22 +4993,25 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             }
             collectDeferredForestRights(
                 deferredForestRightsTasks.values,
-                AntForestRpcCall.BACK_FROM_ENERGY_RAIN_SOURCE
+                actualSource
             )
         } catch (t: Throwable) {
-            handleException("receiveEnergyRainTakeLookEndAwards", t)
+            handleException("processTakeLookEndTaskList", t)
         }
     }
 
     internal suspend fun handleEnergyRainPostFlow() {
         try {
-            val takeLookEndPayload = queryEnergyRainTakeLookEndPayload()
+            val takeLookEndPayload = queryTakeLookEndPayload(AntForestRpcCall.BACK_FROM_ENERGY_RAIN_SOURCE)
             if (takeLookEndPayload != null && hasEnergyRainCollectHint(takeLookEndPayload)) {
                 Log.forest("能量雨收尾页提示仍有可收取机会，补做一次显式检查")
-                collectEnergyByTakeLook(AntForestRpcCall.BACK_FROM_ENERGY_RAIN_SOURCE)
-                queryEnergyRainTakeLookEndPayload()
+                val refreshedTakeLookEndPayload = collectEnergyByTakeLook(AntForestRpcCall.BACK_FROM_ENERGY_RAIN_SOURCE)
+                if (refreshedTakeLookEndPayload == null) {
+                    processTakeLookEndTaskList(AntForestRpcCall.BACK_FROM_ENERGY_RAIN_SOURCE, takeLookEndPayload)
+                }
+                return
             }
-            receiveEnergyRainTakeLookEndAwards()
+            processTakeLookEndTaskList(AntForestRpcCall.BACK_FROM_ENERGY_RAIN_SOURCE, takeLookEndPayload)
         } catch (t: Throwable) {
             handleException("handleEnergyRainPostFlow", t)
         }
@@ -8025,10 +8082,11 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         return try {
             withContext(Dispatchers.Default) {
                 // 主号蹲点查询自己的主页，好友蹲点走好友主页守卫。
+                val fromAct = if (task.isPkContest()) "PKContest" else "TAKE_LOOK_FRIEND"
                 val friendHomeObj = if (task.isSelf()) {
                     querySelfHome()
                 } else {
-                    queryFriendHome(task.userId, if (task.isPkContest()) "PKContest" else null)
+                    queryFriendHome(task.userId, fromAct)
                 }
                 if (friendHomeObj != null) {
                     // 获取真实用户名

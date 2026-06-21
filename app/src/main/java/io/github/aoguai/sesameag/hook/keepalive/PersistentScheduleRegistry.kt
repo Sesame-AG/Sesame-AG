@@ -30,6 +30,7 @@ object PersistentScheduleRegistry {
     private enum class AlarmScheduleResult {
         SCHEDULED,
         ALREADY_CONFIRMED,
+        BLOCKED_BY_POLICY,
         FAILED
     }
 
@@ -49,31 +50,42 @@ object PersistentScheduleRegistry {
             state = PersistentScheduleState.SCHEDULED,
             lastError = null
         )
+        val prepared = PersistentLaunchPolicy.prepareScheduleForRegistration(context, normalized)
+        val effectiveSchedule = prepared.schedule
         val schedules = loadMutable()
         val removed = schedules.filter {
-            it.id == normalized.id ||
-                (normalized.dedupeKey.isNotBlank() && it.dedupeKey == normalized.dedupeKey)
+            it.id == effectiveSchedule.id ||
+                (effectiveSchedule.dedupeKey.isNotBlank() && it.dedupeKey == effectiveSchedule.dedupeKey)
         }
-        removed.firstOrNull { isSameScheduledTask(it, normalized) }?.let { existing ->
+        if (prepared.blockedReason != null) {
+            removed.forEach { cancelSystemAlarm(context, it, silent = true) }
+            if (removed.isNotEmpty()) {
+                schedules.removeAll(removed.toSet())
+                save(schedules)
+            }
+            Log.record(TAG, "持久调度已因禁止系统调度前台拉起目标应用而未注册[${effectiveSchedule.name}]")
+            return effectiveSchedule.withFailure(prepared.blockedReason, now)
+        }
+        removed.firstOrNull { isSameScheduledTask(it, effectiveSchedule) }?.let { existing ->
             return existing
         }
         val action = if (removed.isEmpty()) "新增持久调度" else "替换持久调度"
-        if (ensureSystemAlarm(context, normalized, action, skipIfAlreadyEnsured = false) != AlarmScheduleResult.FAILED) {
+        if (ensureSystemAlarm(context, effectiveSchedule, action, skipIfAlreadyEnsured = false) != AlarmScheduleResult.FAILED) {
             removed
-                .filter { it.id != normalized.id }
+                .filter { it.id != effectiveSchedule.id }
                 .forEach { cancelSystemAlarm(context, it, silent = true) }
             schedules.removeAll(removed.toSet())
-            schedules.add(normalized)
+            schedules.add(effectiveSchedule)
             save(schedules)
-            return normalized
+            return effectiveSchedule
         }
 
-        val failed = normalized.withFailure("system_alarm_schedule_failed", now)
+        val failed = effectiveSchedule.withFailure("system_alarm_schedule_failed", now)
         if (removed.isEmpty()) {
             schedules.add(failed)
             save(schedules)
         } else {
-            Log.record(TAG, "持久调度注册失败，保留旧调度[${normalized.name}]")
+            Log.record(TAG, "持久调度注册失败，保留旧调度[${effectiveSchedule.name}]")
         }
         return failed
     }
@@ -176,11 +188,18 @@ object PersistentScheduleRegistry {
             }
 
             if (schedule.state == PersistentScheduleState.SCHEDULED && schedule.triggerAtMs > now) {
-                ensureSystemAlarm(context, schedule, "恢复持久调度", skipIfAlreadyEnsured = true)
+                val prepared = PersistentLaunchPolicy.prepareScheduleForRegistration(context, schedule)
+                if (prepared.blockedReason != null) {
+                    cancelSystemAlarm(context, schedule)
+                    Log.record(TAG, "持久调度已因禁止系统调度前台拉起目标应用而停用[${schedule.name}]")
+                    continue
+                }
+                ensureSystemAlarm(context, prepared.schedule, "恢复持久调度", skipIfAlreadyEnsured = true)
+                retained.add(prepared.schedule)
             } else {
                 cancelSystemAlarm(context, schedule)
+                retained.add(schedule)
             }
-            retained.add(schedule)
         }
         save(retained)
     }
@@ -279,12 +298,20 @@ object PersistentScheduleRegistry {
                 continue
             }
 
-            when (ensureSystemAlarm(context, schedule, "恢复持久调度", skipIfAlreadyEnsured = true)) {
+            val prepared = PersistentLaunchPolicy.prepareScheduleForRegistration(context, schedule)
+            if (prepared.blockedReason != null) {
+                cancelSystemAlarm(context, schedule)
+                Log.record(TAG, "持久调度已因禁止系统调度前台拉起目标应用而停用[${schedule.name}]")
+                continue
+            }
+
+            when (ensureSystemAlarm(context, prepared.schedule, "恢复持久调度", skipIfAlreadyEnsured = true)) {
                 AlarmScheduleResult.SCHEDULED -> rescheduled++
                 AlarmScheduleResult.ALREADY_CONFIRMED,
+                AlarmScheduleResult.BLOCKED_BY_POLICY,
                 AlarmScheduleResult.FAILED -> Unit
             }
-            retained.add(schedule)
+            retained.add(prepared.schedule)
         }
 
         save(retained)
@@ -314,6 +341,11 @@ object PersistentScheduleRegistry {
         action: String,
         skipIfAlreadyEnsured: Boolean
     ): AlarmScheduleResult {
+        val blockedReason = PersistentLaunchPolicy.prepareScheduleForRegistration(context, schedule).blockedReason
+        if (blockedReason != null) {
+            cancelSystemAlarm(context, schedule, silent = true)
+            return AlarmScheduleResult.BLOCKED_BY_POLICY
+        }
         val key = alarmKey(schedule)
         if (skipIfAlreadyEnsured && isAlarmEnsured(key)) {
             return AlarmScheduleResult.ALREADY_CONFIRMED

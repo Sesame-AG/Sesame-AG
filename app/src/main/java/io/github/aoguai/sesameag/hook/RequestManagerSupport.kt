@@ -26,6 +26,10 @@ internal class RpcLogLimiter(private val intervalMs: Long) {
 internal object RpcFallbackJsonFactory {
     fun build(reason: String, method: String?): String {
         val message = "$reason，请稍后再试"
+        val currentOfflineReason = ApplicationHookConstants.offlineReason
+        val currentOfflineDetail = ApplicationHookConstants.offlineReasonDetail
+        val currentOfflineUntilMs = ApplicationHookConstants.offlineUntilMs
+        val authLikeSnapshot = ApplicationHookConstants.getLatestAuthLikeOfflineSnapshot()
         return try {
             JSONObject().apply {
                 put("success", false)
@@ -35,6 +39,32 @@ internal object RpcFallbackJsonFactory {
                 put("resultCode", "I07")
                 if (!method.isNullOrBlank()) {
                     put("rpcMethod", method)
+                }
+                if (!currentOfflineReason.isNullOrBlank()) {
+                    put("offlineReason", currentOfflineReason)
+                } else if (authLikeSnapshot != null) {
+                    put("offlineReason", "auth_like")
+                }
+                if (!currentOfflineDetail.isNullOrBlank()) {
+                    put("offlineReasonDetail", currentOfflineDetail)
+                } else if (authLikeSnapshot != null && authLikeSnapshot.detail.isNotBlank()) {
+                    put("offlineReasonDetail", authLikeSnapshot.detail)
+                }
+                if (currentOfflineUntilMs > 0L) {
+                    put("offlineUntilMs", currentOfflineUntilMs)
+                } else if (authLikeSnapshot?.active == true && authLikeSnapshot.untilMs > 0L) {
+                    put("offlineUntilMs", authLikeSnapshot.untilMs)
+                }
+                if (authLikeSnapshot != null) {
+                    if (authLikeSnapshot.method.isNotBlank()) {
+                        put("offlineSourceMethod", authLikeSnapshot.method)
+                    }
+                    if (authLikeSnapshot.code.isNotBlank()) {
+                        put("offlineSourceCode", authLikeSnapshot.code)
+                    }
+                    if (authLikeSnapshot.message.isNotBlank()) {
+                        put("offlineSourceMessage", authLikeSnapshot.message)
+                    }
                 }
             }.toString()
         } catch (_: Throwable) {

@@ -544,7 +544,7 @@ class ForestChouChouLe {
             } else if (resJson != null && resJson.isRpcUnsupported()) {
                 taskTryCount.remove(type)
                 TaskBlacklist.autoAddToBlacklist(FOREST_BLACKLIST_MODULE, type, name, RPC_UNSUPPORTED_CODE)
-                Log.forest("${s.name} 任务RPC不支持，已加入黑名单: $name")
+                Log.forest("${s.name} 任务RPC暂无稳定自动闭环，已加入自动跳过列表(黑名单): $name")
                 false
             } else if (resJson != null && resJson.check()) {
                 taskTryCount.remove(type)
@@ -580,7 +580,7 @@ class ForestChouChouLe {
             true
         } else if (res != null && res.isRpcUnsupported()) {
             TaskBlacklist.autoAddToBlacklist(FOREST_BLACKLIST_MODULE, type, name, RPC_UNSUPPORTED_CODE)
-            Log.forest("${s.name} 奖励领取RPC不支持，已加入黑名单: $name")
+            Log.forest("${s.name} 奖励领取RPC暂无稳定自动闭环，已加入自动跳过列表(黑名单): $name")
             false
         } else {
             Log.error(TAG, "${s.name} 奖励领取失败: $name")

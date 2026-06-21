@@ -41,6 +41,7 @@ class BaseModel : Model() {
         modelFields.addField(modelSleepTime) //模块休眠时间范围
         modelFields.addField(execAtTimeList) //定时执行的时间点列表
         modelFields.addField(wakenAtTimeList) //定时唤醒的时间点列表
+        modelFields.addField(allowPersistentForegroundLaunch) //是否允许持久调度前台拉起目标应用
         modelFields.addField(energyTime) //能量收集的时间范围
         modelFields.addField(timedTaskModel) //定时任务模式选择
         modelFields.addField(timeoutRestart) //超时是否重启
@@ -141,6 +142,18 @@ class BaseModel : Model() {
             "-1",
             allowDisable = true
         ).withDesc("自动唤醒目标应用的时间点列表，适合凌晨或关键时段提前拉起进程。")
+
+        /**
+         * 是否允许系统持久调度前台拉起目标应用
+         */
+        val allowPersistentForegroundLaunch: BooleanModelField = BooleanModelField(
+            "allowPersistentForegroundLaunch",
+            "允许系统调度前台拉起目标应用",
+            true
+        ).withDesc(
+            "控制轮询任务、定时唤醒、预唤醒、森林蹲点和庄园/新村/运动持久子任务是否可通过系统调度主动前台拉起目标应用。" +
+                "关闭后将不再主动拉起，但强时效任务只在目标进程存活时准点，或需手动打开目标应用后恢复。"
+        )
 
         /**
          * 能量收集的时间范围

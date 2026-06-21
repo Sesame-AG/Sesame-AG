@@ -84,12 +84,12 @@ class FriendCenterViewModel : ViewModel() {
     private var refreshRequestToken: Long = 0L
 
     companion object {
-        private const val REFRESH_UNAVAILABLE_MESSAGE = "请先启动支付宝后再刷新好友"
+        private const val REFRESH_UNAVAILABLE_MESSAGE = "请先打开目标应用并回到模块，再刷新好友列表"
     }
 
     fun load(userId: String) {
         if (userId.isBlank()) {
-            _uiState.value = FriendCenterUiState(message = "未指定账号")
+            _uiState.value = FriendCenterUiState(message = "当前账号尚未载入，请先打开目标应用并返回模块")
             return
         }
         UserMap.setCurrentUserId(userId)
@@ -202,7 +202,7 @@ class FriendCenterViewModel : ViewModel() {
         val state = _uiState.value
         val currentUserId = state.userId.trim()
         if (currentUserId.isEmpty()) {
-            _uiState.value = state.copy(message = "未指定账号，无法刷新好友")
+            _uiState.value = state.copy(message = "当前账号尚未载入，请先打开目标应用并返回模块")
             return
         }
         if (!state.refreshAvailable) {

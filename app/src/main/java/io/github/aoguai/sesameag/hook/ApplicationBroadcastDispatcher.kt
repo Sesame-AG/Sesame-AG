@@ -8,6 +8,7 @@ import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
 import io.github.aoguai.sesameag.hook.keepalive.UnifiedScheduler
 import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleDefaults
 import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleKind
+import io.github.aoguai.sesameag.hook.keepalive.PersistentLaunchPolicy
 import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleRegistry
 import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleState
 import io.github.aoguai.sesameag.hook.keepalive.ScheduledTaskRouter
@@ -224,12 +225,15 @@ internal object ApplicationBroadcastDispatcher {
                 kind = PersistentScheduleKind.GLOBAL_PREWAKEUP,
                 triggerAtMs = execTime,
                 dedupeKey = "prewakeup_$execTime",
-                payloadJson = """{"execution_time":$execTime,"launch_target":true}""",
+                payloadJson = """{"execution_time":$execTime}""",
                 toleranceMs = PersistentScheduleDefaults.DEFAULT_TOLERANCE_MS,
                 ownerUserId = persistentSchedule?.ownerUserId ?: AccountSessionCoordinator.currentUserId(),
                 sessionEpoch = persistentSchedule?.sessionEpoch ?: AccountSessionCoordinator.currentSessionEpoch()
             )
             if (schedule.lastError != null) {
+                if (PersistentLaunchPolicy.isFrontLaunchDisabled(schedule.lastError)) {
+                    record(TAG, "已禁止系统调度前台拉起目标应用，预唤醒任务降级为仅进程存活时等待")
+                }
                 val delayMillis = execTime - now
                 record(TAG, "持久预唤醒注册失败，回退进程内等待 ${TimeUtil.formatDuration(delayMillis)}")
                 UnifiedScheduler.scheduleLongDelay(delayMillis, "prewakeup_execute") {
@@ -269,14 +273,14 @@ internal object ApplicationBroadcastDispatcher {
                 ctx,
                 targetUserId,
                 ready = false,
-                message = "当前支付宝账号未登录"
+                message = "当前目标应用账号未登录"
             )
 
             targetUserId.isNotEmpty() && targetUserId != currentUserId -> sendHookReadyResult(
                 ctx,
                 targetUserId,
                 ready = false,
-                message = "当前支付宝账号与好友中心账号不一致: target=$targetUserId, current=$currentUserId",
+                message = "当前目标应用账号与好友中心账号不一致: target=$targetUserId, current=$currentUserId",
                 currentUserId = currentUserId
             )
 
@@ -366,7 +370,7 @@ internal object ApplicationBroadcastDispatcher {
                     ctx,
                     targetUserId,
                     success = false,
-                    message = "刷新好友失败：当前支付宝账号未登录"
+                    message = "刷新好友失败：当前目标应用账号未登录"
                 )
                 return@submitEntry
             }
@@ -447,12 +451,12 @@ internal object ApplicationBroadcastDispatcher {
             ?: return ExchangeOptionsRefreshResult(false, "目标应用 Hook 尚未就绪")
         val currentUserId = HookUtil.getUserId(loader)?.trim().orEmpty()
         if (currentUserId.isEmpty()) {
-            return ExchangeOptionsRefreshResult(false, "当前支付宝账号未登录")
+            return ExchangeOptionsRefreshResult(false, "当前目标应用账号未登录")
         }
         if (targetUserId.isNotEmpty() && targetUserId != currentUserId) {
             return ExchangeOptionsRefreshResult(
                 false,
-                "当前支付宝账号与配置账号不一致: target=$targetUserId, current=$currentUserId",
+                "当前目标应用账号与配置账号不一致: target=$targetUserId, current=$currentUserId",
                 currentUserId
             )
         }

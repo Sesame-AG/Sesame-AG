@@ -183,6 +183,9 @@ object TaskBlacklist {
 
         addToBlacklist(moduleName, taskId, taskTitle)
         val taskInfo = if (taskTitle.isNotBlank()) "$taskId - $taskTitle" else taskId
-        Log.record(TAG, "模块[$moduleName]任务[$taskInfo]因$reason 自动加入黑名单")
+        Log.record(
+            TAG,
+            "模块[$moduleName]任务[$taskInfo]因$reason 已加入自动任务跳过列表（用于避免重复尝试，不代表账号异常）"
+        )
     }
 }

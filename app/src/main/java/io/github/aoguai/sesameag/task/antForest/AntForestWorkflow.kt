@@ -40,8 +40,8 @@ internal suspend fun AntForest.runForestPreparationAndCollectionWorkflow(tc: Tim
         collectEnergyByTakeLook()
         tc.countDebug("找能量接口")
     } else {
-        Log.forest("收集能量开关关闭，跳过找能量接口")
-        tc.countDebug("跳过找能量接口（收集能量未开启）")
+        Log.forest("找能量开关关闭，跳过找能量接口")
+        tc.countDebug("跳过找能量接口（找能量未开启）")
     }
 
     if (collectEnergyEnabled && pkEnergy?.value == true) {
@@ -107,8 +107,8 @@ internal fun AntForest.runEnergyOnlyCollectionWorkflow(tc: TimeCounter): JSONObj
         collectEnergyByTakeLook()
         tc.countDebug("只收能量-找能量接口")
     } else {
-        Log.forest("收集能量开关关闭，跳过找能量接口")
-        tc.countDebug("只收能量-跳过找能量接口（收集能量未开启）")
+        Log.forest("找能量开关关闭，跳过找能量接口")
+        tc.countDebug("只收能量-跳过找能量接口（找能量未开启）")
     }
 
     return selfHomeObj

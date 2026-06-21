@@ -373,6 +373,11 @@ object ScheduledTaskRouter {
     }
 
     private fun maybeLaunchTarget(context: Context, schedule: PersistentSchedule, source: String): Boolean {
+        if (PersistentLaunchPolicy.payloadRequestsTargetLaunch(schedule.payloadJson) && !shouldLaunchTarget(schedule)) {
+            clearLaunchFailures(schedule)
+            Log.record(TAG, "持久任务前台拉起已关闭，跳过拉起目标应用[${schedule.name}]")
+            return false
+        }
         if (!shouldLaunchTarget(schedule)) {
             return false
         }
@@ -456,15 +461,12 @@ object ScheduledTaskRouter {
         return context.packageName == General.PACKAGE_NAME
     }
 
-    private fun shouldLaunchTarget(schedule: PersistentSchedule): Boolean {
-        return payloadOf(schedule).optBoolean("launch_target", false)
+    private fun payloadOf(schedule: PersistentSchedule): JSONObject {
+        return runCatching { JSONObject(schedule.payloadJson.ifBlank { "{}" }) }
+            .getOrDefault(JSONObject())
     }
 
-    private fun payloadOf(schedule: PersistentSchedule): JSONObject {
-        return try {
-            JSONObject(schedule.payloadJson.ifBlank { "{}" })
-        } catch (_: Throwable) {
-            JSONObject()
-        }
+    private fun shouldLaunchTarget(schedule: PersistentSchedule): Boolean {
+        return PersistentLaunchPolicy.shouldLaunchTarget(schedule)
     }
 }

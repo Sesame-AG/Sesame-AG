@@ -4,6 +4,8 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -28,28 +30,34 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.github.aoguai.sesameag.model.BaseModel
 import io.github.aoguai.sesameag.ui.permissions.PermissionHealthItem
 import io.github.aoguai.sesameag.ui.permissions.PermissionHealthSnapshot
 import io.github.aoguai.sesameag.ui.permissions.PermissionPolicy
 import io.github.aoguai.sesameag.ui.permissions.PermissionStatus
 import io.github.aoguai.sesameag.util.CommandUtil.ServiceStatus
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun ServicesStatusCard(
     status: ServiceStatus, // 使用新定义的状态
     permissionHealth: PermissionHealthSnapshot,
     expanded: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onDoubleClick: (() -> Unit)? = null
 ) {
     val hasPermissionIssue = permissionHealth.attentionCount > 0 || permissionHealth.hasCriticalIssue
     val shellReady = status is ServiceStatus.Active
     val loading = status is ServiceStatus.Loading || permissionHealth.totalCount == 0
+    val persistentForegroundLaunchEnabled = BaseModel.allowPersistentForegroundLaunch.value != false
     ElevatedCard(
-        onClick = onClick,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 4.dp), // 稍微调整间距
+            .padding(horizontal = 8.dp, vertical = 4.dp)
+            .combinedClickable(
+                onClick = onClick,
+                onDoubleClick = { onDoubleClick?.invoke() }
+            ),
         colors = CardDefaults.elevatedCardColors(
             containerColor = when (status) {
                 is ServiceStatus.Loading -> MaterialTheme.colorScheme.surfaceVariant
@@ -76,10 +84,10 @@ fun ServicesStatusCard(
                 Column(Modifier.padding(start = 20.dp)) {
                     Text(
                         text = when {
-                            loading -> "正在检查运行权限..."
-                            hasPermissionIssue -> "运行与权限待处理"
-                            shellReady -> "运行与权限正常"
-                            else -> "运行权限待确认"
+                            loading -> "正在检查运行环境..."
+                            hasPermissionIssue -> "仍有运行前置条件未完成"
+                            shellReady -> "运行前置条件已就绪"
+                            else -> "运行环境部分就绪"
                         },
                         style = MaterialTheme.typography.titleMedium
                     )
@@ -89,14 +97,31 @@ fun ServicesStatusCard(
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        text = if (permissionHealth.hasRequestableIssue) {
-                            "可处理项 ${permissionHealth.requestableCount}"
-                        } else {
-                            "权限状态已同步"
+                        text = when {
+                            permissionHealth.hasRequestableIssue ->
+                                "单击卡片按顺序检查并申请可处理项，双击查看排查说明"
+                            hasPermissionIssue ->
+                                "仍有需要手动处理的项目，双击查看排查说明"
+                            !shellReady ->
+                                "Root/Shizuku 仅影响诊断类能力，双击可查看详细状态"
+                            else -> "权限状态已同步"
                         },
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
+            }
+            if (!loading && !persistentForegroundLaunchEnabled) {
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = "系统持久调度前台拉起已关闭：轮询、定时唤醒、预唤醒和森林/庄园/新村/运动持久任务到点后不再主动弹出目标应用；强时效任务改为仅进程存活时等待，或需手动打开目标应用后恢复。",
+                    style = MaterialTheme.typography.bodySmall,
+                    lineHeight = 18.sp,
+                    color = when {
+                        hasPermissionIssue -> MaterialTheme.colorScheme.onErrorContainer
+                        shellReady -> MaterialTheme.colorScheme.onPrimary
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                )
             }
 
             // 展开内容：故障排查
@@ -110,7 +135,7 @@ fun ServicesStatusCard(
                     Spacer(modifier = Modifier.height(8.dp))
                     if (permissionHealth.items.isEmpty()) {
                         Text(
-                            text = "权限快照尚未生成，请稍后重试。",
+                            text = "权限快照尚未生成。请先完成文件权限授权，稍等片刻后再次点击检查。",
                             style = MaterialTheme.typography.bodyMedium,
                             lineHeight = 20.sp
                         )
@@ -120,6 +145,14 @@ fun ServicesStatusCard(
                                 PermissionHealthRow(item)
                             }
                         }
+                    }
+                    if (!persistentForegroundLaunchEnabled) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "说明：这里只禁止系统持久调度主动前台拉起目标应用，不影响你手动打开目标应用后的主流程闭环；若系统仍偶发弹出，优先检查厂商自启动、后台弹出或后台活动启动权限。",
+                            style = MaterialTheme.typography.bodySmall,
+                            lineHeight = 18.sp
+                        )
                     }
                 }
             }
@@ -161,9 +194,9 @@ private fun shellStatusText(status: ServiceStatus): String {
             "Shizuku Shell 已连接"
         }
 
-        is ServiceStatus.Inactive -> "Shell 服务不可用"
-        is ServiceStatus.Loading -> "Shell 检查中"
-        is ServiceStatus.Error -> "Shell 服务异常"
+        is ServiceStatus.Inactive -> "Root/Shizuku 未连接"
+        is ServiceStatus.Loading -> "Root/Shizuku 检查中"
+        is ServiceStatus.Error -> "Root/Shizuku 连接异常"
     }
 }
 

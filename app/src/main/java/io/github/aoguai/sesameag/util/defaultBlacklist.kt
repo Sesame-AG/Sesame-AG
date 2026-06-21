@@ -49,6 +49,7 @@ private val sesameCreditDefaultBlacklist = setOf(
     "zml_tbxiaoxiaole_renwu_sanfang|去逛一逛消消乐", // 参数错误：promiseActivityExtCheck
     "zml_fengkuangshuishijie_renwu|去玩疯狂水世界", // 参数错误：promiseActivityExtCheck
     "zml_baoweixiangrikui_renwu|去玩保卫向日葵", // 参数错误：promiseActivityExtCheck
+    "zml_sanguobingheshidai_renwu|去玩三国冰河时代", // 参数错误：promiseActivityExtCheck
     "AP11313161|首次订阅养老金动态及福利", // 成长锦囊新任务中心 NORMAL_TASK，需真实订阅/社保业务
     "AP13350341|去查看我的借呗额度", // 成长锦囊新任务中心 NORMAL_TASK，借贷业务
     "AP11327894|完成1笔借呗支用", // 成长锦囊新任务中心 NORMAL_TASK，借贷支用
@@ -73,6 +74,7 @@ private val sesameAlchemyDefaultBlacklist = setOf(
     "租游戏账号得芝麻粒",   // 参数错误：ILLEGAL_ARGUMENT
     "去玩浪漫餐厅",         // 参数错误：promiseActivityExtCheck
     "去玩疯狂水世界",       // 参数错误：promiseActivityExtCheck
+    "去玩时光杂货店",       // 参数错误：promiseActivityExtCheck
     "去玩斗破苍穹",       // 参数错误：promiseActivityExtCheck
     "hjwf_baoweixiangrikui_renwu|去玩保卫向日葵", // 参数错误：promiseActivityExtCheck
     "hjwf_eduka_renwu|去点击先用后付商品", // 参数错误：promiseActivityExtCheck
@@ -353,6 +355,11 @@ private val memberDefaultBlacklist = setOf(
     "HHKLLRW_TASK",
     "WSYLBLLRW_TASK",
     "ZMSLLRW_TASK",
+    "zzsjxyx|玩主宰世界|通过8关主线关卡",
+    "yzsc|玩约战沙城|完成5个日常活动",
+    "yblb2060170000359285|玩一步两步|通过2关",
+    "ljzc|玩龙迹之城|击杀6次挑战boss",
+    "sjwy|玩四季物语|完成15个订单",
     "营业执照",
     "淘宝闪购",
     "淘金币",

@@ -209,7 +209,7 @@ object CustomSettings {
             isEnabled = false
             if (enableLog) Log.record("当日单次运行模式生效: 今日尚未完成首次全量运行，本次将运行所有任务")
         } else if (isEnabled) {
-            if (enableLog) Log.record("当日单次运行模式生效: 今日已完成全量运行，已启用跳过黑名单任务")
+            if (enableLog) Log.record("当日单次运行模式生效: 今日已完成全量运行，将按已选模块跳过后续运行")
         }
 
         return OnceDailyStatus(isEnabled, isFinished)
@@ -385,7 +385,7 @@ object CustomSettings {
             isFinished -> "单次运行：今日已完成"
             else -> "单次运行：已开启"
         }
-        val ops = arrayOf(statusText, "设置黑名单模块", "设置非单次运行的时段")
+        val ops = arrayOf(statusText, "设置单次运行跳过模块", "设置非单次运行的时段")
         AlertDialog.Builder(context)
             .setTitle("账号：$showName")
             .setItems(ops) { _, which ->
@@ -405,7 +405,7 @@ object CustomSettings {
                     onRefresh()
                     showAccountOps(context, uid, showName, onRefresh)
                 } else if (which == 1) {
-                    ListDialog.show(context, "黑名单 | $showName", onlyOnceDailyList)
+                    ListDialog.show(context, "单次运行跳过模块 | $showName", onlyOnceDailyList)
                     try {
                         val dialogField: Field = ListDialog::class.java.getDeclaredField("listDialog")
                         dialogField.isAccessible = true

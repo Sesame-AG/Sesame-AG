@@ -541,7 +541,7 @@ class AntSesameCredit : ModelTask() {
                     containsAnyNewTaskCenterRisk(riskText)
                 ) {
                     TaskBlacklist.addToBlacklist(sesameCreditTaskBlacklistModule, taskCode, taskName)
-                    Log.sesame("成长锦囊新任务中心[无稳定闭环，已加入黑名单]#$taskName(taskCode=$taskCode,type=$taskType)")
+                    Log.sesame("成长锦囊新任务中心[当前暂无稳定自动完成闭环，已加入自动跳过列表(黑名单)]#$taskName(taskCode=$taskCode,type=$taskType)")
                     continue
                 }
                 if (taskType.equals("VIEW_TASK", ignoreCase = true)) {
@@ -723,7 +723,7 @@ class AntSesameCredit : ModelTask() {
         override fun isBlacklisted(item: TaskFlowItem): Boolean {
             val blacklisted = item.blacklistKeys.any { TaskBlacklist.isTaskInBlacklist(moduleName, it) }
             if (blacklisted && mapPhase(item) != TaskFlowPhase.REWARD_READY) {
-                logSkipOnce(item, "跳过黑名单任务")
+                logSkipOnce(item, "任务在自动跳过列表(黑名单)中，跳过")
             }
             return blacklisted
         }
@@ -1637,7 +1637,7 @@ class AntSesameCredit : ModelTask() {
                 // 只有在所有任务组中未处理过时才记录日志
                 val blacklistLogKey = title.ifBlank { templateId }
                 if (!processedBlacklistTasks.contains(blacklistLogKey)) {
-                    Log.sesame("跳过黑名单任务: $blacklistLogKey")
+                    Log.sesame("任务在自动跳过列表(黑名单)中，跳过: $blacklistLogKey")
                     processedBlacklistTasks.add(blacklistLogKey)
                 }
                 continue
@@ -3172,6 +3172,10 @@ class AntSesameCredit : ModelTask() {
             val code = errorCode.trim()
             val message = resultView.trim()
             return when {
+                code == "ILLEGAL_ARGUMENT" &&
+                    containsAnySesame(message, "promiseActivityExtCheck") ->
+                    TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE
+
                 code in setOf("TASK_ALREADY_FINISHED", "TASK_HAS_FINISHED", "REPEAT_FINISH", "REPEAT_REWARD") ||
                     containsAnySesame(message, "已完成", "已领取", "已经领取", "重复领取", "重复领奖", "重复完成") ->
                     TaskRpcFailureType.TERMINAL_DONE
@@ -3576,7 +3580,7 @@ class AntSesameCredit : ModelTask() {
                     UserMap.currentUid,
                     ExchangeOptionsRefreshBridge.TARGET_SESAME_GRAIN
                 )
-                Log.sesame("芝麻粒兑换🛒目标应用未启动，设置页使用结构化缓存列表#${cachedRows.size}")
+                Log.sesame("芝麻粒兑换🛒目标应用未启动，设置页先展示上次缓存列表；请打开目标应用后再刷新#${cachedRows.size}")
                 return cachedRows
             }
             val refreshResult = ExchangeOptionsRefreshBridge.requestRefreshOptions(

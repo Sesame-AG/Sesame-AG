@@ -13,7 +13,6 @@ import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.PermissionUtil
 import io.github.aoguai.sesameag.util.TimeUtil
 import kotlin.math.absoluteValue
-import org.json.JSONObject
 
 object SystemWakeScheduler {
     private const val TAG = "SystemWakeScheduler"
@@ -70,19 +69,26 @@ object SystemWakeScheduler {
     fun cancel(context: Context, schedule: PersistentSchedule, silent: Boolean = false) {
         resolveAlarmContexts(context).forEach { alarmContext ->
             val alarmManager = alarmContext.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return@forEach
-            val pendingIntent = buildPendingIntent(
-                alarmContext,
-                schedule,
-                PendingIntent.FLAG_NO_CREATE
-            ) ?: return@forEach
-            try {
-                alarmManager.cancel(pendingIntent)
-                pendingIntent.cancel()
-                if (!silent) {
-                    Log.runtime(TAG, "已取消系统闹钟[${schedule.name}] package=${alarmContext.packageName}")
+            var cancelled = false
+            listOfNotNull(
+                buildReceiverPendingIntent(alarmContext, schedule, PendingIntent.FLAG_NO_CREATE),
+                buildTargetLaunchPendingIntent(
+                    alarmContext,
+                    schedule,
+                    PendingIntent.FLAG_NO_CREATE,
+                    allowBackgroundAlways = true
+                )
+            ).forEach { pendingIntent ->
+                try {
+                    alarmManager.cancel(pendingIntent)
+                    pendingIntent.cancel()
+                    cancelled = true
+                } catch (t: Throwable) {
+                    Log.printStackTrace(TAG, "取消系统闹钟失败[${schedule.name}]", t)
                 }
-            } catch (t: Throwable) {
-                Log.printStackTrace(TAG, "取消系统闹钟失败[${schedule.name}]", t)
+            }
+            if (cancelled && !silent) {
+                Log.runtime(TAG, "已取消系统闹钟[${schedule.name}] package=${alarmContext.packageName}")
             }
         }
     }
@@ -133,15 +139,7 @@ object SystemWakeScheduler {
     }
 
     private fun shouldLaunchTarget(schedule: PersistentSchedule): Boolean {
-        return payloadOf(schedule).optBoolean("launch_target", false)
-    }
-
-    private fun payloadOf(schedule: PersistentSchedule): JSONObject {
-        return try {
-            JSONObject(schedule.payloadJson.ifBlank { "{}" })
-        } catch (_: Throwable) {
-            JSONObject()
-        }
+        return PersistentLaunchPolicy.shouldLaunchTarget(schedule)
     }
 
     private fun buildReceiverPendingIntent(

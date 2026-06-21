@@ -717,7 +717,7 @@ class TaskFlowEngine(
     ): String {
         return when (decision) {
             TaskFlowDecision.RETRY_LATER -> if (stopped) "止损停止" else "${action.logName}失败待重试"
-            TaskFlowDecision.BLACKLIST -> "${action.logName}失败并黑名单"
+            TaskFlowDecision.BLACKLIST -> "${action.logName}失败，已加入自动跳过列表(黑名单)"
             TaskFlowDecision.STOP_TODAY_OR_CURRENT_CHAIN -> "${action.logName}业务止损"
             TaskFlowDecision.MARK_HANDLED -> "终态成功"
             TaskFlowDecision.LOG_ONLY -> "${action.logName}失败"

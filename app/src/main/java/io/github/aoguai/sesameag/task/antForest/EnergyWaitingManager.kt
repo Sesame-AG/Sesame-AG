@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
 import io.github.aoguai.sesameag.hook.ApplicationHook
+import io.github.aoguai.sesameag.hook.keepalive.PersistentLaunchPolicy
 import io.github.aoguai.sesameag.hook.keepalive.PersistentSchedule
 import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleKind
 import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleRegistry
@@ -207,6 +208,7 @@ object EnergyWaitingManager {
     // 蹲点任务存储
     private val waitingTasks = ConcurrentHashMap<String, WaitingTask>()
     private val waitingJobs = ConcurrentHashMap<String, Job>()
+    private val loggedFrontLaunchDisabledWaitingTasks = ConcurrentHashMap.newKeySet<String>()
 
     // 智能重试策略
     private val smartRetryStrategy = SmartRetryStrategy()
@@ -325,7 +327,6 @@ object EnergyWaitingManager {
             put("bomb_end_time", task.bombEndTime)
             put("owner_user_id", ownerUserId)
             put("session_epoch", sessionEpoch)
-            put("launch_target", true)
         }
         return PersistentSchedule(
             name = "森林蹲点:${task.taskId}",
@@ -352,13 +353,23 @@ object EnergyWaitingManager {
                 cancelPersistentWaitingSchedule(task.taskId)
                 return
             }
-            PersistentScheduleRegistry.upsert(context, schedule)
+            val registeredSchedule = PersistentScheduleRegistry.upsert(context, schedule)
+            if (PersistentLaunchPolicy.isFrontLaunchDisabled(registeredSchedule.lastError)) {
+                if (loggedFrontLaunchDisabledWaitingTasks.add(task.taskId)) {
+                    Log.forest(
+                        "森林蹲点持久任务[${task.taskId}][${task.getUserTypeTag()}${task.userName}]已因禁止系统调度前台拉起目标应用降级为仅进程存活时等待，需手动打开目标应用后恢复"
+                    )
+                }
+            } else {
+                loggedFrontLaunchDisabledWaitingTasks.remove(task.taskId)
+            }
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "注册森林蹲点系统闹钟失败[${task.taskId}]", t)
         }
     }
 
     private fun cancelPersistentWaitingSchedule(taskId: String) {
+        loggedFrontLaunchDisabledWaitingTasks.remove(taskId)
         val context = appContext()
         runCatching {
             PersistentScheduleRegistry.removeByDedupeKey(context, forestWaitingDedupeKey(taskId))

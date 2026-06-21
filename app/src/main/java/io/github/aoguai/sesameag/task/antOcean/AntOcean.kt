@@ -1385,6 +1385,7 @@ class AntOcean : ModelTask() {
             for (i in 0 until taskList.length()) {
                 val task = taskList.optJSONObject(i) ?: continue
                 val bizInfo = parseJSONObject(task.opt("bizInfo")) ?: JSONObject()
+                val extendInfo = parseJSONObject(task.opt("extend")) ?: JSONObject()
                 val taskType = task.optString("taskType").trim()
                 if (taskType.isBlank()) {
                     continue
@@ -1401,6 +1402,11 @@ class AntOcean : ModelTask() {
                     .put("task", task)
                     .put("bizInfo", bizInfo)
                     .put("awardCount", awardCount)
+                    .put("extend", extendInfo)
+                    .put("rightsTimes", task.opt("rightsTimes"))
+                    .put("rightsTimesLimit", task.opt("rightsTimesLimit"))
+                    .put("alreadyReceiveAwardCount", extendInfo.opt("alreadyReceiveAwardCount"))
+                    .put("iepTaskTracer", task.optString("iepTaskTracer"))
 
                 items.add(
                     TaskFlowItem(
@@ -1466,6 +1472,9 @@ class AntOcean : ModelTask() {
         }
 
         override fun isBlacklisted(item: TaskFlowItem): Boolean {
+            if (shouldBypassOceanBlacklist(item)) {
+                return false
+            }
             val blacklisted = super<TaskFlowAdapter>.isBlacklisted(item)
             if (blacklisted) {
                 logOceanTaskOnce("海洋任务🌊[${item.title}]已在黑名单中，跳过处理")
@@ -1474,6 +1483,17 @@ class AntOcean : ModelTask() {
         }
 
         override fun receive(item: TaskFlowItem): TaskFlowActionResult {
+            // 海洋最新快照里 RECEIVED/HAS_RECEIVED 都表示奖励已领终态，不能再次发领奖 RPC。
+            if (isRewardReceivedStatus(item.status)) {
+                logOceanTaskOnce("海洋任务🌊[${item.title}]已处于领奖终态，跳过重复领奖")
+                return TaskFlowActionResult.failure(
+                    failureType = TaskRpcFailureType.TERMINAL_DONE,
+                    code = "ALREADY_RECEIVED_STATE",
+                    message = "任务已处于已领奖终态，跳过重复领奖",
+                    rpc = "AntOcean.receive.guard",
+                    detail = oceanTaskActionDetail(item, "receiveGuard", "decision=MARK_HANDLED")
+                )
+            }
             val response = AntOceanRpcCall.receiveTaskAward(item.sceneCode, item.type)
             val result = JsonUtil.parseJSONObjectOrNull(response) ?: return TaskFlowActionResult.failure(
                 failureType = TaskRpcFailureType.RETRYABLE_RPC,
@@ -1574,6 +1594,12 @@ class AntOcean : ModelTask() {
         }
         logOceanTaskOnce("海洋任务🌊[${item.title}]$progressMessage，不调用finishTask")
         return TaskFlowPhase.BUSINESS_ACTION
+    }
+
+    private fun shouldBypassOceanBlacklist(item: TaskFlowItem): Boolean {
+        return isRewardReceivedStatus(item.status) ||
+            isHelpFriendCleanTask(item.type, item.title) ||
+            isConsecutiveVisitTask(item.type, item.title)
     }
 
     private fun completeHelpFriendCleanTask(item: TaskFlowItem): TaskFlowActionResult {
@@ -1732,6 +1758,10 @@ class AntOcean : ModelTask() {
         action: String,
         extra: String = ""
     ): String {
+        val rightsTimes = item.raw?.opt("rightsTimes")
+        val rightsTimesLimit = item.raw?.opt("rightsTimesLimit")
+        val alreadyReceiveAwardCount = item.raw?.opt("alreadyReceiveAwardCount")
+        val iepTaskTracer = item.raw?.optString("iepTaskTracer").orEmpty()
         return buildString {
             append("taskType=")
             append(item.type)
@@ -1739,6 +1769,22 @@ class AntOcean : ModelTask() {
             append(item.sceneCode)
             append(" action=")
             append(action)
+            if (rightsTimes != null && rightsTimes != JSONObject.NULL) {
+                append(" rightsTimes=")
+                append(rightsTimes)
+            }
+            if (rightsTimesLimit != null && rightsTimesLimit != JSONObject.NULL) {
+                append(" rightsTimesLimit=")
+                append(rightsTimesLimit)
+            }
+            if (alreadyReceiveAwardCount != null && alreadyReceiveAwardCount != JSONObject.NULL) {
+                append(" alreadyReceiveAwardCount=")
+                append(alreadyReceiveAwardCount)
+            }
+            if (iepTaskTracer.isNotBlank()) {
+                append(" iepTaskTracer=")
+                append(iepTaskTracer)
+            }
             if (extra.isNotBlank()) {
                 append(" ")
                 append(extra)
@@ -1884,14 +1930,14 @@ class AntOcean : ModelTask() {
 
     private fun isRewardReadyStatus(taskStatus: String): Boolean {
         return taskStatus == TaskStatus.FINISHED.name ||
-            taskStatus == TaskStatus.RECEIVED.name ||
             taskStatus == "COMPLETE" ||
             taskStatus == "WAIT_RECEIVE" ||
             taskStatus == "TO_RECEIVE"
     }
 
     private fun isRewardReceivedStatus(taskStatus: String): Boolean {
-        return taskStatus == "HAS_RECEIVED"
+        return taskStatus == TaskStatus.RECEIVED.name ||
+            taskStatus == "HAS_RECEIVED"
     }
 
     private fun isOceanTaskRewardNotReady(jo: JSONObject): Boolean {

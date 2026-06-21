@@ -46,6 +46,7 @@ import io.github.aoguai.sesameag.util.CommandUtil.serviceStatus
 fun MainScreen(
     oneWord: String,
     activeUserName: String,
+    hasActiveUser: Boolean,
     moduleStatus: MainViewModel.ModuleStatus,
     permissionHealth: PermissionHealthSnapshot,
     viewModel: MainViewModel,
@@ -75,7 +76,7 @@ fun MainScreen(
                 title = {
                     Text(
                         text = when (currentScreen) {
-                            BottomNavItem.Home -> activeUserName
+                            BottomNavItem.Home -> if (hasActiveUser) activeUserName else "未载入账号"
                             BottomNavItem.Logs -> "日志中心"
                             BottomNavItem.Settings -> "模块设置"
                         },
@@ -145,6 +146,7 @@ fun MainScreen(
         ) {
             when (currentScreen) {
                 BottomNavItem.Home -> HomeContent(
+                    hasActiveUser = hasActiveUser,
                     moduleStatus = moduleStatus,
                     serviceStatus = serviceStatus,
                     permissionHealth = permissionHealth,

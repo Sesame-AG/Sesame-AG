@@ -108,6 +108,15 @@ object ApplicationHookConstants {
         val detail: String?
     )
 
+    data class AuthLikeOfflineSnapshot(
+        val active: Boolean,
+        val untilMs: Long,
+        val detail: String,
+        val method: String,
+        val code: String,
+        val message: String
+    )
+
     private const val OFFLINE_EVENT_MAX = 64
     private val offlineEvents = ConcurrentLinkedQueue<OfflineEvent>()
     private val offlineEventSize = AtomicInteger(0)
@@ -127,6 +136,61 @@ object ApplicationHookConstants {
     @JvmStatic
     fun getOfflineEventsSnapshot(): List<OfflineEvent> {
         return offlineEvents.toList()
+    }
+
+    private fun extractOfflineDetailValue(detail: String, key: String, vararg nextKeys: String): String {
+        val marker = "$key="
+        val start = detail.indexOf(marker)
+        if (start < 0) {
+            return ""
+        }
+        val valueStart = start + marker.length
+        var valueEnd = detail.length
+        for (nextKey in nextKeys) {
+            val candidate = detail.indexOf(" $nextKey=", valueStart)
+            if (candidate >= 0 && candidate < valueEnd) {
+                valueEnd = candidate
+            }
+        }
+        return detail.substring(valueStart, valueEnd).trim()
+    }
+
+    private fun extractOfflineMethod(detail: String): String {
+        val explicitMethod = extractOfflineDetailValue(detail, "method", "code", "msg", "reason")
+        if (explicitMethod.isNotBlank()) {
+            return explicitMethod
+        }
+        val firstMarker = sequenceOf(" code=", " msg=", " reason=")
+            .map { detail.indexOf(it) }
+            .filter { it >= 0 }
+            .minOrNull()
+            ?: -1
+        if (firstMarker <= 0) {
+            return ""
+        }
+        val candidate = detail.substring(0, firstMarker).trim()
+        return candidate.takeIf { it.contains(".") && !it.contains(" ") }.orEmpty()
+    }
+
+    @JvmStatic
+    fun getLatestAuthLikeOfflineSnapshot(): AuthLikeOfflineSnapshot? {
+        val active = offline && offlineReason == "auth_like"
+        val detail = when {
+            active -> offlineReasonDetail
+            lastOfflineEnterReason == "auth_like" -> lastOfflineEnterReasonDetail
+            else -> null
+        }?.trim().orEmpty()
+        if (detail.isBlank()) {
+            return null
+        }
+        return AuthLikeOfflineSnapshot(
+            active = active,
+            untilMs = if (active) offlineUntilMs else 0L,
+            detail = detail,
+            method = extractOfflineMethod(detail),
+            code = extractOfflineDetailValue(detail, "code", "msg", "reason"),
+            message = extractOfflineDetailValue(detail, "msg", "reason")
+        )
     }
 
     @JvmStatic

@@ -32,6 +32,7 @@ import io.github.aoguai.sesameag.hook.internal.LocationHelper
 import io.github.aoguai.sesameag.hook.internal.AuthCodeHelper
 import io.github.aoguai.sesameag.hook.internal.SecurityBodyHelper
 import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleDefaults
+import io.github.aoguai.sesameag.hook.keepalive.PersistentLaunchPolicy
 import io.github.aoguai.sesameag.hook.keepalive.PersistentReconcileMode
 import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleKind
 import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleRegistry
@@ -448,9 +449,9 @@ class ApplicationHook {
                 val result = chain.proceed()
                 val s = chain.getThisObject() as? Service ?: return@intercept result
                 if (General.CURRENT_USING_SERVICE == s.javaClass.getCanonicalName()) {
-                        // TODO: 目前观察到用户手动划掉支付宝后台时，也会走到这里。
+                        // TODO: 目前观察到用户手动划掉目标应用后台时，也会走到这里。
                         // 如果直接 restartByBroadcast()/reOpenApp()，会把“用户主动退出”误判成“异常退出需要恢复”，
-                        // 进而出现支付宝/模块后台被反复复活的问题。后续可增加独立配置开关，
+                        // 进而出现目标应用/模块后台被反复复活的问题。后续可增加独立配置开关，
                         // 由用户决定“宿主前台服务销毁后是否自动恢复目标应用/执行链路”。
                         updateRunningStatus("目标应用前台服务被销毁")
                         destroyHandler()
@@ -724,13 +725,13 @@ class ApplicationHook {
 
         /**
          * 冷启动首次好友实时同步的后移延时(毫秒)。
-         * 用于规避支付宝社交库(AliAccountDaoOp)在冷启动期未加载完时 getAllFriends() 返回“非空但不完整”
+         * 用于规避目标应用社交库(AliAccountDaoOp)在冷启动期未加载完时 getAllFriends() 返回“非空但不完整”
          * 快照被误判为可信全量。可按实测调大；现有“重新登录”延时为 20s 作参考。
          */
         private const val FRIEND_CENTER_FIRST_SYNC_DEFER_MS: Long = 30_000L
 
         /**
-         * 后移“从支付宝侧获取好友实时快照”的时机：init 阶段不再同步拉取，改为延时后在后台执行，
+         * 后移“从目标应用侧获取好友实时快照”的时机：init 阶段不再同步拉取，改为延时后在后台执行，
          * 让社交库就绪概率更高时再读取。手动刷新(force=true)走广播同步路径，不经此后移。
          */
         private fun scheduleDeferredFriendCenterSync(userId: String, reason: String) {
@@ -920,12 +921,15 @@ class ApplicationHook {
                         kind = PersistentScheduleKind.GLOBAL_POLL,
                         triggerAtMs = triggerAt,
                         dedupeKey = "alarm_poll",
-                        payloadJson = """{"launch_target":true}""",
+                        payloadJson = "{}",
                         toleranceMs = maxOf(checkInterval.toLong(), PersistentScheduleDefaults.DEFAULT_TOLERANCE_MS),
                         ownerUserId = activeSession?.userId ?: currentUid,
                         sessionEpoch = activeSession?.sessionEpoch ?: AccountSessionCoordinator.currentSessionEpoch()
                     )
                     if (schedule.lastError != null) {
+                        if (PersistentLaunchPolicy.isFrontLaunchDisabled(schedule.lastError)) {
+                            record(TAG, "已禁止系统调度前台拉起目标应用，轮询任务降级为仅进程存活时等待")
+                        }
                         UnifiedScheduler.scheduleLongDelay(delayMillis, "轮询任务") {
                             ApplicationHookEntry.onPollAlarm()
                         }
@@ -1016,10 +1020,10 @@ class ApplicationHook {
                 pendingInitReason = null
                 UserMap.setCurrentUserId(userId)
                 load(userId)
-                // 冷启动期支付宝社交库(AliAccountDaoOp)可能尚未加载完，过早 getAllFriends() 会拿到
+                // 冷启动期目标应用社交库(AliAccountDaoOp)可能尚未加载完，过早 getAllFriends() 会拿到
                 // “非空但不完整”的好友快照，被 mergeFromUserMap(allowPruneMissing=true) 误剪为 REMOVED 并持久化。
                 // 这里先同步加载本地已持久化的好友身份(上次完整快照)，供本会话首轮任务使用；
-                // 真正从支付宝侧获取实时快照后移到社交库就绪概率更高的时机再做。手动刷新(force=true)不走此路径，仍立即执行。
+                // 真正从目标应用侧获取实时快照后移到社交库就绪概率更高的时机再做。手动刷新(force=true)不走此路径，仍立即执行。
                 runCatching { UserMap.load(userId) }.onFailure {
                     printStackTrace(TAG, "初始化加载本地好友快照失败", it)
                 }
@@ -1373,12 +1377,15 @@ class ApplicationHook {
                     kind = PersistentScheduleKind.GLOBAL_WAKEUP,
                     triggerAtMs = calendar.timeInMillis,
                     dedupeKey = "wakeup_midnight",
-                    payloadJson = """{"waken_time":"0000","wake_type":"midnight","launch_target":true}""",
+                    payloadJson = """{"waken_time":"0000","wake_type":"midnight"}""",
                     toleranceMs = PersistentScheduleDefaults.DEFAULT_TOLERANCE_MS,
                     ownerUserId = activeSession?.userId ?: currentUid,
                     sessionEpoch = activeSession?.sessionEpoch ?: AccountSessionCoordinator.currentSessionEpoch()
                 )
                 if (midnightSchedule.lastError != null) {
+                    if (PersistentLaunchPolicy.isFrontLaunchDisabled(midnightSchedule.lastError)) {
+                        record(TAG, "已禁止系统调度前台拉起目标应用，每日0点任务降级为仅进程存活时等待")
+                    }
                     UnifiedScheduler.scheduleLongDelay(delayToMidnight, "每日0点任务") {
                         record(TAG, "⏰ 0点任务触发")
                         updateDay()
@@ -1411,12 +1418,15 @@ class ApplicationHook {
                 kind = PersistentScheduleKind.GLOBAL_WAKEUP,
                 triggerAtMs = nextWakeAt,
                 dedupeKey = "wakeup_custom",
-                payloadJson = """{"waken_time":"$timeToken","wake_type":"custom","launch_target":true}""",
+                payloadJson = """{"waken_time":"$timeToken","wake_type":"custom"}""",
                 toleranceMs = PersistentScheduleDefaults.DEFAULT_TOLERANCE_MS,
                 ownerUserId = AccountSessionCoordinator.currentUserId() ?: currentUid,
                 sessionEpoch = AccountSessionCoordinator.currentSessionEpoch()
             )
             if (customWakeSchedule.lastError != null) {
+                if (PersistentLaunchPolicy.isFrontLaunchDisabled(customWakeSchedule.lastError)) {
+                    record(TAG, "已禁止系统调度前台拉起目标应用，自定义唤醒任务降级为仅进程存活时等待[$timeToken]")
+                }
                 UnifiedScheduler.scheduleLongDelay(delay, "自定义唤醒任务") {
                     record(TAG, "? 自定义触发: $timeToken")
                     ApplicationHookEntry.onWakeupCustom(timeToken)

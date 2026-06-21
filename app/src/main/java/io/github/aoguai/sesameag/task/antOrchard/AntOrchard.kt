@@ -44,10 +44,14 @@ class AntOrchard : ModelTask() {
         private const val LEYUAN_DAILY_TASK_SCENE_CODE = "ANTORCHARD_LEYUAN_DAILY_TASK"
         private const val TAOBAO_VISIT_SCENE_CODE = "972"
         private const val TAOBAO_VISIT_TASK_GROUP_ID = "12172"
+        private const val TAOBAO_LIMIT_BALLOON_TASK_ID = "TAOBAO_LIMIT_BALLOON"
+        private const val TAOBAO_LIMIT_BALLOON_TITLE = "农场限时福利"
+        private const val ORCHARD_JUMP_TYPE_NEED_CHECK = "NEED_CHECK"
         private val LEYUAN_AWARD_TASK_TYPES = setOf("DAILY_LEYUAN_QIANDAO", "DAILY_GAME_ZADAN*20")
         private val SUPPORTED_TAOBAO_LIMIT_BALLOON_IDS = setOf("TAOBAO_LIMIT", "TAOBAO")
         private val SUPPORTED_TAOBAO_VISIT_SOURCES = setOf("task_visit", "visittask")
         private val TAOBAO_VISIT_LEGACY_TITLES = setOf("逛助农好货得肥料", "逛农货得肥料")
+        private val ORCHARD_XLIGHT_RISK_CODES = setOf("217", "61002")
         private val ORCHARD_BUSINESS_LIMIT_CODES = setOf(
             "CAMP_TRIGGER_ERROR",
             "PROMISE_TODAY_FINISH_TIMES_LIMIT"
@@ -77,7 +81,6 @@ class AntOrchard : ModelTask() {
     private lateinit var executeInterval: IntegerModelField
     internal lateinit var receiveSevenDayGift: BooleanModelField
     internal lateinit var receiveOrchardTaskAward: BooleanModelField
-    // {{ 修改：分离果树和摇钱树的施肥次数配置 }}
     internal lateinit var orchardSpreadManureCountMain: IntegerModelField
     internal lateinit var orchardSpreadManureCountYeb: IntegerModelField
 
@@ -121,7 +124,6 @@ class AntOrchard : ModelTask() {
                 "自动领取芭芭农场任务奖励，包括肥料等常规收益。"
             ).also { receiveOrchardTaskAward = it }
         )
-        // {{ 修改：添加果树和摇钱树的独立设置项 }}
         modelFields.addField(
             IntegerModelField("orchardSpreadManureCount", "果树 | 每日施肥次数", 0, -1, null).withDesc(
                 "每日给果树施肥的次数；施肥可推进成熟并产出庄园食材。-1 表示施肥到当日上限。"
@@ -189,7 +191,6 @@ class AntOrchard : ModelTask() {
     internal fun orchardSpreadManure() {
         try {
             val modeSet = plantModeField.value
-            // {{ 修改：分别获取两个配置的上限值 }}
             val targetLimitMain = orchardSpreadManureCountMain.value ?: 0
             val targetLimitYeb = orchardSpreadManureCountYeb.value ?: 0
 
@@ -221,7 +222,6 @@ class AntOrchard : ModelTask() {
 
         var totalWatered = Status.getIntFlagToday(statusKey) ?: 0
         var fertilizerReplenishTried = false
-        var popupReplenishTried = false
 
         if (!waterToLimit && totalWatered >= targetLimit) {
             Log.orchard("$sceneName: 今日已完成施肥目标 $totalWatered/$targetLimit")
@@ -262,7 +262,6 @@ class AntOrchard : ModelTask() {
                     ?: Int.MAX_VALUE
                 val batchSpreadInfo = orchardIndexData.optJSONObject("batchSpreadInfo")
 
-                // {{ 修改：适配不同场景的肥料数据结构 }}
                 val taobaoData = JSONObject(taobaoDataStr)
                 val accountInfo = if (isMain) {
                     taobaoData.optJSONObject("gameInfo")?.optJSONObject("accountInfo")
@@ -296,13 +295,6 @@ class AntOrchard : ModelTask() {
                                 Log.orchard("$sceneName 肥料补兑暂不可用，保留后续调度重试")
                             }
                         }
-                        if (!popupReplenishTried) {
-                            popupReplenishTried = true
-                            if (tryCompleteWaterButtonUpgradePopup()) {
-                                extraInfoGet(from = "entry", scene = targetScene)
-                                continue
-                            }
-                        }
                         Log.orchard("$sceneName 肥料不足: 当前 ${happyPoint ?: 0} < 消耗 $singleWateringCost")
                         return
                     }
@@ -334,8 +326,7 @@ class AntOrchard : ModelTask() {
                 val spreadJson = JSONObject(spreadResponse)
                 val resultCode = spreadJson.optString("resultCode")
 
-                // 摇钱树特有逻辑：达到上限停止
-                // {{ 修改：增加 P13 状态码判定 (摇钱树施肥已达当日上限) }}
+                // 摇钱树明确返回当日上限时直接停止，避免继续重复施肥。
                 if ((resultCode == "P14" || resultCode == "P13") && !isMain) {
                     Log.orchard("$sceneName 已达持仓金额上限/次数上限，停止施肥")
                     return
@@ -357,10 +348,8 @@ class AntOrchard : ModelTask() {
                 if (spreadTaobaoDataStr.isNotEmpty()) {
                     val spreadTaobaoData = JSONObject(spreadTaobaoDataStr)
 
-                    // 尝试从服务端获取今日次数，如果不准确(或服务端没返回)则手动累加
                     var dailyCount = 0
 
-                    // {{ 修改：针对不同场景解析统计数据 }}
                     if (isMain && spreadTaobaoData.has("statistics")) {
                         dailyCount = spreadTaobaoData.getJSONObject("statistics").optInt("dailyAppWateringCount")
                     } else if (!isMain) {
@@ -376,7 +365,6 @@ class AntOrchard : ModelTask() {
 
                     Status.setIntFlagToday(statusKey, totalWatered)
 
-                    // {{ 修改：提取进度文本，统一日志格式 }}
                     var stageText = ""
                     if (isMain) {
                         stageText = spreadTaobaoData.optJSONObject("currentStage")?.optString("stageText") ?: ""
@@ -481,54 +469,6 @@ class AntOrchard : ModelTask() {
             }
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "extraInfoGet err:", t)
-        }
-    }
-
-    private fun tryCompleteWaterButtonUpgradePopup(): Boolean {
-        val title = "施肥弹窗大额奖励"
-        return try {
-            val response = JSONObject(AntOrchardRpcCall.refinedOperation("BABAFARM_WATER_BTN_UPGRADE"))
-            if (!ResChecker.checkRes(TAG, response)) {
-                Log.orchard("$title 查询失败: ${response.toString()}")
-                return false
-            }
-
-            val contentList = response.optJSONArray("contentList") ?: return false
-            for (i in 0 until contentList.length()) {
-                val content = contentList.optJSONObject(i) ?: continue
-                if (content.optString("spaceCode") != "BABAFARM_WATER_BTN_UPGRADE") continue
-
-                val jumpUrl = content.optJSONObject("bizExtInfo")?.optString("jumpUrl").orEmpty()
-                if (jumpUrl.isBlank()) continue
-
-                val popupTask = JSONObject().apply {
-                    put("taskId", "BABAFARM_WATER_BTN_UPGRADE")
-                    put("actionType", "JUMP")
-                    put("rightsTimesLimit", 1)
-                    put("taskDisplayConfig", JSONObject().put("targetUrl", jumpUrl))
-                }
-                val item = TaskFlowItem(
-                    id = "BABAFARM_WATER_BTN_UPGRADE",
-                    title = title,
-                    status = "TODO",
-                    type = "WATER_POPUP",
-                    raw = content
-                )
-                val config = buildOrchardBrowseTaskConfig(popupTask, title) ?: continue
-                val roundResult = executeOrchardBrowseRound(config, item, 1)
-                if (roundResult.finishedCount > 0) {
-                    Log.orchard("$title📺完成${roundResult.finishedCount}次浏览补肥")
-                    return true
-                }
-                val failure = roundResult.failure
-                if (failure != null) {
-                    Log.orchard("$title 完成失败: ${failure.message.ifBlank { failure.raw }}")
-                }
-            }
-            false
-        } catch (t: Throwable) {
-            Log.printStackTrace(TAG, "tryCompleteWaterButtonUpgradePopup err:", t)
-            false
         }
     }
 
@@ -1268,26 +1208,43 @@ class AntOrchard : ModelTask() {
     private fun classifyOrchardTaskFailure(response: JSONObject): TaskRpcFailureType {
         val errorCode = extractOrchardRpcErrorCode(response)
         val message = extractOrchardRpcMessage(response)
+        val riskSignals = buildOrchardRiskSignalText(response)
 
         return when {
             containsAny(message, "已领取", "已经领取", "重复领取", "重复领奖", "重复完成", "已完成", "任务已完结", "任务已结束") ->
                 TaskRpcFailureType.TERMINAL_DONE
 
             errorCode in ORCHARD_BUSINESS_LIMIT_CODES ||
+                errorCode in ORCHARD_XLIGHT_RISK_CODES ||
                 errorCode.contains("LIMIT", ignoreCase = true) ||
-                containsAny(message, "上限", "限制", "受限", "不可领取", "次数超过限制", "风控", "风险") ->
+                containsAny(
+                    riskSignals,
+                    "上限",
+                    "限制",
+                    "受限",
+                    "不可领取",
+                    "次数超过限制",
+                    "风控",
+                    "风险",
+                    ORCHARD_JUMP_TYPE_NEED_CHECK,
+                    "captcha",
+                    "verify",
+                    "访问异常",
+                    "验证码",
+                    "cheating traffic"
+                ) ->
                 TaskRpcFailureType.BUSINESS_LIMIT
 
             errorCode in ORCHARD_UNSUPPORTED_RPC_CODES ||
-                containsAny(message, "不支持rpc调用", "不支持RPC完成") ->
+                containsAny(riskSignals, "不支持rpc调用", "不支持RPC完成", "未确认终态", "无稳定闭环", "FAKE_SUCCESS") ->
                 TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE
 
             errorCode in ORCHARD_NON_RETRYABLE_INVALID_CODES ||
-                containsAny(message, "参数错误", "任务ID非法", "任务全局配置不存在") ->
+                containsAny(riskSignals, "参数错误", "任务ID非法", "任务全局配置不存在") ->
                 TaskRpcFailureType.NON_RETRYABLE_INVALID
 
             errorCode in ORCHARD_RETRYABLE_RPC_CODES ||
-                containsAny(message, "稍后", "繁忙", "系统出错", "系统繁忙", "频繁", "重试") ||
+                containsAny(riskSignals, "稍后", "繁忙", "系统出错", "系统繁忙", "频繁", "重试") ||
                 isMarkedRetryable(response) ->
                 TaskRpcFailureType.RETRYABLE_RPC
 
@@ -1436,11 +1393,41 @@ class AntOrchard : ModelTask() {
         )
     }
 
+    private fun buildOrchardXLightGateFailure(item: TaskFlowItem, response: JSONObject): TaskFlowActionResult? {
+        val signals = buildOrchardRiskSignalText(response)
+        val errorCode = extractOrchardRpcErrorCode(response)
+        val hasRiskSignal = errorCode in ORCHARD_XLIGHT_RISK_CODES ||
+            containsAny(
+                signals,
+                "cheating traffic",
+                "captcha",
+                "verify",
+                "访问异常",
+                "验证码",
+                "风控",
+                "风险"
+            )
+        if (!hasRiskSignal) {
+            return null
+        }
+        return buildOrchardTaskFailureResult(
+            response = response,
+            taskId = item.id,
+            title = item.title,
+            action = "xlightPlugin",
+            rpc = "XLightRpcCall.xlightPlugin",
+            item = item
+        )
+    }
+
     private fun extractOrchardRpcErrorCode(response: JSONObject): String {
         return response.optString("resultCode")
             .ifBlank { response.optString("errorCode") }
             .ifBlank { response.optString("code") }
             .ifBlank { response.optString("resultStatus") }
+            .ifBlank { response.optString("retCode") }
+            .ifBlank { response.optString("sspErrorCode") }
+            .ifBlank { response.optString("errCode") }
     }
 
     private fun extractOrchardRpcMessage(response: JSONObject): String {
@@ -1448,9 +1435,26 @@ class AntOrchard : ModelTask() {
             .ifBlank { response.optString("desc") }
             .ifBlank { response.optString("resultDesc") }
             .ifBlank { response.optString("errorMsg") }
+            .ifBlank { response.optString("sspErrorMsg") }
             .ifBlank { response.optString("resultMsg") }
             .ifBlank { response.optString("errorMessage") }
             .ifBlank { response.toString() }
+    }
+
+    private fun buildOrchardRiskSignalText(response: JSONObject): String {
+        return buildString {
+            append(extractOrchardRpcErrorCode(response))
+            append(' ')
+            append(extractOrchardRpcMessage(response))
+            append(' ')
+            append(response.optString("retCode"))
+            append(' ')
+            append(response.optString("sspErrorCode"))
+            append(' ')
+            append(response.optString("sspErrorMsg"))
+            append(' ')
+            append(response.toString())
+        }
     }
 
     private fun isMarkedRetryable(response: JSONObject): Boolean {
@@ -1461,6 +1465,21 @@ class AntOrchard : ModelTask() {
 
     private fun containsAny(text: String, vararg keywords: String): Boolean {
         return keywords.any { keyword -> text.contains(keyword, ignoreCase = true) }
+    }
+
+    private fun isOrchardTaskBlacklisted(taskId: String, title: String = ""): Boolean {
+        if (TaskBlacklist.isTaskInBlacklist(ORCHARD_TASK_BLACKLIST_MODULE, taskId)) {
+            return true
+        }
+        if (title.isNotBlank() && TaskBlacklist.isTaskInBlacklist(ORCHARD_TASK_BLACKLIST_MODULE, title)) {
+            return true
+        }
+        return title.isNotBlank() &&
+            TaskBlacklist.isTaskInBlacklist(ORCHARD_TASK_BLACKLIST_MODULE, "$taskId|$title")
+    }
+
+    private fun addOrchardTaskToBlacklist(taskId: String, title: String) {
+        TaskBlacklist.addToBlacklist(ORCHARD_TASK_BLACKLIST_MODULE, taskId, title)
     }
 
     private fun isTaobaoVisitTask(task: JSONObject): Boolean {
@@ -1623,6 +1642,14 @@ class AntOrchard : ModelTask() {
             }
 
             val responseJson = JSONObject(response)
+            val xlightGateFailure = buildOrchardXLightGateFailure(item, responseJson)
+            if (xlightGateFailure != null) {
+                Log.orchard(
+                    "农场浏览任务⏭️[$title] 第${round}轮第${pageNo}页命中广告风控信号: " +
+                        xlightGateFailure.message.ifBlank { xlightGateFailure.code }
+                )
+                return OrchardBrowseRoundResult(finishedCount, xlightGateFailure)
+            }
             val playingResult = responseJson.optJSONObject("resData")?.optJSONObject("playingResult")
                 ?: responseJson.optJSONObject("playingResult")
             if (playingResult == null) {
@@ -2072,6 +2099,10 @@ class AntOrchard : ModelTask() {
 
     internal fun syncTaobaoLimitBalloon() {
         try {
+            if (isOrchardTaskBlacklisted(TAOBAO_LIMIT_BALLOON_TASK_ID, TAOBAO_LIMIT_BALLOON_TITLE)) {
+                Log.orchard("$TAOBAO_LIMIT_BALLOON_TITLE 已在黑名单中，跳过自动推进")
+                return
+            }
             val lazyIndexResp = JSONObject(
                 AntOrchardRpcCall.orchardLazyIndex(currentPlantScene.ifBlank { "main" }, ORCHARD_SOURCE)
             )
@@ -2088,6 +2119,7 @@ class AntOrchard : ModelTask() {
                 .takeIf { it.isNotBlank() }
                 ?.let { JSONObject(it) }
             val balloonScene = extendJson?.optString("balloonScene").orEmpty()
+            val jumpType = extendJson?.optString("jumpType").orEmpty()
             val taobaoExchangeChestInfo = extendJson?.optJSONObject("taobaoExchangeChestInfo")
             val actionType = taobaoExchangeChestInfo?.optString("actionType").orEmpty()
 
@@ -2098,8 +2130,23 @@ class AntOrchard : ModelTask() {
                 return
             }
             if (status != "INIT" && status != "TODO") return
+            if (jumpType == ORCHARD_JUMP_TYPE_NEED_CHECK) {
+                Log.orchard(
+                    "农场限时福利🎈 classification=BUSINESS_LIMIT decision=STOP_TODAY_OR_CURRENT_CHAIN " +
+                        "taskId=$TAOBAO_LIMIT_BALLOON_TASK_ID activityId=$activityId balloonScene=$balloonScene " +
+                        "jumpType=$jumpType action=$actionType reason=命中人工校验信号，当前无稳定自动闭环"
+                )
+                addOrchardTaskToBlacklist(TAOBAO_LIMIT_BALLOON_TASK_ID, TAOBAO_LIMIT_BALLOON_TITLE)
+                return
+            }
             if (actionType == "SYSTEM_SWITCH") {
-                Log.orchard("农场限时福利🎈识别 action=$actionType，按已抓到的 RPC 继续触发 START 并同步 QUERY_BALLOON_COOPER")
+                Log.orchard(
+                    "农场限时福利🎈 classification=UNSUPPORTED_NO_CLOSURE decision=BLACKLIST " +
+                        "taskId=$TAOBAO_LIMIT_BALLOON_TASK_ID activityId=$activityId balloonScene=$balloonScene " +
+                        "action=$actionType reason=最新抓包仅确认START与QUERY，未发现稳定自动闭环"
+                )
+                addOrchardTaskToBlacklist(TAOBAO_LIMIT_BALLOON_TASK_ID, TAOBAO_LIMIT_BALLOON_TITLE)
+                return
             }
 
             val startResp = JSONObject(
