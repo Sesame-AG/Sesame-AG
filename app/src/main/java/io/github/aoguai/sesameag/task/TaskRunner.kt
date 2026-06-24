@@ -54,7 +54,7 @@ class CoroutineTaskRunner(allModels: List<Model>) {
 
         // 最大并发数，防止请求过于频繁触发风控
         // 可以做成配置项，目前硬编码为 3
-        private const val MAX_CONCURRENCY = 3
+        private const val MAX_CONCURRENCY = 1
 
         private val TIMEOUT_WHITELIST = setOf("蚂蚁森林", "蚂蚁庄园", "运动")
     }
