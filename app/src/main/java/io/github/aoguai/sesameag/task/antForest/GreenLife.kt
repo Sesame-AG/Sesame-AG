@@ -11,12 +11,31 @@ import java.util.concurrent.ConcurrentHashMap
 object GreenLife {
 
     private const val TAG = "GreenLife"
+    private const val MARKET_OVER_LIMIT_CODE = "USER_SEND_OVER_LIMIT"
     private val unsupportedMarketWarnings = ConcurrentHashMap.newKeySet<String>()
+    private val unsupportedMarketSourcesThisRound = ConcurrentHashMap.newKeySet<String>()
 
     private data class MarketFailure(
         val code: String,
         val message: String,
         val unsupported: Boolean
+    )
+
+    private enum class MarketConsultDecision {
+        CAN_SEND,
+        OVER_LIMIT,
+        UNSUPPORTED,
+        FAILED
+    }
+
+    private data class MarketConsultResult(
+        val decision: MarketConsultDecision,
+        val failure: MarketFailure? = null
+    )
+
+    private data class MarketAttemptResult(
+        val collected: Boolean,
+        val shouldContinue: Boolean
     )
 
     /**
@@ -26,15 +45,22 @@ object GreenLife {
      */
     @JvmStatic
     fun ForestMarket(vararg sourceTypes: String): Boolean {
-        unsupportedMarketWarnings.clear()
         val candidates = sourceTypes
             .filter { it.isNotBlank() }
             .distinct()
             .ifEmpty { listOf("GREEN_LIFE") }
 
         candidates.forEachIndexed { index, sourceType ->
-            if (tryForestMarket(sourceType)) {
+            if (unsupportedMarketSourcesThisRound.contains(sourceType)) {
+                Log.forest("森林集市[$sourceType] 本轮已判定来源未支持，跳过重复探测")
+                return@forEachIndexed
+            }
+            val attemptResult = tryForestMarket(sourceType)
+            if (attemptResult.collected) {
                 return true
+            }
+            if (!attemptResult.shouldContinue) {
+                return false
             }
             if (index < candidates.lastIndex) {
                 Log.forest("森林集市[$sourceType] 未获得能量，继续尝试备用来源")
@@ -43,25 +69,38 @@ object GreenLife {
         return false
     }
 
-    private fun tryForestMarket(sourceType: String): Boolean {
+    @JvmStatic
+    fun resetForestMarketRound() {
+        unsupportedMarketWarnings.clear()
+        unsupportedMarketSourcesThisRound.clear()
+    }
+
+    private fun tryForestMarket(sourceType: String): MarketAttemptResult {
         try {
-            var response = JSONObject(AntForestRpcCall.consultForSendEnergyByAction(sourceType))
-            if (!isSuccessResponse(response)) {
-                logMarketFailure(sourceType, "consult", response)
-                CoroutineUtils.sleepCompat(300)
-                return false
+            val consultResponse = JSONObject(AntForestRpcCall.consultForSendEnergyByAction(sourceType))
+            val consultResult = classifyConsultResult(consultResponse)
+            when (consultResult.decision) {
+                MarketConsultDecision.CAN_SEND -> Unit
+                MarketConsultDecision.OVER_LIMIT -> {
+                    Log.forest("森林集市[$sourceType] 今日可领额度已达上限")
+                    return MarketAttemptResult(collected = false, shouldContinue = false)
+                }
+                MarketConsultDecision.UNSUPPORTED -> {
+                    logMarketFailure(sourceType, "consult", consultResult.failure)
+                    CoroutineUtils.sleepCompat(300)
+                    return MarketAttemptResult(collected = false, shouldContinue = false)
+                }
+                MarketConsultDecision.FAILED -> {
+                    logMarketFailure(sourceType, "consult", consultResult.failure)
+                    CoroutineUtils.sleepCompat(300)
+                    return MarketAttemptResult(collected = false, shouldContinue = true)
+                }
             }
 
-            val consultData = response.optJSONObject("data")
-            val canSend = consultData?.optBoolean("canSendEnergy", false) == true
-            if (!canSend) {
-                Log.forest("森林集市[$sourceType] 当前无可领取能量")
-                return false
-            }
-            response = JSONObject(AntForestRpcCall.sendEnergyByAction(sourceType))
+            var response = JSONObject(AntForestRpcCall.sendEnergyByAction(sourceType))
             if (!isSuccessResponse(response)) {
-                logMarketFailure(sourceType, "send", response)
-                return false
+                logMarketFailure(sourceType, "send", extractMarketFailure(response))
+                return MarketAttemptResult(collected = false, shouldContinue = true)
             }
 
             val sendData = response.optJSONObject("data")
@@ -70,16 +109,40 @@ object GreenLife {
             } ?: 0
             if (receivedEnergyAmount > 0) {
                 Log.forest("集市逛街🛍[来源:$sourceType][获得:能量${receivedEnergyAmount}g]")
-                return true
+                return MarketAttemptResult(collected = true, shouldContinue = false)
             }
 
             Log.forest("森林集市[$sourceType] 请求成功，但未获得能量")
-            return false
+            return MarketAttemptResult(collected = false, shouldContinue = true)
         } catch (t: Throwable) {
-            Log.runtime(TAG, "sendEnergyByAction err: sourceType=$sourceType")
+            Log.runtime(TAG, "ForestMarket err: sourceType=$sourceType")
             Log.printStackTrace(TAG, t)
-            return false
+            return MarketAttemptResult(collected = false, shouldContinue = true)
         }
+    }
+
+    private fun classifyConsultResult(response: JSONObject): MarketConsultResult {
+        val data = response.optJSONObject("data")
+        val failure = extractMarketFailure(response)
+        if (!isSuccessResponse(response)) {
+            return if (failure.unsupported) {
+                MarketConsultResult(MarketConsultDecision.UNSUPPORTED, failure)
+            } else {
+                MarketConsultResult(MarketConsultDecision.FAILED, failure)
+            }
+        }
+
+        val resultCode = data?.optString("resultCode").orEmpty()
+        if (resultCode == MARKET_OVER_LIMIT_CODE) {
+            return MarketConsultResult(MarketConsultDecision.OVER_LIMIT, failure)
+        }
+
+        val canSend = data?.optBoolean("canSendEnergy", false) == true
+        if (canSend) {
+            return MarketConsultResult(MarketConsultDecision.CAN_SEND)
+        }
+
+        return MarketConsultResult(MarketConsultDecision.FAILED, failure)
     }
 
     private fun isSuccessResponse(response: JSONObject): Boolean {
@@ -125,9 +188,14 @@ object GreenLife {
         return MarketFailure(code, message, unsupported)
     }
 
-    private fun logMarketFailure(sourceType: String, phase: String, response: JSONObject) {
-        val failure = extractMarketFailure(response)
+    private fun logMarketFailure(sourceType: String, phase: String, failure: MarketFailure?) {
+        if (failure == null) {
+            Log.runtime(TAG, "森林集市[$sourceType][$phase] 失败: 未返回可识别错误信息")
+            return
+        }
+
         if (failure.unsupported) {
+            unsupportedMarketSourcesThisRound.add(sourceType)
             val warnKey = "$sourceType|$phase|${failure.code}|${failure.message}"
             if (unsupportedMarketWarnings.add(warnKey)) {
                 val detail = buildString {

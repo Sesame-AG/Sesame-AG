@@ -5,6 +5,7 @@ import org.json.JSONException
 import org.json.JSONObject
 import io.github.aoguai.sesameag.entity.AlipayVersion
 import io.github.aoguai.sesameag.entity.RpcEntity
+import io.github.aoguai.sesameag.hook.ApplicationHook
 import io.github.aoguai.sesameag.hook.RequestManager
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.RandomUtil
@@ -15,12 +16,24 @@ import java.util.UUID
  */
 object AntForestRpcCall {
     private const val DEFAULT_SOURCE = "chInfo_ch_appcenter__chsub_9patch"
-    private const val PROTECT_BUBBLE_SOURCE = "chInfo_ch_appid-60000002"
+    private const val HOME_TASK_SOURCE = "chInfo_ch_appid-60000002"
+    private const val FOREST_GAME_CENTER_SOURCE = "chInfo_ch_appid-60000002"
+    private const val FOREST_LEYUAN_DAILY_AWARD_SOURCE = "ch_appid-60000002"
+    private const val FOREST_LEYUAN_DAILY_TASK_SCENE_CODE = "ANTFOREST_LEYUAN_DAILY_TASK"
+    private const val PROTECT_BUBBLE_SOURCE = HOME_TASK_SOURCE
     private const val PROTECT_BUBBLE_VERSION = "20230501"
+    private const val PATROL_SOURCE = "huolizhirenwu_xunhu"
+    private const val PATROL_TIMEZONE = "Asia/Shanghai"
+    private const val VITALITY_PROP_SOURCE = "vitality"
+    private const val VITALITY_PROP_VERSION = "20250813"
+    private const val ONE_CLICK_WATERING_SCENE_CODE = "ONE_CLICK_WATERING_V1"
+    private const val ONE_CLICK_WATERING_VERSION = "20230501"
     private const val ENERGY_RAIN_SOURCE = "forest"
+    internal const val ENERGY_RAIN_GAME_ENTRY_SOURCE = "senlinguangchuangrukou"
     private const val ENERGY_RAIN_VERSION = "20230501"
+    private const val PROP_LIST_VERSION = "20250108"
     private const val WHACK_MOLE_VERSION = "20230824"
-    const val OPEN_GREEN_RIGHTS_SOURCE = "chInfo_ch_appid-60000002"
+    const val OPEN_GREEN_RIGHTS_SOURCE = HOME_TASK_SOURCE
     internal const val BACK_FROM_ENERGY_RAIN_SOURCE = "backFromEnergyRain"
     private var VERSION = "20250818"
     private var HOME_PAGE_VERSION = "20250818"
@@ -29,6 +42,33 @@ object AntForestRpcCall {
     private var TAKE_LOOK_VERSION = "20260107"
     private const val COLLECT_ENERGY_VERSION = "20250326"
     private const val TAKE_LOOK_COMBINE_BIZ_VERSION = "20250108"
+
+    private enum class ForestRpcScene {
+        HOME_TASK_LIST,
+        TAKE_LOOK_END_TASK_LIST,
+        PATROL,
+        VITALITY_PROP_CONSUME,
+        ONE_CLICK_WATERING
+    }
+
+    private data class ForestRpcSceneContext(
+        val source: String,
+        val version: String? = null,
+        val extend: JSONObject? = null,
+        val headers: Map<String, String>? = null
+    )
+
+    data class ForestGameCenterRecentAppRecord(
+        val appId: String,
+        val visitTime: Long
+    )
+
+    internal data class PropConsumeContext(
+        val source: String,
+        val version: String,
+        val headers: Map<String, String>? = forestHeaders(source),
+        val propGroup: String? = null
+    )
 
     @JvmStatic
     fun init() {
@@ -103,12 +143,243 @@ object AntForestRpcCall {
         return mapOf("source" to source, "ags-source" to source)
     }
 
+    private fun currentNativeVersion(): String {
+        return ApplicationHook.alipayVersion.versionString
+    }
+
+    private fun resolveSceneContext(scene: ForestRpcScene, sourceOverride: String? = null): ForestRpcSceneContext {
+        return when (scene) {
+            ForestRpcScene.HOME_TASK_LIST -> ForestRpcSceneContext(
+                source = HOME_TASK_SOURCE,
+                version = TASK_LIST_VERSION,
+                extend = createTaskListExtend(
+                    JSONObject().apply {
+                        put("appMode", "normal")
+                        put("nativeVersion", currentNativeVersion())
+                    }
+                ),
+                headers = forestHeaders(HOME_TASK_SOURCE)
+            )
+
+            ForestRpcScene.TAKE_LOOK_END_TASK_LIST -> {
+                val actualSource = sourceOverride?.takeIf { it.isNotBlank() } ?: DEFAULT_SOURCE
+                val extend = if (actualSource == BACK_FROM_ENERGY_RAIN_SOURCE) {
+                    createTaskListExtend(
+                        JSONObject().apply {
+                            put("appMode", "normal")
+                            put("nativeVersion", currentNativeVersion())
+                        }
+                    )
+                } else {
+                    createTaskListExtend()
+                }
+                ForestRpcSceneContext(
+                    source = actualSource,
+                    version = TASK_LIST_VERSION,
+                    extend = extend,
+                    headers = forestHeaders(actualSource)
+                )
+            }
+
+            ForestRpcScene.PATROL -> ForestRpcSceneContext(
+                source = PATROL_SOURCE,
+                headers = forestHeaders(PATROL_SOURCE)
+            )
+
+            ForestRpcScene.VITALITY_PROP_CONSUME -> ForestRpcSceneContext(
+                source = VITALITY_PROP_SOURCE,
+                version = VITALITY_PROP_VERSION,
+                headers = forestHeaders(VITALITY_PROP_SOURCE)
+            )
+
+            ForestRpcScene.ONE_CLICK_WATERING -> ForestRpcSceneContext(
+                source = HOME_TASK_SOURCE,
+                version = ONE_CLICK_WATERING_VERSION,
+                headers = forestHeaders(HOME_TASK_SOURCE)
+            )
+        }
+    }
+
+    private fun buildPatrolPayload(block: JSONObject.() -> Unit = {}): JSONObject {
+        return JSONObject().apply {
+            put("source", PATROL_SOURCE)
+            put("timezoneId", PATROL_TIMEZONE)
+            block()
+        }
+    }
+
+    private fun requestPatrol(method: String, payload: JSONObject): String {
+        val context = resolveSceneContext(ForestRpcScene.PATROL)
+        return RequestManager.requestString(
+            RpcEntity(
+                method,
+                JSONArray().put(payload).toString(),
+                headers = context.headers
+            )
+        )
+    }
+
+    private fun queryTaskListRequest(
+        fromAct: String,
+        source: String,
+        extend: JSONObject,
+        version: String,
+        headers: Map<String, String>? = forestHeaders(source)
+    ): String {
+        val jo = JSONObject().apply {
+            put("extend", extend)
+            put("fromAct", fromAct)
+            put("source", source)
+            put("version", version)
+        }
+        return RequestManager.requestString(
+            RpcEntity(
+                "alipay.antforest.forest.h5.queryTaskList",
+                JSONArray().put(jo).toString(),
+                headers = headers
+            )
+        )
+    }
+
+    internal fun patrolPropConsumeContext(propGroup: String = ""): PropConsumeContext {
+        val sceneContext = resolveSceneContext(ForestRpcScene.PATROL)
+        return PropConsumeContext(
+            source = sceneContext.source,
+            version = VERSION,
+            headers = sceneContext.headers,
+            propGroup = propGroup.takeIf { it.isNotBlank() }
+        )
+    }
+
+    internal fun vitalityEnergyRainPropConsumeContext(): PropConsumeContext {
+        val sceneContext = resolveSceneContext(ForestRpcScene.VITALITY_PROP_CONSUME)
+        return PropConsumeContext(
+            source = sceneContext.source,
+            version = sceneContext.version ?: VITALITY_PROP_VERSION,
+            headers = sceneContext.headers,
+            propGroup = "energyRain"
+        )
+    }
+
+    private fun buildForestGameCenterHeaders(source: String = HOME_TASK_SOURCE): Map<String, String> {
+        return forestHeaders(source)
+    }
+
+    private fun requestForestGameCenter(
+        method: String,
+        requestData: JSONObject,
+        headerSource: String = HOME_TASK_SOURCE
+    ): String {
+        return RequestManager.requestString(
+            RpcEntity(
+                method,
+                JSONArray().put(requestData).toString(),
+                headers = buildForestGameCenterHeaders(headerSource)
+            )
+        )
+    }
+
+    private fun buildForestGameCenterFilter(appMode: Boolean = false): JSONObject {
+        return JSONObject().apply {
+            if (appMode) {
+                put("appMode", "normal")
+            }
+            put("deviceLevel", "high")
+            put("platform", "Android")
+            put("unityDeviceLevel", "high")
+        }
+    }
+
+    private fun JSONObject.putRecentAppRecordList(records: List<ForestGameCenterRecentAppRecord>) {
+        val recentRecords = records
+            .filter { it.appId.isNotBlank() && it.visitTime > 0 }
+            .distinctBy { it.appId }
+        if (recentRecords.isEmpty()) {
+            return
+        }
+        put(
+            "recentAppRecordList",
+            JSONArray().apply {
+                recentRecords.forEach { record ->
+                    put(
+                        JSONObject().apply {
+                            put("appId", record.appId)
+                            put("visitTime", record.visitTime)
+                        }
+                    )
+                }
+            }
+        )
+    }
+
     /**
      * 森林乐园 - 查询游戏中心列表（包含宝箱开箱权益信息）
      *
      */
     @JvmStatic
-    fun queryGameList(): String {
+    fun queryGameList(
+        recentAppRecords: List<ForestGameCenterRecentAppRecord> = emptyList()
+    ): String {
+        return try {
+            val arg = JSONObject().apply {
+                put("bizType", "ANTFOREST")
+                put("commonDegradeFilterRequest", buildForestGameCenterFilter())
+                putRecentAppRecordList(recentAppRecords)
+                put("requestType", "RPC")
+                put("sceneCode", "ANTFOREST")
+                put("source", FOREST_GAME_CENTER_SOURCE)
+                put("version", currentNativeVersion())
+            }
+            requestForestGameCenter("com.alipay.charitygamecenter.queryGameList", arg, FOREST_GAME_CENTER_SOURCE)
+        } catch (e: Exception) {
+            Log.printStackTrace("AntForestRpcCall", "queryGameList 构建请求参数失败", e)
+            ""
+        }
+    }
+
+    @JvmStatic
+    fun queryOptionalPlay(
+        recentAppRecords: List<ForestGameCenterRecentAppRecord> = emptyList(),
+        source: String = FOREST_GAME_CENTER_SOURCE
+    ): String {
+        return try {
+            val arg = JSONObject().apply {
+                put("bizType", "ANTFOREST")
+                put("commonDegradeFilterRequest", buildForestGameCenterFilter(appMode = true))
+                put("playTypeList", JSONArray().put("TASK_TRIGGER").put("TOP_UP_COUPON"))
+                putRecentAppRecordList(recentAppRecords)
+                put("requestType", "RPC")
+                put("sceneCode", "ANTFOREST_COMMON")
+                put("source", source)
+                put("version", currentNativeVersion())
+            }
+            requestForestGameCenter("com.alipay.charitygamecenter.queryOptionalPlay", arg, source)
+        } catch (e: Exception) {
+            Log.printStackTrace("AntForestRpcCall", "queryOptionalPlay 构建请求参数失败", e)
+            ""
+        }
+    }
+
+    @JvmStatic
+    fun queryGameInfo(source: String = HOME_TASK_SOURCE): String {
+        return try {
+            val arg = JSONObject().apply {
+                put("bizType", "ANTFOREST")
+                put("commonDegradeFilterRequest", buildForestGameCenterFilter())
+                put("requestType", "RPC")
+                put("sceneCode", "ANTFOREST_RECENT_PLAY")
+                put("source", source)
+                put("version", currentNativeVersion())
+            }
+            requestForestGameCenter("com.alipay.charitygamecenter.queryGameInfo", arg, source)
+        } catch (e: Exception) {
+            Log.printStackTrace("AntForestRpcCall", "queryGameInfo 构建请求参数失败", e)
+            ""
+        }
+    }
+
+    @JvmStatic
+    fun queryPreloadGame(source: String = HOME_TASK_SOURCE): String {
         return try {
             val arg = JSONObject().apply {
                 put("bizType", "ANTFOREST")
@@ -116,21 +387,19 @@ object AntForestRpcCall {
                     "commonDegradeFilterRequest",
                     JSONObject().apply {
                         put("deviceLevel", "high")
-                        put("platform", "Android")
+                        put("productVersion", currentNativeVersion())
+                        put("systemType", "Android")
                         put("unityDeviceLevel", "high")
                     }
                 )
                 put("requestType", "RPC")
-                put("sceneCode", "ANTFOREST")
-                put("source", "chInfo_ch_appcenter__chsub_9patch")
-                put("version", VERSION)
+                put("sceneCode", "find_energy_interframe")
+                put("source", source)
+                put("version", currentNativeVersion())
             }
-            RequestManager.requestString(
-                "com.alipay.charitygamecenter.queryGameList",
-                JSONArray().put(arg).toString()
-            )
+            requestForestGameCenter("com.alipay.charitygamecenter.queryPreloadGame", arg, source)
         } catch (e: Exception) {
-            Log.printStackTrace("AntForestRpcCall", "queryGameList 构建请求参数失败", e)
+            Log.printStackTrace("AntForestRpcCall", "queryPreloadGame 构建请求参数失败", e)
             ""
         }
     }
@@ -149,13 +418,10 @@ object AntForestRpcCall {
                 put("bizType", "ANTFOREST")
                 put("requestType", "RPC")
                 put("sceneCode", "ANTFOREST")
-                put("source", "leyuan")
-                put("version", VERSION)
+                put("source", FOREST_GAME_CENTER_SOURCE)
+                put("version", currentNativeVersion())
             }
-            RequestManager.requestString(
-                "com.alipay.charitygamecenter.drawGameCenterAward",
-                JSONArray().put(arg).toString()
-            )
+            requestForestGameCenter("com.alipay.charitygamecenter.drawGameCenterAward", arg, FOREST_GAME_CENTER_SOURCE)
         } catch (e: Exception) {
             Log.printStackTrace("AntForestRpcCall", "drawGameCenterAward 构建请求参数失败", e)
             ""
@@ -535,6 +801,57 @@ object AntForestRpcCall {
     }
 
     @JvmStatic
+    fun queryRecommendFriendListByScene(sceneCode: String = ONE_CLICK_WATERING_SCENE_CODE): String {
+        return try {
+            val context = resolveSceneContext(ForestRpcScene.ONE_CLICK_WATERING)
+            val arg = JSONObject().apply {
+                put("sceneCode", sceneCode)
+                put("source", context.source)
+            }
+            RequestManager.requestString(
+                RpcEntity(
+                    "alipay.antforest.forest.h5.queryRecommendFriendListByScene",
+                    JSONArray().put(arg).toString(),
+                    headers = context.headers
+                )
+            )
+        } catch (e: Exception) {
+            Log.printStackTrace(e)
+            ""
+        }
+    }
+
+    @JvmStatic
+    fun transferEnergyForOneClickWatering(
+        targetUser: String,
+        notifyFriend: Boolean = true,
+        orderIndex: Int = 0
+    ): String {
+        return try {
+            val context = resolveSceneContext(ForestRpcScene.ONE_CLICK_WATERING)
+            val arg = JSONObject().apply {
+                put("bizNo", "${System.currentTimeMillis()}_${RandomUtil.getRandomInt(16)}_${orderIndex.coerceAtLeast(0)}")
+                put("energyId", "39")
+                put("extInfo", JSONObject().put("sendChat", if (notifyFriend) "Y" else "N"))
+                put("source", context.source)
+                put("targetUser", targetUser)
+                put("transferType", "WATERING")
+                put("version", context.version ?: ONE_CLICK_WATERING_VERSION)
+            }
+            RequestManager.requestString(
+                RpcEntity(
+                    "alipay.antmember.forest.h5.transferEnergy",
+                    JSONArray().put(arg).toString(),
+                    headers = context.headers
+                )
+            )
+        } catch (e: Exception) {
+            Log.printStackTrace(e)
+            ""
+        }
+    }
+
+    @JvmStatic
     fun forFriendCollectEnergy(targetUserId: String, bubbleId: Long): String {
         val args1 = "[{\"bubbleIds\":[$bubbleId],\"targetUserId\":\"$targetUserId\"}]"
         return RequestManager.requestString("alipay.antmember.forest.h5.forFriendCollectEnergy", args1)
@@ -546,10 +863,10 @@ object AntForestRpcCall {
     }
 
     @JvmStatic
-    fun queryEnergyRainHome(): String {
+    fun queryEnergyRainHome(source: String = ENERGY_RAIN_SOURCE): String {
         return RequestManager.requestString(
             "alipay.antforest.forest.h5.queryEnergyRainHome",
-            "[{\"source\":\"$ENERGY_RAIN_SOURCE\",\"version\":\"$ENERGY_RAIN_VERSION\"}]"
+            "[{\"source\":\"$source\",\"version\":\"$ENERGY_RAIN_VERSION\"}]"
         )
     }
 
@@ -603,7 +920,14 @@ object AntForestRpcCall {
     @JvmStatic
     @Throws(JSONException::class)
     fun queryTaskList(): String {
-        return queryTaskList("home_task_list", DEFAULT_SOURCE, JSONObject(), VERSION)
+        val context = resolveSceneContext(ForestRpcScene.HOME_TASK_LIST)
+        return queryTaskListRequest(
+            "home_task_list",
+            context.source,
+            context.extend ?: createTaskListExtend(),
+            context.version ?: TASK_LIST_VERSION,
+            context.headers
+        )
     }
 
     @JvmStatic
@@ -614,13 +938,7 @@ object AntForestRpcCall {
         extend: JSONObject = createTaskListExtend(),
         version: String = TASK_LIST_VERSION
     ): String {
-        val jo = JSONObject().apply {
-            put("extend", extend)
-            put("fromAct", fromAct)
-            put("source", source)
-            put("version", version)
-        }
-        return RequestManager.requestString("alipay.antforest.forest.h5.queryTaskList", JSONArray().put(jo).toString())
+        return queryTaskListRequest(fromAct, source, extend, version)
     }
 
     @JvmStatic
@@ -632,15 +950,14 @@ object AntForestRpcCall {
     @JvmStatic
     @Throws(JSONException::class)
     fun queryTakeLookEndTaskList(source: String = DEFAULT_SOURCE): String {
-        val extend = if (source == BACK_FROM_ENERGY_RAIN_SOURCE) {
-            createTaskListExtend(JSONObject().apply {
-                put("appMode", "normal")
-                put("nativeVersion", io.github.aoguai.sesameag.hook.ApplicationHook.alipayVersion.versionString)
-            })
-        } else {
-            createTaskListExtend()
-        }
-        return queryTaskList("take_look_end_task_list", source, extend, TASK_LIST_VERSION)
+        val context = resolveSceneContext(ForestRpcScene.TAKE_LOOK_END_TASK_LIST, source)
+        return queryTaskListRequest(
+            "take_look_end_task_list",
+            context.source,
+            context.extend ?: createTaskListExtend(),
+            context.version ?: TASK_LIST_VERSION,
+            context.headers
+        )
     }
 
     @JvmStatic
@@ -720,6 +1037,12 @@ object AntForestRpcCall {
     @JvmStatic
     @Throws(JSONException::class)
     fun finishTask(sceneCode: String, taskType: String): String {
+        return finishTask(sceneCode, taskType, null)
+    }
+
+    @JvmStatic
+    @Throws(JSONException::class)
+    fun finishTask(sceneCode: String, taskType: String, headerSource: String?): String {
         val outBizNo = "${taskType}_${RandomUtil.nextDouble()}"
         val jo = JSONObject().apply {
             put("outBizNo", outBizNo)
@@ -728,21 +1051,47 @@ object AntForestRpcCall {
             put("source", "ANTFOREST")
             put("taskType", taskType)
         }
-        return RequestManager.requestString("com.alipay.antiep.finishTask", "[$jo]")
+        val headers = headerSource?.takeIf { it.isNotBlank() }?.let(::forestHeaders)
+        return if (headers == null) {
+            RequestManager.requestString("com.alipay.antiep.finishTask", "[$jo]")
+        } else {
+            RequestManager.requestString(
+                RpcEntity(
+                    "com.alipay.antiep.finishTask",
+                    "[$jo]",
+                    headers = headers
+                )
+            )
+        }
     }
 
     @JvmStatic
     @Throws(JSONException::class)
     fun popupTask(): String {
+        val context = resolveSceneContext(ForestRpcScene.HOME_TASK_LIST)
         val jo = JSONObject().apply {
+            put(
+                "extend",
+                JSONObject().apply {
+                    put("appMode", "normal")
+                    put("nativeVersion", currentNativeVersion())
+                    put("osType", "android")
+                }
+            )
             put("fromAct", "pop_task")
             put("needInitSign", false)
             put("needTeamPlantRewardInfo", false)
-            put("source", DEFAULT_SOURCE)
+            put("source", context.source)
             put("statusList", JSONArray().put("TODO").put("FINISHED"))
             put("version", HOME_PAGE_VERSION)
         }
-        return RequestManager.requestString("alipay.antforest.forest.h5.popupTask", JSONArray().put(jo).toString())
+        return RequestManager.requestString(
+            RpcEntity(
+                "alipay.antforest.forest.h5.popupTask",
+                JSONArray().put(jo).toString(),
+                headers = context.headers
+            )
+        )
     }
 
     @JvmStatic
@@ -807,13 +1156,39 @@ object AntForestRpcCall {
 
     @JvmStatic
     @Throws(JSONException::class)
-    fun queryPropList(onlyGive: Boolean): String {
+    fun queryPropList(
+        onlyGive: Boolean,
+        source: String = HOME_TASK_SOURCE,
+        version: String = PROP_LIST_VERSION,
+        propType: String = "",
+        pageQuery: Boolean = true
+    ): String {
         val jo = JSONObject().apply {
             put("onlyGive", if (onlyGive) "Y" else "")
-            put("source", "chInfo_ch_appcenter__chsub_9patch")
-            put("version", VERSION)
+            put("pageQuery", pageQuery)
+            if (propType.isNotBlank()) put("propType", propType)
+            put("source", source)
+            put("version", version)
         }
-        return RequestManager.requestString("alipay.antforest.forest.h5.queryPropList", JSONArray().put(jo).toString())
+        return RequestManager.requestString(
+            RpcEntity(
+                "alipay.antforest.forest.h5.queryPropList",
+                JSONArray().put(jo).toString(),
+                headers = forestHeaders(source)
+            )
+        )
+    }
+
+    @JvmStatic
+    @Throws(JSONException::class)
+    fun queryVitalityEnergyRainPropList(): String {
+        return queryPropList(
+            onlyGive = false,
+            source = VITALITY_PROP_SOURCE,
+            version = PROP_LIST_VERSION,
+            propType = "LIMIT_TIME_ENERGY_RAIN_CHANCE",
+            pageQuery = false
+        )
     }
 
     @JvmStatic
@@ -827,18 +1202,36 @@ object AntForestRpcCall {
 
     @JvmStatic
     @Throws(JSONException::class)
-    fun consumeProp(propGroup: String, propId: String, propType: String, secondConfirm: Boolean): String {
+    internal fun consumeProp(
+        propGroup: String,
+        propId: String,
+        propType: String,
+        secondConfirm: Boolean,
+        context: PropConsumeContext? = null
+    ): String {
+        val actualContext = context ?: PropConsumeContext(
+            source = DEFAULT_SOURCE,
+            version = VERSION,
+            headers = forestHeaders(DEFAULT_SOURCE)
+        )
+        val actualPropGroup = context?.propGroup?.takeIf { it.isNotBlank() } ?: propGroup
         val jo = JSONObject().apply {
-            if (propGroup.isNotEmpty()) put("propGroup", propGroup)
+            if (actualPropGroup.isNotEmpty()) put("propGroup", actualPropGroup)
             put("propId", propId)
             put("propType", propType)
             put("sToken", "${System.currentTimeMillis()}_${RandomUtil.getRandomString(8)}")
             put("secondConfirm", secondConfirm)
-            put("source", "chInfo_ch_appcenter__chsub_9patch")
-            put("timezoneId", "Asia/Shanghai")
-            put("version", VERSION)
+            put("source", actualContext.source)
+            put("timezoneId", PATROL_TIMEZONE)
+            put("version", actualContext.version)
         }
-        return RequestManager.requestString("alipay.antforest.forest.h5.consumeProp", "[$jo]")
+        return RequestManager.requestString(
+            RpcEntity(
+                "alipay.antforest.forest.h5.consumeProp",
+                "[$jo]",
+                headers = actualContext.headers
+            )
+        )
     }
 
     @JvmStatic
@@ -849,17 +1242,34 @@ object AntForestRpcCall {
 
     @JvmStatic
     @Throws(JSONException::class)
-    fun consumeProp2(propGroup: String, propId: String, propType: String): String {
+    internal fun consumeProp2(
+        propGroup: String,
+        propId: String,
+        propType: String,
+        context: PropConsumeContext? = null
+    ): String {
+        val actualContext = context ?: PropConsumeContext(
+            source = DEFAULT_SOURCE,
+            version = VERSION,
+            headers = forestHeaders(DEFAULT_SOURCE)
+        )
+        val actualPropGroup = context?.propGroup?.takeIf { it.isNotBlank() } ?: propGroup
         val jo = JSONObject().apply {
-            if (propGroup.isNotEmpty()) put("propGroup", propGroup)
+            if (actualPropGroup.isNotEmpty()) put("propGroup", actualPropGroup)
             put("propId", propId)
             put("propType", propType)
             put("sToken", "${System.currentTimeMillis()}_${RandomUtil.getRandomString(8)}")
-            put("source", "chInfo_ch_appcenter__chsub_9patch")
-            put("timezoneId", "Asia/Shanghai")
-            put("version", VERSION)
+            put("source", actualContext.source)
+            put("timezoneId", PATROL_TIMEZONE)
+            put("version", actualContext.version)
         }
-        return RequestManager.requestString("alipay.antforest.forest.h5.consumeProp", "[$jo]")
+        return RequestManager.requestString(
+            RpcEntity(
+                "alipay.antforest.forest.h5.consumeProp",
+                "[$jo]",
+                headers = actualContext.headers
+            )
+        )
     }
 
     @JvmStatic
@@ -873,66 +1283,66 @@ object AntForestRpcCall {
     @JvmStatic
     @Throws(JSONException::class)
     fun queryUserPatrol(): String {
-        val jo = JSONObject().apply {
-            put("source", "ant_forest")
-            put("timezoneId", "Asia/Shanghai")
-        }
-        return RequestManager.requestString("alipay.antforest.forest.h5.queryUserPatrol", JSONArray().put(jo).toString())
+        return requestPatrol("alipay.antforest.forest.h5.queryUserPatrol", buildPatrolPayload())
     }
 
     @JvmStatic
     @Throws(JSONException::class)
     fun queryMyPatrolRecord(): String {
-        val jo = JSONObject().apply {
-            put("source", "ant_forest")
-            put("timezoneId", "Asia/Shanghai")
-        }
-        return RequestManager.requestString("alipay.antforest.forest.h5.queryMyPatrolRecord", JSONArray().put(jo).toString())
+        return requestPatrol("alipay.antforest.forest.h5.queryMyPatrolRecord", buildPatrolPayload())
     }
 
     @JvmStatic
     @Throws(JSONException::class)
     fun switchUserPatrol(targetPatrolId: String): String {
-        val jo = JSONObject().apply {
-            put("source", "ant_forest")
+        val jo = buildPatrolPayload {
             put("targetPatrolId", targetPatrolId)
-            put("timezoneId", "Asia/Shanghai")
         }
-        return RequestManager.requestString("alipay.antforest.forest.h5.switchUserPatrol", JSONArray().put(jo).toString())
+        return requestPatrol("alipay.antforest.forest.h5.switchUserPatrol", jo)
     }
 
     @JvmStatic
     fun patrolGo(nodeIndex: Int, patrolId: Int): String {
-        return RequestManager.requestString(
+        return requestPatrol(
             "alipay.antforest.forest.h5.patrolGo",
-            "[{\"nodeIndex\":$nodeIndex,\"patrolId\":$patrolId,\"source\":\"ant_forest\",\"timezoneId\":\"Asia/Shanghai\"}]"
+            buildPatrolPayload {
+                put("nodeIndex", nodeIndex)
+                put("patrolId", patrolId)
+            }
         )
     }
 
     @JvmStatic
     fun patrolKeepGoing(nodeIndex: Int, patrolId: Int, eventType: String): String {
-        val args = when (eventType) {
-            "video" -> "[{\"nodeIndex\":$nodeIndex,\"patrolId\":$patrolId,\"reactParam\":{\"viewed\":\"Y\"},\"source\":\"ant_forest\",\"timezoneId\":\"Asia/Shanghai\"}]"
-            "chase" -> "[{\"nodeIndex\":$nodeIndex,\"patrolId\":$patrolId,\"reactParam\":{\"sendChat\":\"Y\"},\"source\":\"ant_forest\",\"timezoneId\":\"Asia/Shanghai\"}]"
-            "quiz" -> "[{\"nodeIndex\":$nodeIndex,\"patrolId\":$patrolId,\"reactParam\":{\"answer\":\"correct\"},\"source\":\"ant_forest\",\"timezoneId\":\"Asia/Shanghai\"}]"
-            else -> "[{\"nodeIndex\":$nodeIndex,\"patrolId\":$patrolId,\"reactParam\":{},\"source\":\"ant_forest\",\"timezoneId\":\"Asia/Shanghai\"}]"
+        val reactParam = when (eventType) {
+            "video" -> JSONObject().put("viewed", "Y")
+            "chase" -> JSONObject().put("sendChat", "Y")
+            "quiz" -> JSONObject().put("answer", "correct")
+            else -> JSONObject()
         }
-        return RequestManager.requestString("alipay.antforest.forest.h5.patrolKeepGoing", args)
+        return requestPatrol(
+            "alipay.antforest.forest.h5.patrolKeepGoing",
+            buildPatrolPayload {
+                put("nodeIndex", nodeIndex)
+                put("patrolId", patrolId)
+                put("reactParam", reactParam)
+            }
+        )
     }
 
     @JvmStatic
     fun exchangePatrolChance(costStep: Int): String {
-        return RequestManager.requestString(
+        return requestPatrol(
             "alipay.antforest.forest.h5.exchangePatrolChance",
-            "[{\"costStep\":$costStep,\"source\":\"ant_forest\",\"timezoneId\":\"Asia/Shanghai\"}]"
+            buildPatrolPayload {
+                put("costStep", costStep)
+            }
         )
     }
 
     @JvmStatic
     fun queryAnimalAndPiece(animalId: Int, patrolId: Int = 0): String {
-        val jo = JSONObject().apply {
-            put("source", "ant_forest")
-            put("timezoneId", "Asia/Shanghai")
+        val jo = buildPatrolPayload {
             when {
                 patrolId > 0 -> {
                     put("patrolId", patrolId)
@@ -946,14 +1356,17 @@ object AntForestRpcCall {
                 }
             }
         }
-        return RequestManager.requestString("alipay.antforest.forest.h5.queryAnimalAndPiece", JSONArray().put(jo).toString())
+        return requestPatrol("alipay.antforest.forest.h5.queryAnimalAndPiece", jo)
     }
 
     @JvmStatic
     fun combineAnimalPiece(animalId: Int, piecePropIds: String): String {
-        return RequestManager.requestString(
+        return requestPatrol(
             "alipay.antforest.forest.h5.combineAnimalPiece",
-            "[{\"animalId\":$animalId,\"piecePropIds\":$piecePropIds,\"timezoneId\":\"Asia/Shanghai\",\"source\":\"ant_forest\"}]"
+            buildPatrolPayload {
+                put("animalId", animalId)
+                put("piecePropIds", JSONArray(piecePropIds))
+            }
         )
     }
 
@@ -1017,23 +1430,54 @@ object AntForestRpcCall {
 
     @JvmStatic
     fun itemList(labelType: String, startIndex: Int = 0, pageSize: Int = 10): String {
+        val requestData = JSONObject().apply {
+            put("extendInfo", "{}")
+            put("fromSpuId", "")
+            put("labelType", labelType)
+            put("pageSize", pageSize)
+            put("requestType", "rpc")
+            put("sceneCode", "ANTFOREST_VITALITY")
+            put("source", "afEntry")
+            put("startIndex", startIndex)
+        }
         return RequestManager.requestString(
-            "com.alipay.antiep.itemList",
-            "[{\"extendInfo\":\"{}\",\"fromSpuId\":\"\",\"labelType\":\"$labelType\",\"pageSize\":$pageSize,\"requestType\":\"rpc\",\"sceneCode\":\"ANTFOREST_VITALITY\",\"source\":\"afEntry\",\"startIndex\":$startIndex}]"
+            RpcEntity(
+                "com.alipay.antiep.itemList",
+                JSONArray().put(requestData).toString(),
+                headers = forestHeaders("afEntry")
+            )
         )
     }
 
     @JvmStatic
     fun itemDetail(spuId: String): String {
+        val requestData = JSONObject().apply {
+            put("requestType", "rpc")
+            put("sceneCode", "ANTFOREST_VITALITY")
+            put("source", "afEntry")
+            put("spuId", spuId)
+        }
         return RequestManager.requestString(
-            "com.alipay.antiep.itemDetail",
-            "[{\"requestType\":\"rpc\",\"sceneCode\":\"ANTFOREST_VITALITY\",\"source\":\"afEntry\",\"spuId\":\"$spuId\"}]"
+            RpcEntity(
+                "com.alipay.antiep.itemDetail",
+                JSONArray().put(requestData).toString(),
+                headers = forestHeaders("afEntry")
+            )
         )
     }
 
     @JvmStatic
     fun queryVitalityStoreIndex(): String {
-        return RequestManager.requestString("alipay.antforest.forest.h5.queryVitalityStoreIndex", "[{\"source\":\"afEntry\"}]")
+        val requestData = JSONObject().apply {
+            put("source", "afEntry")
+        }
+        return RequestManager.requestString(
+            RpcEntity(
+                "alipay.antforest.forest.h5.queryVitalityStoreIndex",
+                JSONArray().put(requestData).toString(),
+                headers = forestHeaders("afEntry")
+            )
+        )
     }
 
     @JvmStatic
@@ -1046,7 +1490,13 @@ object AntForestRpcCall {
             put("skuId", skuId)
             put("source", "GOOD_DETAIL")
         }
-        return RequestManager.requestString("com.alipay.antcommonweal.exchange.h5.exchangeBenefit", JSONArray().put(jo).toString())
+        return RequestManager.requestString(
+            RpcEntity(
+                "com.alipay.antcommonweal.exchange.h5.exchangeBenefit",
+                JSONArray().put(jo).toString(),
+                headers = forestHeaders("afEntry")
+            )
+        )
     }
 
     @JvmStatic
@@ -1182,10 +1632,7 @@ object AntForestRpcCall {
 
     @JvmStatic
     fun AnimalConsumeProp(propGroup: String, propId: String, propType: String): String {
-        return RequestManager.requestString(
-            "alipay.antforest.forest.h5.consumeProp",
-            "[{\"propGroup\":\"$propGroup\",\"propId\":\"$propId\",\"propType\":\"$propType\",\"source\":\"ant_forest\",\"timezoneId\":\"Asia/Shanghai\"}]"
-        )
+        return consumeProp(propGroup, propId, propType, false, patrolPropConsumeContext(propGroup))
     }
 
     @JvmStatic
@@ -1273,14 +1720,19 @@ object AntForestRpcCall {
     @JvmStatic
     @Throws(JSONException::class)
     fun receiveTaskAwardopengreen(source: String, sceneCode: String, taskType: String): String {
+        val actualSource = if (sceneCode == FOREST_LEYUAN_DAILY_TASK_SCENE_CODE) {
+            FOREST_LEYUAN_DAILY_AWARD_SOURCE
+        } else {
+            source
+        }
         val requestData = JSONObject().apply {
             put("ignoreLimit", true)
             put("requestType", "RPC")
             put("sceneCode", sceneCode)
-            put("source", source)
+            put("source", actualSource)
             put("taskType", taskType)
         }
-        Log.forest("receiveTaskAwardopengreen - 任务: $taskType, source: $source")
+        Log.forest("receiveTaskAwardopengreen - 任务: $taskType, source: $actualSource")
         return RequestManager.requestString("com.alipay.antieptask.receiveTaskAwardopengreen", "[$requestData]")
     }
 
@@ -1294,6 +1746,10 @@ object AntForestRpcCall {
             }
             if (!has("ignoreLimit")) put("ignoreLimit", true)
             if (!has("requestType")) put("requestType", "RPC")
+            if (!has("source") || optString("source").isBlank()) put("source", OPEN_GREEN_RIGHTS_SOURCE)
+            if (optString("sceneCode") == FOREST_LEYUAN_DAILY_TASK_SCENE_CODE) {
+                put("source", FOREST_LEYUAN_DAILY_AWARD_SOURCE)
+            }
         }
         val sceneCode = requestData.optString("sceneCode")
         val source = requestData.optString("source")
@@ -1426,17 +1882,34 @@ object AntForestRpcCall {
         )
     }
 
+    /** 能量雨机会任务点击游戏，保持 ANTFOREST 点击上下文。 */
+    @JvmStatic
+    fun clickEnergyRainGame(appId: String): String {
+        val requestData = JSONObject().apply {
+            put("appId", appId)
+            put("bizType", "ANTFOREST")
+            put("requestType", "RPC")
+            put("sceneCode", "ANTFOREST")
+            put("source", "ANTFOREST")
+        }
+        return RequestManager.requestString(
+            "com.alipay.charitygamecenter.clickGame",
+            JSONArray().put(requestData).toString()
+        )
+    }
+
     /** 模拟点击进入游戏 */
     @JvmStatic
-    fun clickGame(appId: String): String {
-        return RequestManager.requestString("com.alipay.charitygamecenter.clickGame",
-            "[{" +
-                    "  \"appId\": \"$appId\"," +
-                    "  \"bizType\": \"ANTFOREST\"," +
-                    "  \"requestType\": \"RPC\"," +
-                    "  \"sceneCode\": \"ANTFOREST\"," +
-                    "  \"source\": \"ANTFOREST\"" +
-                    "}]")
+    fun clickGame(appId: String, source: String = FOREST_GAME_CENTER_SOURCE): String {
+        val requestData = JSONObject().apply {
+            put("appId", appId)
+            put("bizType", "ANTFOREST")
+            put("requestType", "RPC")
+            put("sceneCode", "ANTFOREST")
+            put("source", source)
+            put("version", currentNativeVersion())
+        }
+        return requestForestGameCenter("com.alipay.charitygamecenter.clickGame", requestData, source)
     }
 }
 

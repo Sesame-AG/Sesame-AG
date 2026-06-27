@@ -28,6 +28,7 @@ import io.github.aoguai.sesameag.util.FriendGuard
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.RandomUtil
 import io.github.aoguai.sesameag.util.ResChecker
+import io.github.aoguai.sesameag.util.RpcOfflineRisk
 import io.github.aoguai.sesameag.util.TaskBlacklist
 import io.github.aoguai.sesameag.util.maps.UserMap
 import org.json.JSONArray
@@ -51,7 +52,6 @@ class AntOrchard : ModelTask() {
         private val SUPPORTED_TAOBAO_LIMIT_BALLOON_IDS = setOf("TAOBAO_LIMIT", "TAOBAO")
         private val SUPPORTED_TAOBAO_VISIT_SOURCES = setOf("task_visit", "visittask")
         private val TAOBAO_VISIT_LEGACY_TITLES = setOf("逛助农好货得肥料", "逛农货得肥料")
-        private val ORCHARD_XLIGHT_RISK_CODES = setOf("217", "61002")
         private val ORCHARD_BUSINESS_LIMIT_CODES = setOf(
             "CAMP_TRIGGER_ERROR",
             "PROMISE_TODAY_FINISH_TIMES_LIMIT"
@@ -1214,8 +1214,10 @@ class AntOrchard : ModelTask() {
             containsAny(message, "已领取", "已经领取", "重复领取", "重复领奖", "重复完成", "已完成", "任务已完结", "任务已结束") ->
                 TaskRpcFailureType.TERMINAL_DONE
 
+            RpcOfflineRisk.isAdTrafficRisk(response) ->
+                TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE
+
             errorCode in ORCHARD_BUSINESS_LIMIT_CODES ||
-                errorCode in ORCHARD_XLIGHT_RISK_CODES ||
                 errorCode.contains("LIMIT", ignoreCase = true) ||
                 containsAny(
                     riskSignals,
@@ -1230,8 +1232,7 @@ class AntOrchard : ModelTask() {
                     "captcha",
                     "verify",
                     "访问异常",
-                    "验证码",
-                    "cheating traffic"
+                    "验证码"
                 ) ->
                 TaskRpcFailureType.BUSINESS_LIMIT
 
@@ -1366,7 +1367,7 @@ class AntOrchard : ModelTask() {
         }
         return TaskFlowActionResult.failure(
             failureType = failureType,
-            code = extractOrchardRpcErrorCode(response),
+            code = extractOrchardFailureCode(response),
             message = extractOrchardRpcMessage(response),
             rpc = rpc,
             raw = response.toString(),
@@ -1394,20 +1395,7 @@ class AntOrchard : ModelTask() {
     }
 
     private fun buildOrchardXLightGateFailure(item: TaskFlowItem, response: JSONObject): TaskFlowActionResult? {
-        val signals = buildOrchardRiskSignalText(response)
-        val errorCode = extractOrchardRpcErrorCode(response)
-        val hasRiskSignal = errorCode in ORCHARD_XLIGHT_RISK_CODES ||
-            containsAny(
-                signals,
-                "cheating traffic",
-                "captcha",
-                "verify",
-                "访问异常",
-                "验证码",
-                "风控",
-                "风险"
-            )
-        if (!hasRiskSignal) {
+        if (!RpcOfflineRisk.isAdTrafficRisk(response)) {
             return null
         }
         return buildOrchardTaskFailureResult(
@@ -1418,6 +1406,15 @@ class AntOrchard : ModelTask() {
             rpc = "XLightRpcCall.xlightPlugin",
             item = item
         )
+    }
+
+    private fun extractOrchardFailureCode(response: JSONObject): String {
+        val code = extractOrchardRpcErrorCode(response)
+        return if (code.isBlank() && RpcOfflineRisk.isAdTrafficRisk(response)) {
+            "AD_TRAFFIC_RISK"
+        } else {
+            code
+        }
     }
 
     private fun extractOrchardRpcErrorCode(response: JSONObject): String {
@@ -2286,6 +2283,9 @@ class AntOrchard : ModelTask() {
                     }
                     "VISIT" -> {
                         val displayCfg = child.optJSONObject("taskDisplayConfig") ?: continue
+                        val childTitle = displayCfg.optString("title")
+                            .ifBlank { child.optString("taskName") }
+                            .ifBlank { childTaskId }
                         val targetUrl = displayCfg.optString("targetUrl", "")
                         if (targetUrl.isEmpty()) continue
 
@@ -2294,23 +2294,24 @@ class AntOrchard : ModelTask() {
                         val finalSpaceCode = spaceCodeFeeds ?: UrlUtil.getParamValue(targetUrl, "spaceCodeFeeds") ?: ""
                         if (finalSpaceCode.isEmpty()) continue
 
-                        val pageFrom = "ch_url-https://render.alipay.com/p/yuyan/180020010001263018/game.html"
-                        val session = "u_41ba1_2f33e"
-                        val r = XLightRpcCall.xlightPlugin(finalUrl, pageFrom, session, finalSpaceCode)
-                        val jr = JSONObject(r)
+                        if (isOrchardTaskBlacklisted(childTaskId, childTitle) ||
+                            isOrchardTaskBlacklisted(groupId, childTitle)
+                        ) {
+                            Log.orchard("农场限时福利⏭️[$childTitle]#任务在自动跳过列表(黑名单)中，跳过")
+                            continue
+                        }
 
-                        val playingResult = jr.optJSONObject("resData")?.optJSONObject("playingResult") ?: jr.optJSONObject("playingResult")
-                        if (playingResult == null) continue
-
-                        val playingBizId = playingResult.optString("playingBizId", "")
-                        val eventRewardDetail = playingResult.optJSONObject("eventRewardDetail")
-                        val infoListArray = eventRewardDetail?.optJSONArray("eventRewardInfoList")
-                        if (infoListArray == null || infoListArray.length() == 0) continue
-
-                        val playEventInfo = infoListArray.getJSONObject(0)
-                        val finishResult = XLightRpcCall.finishTask(playingBizId, playEventInfo, sceneCode, groupId)
-                        if (ResChecker.checkRes(TAG, JSONObject(finishResult))) {
-                            Log.orchard("浏览广告任务完成")
+                        Log.error(
+                            TAG,
+                            "农场限时福利[$childTitle] classification=UNSUPPORTED_NO_CLOSURE " +
+                                "decision=BLACKLIST taskId=$childTaskId action=xlightPlugin " +
+                                "rpc=<none> code=UNSUPPORTED_XLIGHT_LIMITED_CHALLENGE " +
+                                "msg=限时福利浏览广告任务缺少稳定自动闭环，跳过硬编码session链路 " +
+                                "sceneCode=$sceneCode groupId=$groupId spaceCode=$finalSpaceCode"
+                        )
+                        addOrchardTaskToBlacklist(childTaskId, childTitle)
+                        if (groupId.isNotBlank()) {
+                            addOrchardTaskToBlacklist(groupId, childTitle)
                         }
                     }
                 }

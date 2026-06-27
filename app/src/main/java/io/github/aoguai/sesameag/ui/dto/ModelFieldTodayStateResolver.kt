@@ -168,9 +168,6 @@ object ModelFieldTodayStateResolver {
             "AntMember.enableGoldTicketConsume" ->
                 flag(StatusFlags.FLAG_ANTMEMBER_GOLD_TICKET_CONSUME_DONE, "今日黄金票提取已处理")
 
-            "AntMember.CollectStickers" ->
-                flag(StatusFlags.FLAG_ANTMEMBER_STICKER, "今日贴纸已领取")
-
             "AntSports.sportsTasks" ->
                 allFlags(
                     StatusFlags.FLAG_ANTSPORTS_DAILY_TASKS_DONE,

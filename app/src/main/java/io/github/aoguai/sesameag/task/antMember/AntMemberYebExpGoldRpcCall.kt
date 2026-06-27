@@ -8,6 +8,8 @@ import org.json.JSONObject
 object AntMemberYebExpGoldRpcCall {
     private const val YEB_EXP_GOLD_SIGN_IN_PLAY_ID = "PLAY102253251"
     private const val YEB_EXP_GOLD_CH_INFO = "ch_url-https://render.alipay.com/p/yuyan/180020010001282160/index.html"
+    internal const val YEB_EXP_GOLD_MAIN_QUERY_APPLET_ID = "AP12183159"
+    private const val YEB_EXP_GOLD_MAIN_QUERY_TASK_VERSION = 2
 
     fun queryYebExpGoldMain(
         queryComplete: Boolean = false,
@@ -51,6 +53,14 @@ object AntMemberYebExpGoldRpcCall {
             "com.alipay.yebpromobff.promosdk2024.task.complete",
             """[{"appName":"yebpromobff","outBizNo":"$outBizNo","playActionCode":"TASK_COMPLETE","playEntrance":"HYQ_TASK_LIST_ENTRANCE_2","taskId":"$taskId"}]"""
         )
+    }
+
+    fun completeYebExpGoldMainQueryTask(taskId: String): String {
+        return forwardYebExpGoldTask(taskId, "task.complete")
+    }
+
+    fun triggerYebExpGoldMainQueryTask(taskId: String): String {
+        return forwardYebExpGoldTask(taskId, "task.trigger")
     }
 
     fun queryYebTrialAsset(): String {
@@ -104,6 +114,24 @@ object AntMemberYebExpGoldRpcCall {
         }
         return RequestManager.requestString(
             "com.alipay.yebscenebff.needle.yebExpGoldVoucherConvert",
+            JSONArray().put(args).toString()
+        )
+    }
+
+    private fun forwardYebExpGoldTask(taskId: String, path: String): String {
+        val args = JSONObject().apply {
+            put(
+                "params",
+                JSONObject().apply {
+                    put("appletId", YEB_EXP_GOLD_MAIN_QUERY_APPLET_ID)
+                    put("taskId", taskId)
+                    put("version", YEB_EXP_GOLD_MAIN_QUERY_TASK_VERSION)
+                }
+            )
+            put("path", path)
+        }
+        return RequestManager.requestString(
+            "com.alipay.yebscenebff.promosdk.index.forward",
             JSONArray().put(args).toString()
         )
     }

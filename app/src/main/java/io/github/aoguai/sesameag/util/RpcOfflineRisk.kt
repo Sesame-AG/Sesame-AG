@@ -7,6 +7,7 @@ object RpcOfflineRisk {
     private const val TAG = "风控"
     private val directRiskCodes = setOf("1009")
     private val offlineModeCodes = setOf("I07")
+    private val adTrafficRiskCodes = setOf("217", "61002")
 
     private val riskKeywords = listOf(
         "需要验证",
@@ -52,6 +53,15 @@ object RpcOfflineRisk {
         return stopObject != null && isOfflineRisk(stopObject)
     }
 
+    fun isAdTrafficRisk(jsonObject: JSONObject): Boolean {
+        if (!hasAdTrafficContext(jsonObject)) {
+            return false
+        }
+        val signalText = buildAdTrafficSignalText(jsonObject)
+        return adTrafficRiskCodes.any { code -> signalText.contains(code, ignoreCase = true) } ||
+            signalText.contains("cheating traffic", ignoreCase = true)
+    }
+
     fun enterOfflineIfNeeded(source: String, code: String, message: String): Boolean {
         if (!isOfflineRisk(code, message)) {
             return false
@@ -86,7 +96,10 @@ object RpcOfflineRisk {
             jsonObject.opt("errorCode")?.toString(),
             jsonObject.opt("error")?.toString(),
             jsonObject.opt("errorTip")?.toString(),
-            jsonObject.opt("code")?.toString()
+            jsonObject.opt("code")?.toString(),
+            jsonObject.opt("retCode")?.toString(),
+            jsonObject.opt("sspErrorCode")?.toString(),
+            jsonObject.opt("errCode")?.toString()
         ).firstOrNull { !it.isNullOrBlank() }.orEmpty()
     }
 
@@ -98,9 +111,49 @@ object RpcOfflineRisk {
             jsonObject.optString("desc"),
             jsonObject.optString("errorMessage"),
             jsonObject.optString("errorMsg"),
+            jsonObject.optString("sspErrorMsg"),
             jsonObject.optString("message")
         ).filter { it.isNotBlank() }
             .joinToString(" | ")
+    }
+
+    private fun hasAdTrafficContext(jsonObject: JSONObject): Boolean {
+        if (hasAdTrafficFields(jsonObject)) {
+            return true
+        }
+        val resData = jsonObject.optJSONObject("resData") ?: return false
+        return hasAdTrafficFields(resData)
+    }
+
+    private fun hasAdTrafficFields(jsonObject: JSONObject): Boolean {
+        return jsonObject.has("xlightRequestId") ||
+            jsonObject.has("sspErrorCode") ||
+            jsonObject.has("sspErrorMsg") ||
+            jsonObject.has("adList") ||
+            jsonObject.has("playingResult") ||
+            jsonObject.has("enableNewPlayingProto")
+    }
+
+    private fun buildAdTrafficSignalText(jsonObject: JSONObject): String {
+        return buildString {
+            appendAdTrafficSignals(jsonObject)
+            jsonObject.optJSONObject("resData")?.let { resData ->
+                append(' ')
+                appendAdTrafficSignals(resData)
+            }
+        }
+    }
+
+    private fun StringBuilder.appendAdTrafficSignals(jsonObject: JSONObject) {
+        append(extractCode(jsonObject))
+        append(' ')
+        append(extractMessage(jsonObject))
+        append(' ')
+        append(jsonObject.optString("retCode"))
+        append(' ')
+        append(jsonObject.optString("sspErrorCode"))
+        append(' ')
+        append(jsonObject.optString("sspErrorMsg"))
     }
 
     private fun buildDetail(source: String, code: String, message: String): String {

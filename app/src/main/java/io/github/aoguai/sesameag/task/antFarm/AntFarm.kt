@@ -100,11 +100,6 @@ import kotlin.math.min
 
 private const val SPECIAL_FOOD_USE_FARM_FOOD_RPC = "com.alipay.antfarm.useFarmFood"
 
-internal enum class SpecialFoodGuardDecision {
-    ALLOW,
-    LOG_ONLY
-}
-
 @Suppress("unused", "EnumEntryName", "EnumEntryName", "EnumEntryName", "EnumEntryName")
 class AntFarm : ModelTask() {
     internal var ownerFarmId: String? = null
@@ -2096,7 +2091,6 @@ class AntFarm : ModelTask() {
                             useSpecialFood(
                                 cuisineList = cuisineList,
                                 maxUsage = remainingDailyQuota,
-                                guardDecision = resolveSpecialFoodGuardDecision("庄园自动链路"),
                                 guardScene = "庄园自动链路"
                             )
                         }
@@ -2685,18 +2679,14 @@ class AntFarm : ModelTask() {
         }
 
         val eggGap = (requiredEggCount - harvestBenevolenceScore).coerceAtLeast(0.0)
-        val guardDecision = resolveSpecialFoodGuardDecision("普通捐蛋补蛋")
         val usedCount = useSpecialFood(
             cuisineList = cuisineList,
             maxUsage = remainingDailyQuota,
             targetEggGap = eggGap,
-            guardDecision = guardDecision,
             guardScene = "普通捐蛋补蛋"
         )
         if (usedCount <= 0) {
-            if (guardDecision == SpecialFoodGuardDecision.ALLOW) {
-                Log.farm("普通捐蛋蛋数不足，特殊食品调用未成功，停止补蛋")
-            }
+            Log.farm("普通捐蛋蛋数不足，特殊食品调用未成功，停止补蛋")
             return false
         }
 
@@ -5222,7 +5212,9 @@ class AntFarm : ModelTask() {
                     val orchardFoodMaterialStatus = jo.getJSONObject("orchardFoodMaterialStatus")
                     if (shouldCollectOrchardFoodMaterial(orchardFoodMaterialStatus)) {
                         jo = JSONObject(AntFarmRpcCall.farmFoodMaterialCollect())
-                        if (ResChecker.checkRes(TAG, jo)) {
+                        if (isNoOrchardFoodMaterialToCollect(jo)) {
+                            Log.farm("小鸡厨房👨🏻‍🍳[农场食材]暂无可收取")
+                        } else if (ResChecker.checkRes(TAG, jo)) {
                             val collectAmount = jo.optInt("foodMaterialAddCount", jo.optInt("receiveFoodMaterialCount", 0))
                             Log.farm("小鸡厨房👨🏻‍🍳[领取农场食材]#" + collectAmount + "g")
                         }
@@ -5278,7 +5270,13 @@ class AntFarm : ModelTask() {
         if (foodStatus in setOf("RECIVIED", "RECEIVED", "DONE", "COLLECTED", "EMPTY", "NONE")) {
             return false
         }
-        return foodStatus in setOf("FINISHED", "TODO", "WAITING_RECEIVE", "UNRECEIVED", "CAN_COLLECT", "AVAILABLE")
+        return foodStatus in setOf("FINISHED", "WAITING_RECEIVE", "UNRECEIVED", "CAN_COLLECT", "AVAILABLE")
+    }
+
+    private fun isNoOrchardFoodMaterialToCollect(jo: JSONObject): Boolean {
+        val resultCode = jo.optString("resultCode")
+        val resultDesc = jo.optString("resultDesc").ifBlank { jo.optString("memo") }
+        return resultCode == "HA6" && resultDesc.contains("无食材可收取")
     }
 
     /**
@@ -5322,7 +5320,7 @@ class AntFarm : ModelTask() {
                 val cookTimesAllowed = jo.getInt("cookTimesAllowed")
                 if (cookTimesAllowed > 0) {
                     for (i in 0..<cookTimesAllowed) {
-                        jo = JSONObject(AntFarmRpcCall.cook(userId, "VILLA"))
+                        jo = JSONObject(AntFarmRpcCall.cook(userId))
                         if (ResChecker.checkRes(TAG, jo)) {
                             val cuisineVO = jo.getJSONObject("cuisineVO")
                             Log.farm("小鸡厨房👨🏻‍🍳[" + cuisineVO.getString("name") + "]制作成功")
@@ -5388,34 +5386,6 @@ class AntFarm : ModelTask() {
         val sourceMessage: String
     )
 
-    internal fun resolveSpecialFoodGuardDecision(
-        guardScene: String,
-        allowRiskAction: Boolean = false
-    ): SpecialFoodGuardDecision {
-        if (allowRiskAction) {
-            Log.farm("特殊食品风险守门：scene=$guardScene decision=ALLOW reason=显式允许场景执行")
-            return SpecialFoodGuardDecision.ALLOW
-        }
-        return SpecialFoodGuardDecision.LOG_ONLY
-    }
-
-    private fun buildSpecialFoodGuardSummary(
-        usageLabel: String,
-        guardScene: String,
-        decision: SpecialFoodGuardDecision,
-        totalInventory: Int,
-        plannedUsage: Int,
-        remainingTarget: Double,
-        reason: String
-    ): String {
-        val targetText = if (remainingTarget > SPECIAL_FOOD_PRODUCE_EPS) {
-            " targetEggGap=${formatSpecialFoodProduce(remainingTarget)}颗"
-        } else {
-            ""
-        }
-        return "$usageLabel 风险守门：scene=$guardScene decision=${decision.name} inventory=$totalInventory planned=$plannedUsage$targetText reason=$reason"
-    }
-
     private fun isSpecialFoodRiskFailure(
         jo: JSONObject,
         authLikeSnapshot: ApplicationHookConstants.AuthLikeOfflineSnapshot?
@@ -5472,7 +5442,6 @@ class AntFarm : ModelTask() {
         usageDailyLimit: Int = useSpecialFoodCount?.value ?: -1,
         usageLabel: String = "特殊食品",
         targetEggGap: Double = 0.0,
-        guardDecision: SpecialFoodGuardDecision = SpecialFoodGuardDecision.LOG_ONLY,
         guardScene: String = "庄园自动链路"
     ): Int {
         var usedCount = 0
@@ -5518,24 +5487,6 @@ class AntFarm : ModelTask() {
                 Log.farm("${usageLabel}目标补蛋：目标差额${formatSpecialFoodProduce(remainingTarget)}颗，最多使用${remainingToEat}个")
             } else {
                 Log.farm("美食处理：待消耗总量 $remainingToEat")
-            }
-
-            when (guardDecision) {
-                SpecialFoodGuardDecision.LOG_ONLY -> {
-                    Log.farm(
-                        buildSpecialFoodGuardSummary(
-                            usageLabel = usageLabel,
-                            guardScene = guardScene,
-                            decision = guardDecision,
-                            totalInventory = totalInventory,
-                            plannedUsage = remainingToEat,
-                            remainingTarget = remainingTarget,
-                            reason = "自动链路默认不直接执行useFarmFood"
-                        )
-                    )
-                    return 0
-                }
-                SpecialFoodGuardDecision.ALLOW -> Unit
             }
 
             while (remainingToEat > 0 && stockList.isNotEmpty()) {
@@ -7988,7 +7939,6 @@ class AntFarm : ModelTask() {
                     val usedCount = useSpecialFood(
                         cuisineList = cuisineList,
                         maxUsage = count,
-                        guardDecision = resolveSpecialFoodGuardDecision("手动使用特殊美食", allowRiskAction = true),
                         guardScene = "手动使用特殊美食"
                     )
                     if (usedCount > 0) {

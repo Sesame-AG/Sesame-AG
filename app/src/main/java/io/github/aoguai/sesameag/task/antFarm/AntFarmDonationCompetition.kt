@@ -967,7 +967,6 @@ private fun AntFarm.tryUseSpecialFoodForCompetition(requiredEggCount: Int): Bool
         return true
     }
 
-    val guardDecision = resolveSpecialFoodGuardDecision("排位赛特殊食品补蛋")
     val usedCount = useSpecialFood(
         cuisineList = cuisineList,
         maxUsage = remainingDailyQuota,
@@ -976,13 +975,10 @@ private fun AntFarm.tryUseSpecialFoodForCompetition(requiredEggCount: Int): Bool
         usageDailyLimit = dailyLimit,
         usageLabel = "排位赛特殊食品",
         targetEggGap = eggGap,
-        guardDecision = guardDecision,
         guardScene = "排位赛特殊食品补蛋"
     )
     if (usedCount <= 0) {
-        if (guardDecision == SpecialFoodGuardDecision.ALLOW) {
-            Log.record(TAG, "排位反超蛋数不足，特殊食品调用未成功，停止补蛋")
-        }
+        Log.record(TAG, "排位反超蛋数不足，特殊食品调用未成功，停止补蛋")
         return false
     }
 

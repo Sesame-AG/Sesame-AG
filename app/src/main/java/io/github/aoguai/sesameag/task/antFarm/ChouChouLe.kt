@@ -5,6 +5,7 @@ import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.hook.ExchangeOptionsRefreshBridge
 import io.github.aoguai.sesameag.task.TaskStatus
+import io.github.aoguai.sesameag.task.antOrchard.UrlUtil
 import io.github.aoguai.sesameag.task.exchange.ExchangeCost
 import io.github.aoguai.sesameag.task.exchange.ExchangeEffectCatalog
 import io.github.aoguai.sesameag.task.exchange.ExchangeItem
@@ -93,6 +94,8 @@ class ChouChouLe {
         var awardCount: Int = 0,
         var targetUrl: String = "",
         var desc: String = "",
+        var taskMode: String = "",
+        var countDownSeconds: Int = 0,
         var categorizationSecondLevel: String = "",
         var categorizationThirdLevel: String = ""
     ) {
@@ -439,6 +442,8 @@ class ChouChouLe {
                 ).firstOrNull { it >= 0 } ?: 0,
                 targetUrl = item.optString("targetUrl").ifBlank { item.optString("finishedUrl") },
                 desc = item.optString("desc"),
+                taskMode = item.optString("taskMode"),
+                countDownSeconds = item.optInt("countDownSeconds", 0),
                 categorizationSecondLevel = item.optString("categorizationSecondLevel"),
                 categorizationThirdLevel = item.optString("categorizationThirdLevel")
             )
@@ -447,25 +452,22 @@ class ChouChouLe {
         return list
     }
 
-    private fun isAdBrowseTask(task: TaskInfo): Boolean {
-        val merged = listOf(task.taskId, task.title, task.targetUrl)
-            .joinToString("|")
-            .lowercase()
-        return merged.contains("shangyehua") ||
-            merged.contains("30s") ||
-            merged.contains("15s") ||
-            merged.contains("browse") ||
-            merged.contains("杂货铺") ||
-            merged.contains("逛一逛")
+    private fun shouldUseDirectFinishTaskFlow(task: TaskInfo): Boolean {
+        if (task.taskMode.equals("COUNT_DOWN", ignoreCase = true) || task.countDownSeconds > 0) {
+            return true
+        }
+        val iepTaskType = UrlUtil.getParamValue(task.targetUrl, "iepTaskType")
+        val iepTaskSceneCode = UrlUtil.getParamValue(task.targetUrl, "iepTaskSceneCode")
+        return !iepTaskType.isNullOrBlank() && !iepTaskSceneCode.isNullOrBlank()
     }
 
-    private fun resolveAdTaskAttemptCount(task: TaskInfo): Int {
+    private fun resolveDirectFinishAttemptCount(task: TaskInfo): Int {
         val remainingTimes = task.getRemainingTimes()
         if (remainingTimes > 0) {
             return remainingTimes
         }
         if (task.rightsTimesLimit <= 0) {
-            Log.farm("广告任务[${task.title}]剩余次数字段异常，按默认3次兜底")
+            Log.farm("直连任务[${task.title}]剩余次数字段异常，按默认3次兜底")
             return 3
         }
         return 0
@@ -485,12 +487,10 @@ class ChouChouLe {
             }
             val taskName = if (drawType == "ipDraw") "IP抽抽乐" else "抽抽乐"
 
-            // 特殊任务：浏览广告
-            if (isAdBrowseTask(task)) {
-                return handleAdTask(drawType, task)
+            if (shouldUseDirectFinishTaskFlow(task)) {
+                return handleDirectFinishTask(drawType, task)
             }
 
-            // 普通任务
             if (task.title == "消耗饲料换机会") {
                 if (AntFarm.foodStock < 90) {
                     Log.farm("饲料余量(${AntFarm.foodStock}g)少于90g，跳过任务: ${task.title}")
@@ -529,14 +529,14 @@ class ChouChouLe {
         }
     }
 
-    private fun finishAdTaskDirectly(
+    private fun finishTaskDirectly(
         drawType: String,
         task: TaskInfo,
         taskSceneCode: String,
         maxRetry: Int? = null
     ): Int {
         val taskName = if (drawType == "ipDraw") "IP抽抽乐" else "抽抽乐"
-        val attemptCount = resolveAdTaskAttemptCount(task)
+        val attemptCount = resolveDirectFinishAttemptCount(task)
         if (attemptCount <= 0) {
             return 0
         }
@@ -555,7 +555,7 @@ class ChouChouLe {
             val response = AntFarmRpcCall.finishTask(task.taskId, taskSceneCode, outBizNo)
             val jo = JSONObject(response)
             if (isTaskQuotaReachedResponse(jo)) {
-                Log.farm("广告任务[${task.title}]今日权益已达上限，停止继续尝试")
+                Log.farm("直连任务[${task.title}]今日权益已达上限，停止继续尝试")
                 return -1
             }
             if (ResChecker.checkRes(TAG, jo)) {
@@ -572,7 +572,7 @@ class ChouChouLe {
                 return max(1, successCount)
             }
             if (successCount == 0) {
-                Log.farm("广告任务直连完成失败[${task.title}]: ${message.ifBlank { jo.toString() }}")
+                Log.farm("直连任务完成失败[${task.title}]: ${message.ifBlank { jo.toString() }}")
             }
             break
         }
@@ -580,25 +580,26 @@ class ChouChouLe {
     }
 
     /**
-     * 处理广告任务
+     * 处理直连任务
      */
-    private fun handleAdTask(drawType: String, task: TaskInfo): Boolean {
+    private fun handleDirectFinishTask(drawType: String, task: TaskInfo): Boolean {
         try {
             if (shouldSkipLimitedTaskToday(task)) {
                 return false
             }
             val taskSceneCode = if (drawType == "ipDraw") "ANTFARM_IP_DRAW_TASK" else "ANTFARM_DAILY_DRAW_TASK"
-            val directSuccessCount = finishAdTaskDirectly(drawType, task, taskSceneCode)
+            val directSuccessCount = finishTaskDirectly(drawType, task, taskSceneCode)
             if (directSuccessCount != 0) {
                 return directSuccessCount > 0
             }
 
+            var fallbackReason = "插件未提供可用直连能力"
             val referToken = AntFarm.loadAntFarmReferToken()
             if (!referToken.isNullOrEmpty()) {
                 val response = AntFarmRpcCall.xlightPlugin(referToken, "HDWFCJGXNZW_CUSTOM_20250826173111")
                 val jo = JSONObject(response)
                 if (isTaskQuotaReachedResponse(jo)) {
-                    Log.farm("浏览广告任务[${task.title}]今日权益已达上限，跳过插件流程")
+                    Log.farm("直连任务[${task.title}]今日权益已达上限，跳过插件流程")
                     return false
                 }
 
@@ -606,9 +607,7 @@ class ChouChouLe {
                     val resData = jo.optJSONObject("resData")
                     if (resData != null) {
                         val adList = resData.optJSONArray("adList")
-
                         if (adList != null && adList.length() > 0) {
-                            // 检查是否有猜一猜任务
                             val playingResult = resData.optJSONObject("playingResult")
                             if (playingResult != null &&
                                 "XLIGHT_GUESS_PRICE_FEEDS" == playingResult.optString("playingStyleType")
@@ -617,17 +616,17 @@ class ChouChouLe {
                             }
                         }
                     } else {
-                        Log.farm("浏览广告任务[广告插件未返回resData，回退普通完成方式]")
+                        fallbackReason = "插件未返回 resData"
                     }
                 }
-                Log.farm("浏览广告任务[没有可用广告或不支持，使用普通完成方式]")
             } else {
-                Log.farm("浏览广告任务[没有可用Token，请手动看一起广告]")
+                fallbackReason = "缺少 referToken，跳过插件流程"
             }
 
-            return finishAdTaskDirectly(drawType, task, taskSceneCode, 1) > 0
+            Log.farm("直连任务[${task.title}]$fallbackReason，回退 finishTask")
+            return finishTaskDirectly(drawType, task, taskSceneCode, 1) > 0
         } catch (t: Throwable) {
-            Log.printStackTrace("处理广告任务 err:", t)
+            Log.printStackTrace("处理直连任务 err:", t)
             return false
         }
     }

@@ -15,6 +15,7 @@ object AntFarmRpcCall {
     private const val TAG = "AntFarmRpcCall"
     private const val VERSION = "1.8.2302070202.46"
     private const val GAME_CENTER_VERSION = "10.8.20.8000"
+    private const val KITCHEN_TASK_SOURCE = "antfarmzuofanrw"
 
     /**
      * 进入农场
@@ -120,8 +121,8 @@ object AntFarmRpcCall {
     @JvmStatic
     fun queryLoveCabin(userId: String?): String {
         val args1 =
-            "[{\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"ENTERFARM\",\"userId\":\"" +
-                    userId + "\",\"version\":\"" + VERSION + "\"}]"
+            "[{\"requestType\":\"RPC\",\"sceneCode\":\"ANTFARM\",\"source\":\"LOVECABIN\",\"userId\":\"" +
+                userId + "\"}]"
         return requestString("com.alipay.antfarm.queryLoveCabin", args1)
     }
 
@@ -502,7 +503,7 @@ object AntFarmRpcCall {
         val args = JSONObject()
         args.put("requestType", "RPC")
         args.put("sceneCode", "ANTFARM")
-        args.put("source", "VILLA")
+        args.put("source", KITCHEN_TASK_SOURCE)
         args.put("userId", userId)
         args.put("version", "unknown")
         val params = "[" + args + "]"
@@ -513,7 +514,7 @@ object AntFarmRpcCall {
     fun collectDailyFoodMaterial(dailyFoodMaterialAmount: Int): String {
         return requestString(
             "com.alipay.antfarm.collectDailyFoodMaterial",
-            "[{\"collectDailyFoodMaterialAmount\":" + dailyFoodMaterialAmount + ",\"requestType\":\"RPC\",\"sceneCode\":\"ANTFARM\",\"source\":\"VILLA\",\"version\":\"unknown\"}]"
+            "[{\"collectDailyFoodMaterialAmount\":" + dailyFoodMaterialAmount + ",\"requestType\":\"RPC\",\"sceneCode\":\"ANTFARM\",\"source\":\"" + KITCHEN_TASK_SOURCE + "\",\"version\":\"unknown\"}]"
         )
     }
 
@@ -546,7 +547,7 @@ object AntFarmRpcCall {
     fun farmFoodMaterialCollect(): String {
         return requestString(
             "com.alipay.antorchard.farmFoodMaterialCollect",
-            "[{\"collect\":true,\"requestType\":\"RPC\",\"sceneCode\":\"ORCHARD\",\"source\":\"VILLA\",\"version\":\"unknown\"}]"
+            "[{\"collect\":true,\"requestType\":\"RPC\",\"sceneCode\":\"ORCHARD\",\"source\":\"" + KITCHEN_TASK_SOURCE + "\",\"version\":\"unknown\"}]"
         )
     }
 
@@ -554,18 +555,17 @@ object AntFarmRpcCall {
      * 小鸡厨房 - 做菜
      *
      * @param userId
-     * @param source
      * @return
      * @throws JSONException
      */
     @JvmStatic
     @Throws(JSONException::class)
-    fun cook(userId: String?, source: String?): String {
-//[{"requestType":"RPC","sceneCode":"ANTFARM","source":"VILLA","userId":"2088522730162798","version":"unknown"}]
+    fun cook(userId: String?): String {
+//[{"requestType":"RPC","sceneCode":"ANTFARM","source":"antfarmzuofanrw","userId":"2088522730162798","version":"unknown"}]
         val args = JSONObject()
         args.put("requestType", "RPC")
         args.put("sceneCode", "ANTFARM")
-        args.put("source", source)
+        args.put("source", KITCHEN_TASK_SOURCE)
         args.put("userId", userId)
         args.put("version", "unknown")
         val params = "[" + args + "]"

@@ -12,6 +12,7 @@ import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.entity.BeanExchangeRight
 import io.github.aoguai.sesameag.entity.MapperEntity
 import io.github.aoguai.sesameag.entity.MemberBenefit
+import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.hook.ExchangeOptionsRefreshBridge
 import io.github.aoguai.sesameag.hook.HookReadyChecker
@@ -138,6 +139,13 @@ class AntMember : ModelTask() {
     private var collectStickers: BooleanModelField? = null
 
     private val goldTicketTaskBlacklistModule = "黄金票"
+    private val beanTaskCenterHandledLimitCodes = setOf(
+        "10001013",
+        "10001033",
+        "10001034",
+        "10001043",
+        "10001044"
+    )
 
 
     private enum class MemberTaskTargetBusinessType {
@@ -236,6 +244,7 @@ class AntMember : ModelTask() {
 
     private enum class DailyTaskProcessResult {
         HANDLED,
+        PENDING,
         RETRYABLE_FAILURE,
         UNKNOWN_FAILURE
     }
@@ -249,6 +258,27 @@ class AntMember : ModelTask() {
     private data class InsuredGoldCollectionPassResult(
         val availableCount: Int,
         val result: DailyTaskProcessResult
+    )
+
+    private data class BeanTaskCenterTaskListScanResult(
+        val taskCount: Int,
+        val result: DailyTaskProcessResult
+    )
+
+    private data class BeanGuardianQuestion(
+        val scriptId: String,
+        val userDramaId: String,
+        val rightAnswer: String,
+        val sort: Int,
+        val answerResult: String,
+        val awardStatus: String,
+        val questionText: String
+    )
+
+    private data class BeanGuardianQuestionDrama(
+        val dramaId: String,
+        val nextScriptId: String,
+        val questions: List<BeanGuardianQuestion>
     )
 
     private enum class InsuredGoldRpcFailureType {
@@ -282,11 +312,19 @@ class AntMember : ModelTask() {
         val pointAmount: Int
     )
 
+    private data class GameCenterP2eQuerySnapshot(
+        val source: String,
+        val success: Boolean,
+        val rawResponse: String,
+        val responseObject: JSONObject
+    )
+
     private val insuredTaskCenterConfigs = listOf(
         InsuredTaskCenterConfig("AP16236844", "TASK_LIST", "GIFT_GOLD_NORMAL_TASK_CONTROL"),
         InsuredTaskCenterConfig("AP19236833", "TOP_LIST", "GIFT_GOLD_TOP_TASK_CONTROL"),
         InsuredTaskCenterConfig("AP19301319", "BZJ_SWAP_TASK_CONSULT_CONTROL", "BZJ_SWAP_TASK_CONSULT_CONTROL"),
-        InsuredTaskCenterConfig("AP12301346", "BZJ_SOFT_TASK_CONSULT_CONTROL", "BZJ_SOFT_TASK_CONSULT_CONTROL")
+        InsuredTaskCenterConfig("AP12301346", "BZJ_SOFT_TASK_CONSULT_CONTROL", "BZJ_SOFT_TASK_CONSULT_CONTROL"),
+        InsuredTaskCenterConfig("AP14273842", "BZJ_XUBAO_TASK_CONSULT")
     )
 
     override fun getFields(): ModelFields {
@@ -993,18 +1031,42 @@ class AntMember : ModelTask() {
     internal fun refreshBeanExchangeRightOptionsForRemote(): List<ExchangeOptionRow> =
         refreshBeanExchangeRightOptionsFromRpc()
 
-    private fun queryBeanExchangeCandidates(beanBalance: Int?): LinkedHashMap<String, BeanExchangeCandidate> {
-        val candidateMap = LinkedHashMap<String, BeanExchangeCandidate>()
-        val bizProperties = listOf(
-            "",
+    private fun queryBeanBizProperties(): List<String> {
+        val fallbackBizProperties = listOf(
             "RED_PACKET_COUPON",
             "VOUCHER_CARD",
             "CASH_MEMBER",
             "HEALTH",
             "HOEM_DALIY",
-            "MOTHER_BABY_TOYS"
+            "MOTHER_BABY_TOYS",
+            "FOOD_BEVERAGE",
+            "ELECTRONICS_APPLIANCES",
+            "OTHERS"
         )
-        for (bizProperty in bizProperties) {
+        return runCatching {
+            val response = JSONObject(AntMemberRpcCall.filterValidBizProperty())
+            if (!ResChecker.checkRes(TAG, response)) {
+                Log.member("安心豆🫘[权益分类]#动态分类查询失败，继续使用保守分类列表")
+                return@runCatching listOf("") + fallbackBizProperties
+            }
+            val validBizPropertyList = extractBeanExchangeResult(response).optJSONArray("validBizPropertyList")
+            if (validBizPropertyList == null || validBizPropertyList.length() == 0) {
+                return@runCatching listOf("") + fallbackBizProperties
+            }
+            val dynamicBizProperties = (0 until validBizPropertyList.length())
+                .mapNotNull { validBizPropertyList.optJSONObject(it) }
+                .sortedBy { it.optInt("priority", Int.MAX_VALUE) }
+                .mapNotNull { it.optString("bizPropertyCode").takeIf(String::isNotBlank) }
+            listOf("") + dynamicBizProperties
+        }.onFailure {
+            Log.printStackTrace(TAG, "queryBeanBizProperties err:", it)
+        }.getOrDefault(listOf("") + fallbackBizProperties)
+            .distinct()
+    }
+
+    private fun queryBeanExchangeCandidates(beanBalance: Int?): LinkedHashMap<String, BeanExchangeCandidate> {
+        val candidateMap = LinkedHashMap<String, BeanExchangeCandidate>()
+        for (bizProperty in queryBeanBizProperties()) {
             var pageStartIndex = 0
             var pageCount = 0
             while (pageCount < 10) {
@@ -2779,6 +2841,10 @@ class AntMember : ModelTask() {
             "adBizId=${task.adBizId.ifBlank { "NONE" }} progress=${buildCurrentMemberTaskProgress(task.current, task.limit).ifBlank { "UNKNOWN" }}"
     }
 
+    private fun resolveInsuredGoldEntrance(vararg candidates: String?): String {
+        return candidates.firstOrNull { !it.isNullOrBlank() } ?: AntMemberRpcCall.INSURED_GOLD_DEFAULT_ENTRANCE
+    }
+
     /**
      * 保障金领取
      */
@@ -2789,14 +2855,15 @@ class AntMember : ModelTask() {
                 return@run
             }
 
-            var allHandled = warmUpInsuredGoldEntrance()
+            val insuredGoldEntrance = resolveInsuredGoldEntrance()
+            var allHandled = warmUpInsuredGoldEntrance(insuredGoldEntrance)
 
             val handledInsuredGoldFlowNos = mutableSetOf<String>()
             var insuredGoldQueryRound = 0
             var shouldRecheckInsuredGold: Boolean
             do {
                 insuredGoldQueryRound++
-                val passResult = collectAvailableInsuredGoldOnce(handledInsuredGoldFlowNos)
+                val passResult = collectAvailableInsuredGoldOnce(handledInsuredGoldFlowNos, insuredGoldEntrance)
                 if (passResult.result != DailyTaskProcessResult.HANDLED) {
                     allHandled = false
                 }
@@ -2804,10 +2871,13 @@ class AntMember : ModelTask() {
                     insuredGoldQueryRound < INSURED_GOLD_WAIT_LIST_QUERY_LIMIT
                 if (shouldRecheckInsuredGold) {
                     Log.member("保障金🏥[待领取气泡]#本轮处理${passResult.availableCount}项，复查是否还有新奖励")
+                    if (!refreshInsuredGoldOpenState(insuredGoldEntrance)) {
+                        allHandled = false
+                    }
                 }
             } while (shouldRecheckInsuredGold)
 
-            val taskCenterResult = collectInsuredTaskCenterRewards()
+            val taskCenterResult = collectInsuredTaskCenterRewards(insuredGoldEntrance)
             if (allHandled && taskCenterResult == DailyTaskProcessResult.HANDLED) {
                 setFlagToday(StatusFlags.FLAG_ANTMEMBER_INSURED_GOLD_DONE)
             }
@@ -2817,11 +2887,12 @@ class AntMember : ModelTask() {
     }
 
     private fun collectAvailableInsuredGoldOnce(
-        handledFlowNos: MutableSet<String>
+        handledFlowNos: MutableSet<String>,
+        entrance: String
     ): InsuredGoldCollectionPassResult {
         var availableCount = 0
         var passResult = DailyTaskProcessResult.HANDLED
-        val response = AntMemberRpcCall.queryAvailableCollectInsuredGold()
+        val response = AntMemberRpcCall.queryAvailableCollectInsuredGold(entrance)
         val responseObject = JSONObject(response)
         if (!ResChecker.checkRes(TAG, responseObject)) {
             Log.error("$TAG.collectInsuredGold.queryInsuredHome", "保障金🏥[响应失败]#$response")
@@ -2841,7 +2912,7 @@ class AntMember : ModelTask() {
             val sendFlowNo = signInBall.optString("sendFlowNo")
             if (sendFlowNo.isBlank() || handledFlowNos.add(sendFlowNo)) {
                 availableCount++
-                passResult = mergeDailyTaskProcessResult(passResult, collectSingleInsuredGold(signInBall, true))
+                passResult = mergeDailyTaskProcessResult(passResult, collectSingleInsuredGold(signInBall, true, entrance))
             }
         }
 
@@ -2856,15 +2927,15 @@ class AntMember : ModelTask() {
                 continue
             }
             availableCount++
-            passResult = mergeDailyTaskProcessResult(passResult, collectSingleInsuredGold(anotherBall, false))
+            passResult = mergeDailyTaskProcessResult(passResult, collectSingleInsuredGold(anotherBall, false, entrance))
         }
 
         return InsuredGoldCollectionPassResult(availableCount, passResult)
     }
 
-    private fun warmUpInsuredGoldEntrance(): Boolean {
+    private fun warmUpInsuredGoldEntrance(entrance: String): Boolean {
         return try {
-            val response = AntMemberRpcCall.queryInsuredOpenAndAllowAndUpgrade()
+            val response = AntMemberRpcCall.queryInsuredOpenAndAllowAndUpgrade(entrance)
             val responseObject = JSONObject(response)
             var success = if (ResChecker.checkRes("$TAG.collectInsuredGold.queryOpenAndAllowAndUpgrade", responseObject)) {
                 true
@@ -2873,26 +2944,44 @@ class AntMember : ModelTask() {
                 false
             }
 
-            val homeRenderResponse = AntMemberRpcCall.queryInsuredGiftHomeRender()
+            val homeRenderResponse = AntMemberRpcCall.queryInsuredGiftHomeRender(entrance)
             val homeRenderObject = JSONObject(homeRenderResponse)
             if (!ResChecker.checkRes("$TAG.collectInsuredGold.giftHomeRender", homeRenderObject)) {
                 Log.member("保障金🏥[访问预热]#页面渲染失败，继续查询待领取奖励:$homeRenderResponse")
                 success = false
             }
-            success
+            refreshInsuredGoldOpenState(entrance) && success
         } catch (t: Throwable) {
             Log.printStackTrace("$TAG.collectInsuredGold.queryOpenAndAllowAndUpgrade", t)
             false
         }
     }
 
-    private fun collectSingleInsuredGold(goldBall: JSONObject, isSignIn: Boolean): DailyTaskProcessResult {
+    private fun refreshInsuredGoldOpenState(entrance: String): Boolean {
+        return runCatching {
+            val response = AntMemberRpcCall.queryInsuredOpenAndAllow(entrance)
+            val responseObject = JSONObject(response)
+            if (ResChecker.checkRes("$TAG.collectInsuredGold.queryOpenAndAllow", responseObject)) {
+                return@runCatching true
+            }
+            Log.member("保障金🏥[开放状态查询]#响应失败，继续当前链路:$response")
+            false
+        }.onFailure {
+            Log.printStackTrace("$TAG.collectInsuredGold.queryOpenAndAllow", it)
+        }.getOrDefault(false)
+    }
+
+    private fun collectSingleInsuredGold(
+        goldBall: JSONObject,
+        isSignIn: Boolean,
+        entrance: String
+    ): DailyTaskProcessResult {
         val title = resolveInsuredGoldTitle(goldBall, isSignIn)
         if (goldBall.optString("sendFlowNo").isBlank()) {
             Log.member("保障金🏥[$title]#缺少sendFlowNo，跳过")
             return DailyTaskProcessResult.UNKNOWN_FAILURE
         }
-        val requestObject = buildInsuredGoldGainRequest(goldBall, isSignIn)
+        val requestObject = buildInsuredGoldGainRequest(goldBall, isSignIn, entrance)
         val response = AntMemberRpcCall.collectInsuredGold(requestObject)
         val responseObject = JSONObject(response)
         if (!ResChecker.checkRes(TAG, responseObject)) {
@@ -2907,16 +2996,17 @@ class AntMember : ModelTask() {
         return DailyTaskProcessResult.HANDLED
     }
 
-    private suspend fun collectInsuredTaskCenterRewards(): DailyTaskProcessResult {
+    private suspend fun collectInsuredTaskCenterRewards(entrance: String): DailyTaskProcessResult {
         var overallResult = DailyTaskProcessResult.HANDLED
         var taskCount = 0
         for (config in insuredTaskCenterConfigs) {
-            val adapter = InsuredTaskCenterFlowAdapter(config)
+            val adapter = InsuredTaskCenterFlowAdapter(config, entrance)
             val runResult = TaskFlowEngine(adapter, roundSleepMs = 500L).run()
             taskCount += adapter.taskCount
             val configResult = when {
                 adapter.queryFailed || adapter.hasBlockingFailure -> DailyTaskProcessResult.UNKNOWN_FAILURE
                 adapter.hasRetryableFailure || runResult.stopped -> DailyTaskProcessResult.RETRYABLE_FAILURE
+                adapter.hasPendingManualTask -> DailyTaskProcessResult.PENDING
                 else -> DailyTaskProcessResult.HANDLED
             }
             overallResult = mergeDailyTaskProcessResult(overallResult, configResult)
@@ -2928,7 +3018,8 @@ class AntMember : ModelTask() {
     }
 
     private inner class InsuredTaskCenterFlowAdapter(
-        private val config: InsuredTaskCenterConfig
+        private val config: InsuredTaskCenterConfig,
+        private val entrance: String
     ) : TaskFlowAdapter {
         override val moduleName: String = insuredTaskBlacklistModule
         override val flowName: String = "保障金🏥任务中心(${config.sceneCode})"
@@ -2938,6 +3029,8 @@ class AntMember : ModelTask() {
         var hasBlockingFailure: Boolean = false
             private set
         var hasRetryableFailure: Boolean = false
+            private set
+        var hasPendingManualTask: Boolean = false
             private set
         var taskCount: Int = 0
             private set
@@ -2951,7 +3044,7 @@ class AntMember : ModelTask() {
                 val response = AntMemberRpcCall.queryInsuredTaskListV2(
                     config.taskCenterId,
                     config.sceneCode,
-                    "cfsy",
+                    entrance,
                     config.controlSolutionSceneCode
                 )
                 val responseObject = JSONObject(response)
@@ -3074,7 +3167,8 @@ class AntMember : ModelTask() {
                 return true
             }
 
-            logUnsupportedInsuredTask(task, item.id, item.title)
+            hasPendingManualTask = true
+            logPendingInsuredTask(task, item.id, item.title)
             return true
         }
 
@@ -3343,6 +3437,9 @@ class AntMember : ModelTask() {
             current == DailyTaskProcessResult.RETRYABLE_FAILURE ||
                 next == DailyTaskProcessResult.RETRYABLE_FAILURE -> DailyTaskProcessResult.RETRYABLE_FAILURE
 
+            current == DailyTaskProcessResult.PENDING ||
+                next == DailyTaskProcessResult.PENDING -> DailyTaskProcessResult.PENDING
+
             else -> DailyTaskProcessResult.HANDLED
         }
     }
@@ -3427,7 +3524,7 @@ class AntMember : ModelTask() {
             operationType == "NORMAL_PENDANT_CLICK_TASK"
     }
 
-    private fun logUnsupportedInsuredTask(task: JSONObject, taskId: String, title: String) {
+    private fun logPendingInsuredTask(task: JSONObject, taskId: String, title: String) {
         val customInfo = resolveInsuredTaskCustomInfo(task)
         val taskMainType = task.optString("taskMainType")
         val taskType = customInfo.optString("taskType").ifBlank { taskMainType }
@@ -3436,17 +3533,15 @@ class AntMember : ModelTask() {
             customInfo.optString("taskCategorize")
         }
         val status = task.optString("taskProcessStatus")
-        val reason = resolveUnsupportedInsuredTaskReason(taskMainType, taskType, operationType, taskCategory)
+        val reason = resolvePendingInsuredTaskReason(taskMainType, taskType, operationType, taskCategory)
         Log.member(
-            "保障金🏥[任务中心-$title] classification=UNSUPPORTED_NO_CLOSURE decision=BLACKLIST reason=$reason " +
-                "module=$insuredTaskBlacklistModule action=unsupportedInsuredTask rpc=<none> code=400000040 msg=未抓到稳定完成RPC " +
-                "taskId=$taskId taskMainType=$taskMainType taskType=$taskType " +
-                "operationType=$operationType category=$taskCategory status=$status"
+            "保障金🏥[任务中心-$title]#待手动闭环 reason=$reason " +
+                "taskId=$taskId status=$status taskType=$taskType " +
+                "operationType=$operationType category=$taskCategory"
         )
-        TaskBlacklist.autoAddToBlacklist(insuredTaskBlacklistModule, taskId, title, "400000040")
     }
 
-    private fun resolveUnsupportedInsuredTaskReason(
+    private fun resolvePendingInsuredTaskReason(
         taskMainType: String,
         taskType: String,
         operationType: String,
@@ -3454,15 +3549,15 @@ class AntMember : ModelTask() {
     ): String {
         return when {
             taskMainType == "ISSUED_TASK" || taskType == "ISSUED_TASK" || taskCategory == "TRANSFER" ->
-                "投保/转账类任务缺少可确认RPC闭环"
+                "投保/转账类任务暂未确认稳定领奖闭环"
 
             taskMainType == "EXPLAIN_INTELLIGENCE" || taskType == "EXPLAIN_INTELLIGENCE" ->
-                "讲解/视频类任务缺少播放完成RPC闭环"
+                "讲解/视频类任务暂未确认稳定播放完成闭环"
 
             taskMainType == "COMMON_TASK" || taskType == "COMMON_TASK" || operationType == "COMMON_TASK" ->
-                "COMMON_TASK仅抓到报名，缺少发奖闭环"
+                "COMMON_TASK已观察到状态机，但暂未确认稳定发奖闭环"
 
-            else -> "任务类型暂未支持"
+            else -> "任务类型待后续抓包确认闭环"
         }
     }
 
@@ -3580,26 +3675,36 @@ class AntMember : ModelTask() {
         }
     }
 
-    private fun buildInsuredGoldGainRequest(goldBall: JSONObject, isSignIn: Boolean): JSONObject {
+    private fun buildInsuredGoldGainRequest(
+        goldBall: JSONObject,
+        isSignIn: Boolean,
+        entrance: String
+    ): JSONObject {
         val requestObject = JSONObject(goldBall.toString())
         if (!requestObject.has("bizData")) {
             requestObject.put("bizData", JSONObject())
         }
-        requestObject.put("entrance", "cfsy")
-        requestObject.put("helpGain", false)
+        requestObject.put("entrance", resolveInsuredGoldEntrance(requestObject.optString("entrance"), entrance))
+        if (!requestObject.has("helpGain")) {
+            requestObject.put("helpGain", false)
+        }
         val showYuan = requestObject.optString("sendSumInsuredYuan").ifBlank {
             requestObject.optString("realSendSumInsuredYuan")
         }
-        if (showYuan.isNotBlank()) {
+        if (showYuan.isNotBlank() && requestObject.optString("showYuan").isBlank()) {
             requestObject.put("showYuan", showYuan)
         }
         val title = resolveInsuredGoldTitle(requestObject, isSignIn)
-        if (title.isNotBlank()) {
+        if (title.isNotBlank() && requestObject.optString("title").isBlank()) {
             requestObject.put("title", title)
         }
         if (isSignIn) {
-            requestObject.put("disabled", false)
-            requestObject.put("isSignIn", true)
+            if (!requestObject.has("disabled")) {
+                requestObject.put("disabled", false)
+            }
+            if (!requestObject.optBoolean("isSignIn", false)) {
+                requestObject.put("isSignIn", true)
+            }
             if (!requestObject.has("isTodayContinuousSignIn")) {
                 requestObject.put("isTodayContinuousSignIn", false)
             }
@@ -4324,8 +4429,8 @@ class AntMember : ModelTask() {
 
     private fun isGoldTicketKnownWelfareAutoTask(task: JSONObject): Boolean {
         return when (task.optString("taskId")) {
-            "AP11249033", // 逛蛋定生财去签到
             "AP10247402", // 逛逛稳健理财领红包
+            "AP11249033", // 逛蛋定生财去签到
             "AP13250426", // 逛定期市场领红包
             "AP15280470", // 逛蚂蚁投教基地
             "AP16338809"  // 去芝麻攒粒兑权益
@@ -4415,7 +4520,7 @@ class AntMember : ModelTask() {
             val task = todoTasks.optJSONObject(i) ?: continue
             if (isGoldTicketKnownWelfareAutoTask(task) &&
                 isGoldTicketTaskPendingAutoStatus(task) &&
-                (isGoldTicketTaskRewardReady(task) || !isGoldTicketTaskBlacklisted(task))
+                !isGoldTicketTaskBlacklisted(task)
             ) {
                 pendingCount++
             }
@@ -4487,10 +4592,6 @@ class AntMember : ModelTask() {
             }
 
             val pendingRetryCount = countGoldTicketPendingWelfareAutoTasks(refreshedTodoTasks)
-            val confirmedAutoReceivedCount = (trackedAutoTaskCount - pendingRetryCount).coerceAtLeast(0)
-            if (confirmedAutoReceivedCount > 0) {
-                Log.member("黄金票🎫[福利中心任务自动领取] ${confirmedAutoReceivedCount}项")
-            }
             if (pendingRetryCount > 0) {
                 Log.member("黄金票🎫[福利中心任务保留下次重试] ${pendingRetryCount}项")
             }
@@ -4522,7 +4623,6 @@ class AntMember : ModelTask() {
         private var firstQueryConsumed = false
         private var autoReceivedCount = 0
         private val unsupportedTaskKeys = LinkedHashSet<String>()
-
         override fun query(): JSONObject {
             val todoTasks = if (!firstQueryConsumed) {
                 firstQueryConsumed = true
@@ -5130,7 +5230,8 @@ class AntMember : ModelTask() {
             Log.member("游戏中心🎮[赚现金无待处理任务]")
         }
         return when {
-            adapter.queryFailed || adapter.hasBlockingFailure -> DailyTaskProcessResult.UNKNOWN_FAILURE
+            adapter.queryFailed || adapter.hasPartialQueryFailure || adapter.hasBlockingFailure ->
+                DailyTaskProcessResult.UNKNOWN_FAILURE
             adapter.hasRetryableFailure || runResult.stopped -> DailyTaskProcessResult.RETRYABLE_FAILURE
             else -> DailyTaskProcessResult.HANDLED
         }
@@ -5469,7 +5570,55 @@ class AntMember : ModelTask() {
             return "send=$sendResponse recheck=$recheckRaw"
         }
 
+        private fun buildUnsupportedGameCenterGameplayResult(item: TaskFlowItem): TaskFlowActionResult? {
+            if (!isRealGameCenterGameplayTask(item)) {
+                return null
+            }
+            return TaskFlowActionResult.failure(
+                failureType = TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE,
+                code = "UNSUPPORTED_GAMEPLAY_TASK",
+                message = "普通真实游戏任务无稳定RPC闭环，跳过doTaskSend伪成功链路",
+                rpc = "<none>",
+                raw = item.raw?.toString().orEmpty(),
+                detail = gameCenterTaskActionDetail(item, "precheck")
+            )
+        }
+
+        private fun isRealGameCenterGameplayTask(item: TaskFlowItem): Boolean {
+            val task = item.raw ?: return false
+            if (!task.optString("actionType").equals("NORMAL", ignoreCase = true)) {
+                return false
+            }
+            if (task.optBoolean("needSignUp", false)) {
+                return false
+            }
+            if (task.optString("buttonText") != "去完成") {
+                return false
+            }
+            val gameId = task.optString("gameId")
+            val appId = task.optString("appId")
+            val jumpLink = task.optString("jumpLink")
+            if (gameId.isBlank() || appId.isBlank() || !jumpLink.contains("platformapi/startapp", ignoreCase = true)) {
+                return false
+            }
+            val taskText = "${item.title} ${task.optString("subTitle")}"
+            return containsAny(
+                taskText,
+                "通过",
+                "完成",
+                "击杀",
+                "挑战",
+                "订单",
+                "庙会",
+                "夜市",
+                "主线",
+                "boss"
+            )
+        }
+
         private fun sendGameCenterTask(item: TaskFlowItem): TaskFlowActionResult {
+            buildUnsupportedGameCenterGameplayResult(item)?.let { return it }
+
             val sendResponse = AntMemberRpcCall.doTaskSend(item.id)
             val sendResponseObject = JSONObject(sendResponse)
             if (!ResChecker.checkRes(TAG, sendResponseObject)) {
@@ -5546,6 +5695,8 @@ class AntMember : ModelTask() {
 
         var queryFailed: Boolean = false
             private set
+        var hasPartialQueryFailure: Boolean = false
+            private set
         var hasBlockingFailure: Boolean = false
             private set
         var hasRetryableFailure: Boolean = false
@@ -5560,39 +5711,65 @@ class AntMember : ModelTask() {
         private val receivedTaskIds = LinkedHashSet<String>()
         private val loggedSkipKeys = LinkedHashSet<String>()
         private val sessionId = System.currentTimeMillis().toString()
+        private var partialQueryFailureLogged = false
 
         override fun query(): JSONObject {
-            return try {
-                val raw = AntMemberRpcCall.queryGameCenterP2eTaskList(sessionId)
-                val response = JSONObject(raw)
-                response
-                    .put("_taskFlowQuerySuccess", ResChecker.checkRes(TAG, response))
-                    .put("_rawResponse", raw)
-            } catch (t: Throwable) {
-                JSONObject()
-                    .put("_taskFlowQuerySuccess", false)
-                    .put("resultView", "查询异常:${t.message}")
+            val homeSnapshot = queryGameCenterP2eSnapshot(AntMemberRpcCall.GAME_CENTER_SOURCE)
+            val taskSnapshot = queryGameCenterP2eSnapshot(AntMemberRpcCall.GAME_CENTER_P2E_SOURCE)
+            val anySuccess = homeSnapshot.success || taskSnapshot.success
+            val partialFailure = anySuccess && (!homeSnapshot.success || !taskSnapshot.success)
+            val mergedTaskMap = LinkedHashMap<String, JSONObject>()
+            val exposedTaskMap = LinkedHashMap<String, JSONObject>()
+
+            if (homeSnapshot.success) {
+                mergeGameCenterP2eTasksFromSnapshot(homeSnapshot, mergedTaskMap, exposedTaskMap)
+            }
+            if (taskSnapshot.success) {
+                mergeGameCenterP2eTasksFromSnapshot(taskSnapshot, mergedTaskMap, exposedTaskMap)
+            }
+
+            val mergedTaskList = JSONArray().apply {
+                mergedTaskMap.values.forEach(::put)
+            }
+            val exposedTaskList = JSONArray().apply {
+                exposedTaskMap.values.forEach(::put)
+            }
+            return JSONObject().apply {
+                put("_taskFlowQuerySuccess", anySuccess)
+                put("_gcPartialQueryFailure", partialFailure)
+                put("_gcMergedTaskList", mergedTaskList)
+                put("_gcExposedTaskList", exposedTaskList)
+                put("_rawResponse", buildGameCenterP2eCombinedRaw(homeSnapshot, taskSnapshot))
+                if (!anySuccess) {
+                    put("resultView", buildGameCenterP2eQueryFailureMessage(homeSnapshot, taskSnapshot))
+                } else if (partialFailure) {
+                    put("_gcPartialQueryFailureMessage", buildGameCenterP2ePartialFailureMessage(homeSnapshot, taskSnapshot))
+                }
             }
         }
 
         override fun isQuerySuccess(response: JSONObject): Boolean {
-            queryFailed = !response.optBoolean("_taskFlowQuerySuccess", false)
-            return !queryFailed
+            val success = response.optBoolean("_taskFlowQuerySuccess", false)
+            val partialFailure = response.optBoolean("_gcPartialQueryFailure", false)
+            queryFailed = queryFailed || !success
+            hasPartialQueryFailure = hasPartialQueryFailure || partialFailure
+            if (partialFailure && !partialQueryFailureLogged) {
+                partialQueryFailureLogged = true
+                val msg = response.optString("_gcPartialQueryFailureMessage")
+                    .ifBlank { response.optString("_rawResponse") }
+                Log.error("$TAG.enableGameCenter.p2eTasks", "游戏中心🎮[赚现金任务列表部分查询失败]#$msg")
+            }
+            return success
         }
 
         override fun extractItems(response: JSONObject): List<TaskFlowItem> {
-            val data = response.optJSONObject("data") ?: return emptyList()
-            val exposedTaskList = data.optJSONObject("exposedTaskModuleVO")
-                ?.optJSONArray("exposedTaskList")
+            val exposedTaskList = response.optJSONArray("_gcExposedTaskList")
                 ?: JSONArray()
             reportGameCenterP2eExposedTasks(exposedTaskList)
 
             val items = mutableListOf<TaskFlowItem>()
-            appendGameCenterP2eTasks(items, exposedTaskList)
-            val gameTaskList = data.optJSONObject("platformGameTaskModule")
-                ?.optJSONArray("gameTaskList")
-                ?: JSONArray()
-            appendGameCenterP2eTasks(items, gameTaskList)
+            val mergedTaskList = response.optJSONArray("_gcMergedTaskList") ?: JSONArray()
+            appendGameCenterP2eTasks(items, mergedTaskList)
             taskCount = max(taskCount, items.size)
             availableTaskCount = items.count { item ->
                 when (mapPhase(item)) {
@@ -5648,7 +5825,7 @@ class AntMember : ModelTask() {
                 return true
             }
             if (phase == TaskFlowPhase.UNSUPPORTED) {
-                blacklistUnsupportedP2eTask(item)
+                handleUnsupportedP2eTask(item)
                 return true
             }
             val raw = item.raw ?: JSONObject()
@@ -5674,7 +5851,12 @@ class AntMember : ModelTask() {
 
         override fun signup(item: TaskFlowItem): TaskFlowActionResult {
             val raw = item.raw ?: JSONObject()
-            val response = AntMemberRpcCall.gameCenterP2ePlatformTaskSignUp(item.id, raw.optString("taskToken"))
+            val response = AntMemberRpcCall.gameCenterP2ePlatformTaskSignUp(
+                item.id,
+                raw.optString("taskToken"),
+                extractGameCenterP2eActionChannel(raw),
+                extractGameCenterP2eSource(raw)
+            )
             val responseObject = JSONObject(response)
             if (!ResChecker.checkRes(TAG, responseObject)) {
                 return gameCenterTaskFailureResult(
@@ -5698,7 +5880,12 @@ class AntMember : ModelTask() {
 
         override fun receive(item: TaskFlowItem): TaskFlowActionResult {
             val raw = item.raw ?: JSONObject()
-            val response = AntMemberRpcCall.gameCenterP2eTaskReceive(raw)
+            val response = AntMemberRpcCall.gameCenterP2eTaskReceive(
+                raw,
+                extractGameCenterP2eActionChannel(raw),
+                extractGameCenterP2eSource(raw),
+                extractGameCenterP2eOriChInfo(raw)
+            )
             val responseObject = JSONObject(response)
             if (!ResChecker.checkRes(TAG, responseObject)) {
                 return gameCenterTaskFailureResult(
@@ -5771,7 +5958,12 @@ class AntMember : ModelTask() {
 
         private fun completeGameCenterP2eTask(item: TaskFlowItem): TaskFlowActionResult {
             val raw = item.raw ?: JSONObject()
-            val response = AntMemberRpcCall.gameCenterP2ePlatformTaskComplete(item.id, raw.optString("taskToken"))
+            val response = AntMemberRpcCall.gameCenterP2ePlatformTaskComplete(
+                item.id,
+                raw.optString("taskToken"),
+                extractGameCenterP2eActionChannel(raw),
+                extractGameCenterP2eSource(raw)
+            )
             val responseObject = JSONObject(response)
             if (!ResChecker.checkRes(TAG, responseObject)) {
                 return gameCenterTaskFailureResult(
@@ -5812,6 +6004,136 @@ class AntMember : ModelTask() {
             }
         }
 
+        private fun queryGameCenterP2eSnapshot(source: String): GameCenterP2eQuerySnapshot {
+            return try {
+                val raw = AntMemberRpcCall.queryGameCenterP2eTaskList(source, sessionId)
+                val response = JSONObject(raw)
+                GameCenterP2eQuerySnapshot(
+                    source = source,
+                    success = ResChecker.checkRes(TAG, response),
+                    rawResponse = raw,
+                    responseObject = response
+                )
+            } catch (t: Throwable) {
+                GameCenterP2eQuerySnapshot(
+                    source = source,
+                    success = false,
+                    rawResponse = "查询异常:${t.message}",
+                    responseObject = JSONObject().put("resultView", "查询异常:${t.message}")
+                )
+            }
+        }
+
+        private fun mergeGameCenterP2eTasksFromSnapshot(
+            snapshot: GameCenterP2eQuerySnapshot,
+            mergedTaskMap: LinkedHashMap<String, JSONObject>,
+            exposedTaskMap: LinkedHashMap<String, JSONObject>
+        ) {
+            val data = snapshot.responseObject.optJSONObject("data") ?: return
+            val exposedTaskList = data.optJSONObject("exposedTaskModuleVO")
+                ?.optJSONArray("exposedTaskList")
+            mergeGameCenterP2eTaskList(
+                mergedTaskMap,
+                exposedTaskMap,
+                exposedTaskList,
+                container = "exposedTaskModule",
+                source = snapshot.source
+            )
+            val platformTaskModule = data.optJSONObject("platformGameTaskModule") ?: return
+            mergeGameCenterP2eTaskList(
+                mergedTaskMap,
+                exposedTaskMap,
+                platformTaskModule.optJSONArray("platformTaskList"),
+                container = "platformTaskList",
+                source = snapshot.source
+            )
+            mergeGameCenterP2eTaskList(
+                mergedTaskMap,
+                exposedTaskMap,
+                platformTaskModule.optJSONArray("taskList"),
+                container = "taskList",
+                source = snapshot.source
+            )
+            mergeGameCenterP2eTaskList(
+                mergedTaskMap,
+                exposedTaskMap,
+                platformTaskModule.optJSONArray("gameTaskList"),
+                container = "gameTaskList",
+                source = snapshot.source
+            )
+        }
+
+        private fun mergeGameCenterP2eTaskList(
+            mergedTaskMap: LinkedHashMap<String, JSONObject>,
+            exposedTaskMap: LinkedHashMap<String, JSONObject>,
+            taskList: JSONArray?,
+            container: String,
+            source: String
+        ) {
+            if (taskList == null) {
+                return
+            }
+            for (i in 0 until taskList.length()) {
+                val task = taskList.optJSONObject(i) ?: continue
+                val taskId = task.optString("taskId")
+                if (taskId.isBlank()) {
+                    continue
+                }
+                val normalizedTask = JSONObject(task.toString()).apply {
+                    put("_gcContainer", container)
+                    put("_gcActionChannel", if (container == "exposedTaskModule") "exposedTaskModule" else "taskList")
+                    put("_gcSource", source)
+                    put("_gcOriChInfo", source)
+                }
+                if (container == "exposedTaskModule") {
+                    val currentExposed = exposedTaskMap[taskId]
+                    if (currentExposed == null || shouldReplaceGameCenterP2eTask(currentExposed, normalizedTask)) {
+                        exposedTaskMap[taskId] = normalizedTask
+                    }
+                }
+                val currentTask = mergedTaskMap[taskId]
+                if (currentTask == null || shouldReplaceGameCenterP2eTask(currentTask, normalizedTask)) {
+                    mergedTaskMap[taskId] = normalizedTask
+                }
+            }
+        }
+
+        private fun shouldReplaceGameCenterP2eTask(currentTask: JSONObject, candidateTask: JSONObject): Boolean {
+            val candidateScore = scoreGameCenterP2eTask(candidateTask)
+            val currentScore = scoreGameCenterP2eTask(currentTask)
+            if (candidateScore != currentScore) {
+                return candidateScore > currentScore
+            }
+            return scoreGameCenterP2eTaskSource(candidateTask) > scoreGameCenterP2eTaskSource(currentTask)
+        }
+
+        private fun scoreGameCenterP2eTask(task: JSONObject): Int {
+            val container = task.optString("_gcContainer")
+            val rewardReady = isGameCenterP2eRewardTask(task)
+            return when {
+                rewardReady && container in setOf("taskList", "platformTaskList") -> 500
+                rewardReady && container == "exposedTaskModule" -> 400
+                rewardReady -> 350
+                container == "exposedTaskModule" -> 300
+                container in setOf("taskList", "platformTaskList") -> 200
+                else -> 100
+            }
+        }
+
+        private fun scoreGameCenterP2eTaskSource(task: JSONObject): Int {
+            return when (task.optString("_gcSource")) {
+                AntMemberRpcCall.GAME_CENTER_P2E_SOURCE -> 2
+                AntMemberRpcCall.GAME_CENTER_SOURCE -> 1
+                else -> 0
+            }
+        }
+
+        private fun isGameCenterP2eRewardTask(task: JSONObject): Boolean {
+            val status = task.optString("taskStatus").uppercase(Locale.ROOT)
+            val buttonText = task.optString("buttonText")
+            return status in setOf("COMPLETED", "COMPLETE", "FINISHED") || buttonText.contains("领取")
+        }
+
         private fun reportGameCenterP2eExposedTasks(taskList: JSONArray) {
             if (taskList.length() == 0) {
                 return
@@ -5833,17 +6155,24 @@ class AntMember : ModelTask() {
                 raw.optString("actionType").equals("VIEW_TASK", ignoreCase = true)
         }
 
-        private fun blacklistUnsupportedP2eTask(item: TaskFlowItem) {
+        private fun handleUnsupportedP2eTask(item: TaskFlowItem) {
             val raw = item.raw ?: JSONObject()
             val reason = when {
-                raw.optString("taskType").equals("GAME_TRAN_TASK", ignoreCase = true) ->
-                    "真实游戏通关/订单任务无自动闭环"
-                raw.optString("actionType").equals("LIGHT_AD_TASK", ignoreCase = true) ->
-                    "P2E广告任务无稳定完成闭环，仅处理已完成领奖"
-                else -> "未验证的P2E任务类型"
+                raw.optString("taskType").equals("GAME_TRAN_TASK", ignoreCase = true) -> {
+                    TaskBlacklist.addToBlacklist(moduleName, item.id, item.title)
+                    "真实游戏通关/订单任务无自动闭环，已加入自动跳过列表(黑名单)"
+                }
+                raw.optString("actionType").equals("LIGHT_AD_TASK", ignoreCase = true) -> {
+                    TaskBlacklist.addToBlacklist(moduleName, item.id, item.title)
+                    "P2E广告任务无稳定完成闭环，仅处理已完成领奖，已加入自动跳过列表(黑名单)"
+                }
+                else -> {
+                    val taskType = raw.optString("taskType").ifBlank { "UNKNOWN" }
+                    val actionType = raw.optString("actionType").ifBlank { "UNKNOWN" }
+                    "当前暂无稳定自动闭环，保留待补抓:taskType=$taskType actionType=$actionType"
+                }
             }
-            TaskBlacklist.addToBlacklist(moduleName, item.id, item.title)
-            logSkipOnce(item, "当前暂无稳定自动完成闭环，已加入自动跳过列表(黑名单):$reason")
+            logSkipOnce(item, reason)
         }
 
         private fun logSkipOnce(item: TaskFlowItem, reason: String) {
@@ -5852,6 +6181,63 @@ class AntMember : ModelTask() {
                 Log.member("游戏中心🎮赚现金任务[${item.title}]#$reason")
             }
         }
+
+        private fun buildGameCenterP2eCombinedRaw(
+            homeSnapshot: GameCenterP2eQuerySnapshot,
+            taskSnapshot: GameCenterP2eQuerySnapshot
+        ): String {
+            return "homeSource=${homeSnapshot.source}:${homeSnapshot.rawResponse} " +
+                "taskSource=${taskSnapshot.source}:${taskSnapshot.rawResponse}"
+        }
+
+        private fun buildGameCenterP2eQueryFailureMessage(
+            homeSnapshot: GameCenterP2eQuerySnapshot,
+            taskSnapshot: GameCenterP2eQuerySnapshot
+        ): String {
+            return buildString {
+                append("首页源失败:")
+                append(extractGameCenterP2eQueryMessage(homeSnapshot))
+                append(" | 任务页源失败:")
+                append(extractGameCenterP2eQueryMessage(taskSnapshot))
+            }
+        }
+
+        private fun buildGameCenterP2ePartialFailureMessage(
+            homeSnapshot: GameCenterP2eQuerySnapshot,
+            taskSnapshot: GameCenterP2eQuerySnapshot
+        ): String {
+            return when {
+                homeSnapshot.success && !taskSnapshot.success ->
+                    "首页源成功，任务页源失败:${extractGameCenterP2eQueryMessage(taskSnapshot)}"
+                !homeSnapshot.success && taskSnapshot.success ->
+                    "首页源失败:${extractGameCenterP2eQueryMessage(homeSnapshot)}，任务页源成功"
+                else -> buildGameCenterP2eQueryFailureMessage(homeSnapshot, taskSnapshot)
+            }
+        }
+
+        private fun extractGameCenterP2eQueryMessage(snapshot: GameCenterP2eQuerySnapshot): String {
+            val response = snapshot.responseObject
+            return sequenceOf(
+                response.optString("errorMsg"),
+                response.optString("errorMessage"),
+                response.optString("resultView"),
+                response.optString("resultDesc"),
+                response.optString("memo"),
+                response.optString("desc")
+            ).firstOrNull { it.isNotBlank() } ?: snapshot.rawResponse
+        }
+    }
+
+    private fun extractGameCenterP2eActionChannel(task: JSONObject): String {
+        return task.optString("_gcActionChannel").ifBlank { "taskList" }
+    }
+
+    private fun extractGameCenterP2eSource(task: JSONObject): String {
+        return task.optString("_gcSource").ifBlank { AntMemberRpcCall.GAME_CENTER_P2E_SOURCE }
+    }
+
+    private fun extractGameCenterP2eOriChInfo(task: JSONObject): String {
+        return task.optString("_gcOriChInfo").ifBlank { extractGameCenterP2eSource(task) }
     }
 
     private fun gameCenterTaskFailureResult(
@@ -5877,11 +6263,15 @@ class AntMember : ModelTask() {
             "gameId=${task.optString("gameId").ifBlank { "UNKNOWN" }} " +
             "appId=${task.optString("appId").ifBlank { "UNKNOWN" }} " +
             "buttonText=${task.optString("buttonText").ifBlank { "UNKNOWN" }} " +
-            "needSignUp=${task.optBoolean("needSignUp", false)} pointAmount=${task.optInt("pointAmount", 0)}"
+            "needSignUp=${task.optBoolean("needSignUp", false)} pointAmount=${task.optInt("pointAmount", 0)} " +
+            "gcContainer=${task.optString("_gcContainer").ifBlank { "UNKNOWN" }} " +
+            "gcActionChannel=${extractGameCenterP2eActionChannel(task)} " +
+            "gcSource=${extractGameCenterP2eSource(task)} " +
+            "gcOriChInfo=${extractGameCenterP2eOriChInfo(task)}"
     }
 
     private suspend fun doGameCenterP2eSignIn(): DailyTaskProcessResult {
-        val resp = AntMemberRpcCall.queryGameCenterP2eHomePage()
+        val resp = AntMemberRpcCall.queryGameCenterP2eHomePage(AntMemberRpcCall.GAME_CENTER_SOURCE)
         val root = JSONObject(resp)
         if (!ResChecker.checkRes(TAG, root)) {
             return logGameCenterP2eFailure("赚现金签到查询", root, resp)
@@ -5918,7 +6308,12 @@ class AntMember : ModelTask() {
             return DailyTaskProcessResult.UNKNOWN_FAILURE
         }
 
-        val signResp = AntMemberRpcCall.gameCenterP2eSignIn(date, index, signSequenceId)
+        val signResp = AntMemberRpcCall.gameCenterP2eSignIn(
+            date,
+            index,
+            signSequenceId,
+            AntMemberRpcCall.GAME_CENTER_SOURCE
+        )
         val signObject = JSONObject(signResp)
         if (!ResChecker.checkRes(TAG, signObject)) {
             return logGameCenterP2eFailure("赚现金签到", signObject, signResp)
@@ -6200,6 +6595,18 @@ class AntMember : ModelTask() {
         }
     }
 
+    private fun hasBeanTaskCenterSendOrder(task: JSONObject): Boolean {
+        val sendOrderList = task.optJSONArray("sendPrizeSendOrderList") ?: return false
+        for (i in 0 until sendOrderList.length()) {
+            val sendOrder = sendOrderList.optJSONObject(i) ?: continue
+            val sendStatus = sendOrder.optString("sendStatus")
+            if (sendStatus.isBlank() || sendStatus.equals("SUCCESS", true)) {
+                return true
+            }
+        }
+        return false
+    }
+
     private fun classifyGuardianBeanAwardFailure(code: String, message: String): GuardianBeanAwardRpcFailureType {
         return when {
             message.contains("已领取") ||
@@ -6257,20 +6664,269 @@ class AntMember : ModelTask() {
                 }
             }
 
-            val answerStatus = responseObject.optJSONObject("result")?.optString("answerStatus")
-                ?: responseObject.optString("answerStatus")
-            when (answerStatus) {
-                "ANSWER_PENDING" -> Log.member("安心豆🫘[保险知识闯关]#发现待答题，缺少题目提交闭环RPC，暂不自动答题")
-                "ANSWERED",
-                "ANSWER_SUCCESS",
-                "RECEIVE_SUCCESS" -> Log.member("安心豆🫘[保险知识闯关]#状态已完成:$answerStatus")
-                "" -> Log.member("安心豆🫘[保险知识闯关]#未返回答题状态，保留后续日志复核")
-                else -> Log.member("安心豆🫘[保险知识闯关]#当前状态:$answerStatus")
+            val answerStatus = resolveGuardianAnswerStatus(responseObject)
+            return when {
+                isGuardianAnswerHandledStatus(answerStatus) -> {
+                    Log.member("安心豆🫘[保险知识闯关]#状态已完成:$answerStatus")
+                    DailyTaskProcessResult.HANDLED
+                }
+
+                answerStatus == "ANSWER_PENDING" -> {
+                    completeGuardianAnswerPendingTask()
+                }
+
+                answerStatus.isBlank() -> {
+                    Log.member("安心豆🫘[保险知识闯关]#未返回答题状态，保留后续日志复核")
+                    DailyTaskProcessResult.PENDING
+                }
+
+                else -> {
+                    Log.member("安心豆🫘[保险知识闯关]#当前状态:$answerStatus")
+                    DailyTaskProcessResult.PENDING
+                }
             }
-            DailyTaskProcessResult.HANDLED
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "consultGuardianAnswerTask err:", t)
             DailyTaskProcessResult.UNKNOWN_FAILURE
+        }
+    }
+
+    private fun resolveGuardianAnswerStatus(responseObject: JSONObject): String {
+        return responseObject.optJSONObject("result")?.optString("answerStatus")
+            ?.takeIf { it.isNotBlank() }
+            ?: responseObject.optString("answerStatus")
+    }
+
+    private fun isGuardianAnswerHandledStatus(answerStatus: String): Boolean {
+        return when (answerStatus) {
+            "ANSWERED",
+            "ANSWER_SUCCESS",
+            "RECEIVE_SUCCESS",
+            "ANSWER_COMPLETED" -> true
+
+            else -> false
+        }
+    }
+
+    private fun resolveBeanGuardianUserId(): String? {
+        return AccountSessionCoordinator.currentUserId()?.takeIf { it.isNotBlank() }
+            ?: UserMap.currentUid?.takeIf { it.isNotBlank() }
+    }
+
+    private fun resolveBeanGuardianQuizFailure(
+        actionLabel: String,
+        errorSource: String,
+        responseObject: JSONObject,
+        rawResponse: String
+    ): DailyTaskProcessResult {
+        val detail = buildBeanTaskCenterFailureDetail(responseObject, rawResponse)
+        return when (classifyBeanTaskCenterFailure(detail.first, detail.second)) {
+            GuardianBeanAwardRpcFailureType.BUSINESS_LIMIT -> {
+                Log.member("安心豆🫘[保险知识闯关]#${actionLabel}业务受限，本轮跳过:${detailToString(detail, rawResponse)}")
+                DailyTaskProcessResult.HANDLED
+            }
+
+            GuardianBeanAwardRpcFailureType.DUPLICATE_REWARD -> {
+                Log.member("安心豆🫘[保险知识闯关]#${actionLabel}已处理过，跳过:${detailToString(detail, rawResponse)}")
+                DailyTaskProcessResult.HANDLED
+            }
+
+            GuardianBeanAwardRpcFailureType.RETRYABLE -> {
+                Log.member("安心豆🫘[保险知识闯关]#${actionLabel}暂时不可用，保留后续重试:${detailToString(detail, rawResponse)}")
+                DailyTaskProcessResult.RETRYABLE_FAILURE
+            }
+
+            GuardianBeanAwardRpcFailureType.NON_RETRYABLE -> {
+                Log.error(errorSource, "安心豆🫘[保险知识闯关]#${actionLabel}失败:${detailToString(detail, rawResponse)}")
+                DailyTaskProcessResult.UNKNOWN_FAILURE
+            }
+        }
+    }
+
+    private fun resolveBeanGuardianQuestionDrama(responseObject: JSONObject): BeanGuardianQuestionDrama? {
+        val data = responseObject.optJSONObject("data") ?: return null
+        val questionAnswers = data.optJSONArray("userQuestionDramaAnswers") ?: return null
+        val questions = (0 until questionAnswers.length())
+            .mapNotNull { questionAnswers.optJSONObject(it) }
+            .map { question ->
+                BeanGuardianQuestion(
+                    scriptId = question.optString("scriptId"),
+                    userDramaId = question.optString("userDramaId"),
+                    rightAnswer = question.optString("rightAnswer"),
+                    sort = question.optInt("sort", Int.MAX_VALUE),
+                    answerResult = question.optString("answerResult"),
+                    awardStatus = question.optString("awardStatus"),
+                    questionText = question.optString("question")
+                )
+            }
+            .sortedBy { it.sort }
+        return BeanGuardianQuestionDrama(
+            dramaId = data.optString("dramaId"),
+            nextScriptId = data.optString("nextScriptId"),
+            questions = questions
+        )
+    }
+
+    private fun isBeanGuardianQuestionCompleted(question: BeanGuardianQuestion): Boolean {
+        if (question.awardStatus.equals("SENT", ignoreCase = true)) {
+            return true
+        }
+        return when (question.answerResult.uppercase(Locale.ROOT)) {
+            "ANSWERED",
+            "ANSWER_SUCCESS",
+            "SUCCESS",
+            "ANSWER_COMPLETED",
+            "COMPLETED" -> true
+
+            else -> false
+        }
+    }
+
+    private fun resolveBeanGuardianNextQuestion(
+        questionDrama: BeanGuardianQuestionDrama,
+        nextScriptId: String,
+        submittedScriptIds: Set<String>
+    ): BeanGuardianQuestion? {
+        if (nextScriptId.isNotBlank()) {
+            questionDrama.questions.firstOrNull {
+                it.scriptId == nextScriptId && it.scriptId !in submittedScriptIds
+            }?.let { return it }
+        }
+        return questionDrama.questions.firstOrNull {
+            it.scriptId !in submittedScriptIds && !isBeanGuardianQuestionCompleted(it)
+        } ?: questionDrama.questions.firstOrNull { it.scriptId !in submittedScriptIds }
+    }
+
+    private fun resolveBeanGuardianQuestionLabel(question: BeanGuardianQuestion): String {
+        return question.questionText.ifBlank { question.scriptId.ifBlank { "未知题目" } }
+    }
+
+    private fun resolveBeanGuardianQuestionMissingField(
+        questionDrama: BeanGuardianQuestionDrama,
+        question: BeanGuardianQuestion
+    ): String? {
+        return when {
+            questionDrama.dramaId.isBlank() -> "缺少dramaId"
+            question.scriptId.isBlank() -> "缺少scriptId"
+            question.userDramaId.isBlank() -> "缺少userDramaId"
+            question.rightAnswer.isBlank() -> "缺少rightAnswer"
+            else -> null
+        }
+    }
+
+    private fun completeGuardianAnswerPendingTask(): DailyTaskProcessResult {
+        val userId = resolveBeanGuardianUserId()
+        if (userId.isNullOrBlank()) {
+            Log.error("$TAG.completeGuardianAnswerPendingTask", "安心豆🫘[保险知识闯关]#缺少当前userId，无法进入答题闭环")
+            return DailyTaskProcessResult.UNKNOWN_FAILURE
+        }
+
+        val questionResponse = AntMemberRpcCall.queryUserQuestionDrama(userId = userId)
+        val questionObject = JSONObject(questionResponse)
+        if (!ResChecker.checkRes(TAG, questionObject)) {
+            return resolveBeanGuardianQuizFailure(
+                "题目查询",
+                "$TAG.completeGuardianAnswerPendingTask.queryUserQuestionDrama",
+                questionObject,
+                questionResponse
+            )
+        }
+
+        val questionDrama = resolveBeanGuardianQuestionDrama(questionObject) ?: run {
+            Log.error(
+                "$TAG.completeGuardianAnswerPendingTask.queryUserQuestionDrama",
+                "安心豆🫘[保险知识闯关]#题目结构异常，缺少userQuestionDramaAnswers:$questionResponse"
+            )
+            return DailyTaskProcessResult.UNKNOWN_FAILURE
+        }
+        if (questionDrama.questions.isEmpty()) {
+            Log.member("安心豆🫘[保险知识闯关]#待答题但未返回可用题目，保留后续复查")
+            return DailyTaskProcessResult.PENDING
+        }
+        if (questionDrama.dramaId.isBlank()) {
+            Log.member("安心豆🫘[保险知识闯关]#题目链路缺少dramaId，保留后续复查")
+            return DailyTaskProcessResult.PENDING
+        }
+
+        var nextScriptId = questionDrama.nextScriptId
+        var progressMade = false
+        val submittedScriptIds = LinkedHashSet<String>()
+        while (submittedScriptIds.size < questionDrama.questions.size) {
+            val question = resolveBeanGuardianNextQuestion(questionDrama, nextScriptId, submittedScriptIds) ?: break
+            val missingField = resolveBeanGuardianQuestionMissingField(questionDrama, question)
+            if (missingField != null) {
+                Log.member("安心豆🫘[保险知识闯关]#${resolveBeanGuardianQuestionLabel(question)}$missingField，保留后续复查")
+                return DailyTaskProcessResult.PENDING
+            }
+
+            val questionLabel = resolveBeanGuardianQuestionLabel(question)
+            val recordResponse = AntMemberRpcCall.addAskAnswerRecord(question.scriptId, userId)
+            val recordObject = JSONObject(recordResponse)
+            if (!ResChecker.checkRes(TAG, recordObject)) {
+                return resolveBeanGuardianQuizFailure(
+                    "记录题目[$questionLabel]",
+                    "$TAG.completeGuardianAnswerPendingTask.addAskAnswerRecord",
+                    recordObject,
+                    recordResponse
+                )
+            }
+
+            val answerResponse = AntMemberRpcCall.answerQuestionDrama(
+                dramaId = questionDrama.dramaId,
+                scriptId = question.scriptId,
+                userDramaId = question.userDramaId,
+                userId = userId
+            )
+            val answerObject = JSONObject(answerResponse)
+            if (!ResChecker.checkRes(TAG, answerObject)) {
+                return resolveBeanGuardianQuizFailure(
+                    "提交答案[$questionLabel]",
+                    "$TAG.completeGuardianAnswerPendingTask.answerQuestionDrama",
+                    answerObject,
+                    answerResponse
+                )
+            }
+
+            progressMade = true
+            submittedScriptIds.add(question.scriptId)
+            Log.member("安心豆🫘[保险知识闯关]#已提交[$questionLabel]")
+
+            val answerData = answerObject.optJSONObject("data")
+            val allCorrect = answerData?.optString("allCorrect").orEmpty().equals("true", ignoreCase = true) ||
+                answerData?.optBoolean("allCorrect") == true
+            if (allCorrect) {
+                break
+            }
+            nextScriptId = answerData?.optString("nextScriptId").orEmpty()
+        }
+
+        val finalResponse = AntMemberRpcCall.guardianAnswerConsult()
+        val finalObject = JSONObject(finalResponse)
+        if (!ResChecker.checkRes(TAG, finalObject)) {
+            return resolveBeanGuardianQuizFailure(
+                "答题复核",
+                "$TAG.completeGuardianAnswerPendingTask.guardianAnswerConsult",
+                finalObject,
+                finalResponse
+            )
+        }
+
+        val finalStatus = resolveGuardianAnswerStatus(finalObject)
+        return when {
+            isGuardianAnswerHandledStatus(finalStatus) -> {
+                Log.member("安心豆🫘[保险知识闯关]#答题闭环完成:$finalStatus")
+                DailyTaskProcessResult.HANDLED
+            }
+
+            progressMade -> {
+                Log.member("安心豆🫘[保险知识闯关]#本轮已推进答题，但复核仍未完成:${finalStatus.ifBlank { "UNKNOWN" }}")
+                DailyTaskProcessResult.PENDING
+            }
+
+            else -> {
+                Log.member("安心豆🫘[保险知识闯关]#未完成答题闭环，当前状态:${finalStatus.ifBlank { "UNKNOWN" }}")
+                DailyTaskProcessResult.PENDING
+            }
         }
     }
 
@@ -6278,8 +6934,7 @@ class AntMember : ModelTask() {
         return try {
             val response = AntMemberRpcCall.beanTaskCenterConsult(
                 taskCenterId = "AP15241780",
-                sceneCode = "AXD_TAK_LIST",
-                entrance = "insplatform_mine_anxindou"
+                sceneCode = "AXD_TAK_LIST"
             )
             val responseObject = JSONObject(response)
             if (!ResChecker.checkRes(TAG, responseObject)) {
@@ -6312,53 +6967,92 @@ class AntMember : ModelTask() {
                 Log.error("$TAG.queryBeanTaskCenterStatus", "安心豆🫘[任务中心]#响应缺少result/data:$response")
                 return DailyTaskProcessResult.UNKNOWN_FAILURE
             }
-            val taskCount = logBeanTaskCenterTaskList(resultObject.optJSONArray("taskDetailList"))
-            val doneTaskCount = logBeanTaskCenterTaskList(resultObject.optJSONArray("doneTaskDetailList"))
-            if (taskCount == 0 && doneTaskCount == 0) {
+            val pendingTaskScan = logBeanTaskCenterTaskList(
+                resultObject.optJSONArray("taskDetailList"),
+                treatTaskListAsHandled = false
+            )
+            val doneTaskScan = logBeanTaskCenterTaskList(
+                resultObject.optJSONArray("doneTaskDetailList"),
+                treatTaskListAsHandled = true
+            )
+            if (pendingTaskScan.taskCount == 0 && doneTaskScan.taskCount == 0) {
                 Log.member("安心豆🫘[任务中心]#无可识别任务")
             }
-            DailyTaskProcessResult.HANDLED
+            mergeDailyTaskProcessResult(doneTaskScan.result, pendingTaskScan.result)
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "queryBeanTaskCenterStatus err:", t)
             DailyTaskProcessResult.UNKNOWN_FAILURE
         }
     }
 
-    private fun logBeanTaskCenterTaskList(taskList: JSONArray?): Int {
+    private fun logBeanTaskCenterTaskList(
+        taskList: JSONArray?,
+        treatTaskListAsHandled: Boolean
+    ): BeanTaskCenterTaskListScanResult {
         if (taskList == null) {
-            return 0
+            return BeanTaskCenterTaskListScanResult(0, DailyTaskProcessResult.HANDLED)
         }
         var count = 0
+        var result = DailyTaskProcessResult.HANDLED
         for (i in 0 until taskList.length()) {
             val task = taskList.optJSONObject(i) ?: continue
             count++
             val taskId = resolveBeanTaskCenterTaskId(task)
             val title = resolveBeanTaskCenterTaskTitle(task, taskId)
-            val status = task.optString("taskProcessStatus")
-            val errorCode = task.optString("queryErrorCode")
-            val errorMsg = task.optString("queryErrorMsg")
+            val status = task.optString("taskProcessStatus").trim()
+            val normalizedStatus = status.uppercase(Locale.ROOT)
+            val errorCode = task.optString("queryErrorCode").trim()
+            val errorMsg = task.optString("queryErrorMsg").trim()
+            val detail = when {
+                errorCode.isNotBlank() && errorMsg.isNotBlank() -> "$errorCode/$errorMsg"
+                errorCode.isNotBlank() -> errorCode
+                else -> errorMsg
+            }
+            val hasSendOrder = hasBeanTaskCenterSendOrder(task)
             when {
-                status.equals("RECEIVE_SUCCESS", true) -> {
+                hasSendOrder || normalizedStatus in setOf(
+                    "RECEIVE_SUCCESS",
+                    "HAS_RECEIVED",
+                    "RECEIVED",
+                    "DONE",
+                    "COMPLETED",
+                    "SUCCESS"
+                ) -> {
                     Log.member("安心豆🫘[任务中心]#$title($taskId) 已完成/已领取")
                 }
 
-                status.equals("WAIT_RECEIVE", true) ||
-                    status.equals("TO_RECEIVE", true) ||
-                    status.equals("FINISHED", true) -> {
-                    Log.member("安心豆🫘[任务中心]#$title($taskId) 待领取，但当前未抓到明确领奖RPC，保留后续复核")
+                treatTaskListAsHandled -> {
+                    Log.member("安心豆🫘[任务中心]#$title($taskId) 已在完成列表中，保持收口")
                 }
 
-                errorCode in setOf("10001013", "10001034") -> {
-                    val detail = if (errorMsg.isNotBlank()) "$errorCode/$errorMsg" else errorCode
-                    Log.member("安心豆🫘[任务中心]#$title($taskId) 业务受限，跳过:$detail")
+                errorCode in beanTaskCenterHandledLimitCodes -> {
+                    Log.member("安心豆🫘[任务中心]#$title($taskId) 业务受限，跳过:${detail.ifBlank { errorCode }}")
+                }
+
+                normalizedStatus == "WAIT_RECEIVE" ||
+                    normalizedStatus == "TO_RECEIVE" ||
+                    normalizedStatus == "FINISHED" -> {
+                    Log.member("安心豆🫘[任务中心]#$title($taskId) 待领取，但当前未抓到明确领奖RPC，保留后续复核")
+                    result = mergeDailyTaskProcessResult(result, DailyTaskProcessResult.PENDING)
                 }
 
                 status.isNotBlank() -> {
                     Log.member("安心豆🫘[任务中心]#$title($taskId) 当前状态:$status")
+                    result = mergeDailyTaskProcessResult(result, DailyTaskProcessResult.PENDING)
+                }
+
+                detail.isNotBlank() -> {
+                    Log.member("安心豆🫘[任务中心]#$title($taskId) 当前未收口:$detail")
+                    result = mergeDailyTaskProcessResult(result, DailyTaskProcessResult.PENDING)
+                }
+
+                else -> {
+                    Log.member("安心豆🫘[任务中心]#$title($taskId) 当前未收口，保留后续复核")
+                    result = mergeDailyTaskProcessResult(result, DailyTaskProcessResult.PENDING)
                 }
             }
         }
-        return count
+        return BeanTaskCenterTaskListScanResult(count, result)
     }
 
     private fun resolveBeanTaskCenterTaskId(task: JSONObject): String {
@@ -6400,6 +7094,9 @@ class AntMember : ModelTask() {
     }
 
     private fun classifyBeanTaskCenterFailure(code: String, message: String): GuardianBeanAwardRpcFailureType {
+        if (code in beanTaskCenterHandledLimitCodes) {
+            return GuardianBeanAwardRpcFailureType.BUSINESS_LIMIT
+        }
         return classifyGuardianBeanAwardFailure(code, message)
     }
 
@@ -6643,14 +7340,15 @@ class AntMember : ModelTask() {
 
     private fun queryBlueBeanBalance(): Int? {
         return runCatching {
-            val accountInfo = JSONObject(AntMemberRpcCall.queryUserAccountInfo("INS_BLUE_BEAN"))
+            val accountInfo = JSONObject(AntMemberRpcCall.queryAccountSummaryPoint())
             if (!ResChecker.checkRes(TAG, accountInfo)) {
                 return@runCatching null
             }
-            val result = accountInfo.optJSONObject("result") ?: return@runCatching null
-            result.optInt("userCurrentPoint", -1)
-                .takeIf { it >= 0 }
-                ?: result.optJSONObject("accountPoint")?.optInt("userCurrentPoint", -1)?.takeIf { it >= 0 }
+            val result = accountInfo.optJSONObject("result")
+                ?: accountInfo.optJSONObject("data")?.optJSONObject("result")
+                ?: accountInfo.optJSONObject("data")
+                ?: return@runCatching null
+            result.optInt("effectPoint", -1).takeIf { it >= 0 }
         }.onFailure {
             Log.printStackTrace(TAG, "queryBlueBeanBalance err:", it)
         }.getOrNull()
@@ -6782,16 +7480,12 @@ class AntMember : ModelTask() {
     @SuppressLint("DefaultLocale")
     fun queryAndCollectStickers() {
         try {
-            if (hasFlagToday(StatusFlags.FLAG_ANTMEMBER_STICKER)) {
-                Log.member("今日已兑换贴纸，跳过")
-                return
-            }
             val now = Date()
             val year = SimpleDateFormat("yyyy", Locale.ENGLISH).format(now)
             val month = SimpleDateFormat("MM", Locale.ENGLISH).format(now)
             val day = SimpleDateFormat("dd", Locale.ENGLISH).format(now)
 
-            val queryResp = AntMemberRpcCall.queryStickerCanReceive(year, month)
+            val queryResp = AntMemberRpcCall.queryStickerCanReceiveList(year, month)
 
             val queryJson = JSONObject(queryResp)
             if (!ResChecker.checkRes(TAG, queryJson)) {
@@ -6821,6 +7515,7 @@ class AntMember : ModelTask() {
                 }
             }
 
+            var receivedSticker = false
             if (allStickerIds.isEmpty()) {
                 Log.member("贴纸扫描：暂无可领取的贴纸")
             } else {
@@ -6841,6 +7536,7 @@ class AntMember : ModelTask() {
                 // 3. 结果解析与比对输出
                 val specialList = collectJson.optJSONArray("specialStickerList")
                 val obtainedIds = collectJson.optJSONArray("obtainedConfigId")
+                receivedSticker = (obtainedIds?.length() ?: 0) > 0 || (specialList?.length() ?: 0) > 0
 
                 Log.member("贴纸领取成功，总数：${obtainedIds?.length() ?: 0}")
 
@@ -6862,13 +7558,15 @@ class AntMember : ModelTask() {
             }
 
             val followUpResult = handleStickerFollowUps(year, month, day)
+            if (receivedSticker) {
+                val ackJson = JSONObject(AntMemberRpcCall.ackStickerCanReceiveFirstShow())
+                if (!ResChecker.checkRes(TAG, ackJson)) {
+                    logStickerRpcFailure("领取后刷新确认", ackJson)
+                }
+            }
             if (!followUpResult.success) {
                 Log.member("贴纸后续处理存在失败，保留后续重试机会")
                 return
-            }
-
-            if (allStickerIds.isNotEmpty() || followUpResult.handled) {
-                setFlagToday(StatusFlags.FLAG_ANTMEMBER_STICKER)
             }
 
         } catch (e: Exception) {
@@ -7145,7 +7843,7 @@ class AntMember : ModelTask() {
 
     companion object {
         private val TAG: String = AntMember::class.java.getSimpleName()
-        private const val memberTaskBlacklistModule = "目标应用会员"
+        private const val memberTaskBlacklistModule = "会员"
         private const val insuredTaskBlacklistModule = "蚂蚁保"
         private const val memberFloatingBallAdTaskTitle = "会员浮球广告浏览任务"
         private const val MERCHANT_EXAM_TASK_CODE = "JYMWDDJF_TASK"
@@ -7429,7 +8127,7 @@ class AntMember : ModelTask() {
          */
         private suspend fun doMerchantMoreTask(): Unit = CoroutineUtils.run {
             try {
-                val adapter = MerchantMoreTaskFlowAdapter()
+                val adapter = MerchantTaskFlowAdapter()
                 val runResult = TaskFlowEngine(adapter, roundSleepMs = 500L).run()
                 if (adapter.taskListObserved && adapter.taskCount == 0) {
                     Log.member("商家服务🏬[积分任务]#未查询到任务列表")
@@ -7439,13 +8137,27 @@ class AntMember : ModelTask() {
                 }
                 collectMerchantPointBalls()
             } catch (t: Throwable) {
-                Log.printStackTrace(TAG, "taskListQuery err:", t)
+                Log.printStackTrace(TAG, "merchantTaskFlow err:", t)
             }
         }
 
-        private class MerchantMoreTaskFlowAdapter : TaskFlowAdapter {
+        private class MerchantTaskFlowAdapter : TaskFlowAdapter {
             override val moduleName: String = memberTaskBlacklistModule
             override val flowName: String = "商家服务🏬积分任务"
+
+            private data class MerchantTaskGroupSnapshot(
+                val group: String,
+                val tasks: JSONArray
+            )
+
+            private data class MerchantTaskSnapshotQuery(
+                val success: Boolean,
+                val groups: List<MerchantTaskGroupSnapshot> = emptyList(),
+                val moreOrderTaskCode: String = "",
+                val failureRpc: String = "",
+                val failureResponse: JSONObject = JSONObject(),
+                val failureEvaluation: MerchantRpcEvaluation? = null
+            )
 
             var taskCount: Int = 0
                 private set
@@ -7454,6 +8166,7 @@ class AntMember : ModelTask() {
             var taskListObserved: Boolean = false
                 private set
 
+            private var moreOrderTaskCode: String = ""
             private val handledTaskKeys = LinkedHashSet<String>()
             private val receivedTaskKeys = LinkedHashSet<String>()
             private val signedUpTaskKeys = LinkedHashSet<String>()
@@ -7461,12 +8174,33 @@ class AntMember : ModelTask() {
 
             override fun query(): JSONObject {
                 return try {
-                    val raw = AntMemberRpcCall.taskListQuery()
-                    val response = JSONObject(raw)
-                    val evaluation = evaluateMerchantRpc(response)
-                    response
-                        .put("_taskFlowQuerySuccess", evaluation.success)
-                        .put("_rawResponse", raw)
+                    val snapshot = queryMerchantTaskSnapshot()
+                    moreOrderTaskCode = snapshot.moreOrderTaskCode
+                    if (!snapshot.success) {
+                        return try {
+                            JSONObject(snapshot.failureResponse.toString())
+                                .put("_taskFlowQuerySuccess", false)
+                                .put("_merchantMoreOrderTaskCode", moreOrderTaskCode)
+                        } catch (_: Throwable) {
+                            JSONObject()
+                                .put("_taskFlowQuerySuccess", false)
+                                .put("_merchantMoreOrderTaskCode", moreOrderTaskCode)
+                                .put("resultDesc", "查询失败")
+                        }
+                    }
+                    val groups = JSONArray()
+                    snapshot.groups.forEach { group ->
+                        groups.put(
+                            JSONObject().apply {
+                                put("group", group.group)
+                                put("tasks", group.tasks)
+                            }
+                        )
+                    }
+                    JSONObject()
+                        .put("_taskFlowQuerySuccess", true)
+                        .put("_merchantMoreOrderTaskCode", moreOrderTaskCode)
+                        .put("_merchantTaskGroups", groups)
                 } catch (t: Throwable) {
                     JSONObject()
                         .put("_taskFlowQuerySuccess", false)
@@ -7480,38 +8214,42 @@ class AntMember : ModelTask() {
             }
 
             override fun extractItems(response: JSONObject): List<TaskFlowItem> {
-                val data = response.optJSONObject("data") ?: return emptyList()
-                val planCode = data.optString("planCode")
-                if (planCode.isNotBlank() && !planCode.equals("MORE", true)) {
-                    Log.member("商家服务🏬[积分任务列表]#返回计划$planCode，本轮跳过")
-                    return emptyList()
-                }
-                val taskList = data.optJSONArray("taskList") ?: return emptyList()
-                taskListObserved = true
-                taskCount = max(taskCount, taskList.length())
+                val groupArray = response.optJSONArray("_merchantTaskGroups") ?: JSONArray()
+                taskListObserved = response.has("_merchantTaskGroups")
+                val mergedMoreOrderTaskCode = response.optString("_merchantMoreOrderTaskCode")
                 val items = mutableListOf<TaskFlowItem>()
-                for (i in 0 until taskList.length()) {
-                    val task = taskList.optJSONObject(i) ?: continue
-                    val taskCode = task.optString("taskCode")
-                    val title = task.optString("title", task.optString("taskName", "商家任务"))
-                    val status = task.optString("status")
-                    val current = extractMerchantTaskCurrent(task)
-                    val limit = extractMerchantTaskLimit(task)
-                    items.add(
-                        TaskFlowItem(
-                            id = taskCode.ifBlank { task.optString("pointBallId").ifBlank { title } },
-                            title = title,
-                            status = status,
-                            type = taskCode,
-                            actionType = resolveMerchantActionCodes(task).joinToString("|"),
-                            blacklistKeys = listOf(taskCode, title).filter { it.isNotBlank() },
-                            raw = task,
-                            progress = buildMerchantTaskProgress(task, current, limit),
-                            current = current,
-                            limit = limit
+                var totalTaskCount = 0
+                for (groupIndex in 0 until groupArray.length()) {
+                    val group = groupArray.optJSONObject(groupIndex) ?: continue
+                    val groupName = group.optString("group")
+                    val taskList = group.optJSONArray("tasks") ?: continue
+                    totalTaskCount += taskList.length()
+                    for (i in 0 until taskList.length()) {
+                        val task = taskList.optJSONObject(i) ?: continue
+                        task.put("_merchant_group", groupName)
+                        task.put("_merchant_more_order_task_code", mergedMoreOrderTaskCode)
+                        val taskCode = task.optString("taskCode")
+                        val title = task.optString("title", task.optString("taskName", "商家任务"))
+                        val status = task.optString("status")
+                        val current = extractMerchantTaskCurrent(task)
+                        val limit = extractMerchantTaskLimit(task)
+                        items.add(
+                            TaskFlowItem(
+                                id = taskCode.ifBlank { task.optString("pointBallId").ifBlank { title } },
+                                title = title,
+                                status = status,
+                                type = taskCode,
+                                actionType = resolveMerchantActionCodes(task).joinToString("|"),
+                                blacklistKeys = listOf(taskCode, title).filter { it.isNotBlank() },
+                                raw = task,
+                                progress = buildMerchantTaskProgress(task, current, limit),
+                                current = current,
+                                limit = limit
+                            )
                         )
-                    )
+                    }
                 }
+                taskCount = max(taskCount, totalTaskCount)
                 return items
             }
 
@@ -7520,11 +8258,16 @@ class AntMember : ModelTask() {
                 if (taskKey in receivedTaskKeys) {
                     return TaskFlowPhase.TERMINAL
                 }
-                return when (item.status.uppercase(Locale.ROOT)) {
-                    "NEED_RECEIVE" -> TaskFlowPhase.REWARD_READY
-                    "PROCESSING" -> if (resolveMerchantBizId(item.raw ?: JSONObject()).isNotBlank()) {
-                        TaskFlowPhase.REWARD_READY
-                    } else if (taskKey in handledTaskKeys) {
+                val rawTask = item.raw ?: JSONObject()
+                val normalizedStatus = item.status.uppercase(Locale.ROOT)
+                if (isMerchantRewardReadyStatus(rawTask, normalizedStatus)) {
+                    return TaskFlowPhase.REWARD_READY
+                }
+                return when (normalizedStatus) {
+                    "PROCESSING",
+                    "PROCESS",
+                    "WAIT_COMPLETE",
+                    "EXCHANGE_PENDING" -> if (taskKey in handledTaskKeys) {
                         TaskFlowPhase.TERMINAL
                     } else {
                         TaskFlowPhase.READY_TO_COMPLETE
@@ -7629,7 +8372,6 @@ class AntMember : ModelTask() {
                     .map { it.trim() }
                     .filter { it.isNotEmpty() }
                 var lastFailure: TaskFlowActionResult? = null
-                val targetCount = resolveMerchantTaskTargetCount(item.raw ?: JSONObject())
                 actionLoop@ for (actionCode in actionCodes) {
                     val queryActivity = JSONObject(AntMemberRpcCall.actioncode(actionCode))
                     val queryEvaluation = evaluateMerchantRpc(queryActivity)
@@ -7654,51 +8396,29 @@ class AntMember : ModelTask() {
                         continue
                     }
 
-                    var produceSuccess = false
-                    var remainingCount = max(1, targetCount)
-                    for (index in 0 until max(1, targetCount)) {
-                        val produce = JSONObject(AntMemberRpcCall.produce(actionCode))
-                        val produceEvaluation = evaluateMerchantRpc(produce)
-                        if (!produceEvaluation.success) {
-                            val failure = merchantTaskFailureResult(
-                                item,
-                                "AntMemberRpcCall.produce",
-                                produce,
-                                produceEvaluation,
-                                actionCode
-                            )
-                            lastFailure = failure
-                            if (produceEvaluation.failureType == MerchantRpcFailureType.NO_ACTIVITY) {
-                                logMerchantRpcFailure("完成任务[${item.title}/$actionCode]", produce, produceEvaluation)
-                                continue@actionLoop
-                            }
-                            if (failure.failureType == TaskRpcFailureType.RETRYABLE_RPC ||
-                                failure.failureType == TaskRpcFailureType.BUSINESS_LIMIT
-                            ) {
-                                return failure
-                            }
-                            break
+                    val produce = JSONObject(AntMemberRpcCall.produce(actionCode))
+                    val produceEvaluation = evaluateMerchantRpc(produce)
+                    if (!produceEvaluation.success) {
+                        val failure = merchantTaskFailureResult(
+                            item,
+                            "AntMemberRpcCall.produce",
+                            produce,
+                            produceEvaluation,
+                            actionCode
+                        )
+                        lastFailure = failure
+                        if (produceEvaluation.failureType == MerchantRpcFailureType.NO_ACTIVITY) {
+                            logMerchantRpcFailure("完成任务[${item.title}/$actionCode]", produce, produceEvaluation)
+                            continue@actionLoop
                         }
-                        produceSuccess = true
-
-                        val refreshedTask = queryMerchantTaskByCode(item.type) ?: break
-                        val refreshedStatus = refreshedTask.optString("status")
-                        if ("NEED_RECEIVE" == refreshedStatus ||
-                            ("PROCESSING" != refreshedStatus && "UNRECEIVED" != refreshedStatus)
+                        if (failure.failureType == TaskRpcFailureType.RETRYABLE_RPC ||
+                            failure.failureType == TaskRpcFailureType.BUSINESS_LIMIT
                         ) {
-                            break
+                            return failure
                         }
-
-                        val refreshedRemainingCount = resolveMerchantTaskRemainingCount(refreshedTask) ?: break
-                        if (refreshedRemainingCount <= 0 || refreshedRemainingCount >= remainingCount) {
-                            break
-                        }
-                        remainingCount = refreshedRemainingCount
+                        continue
                     }
-                    if (produceSuccess) {
-                        Log.member("商家服务🏬[完成任务${item.title}]")
-                        return TaskFlowActionResult.success()
-                    }
+                    return confirmMerchantCompletionProgress(item, actionCode)
                 }
                 return lastFailure ?: TaskFlowActionResult.failure(
                     failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
@@ -7758,8 +8478,7 @@ class AntMember : ModelTask() {
                     )
                 }
 
-                Log.member("商家服务🏬[${item.title}]#完成答题任务")
-                return TaskFlowActionResult.success()
+                return confirmMerchantCompletionProgress(item, actionCode)
             }
 
             override fun actionKey(item: TaskFlowItem, action: TaskFlowAction): String {
@@ -7770,7 +8489,9 @@ class AntMember : ModelTask() {
                 when (action) {
                     TaskFlowAction.RECEIVE -> receivedTaskKeys.add(buildMerchantTaskFlowKey(item))
                     TaskFlowAction.COMPLETE,
-                    TaskFlowAction.SEND -> handledTaskKeys.add(buildMerchantTaskFlowKey(item))
+                    TaskFlowAction.SEND -> if (result.progressChanged && !result.refreshAfterAction) {
+                        handledTaskKeys.add(buildMerchantTaskFlowKey(item))
+                    }
                     TaskFlowAction.SIGNUP -> signedUpTaskKeys.add(buildMerchantTaskFlowKey(item))
                 }
             }
@@ -7815,6 +8536,148 @@ class AntMember : ModelTask() {
                 Log.error(TAG, message)
             }
 
+            private fun queryMerchantTaskSnapshot(): MerchantTaskSnapshotQuery {
+                val currentMoreOrderTaskCode = moreOrderTaskCode
+
+                val moreResponse = JSONObject(AntMemberRpcCall.taskMoreQuery(currentMoreOrderTaskCode))
+                val moreEvaluation = evaluateMerchantRpc(moreResponse)
+                if (!moreEvaluation.success) {
+                    return MerchantTaskSnapshotQuery(
+                        success = false,
+                        moreOrderTaskCode = currentMoreOrderTaskCode,
+                        failureRpc = "AntMemberRpcCall.taskMoreQuery",
+                        failureResponse = moreResponse,
+                        failureEvaluation = moreEvaluation
+                    )
+                }
+
+                val nextMoreOrderTaskCode = moreResponse.optJSONObject("data")?.optString("orderTaskCode").orEmpty()
+                val serviceResponse = JSONObject(AntMemberRpcCall.taskServiceQuery())
+                val serviceEvaluation = evaluateMerchantRpc(serviceResponse)
+                if (!serviceEvaluation.success) {
+                    return MerchantTaskSnapshotQuery(
+                        success = false,
+                        moreOrderTaskCode = nextMoreOrderTaskCode,
+                        failureRpc = "AntMemberRpcCall.taskServiceQuery",
+                        failureResponse = serviceResponse,
+                        failureEvaluation = serviceEvaluation
+                    )
+                }
+
+                val groups = mutableListOf<MerchantTaskGroupSnapshot>()
+                buildMerchantTaskGroupSnapshot(moreResponse, "MORE", nextMoreOrderTaskCode)?.let(groups::add)
+                buildMerchantTaskGroupSnapshot(serviceResponse, "SERVICE", nextMoreOrderTaskCode)?.let(groups::add)
+                return MerchantTaskSnapshotQuery(
+                    success = true,
+                    groups = groups,
+                    moreOrderTaskCode = nextMoreOrderTaskCode
+                )
+            }
+
+            private fun buildMerchantTaskGroupSnapshot(
+                response: JSONObject,
+                expectedGroup: String,
+                nextMoreOrderTaskCode: String
+            ): MerchantTaskGroupSnapshot? {
+                val data = response.optJSONObject("data") ?: return null
+                val planCode = data.optString("planCode")
+                if (planCode.isNotBlank() && !planCode.equals(expectedGroup, true)) {
+                    return null
+                }
+                val taskList = data.optJSONArray("taskList") ?: return null
+                if (taskList.length() <= 0) {
+                    return null
+                }
+                val tasks = JSONArray()
+                for (i in 0 until taskList.length()) {
+                    val task = taskList.optJSONObject(i) ?: continue
+                    tasks.put(
+                        JSONObject(task.toString()).apply {
+                            put("_merchant_group", expectedGroup)
+                            put("_merchant_more_order_task_code", nextMoreOrderTaskCode)
+                        }
+                    )
+                }
+                return MerchantTaskGroupSnapshot(
+                    group = expectedGroup,
+                    tasks = tasks
+                )
+            }
+
+            private fun confirmMerchantCompletionProgress(item: TaskFlowItem, actionCode: String): TaskFlowActionResult {
+                val snapshot = queryMerchantTaskSnapshot()
+                moreOrderTaskCode = snapshot.moreOrderTaskCode
+                if (!snapshot.success) {
+                    return merchantTaskFailureResult(
+                        item,
+                        snapshot.failureRpc.ifBlank { "AntMemberRpcCall.taskMoreQuery" },
+                        snapshot.failureResponse,
+                        snapshot.failureEvaluation ?: evaluateMerchantRpc(snapshot.failureResponse),
+                        actionCode
+                    )
+                }
+
+                val currentGroup = item.raw?.optString("_merchant_group").orEmpty()
+                val refreshedTask = queryMerchantTaskByCode(snapshot.groups, item.type, currentGroup)
+                if (hasMerchantTaskProgressed(item.raw ?: JSONObject(), refreshedTask)) {
+                    Log.member("商家服务🏬[${item.title}]#任务进度已推进")
+                    val refreshedStatus = refreshedTask?.optString("status").orEmpty()
+                    if (refreshedTask != null && isMerchantCompletionPendingStatus(refreshedTask, refreshedStatus)) {
+                        return TaskFlowActionResult.success(refreshAfterAction = true)
+                    }
+                    return TaskFlowActionResult.success()
+                }
+                return TaskFlowActionResult.success(progressChanged = false)
+            }
+
+            private fun queryMerchantTaskByCode(
+                groups: List<MerchantTaskGroupSnapshot>,
+                taskCode: String,
+                expectedGroup: String
+            ): JSONObject? {
+                if (taskCode.isBlank()) {
+                    return null
+                }
+                for (group in groups) {
+                    if (expectedGroup.isNotBlank() && !group.group.equals(expectedGroup, true)) {
+                        continue
+                    }
+                    for (i in 0 until group.tasks.length()) {
+                        val task = group.tasks.optJSONObject(i) ?: continue
+                        if (taskCode == task.optString("taskCode")) {
+                            return task
+                        }
+                    }
+                }
+                return null
+            }
+
+            private fun hasMerchantTaskProgressed(beforeTask: JSONObject, afterTask: JSONObject?): Boolean {
+                if (afterTask == null) {
+                    return true
+                }
+
+                val beforeCurrent = extractMerchantTaskCurrent(beforeTask)
+                val afterCurrent = extractMerchantTaskCurrent(afterTask)
+                if (beforeCurrent != null && afterCurrent != null && afterCurrent > beforeCurrent) {
+                    return true
+                }
+
+                val beforeStatus = beforeTask.optString("status").uppercase(Locale.ROOT)
+                val afterStatus = afterTask.optString("status").uppercase(Locale.ROOT)
+                if (afterStatus != beforeStatus &&
+                    afterStatus in setOf("NEED_RECEIVE", "RECEIVED", "DONE", "FINISHED", "COMPLETE", "SUCCESS")
+                ) {
+                    return true
+                }
+
+                if (beforeTask.optString("pointBallId").isBlank() && afterTask.optString("pointBallId").isNotBlank()) {
+                    return true
+                }
+
+                return resolveMerchantBizId(beforeTask).isBlank() && resolveMerchantBizId(afterTask).isNotBlank()
+            }
+
             private fun logSkipOnce(item: TaskFlowItem, reason: String) {
                 val key = "$reason|${buildMerchantTaskFlowKey(item)}"
                 if (loggedSkipKeys.add(key)) {
@@ -7823,109 +8686,31 @@ class AntMember : ModelTask() {
             }
         }
 
-        /**
-         * 完成商家积分任务
-         * @param taskCode 任务代码
-         * @param actionCodes 行为代码候选
-         * @param title 标题
-         */
-        private fun receiveMerchantTask(taskCode: String): Boolean = CoroutineUtils.run {
-            try {
-                val jo = JSONObject(AntMemberRpcCall.taskReceive(taskCode))
-                val evaluation = evaluateMerchantRpc(jo)
-                if (!evaluation.success) {
-                    logMerchantRpcFailure("领取任务[$taskCode]", jo, evaluation)
-                    return@run evaluation.failureType == MerchantRpcFailureType.DUPLICATE_REWARD
-                }
-                return@run true
-            } catch (t: Throwable) {
-                Log.printStackTrace(TAG, "receiveMerchantTask err:", t)
+        private fun isMerchantRewardReadyStatus(task: JSONObject, status: String = task.optString("status")): Boolean {
+            return when (status.uppercase(Locale.ROOT)) {
+                "NEED_RECEIVE" -> true
+                "PROCESSING",
+                "EXCHANGE_PENDING" -> task.optString("pointBallId").isNotBlank() ||
+                    resolveMerchantBizId(task).isNotBlank()
+                else -> false
             }
-            false
         }
 
-        private suspend fun executeMerchantBrowseTask(
-            taskCode: String,
-            actionCodes: List<String>,
-            title: String,
-            taskStatus: String,
-            targetCount: Int = 1
-        ): Boolean = CoroutineUtils.run {
-            try {
-                if ("UNRECEIVED" == taskStatus && !receiveMerchantTask(taskCode)) {
-                    return@run false
-                }
-
-                for (actionCode in actionCodes) {
-                    var jo = JSONObject(AntMemberRpcCall.actioncode(actionCode))
-                    var evaluation = evaluateMerchantRpc(jo)
-                    if (!evaluation.success) {
-                        logMerchantRpcFailure("查询任务活动[$title/$actionCode]", jo, evaluation)
-                        if (evaluation.failureType == MerchantRpcFailureType.AUTH_LIMIT) {
-                            return@run false
-                        }
-                        continue
-                    }
-
-                    var produceSuccess = false
-                    var remainingCount = max(1, targetCount)
-                    for (index in 0 until max(1, targetCount)) {
-                        jo = JSONObject(AntMemberRpcCall.produce(actionCode))
-                        evaluation = evaluateMerchantRpc(jo)
-                        if (!evaluation.success) {
-                            logMerchantRpcFailure("任务打点[$title/$actionCode]", jo, evaluation)
-                            if (evaluation.failureType == MerchantRpcFailureType.AUTH_LIMIT) {
-                                return@run false
-                            }
-                            break
-                        }
-                        produceSuccess = true
-
-                        val refreshedTask = queryMerchantTaskByCode(taskCode) ?: break
-                        val refreshedStatus = refreshedTask.optString("status")
-                        if ("NEED_RECEIVE" == refreshedStatus || ("PROCESSING" != refreshedStatus && "UNRECEIVED" != refreshedStatus)) {
-                            break
-                        }
-
-                        val refreshedRemainingCount = resolveMerchantTaskRemainingCount(refreshedTask) ?: break
-                        if (refreshedRemainingCount <= 0 || refreshedRemainingCount >= remainingCount) {
-                            break
-                        }
-                        remainingCount = refreshedRemainingCount
-                    }
-
-                    if (produceSuccess) {
-                        Log.member("商家服务🏬[完成任务$title]")
-                        return@run true
-                    }
-                }
-            } catch (t: Throwable) {
-                Log.printStackTrace(TAG, "executeMerchantBrowseTask err:", t)
+        private fun isMerchantCompletionPendingStatus(task: JSONObject, status: String = task.optString("status")): Boolean {
+            return when (status.uppercase(Locale.ROOT)) {
+                "UNRECEIVED",
+                "PROCESS",
+                "WAIT_COMPLETE" -> true
+                "PROCESSING",
+                "EXCHANGE_PENDING" -> !isMerchantRewardReadyStatus(task, status)
+                else -> false
             }
-            false
-        }
-
-        private fun queryMerchantTaskByCode(taskCode: String): JSONObject? {
-            if (taskCode.isEmpty()) {
-                return null
-            }
-            val taskGroups = queryMerchantTaskGroups()
-            for (taskList in taskGroups) {
-                for (i in 0..<taskList.length()) {
-                    val task = taskList.optJSONObject(i) ?: continue
-                    if (taskCode == task.optString("taskCode")) {
-                        return task
-                    }
-                }
-            }
-            return null
         }
 
         private enum class MerchantRpcFailureType {
             AUTH_LIMIT,
             NO_ACTIVITY,
             DUPLICATE_REWARD,
-            DEPRECATED_SOURCE,
             NON_RETRYABLE
         }
 
@@ -7965,24 +8750,15 @@ class AntMember : ModelTask() {
                 )
             }
             val failureType = when {
-                code == "1009" ||
-                    message.contains("伺服器繁忙") ||
-                    message.contains("服务器繁忙") ||
-                    message.contains("請稍後再試") ||
-                    message.contains("请稍后再试") ||
-                    message.contains("訪問被拒絕") ||
-                    message.contains("访问被拒绝") -> MerchantRpcFailureType.AUTH_LIMIT
+                message == "訪問被拒絕" ||
+                    message == "访问被拒绝" -> MerchantRpcFailureType.AUTH_LIMIT
 
                 code.equals("RESULT_IS_NULL", true) ||
-                    message.contains("通过actionCode查询的任务活动为空") -> MerchantRpcFailureType.NO_ACTIVITY
+                    message == "通过actionCode查询的任务活动为空" -> MerchantRpcFailureType.NO_ACTIVITY
 
                 code == "392" ||
                     message == "任务已领取,无法重复领取" ||
                     message == "宝箱奖励已领取" -> MerchantRpcFailureType.DUPLICATE_REWARD
-
-                code == "3000" ||
-                    message.contains("系統出錯，正在排查") ||
-                    message.contains("系统出错，正在排查") -> MerchantRpcFailureType.DEPRECATED_SOURCE
 
                 else -> MerchantRpcFailureType.NON_RETRYABLE
             }
@@ -8010,6 +8786,7 @@ class AntMember : ModelTask() {
             evaluation: MerchantRpcEvaluation = evaluateMerchantRpc(response)
         ) {
             val detail = buildMerchantRpcFailureDetail(evaluation, response)
+            val fallbackFailureType = classifyMerchantTaskFailure(evaluation.code, evaluation.message, response)
             when (evaluation.failureType) {
                 MerchantRpcFailureType.AUTH_LIMIT ->
                     Log.member("商家服务🏬[$scene]#业务受限，本轮跳过:$detail")
@@ -8020,11 +8797,25 @@ class AntMember : ModelTask() {
                 MerchantRpcFailureType.DUPLICATE_REWARD ->
                     Log.member("商家服务🏬[$scene]#奖励已领取，跳过重复领取:$detail")
 
-                MerchantRpcFailureType.DEPRECATED_SOURCE ->
-                    Log.member("商家服务🏬[$scene]#旧链路不可用，已停止使用:$detail")
+                MerchantRpcFailureType.NON_RETRYABLE, null -> when (fallbackFailureType) {
+                    TaskRpcFailureType.TERMINAL_DONE ->
+                        Log.member("商家服务🏬[$scene]#奖励已领取，跳过重复领取:$detail")
 
-                MerchantRpcFailureType.NON_RETRYABLE, null ->
-                    Log.member("商家服务🏬[$scene]#接口失败:$detail")
+                    TaskRpcFailureType.RETRYABLE_RPC ->
+                        Log.member("商家服务🏬[$scene]#接口失败待重试:$detail")
+
+                    TaskRpcFailureType.BUSINESS_LIMIT ->
+                        Log.member("商家服务🏬[$scene]#业务受限，本轮跳过:$detail")
+
+                    TaskRpcFailureType.NON_RETRYABLE_INVALID ->
+                        Log.member("商家服务🏬[$scene]#参数无效，跳过:$detail")
+
+                    TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE ->
+                        Log.member("商家服务🏬[$scene]#当前链路不支持自动闭环:$detail")
+
+                    TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW ->
+                        Log.member("商家服务🏬[$scene]#接口失败:$detail")
+                }
             }
         }
 
@@ -8037,9 +8828,8 @@ class AntMember : ModelTask() {
         ): TaskFlowActionResult {
             val failureType = when (evaluation.failureType) {
                 MerchantRpcFailureType.DUPLICATE_REWARD -> TaskRpcFailureType.TERMINAL_DONE
-                MerchantRpcFailureType.AUTH_LIMIT -> TaskRpcFailureType.RETRYABLE_RPC
+                MerchantRpcFailureType.AUTH_LIMIT -> TaskRpcFailureType.BUSINESS_LIMIT
                 MerchantRpcFailureType.NO_ACTIVITY -> TaskRpcFailureType.BUSINESS_LIMIT
-                MerchantRpcFailureType.DEPRECATED_SOURCE -> TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW
                 MerchantRpcFailureType.NON_RETRYABLE,
                 null -> classifyMerchantTaskFailure(evaluation.code, evaluation.message, response)
             }
@@ -8091,47 +8881,38 @@ class AntMember : ModelTask() {
             message: String,
             responseObject: JSONObject
         ): TaskRpcFailureType {
-            val combined = "$code $message ${responseObject.optString("desc")} ${responseObject.optString("resultView")}"
+            val desc = responseObject.optString("desc")
+            val resultView = responseObject.optString("resultView")
             return when {
-                merchantContainsAny(
-                    combined,
+                message in setOf(
+                    "任务已领取,无法重复领取",
+                    "宝箱奖励已领取",
+                    "任务已领取",
+                    "奖励已领取",
                     "已领取",
-                    "已经领取",
-                    "重复领取",
-                    "重复领奖",
-                    "重复完成",
                     "已完成",
                     "已报名",
-                    "已经报名",
-                    "重复报名",
-                    "任务已完结",
-                    "任务已结束"
+                    "已经报名"
                 ) -> TaskRpcFailureType.TERMINAL_DONE
 
-                code == "400000040" ||
-                    merchantContainsAny(combined, "不支持rpc调用", "不支持RPC完成") ->
-                    TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE
+                code == "400000040" -> TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE
 
-                code in setOf("20020012", "TASK_ID_INVALID", "ILLEGAL_ARGUMENT", "PROMISE_TEMPLATE_NOT_EXIST") ||
-                    merchantContainsAny(combined, "参数错误", "参数非法", "任务ID非法", "模板不存在", "生活记录模板不存在") ->
+                code in setOf("20020012", "TASK_ID_INVALID", "ILLEGAL_ARGUMENT", "PROMISE_TEMPLATE_NOT_EXIST") ->
                     TaskRpcFailureType.NON_RETRYABLE_INVALID
 
-                code in setOf("3000", "1009", "I07", "REMOTE_INVOKE_EXCEPTION", "OP_REPEAT_CHECK", "SYSTEM_BUSY", "NETWORK_ERROR") ||
-                    merchantContainsAny(combined, "系统出错", "系统繁忙", "稍后", "繁忙", "频繁", "重试", "需要验证", "访问异常") ->
+                code in setOf("3000", "1009", "I07", "REMOTE_INVOKE_EXCEPTION", "OP_REPEAT_CHECK", "SYSTEM_BUSY", "NETWORK_ERROR") ->
                     TaskRpcFailureType.RETRYABLE_RPC
 
                 code.startsWith("100010") ||
                     code.contains("LIMIT", ignoreCase = true) ||
                     code == "NOT_PROMO_RULE_QUALIFIED" ||
-                    merchantContainsAny(combined, "上限", "限制", "受限", "不可领取", "资格不足", "风控", "风险", "访问被拒绝") ->
+                    message in setOf("訪問被拒絕", "访问被拒绝") ||
+                    desc in setOf("訪問被拒絕", "访问被拒绝") ||
+                    resultView in setOf("訪問被拒絕", "访问被拒绝") ->
                     TaskRpcFailureType.BUSINESS_LIMIT
 
                 else -> TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW
             }
-        }
-
-        private fun merchantContainsAny(value: String, vararg keywords: String): Boolean {
-            return keywords.any { value.contains(it, ignoreCase = true) }
         }
 
         private fun buildMerchantTaskFlowKey(item: TaskFlowItem): String {
@@ -8234,80 +9015,6 @@ class AntMember : ModelTask() {
             false
         }
 
-        private fun queryMerchantTaskGroups(): List<JSONArray> {
-            try {
-                val response = JSONObject(AntMemberRpcCall.taskListQuery())
-                val evaluation = evaluateMerchantRpc(response)
-                if (!evaluation.success) {
-                    logMerchantRpcFailure("积分任务列表", response, evaluation)
-                    return emptyList()
-                }
-                val data = response.optJSONObject("data")
-                val planCode = data?.optString("planCode").orEmpty()
-                if (planCode.isNotBlank() && !planCode.equals("MORE", true)) {
-                    Log.member("商家服务🏬[积分任务列表]#返回计划$planCode，本轮跳过")
-                    return emptyList()
-                }
-                val taskList = data?.optJSONArray("taskList") ?: return emptyList()
-                if (taskList.length() <= 0) {
-                    return emptyList()
-                }
-                return listOf(taskList)
-            } catch (t: Throwable) {
-                Log.printStackTrace(TAG, "queryMerchantTaskGroups taskListQuery err:", t)
-            }
-            return emptyList()
-        }
-
-        private suspend fun processMerchantTask(task: JSONObject): Boolean = CoroutineUtils.run {
-            val taskStatus = task.optString("status")
-            if (taskStatus.isEmpty()) {
-                return@run false
-            }
-
-            val title = task.optString("title", task.optString("taskName", "商家任务"))
-            val reward = task.optString("reward", task.optString("point"))
-            val taskCode = task.optString("taskCode")
-
-            if (TaskBlacklist.isTaskInBlacklist(memberTaskBlacklistModule, title) ||
-                TaskBlacklist.isTaskInBlacklist(memberTaskBlacklistModule, taskCode)
-            ) {
-                Log.member("商家服务🏬[$title]#任务在自动跳过列表(黑名单)中，停止执行")
-                return@run false
-            }
-
-            if ("NEED_RECEIVE" == taskStatus) {
-                val pointBallId = task.optString("pointBallId")
-                if (pointBallId.isNotEmpty()) {
-                    return@run receiveMerchantPointBall(pointBallId, title, reward)
-                }
-                return@run false
-            }
-
-            if ("PROCESSING" != taskStatus && "UNRECEIVED" != taskStatus) {
-                return@run false
-            }
-
-            val bizId = resolveMerchantBizId(task)
-            if ("PROCESSING" == taskStatus && bizId.isNotEmpty()) {
-                val jo = JSONObject(AntMemberRpcCall.taskFinish(bizId))
-                val evaluation = evaluateMerchantRpc(jo)
-                if (evaluation.success) {
-                    Log.member("商家服务🏬[$title]#领取积分$reward")
-                    return@run true
-                }
-                logMerchantRpcFailure("领取积分[$title]", jo, evaluation)
-                return@run evaluation.failureType == MerchantRpcFailureType.DUPLICATE_REWARD
-            }
-
-            val actionCodes = resolveMerchantActionCodes(task)
-            if (taskCode.isEmpty() || actionCodes.isEmpty()) {
-                return@run false
-            }
-
-            return@run executeMerchantBrowseTask(taskCode, actionCodes, title, taskStatus, resolveMerchantTaskTargetCount(task))
-        }
-
         private fun resolveMerchantBizId(task: JSONObject): String {
             return task.optJSONObject("extendLog")
                 ?.optJSONObject("bizExtMap")
@@ -8366,29 +9073,9 @@ class AntMember : ModelTask() {
             }
         }
 
-        private fun resolveMerchantTaskTargetCount(task: JSONObject): Int {
-            return max(1, resolveMerchantTaskRemainingCount(task) ?: 1)
-        }
-
-        private fun resolveMerchantTaskRemainingCount(task: JSONObject): Int? {
-            val target = task.optInt("target", Int.MIN_VALUE)
-            val current = task.optInt("current", 0)
-            if (target != Int.MIN_VALUE) {
-                return (target - current).coerceAtLeast(0)
-            }
-
-            val targetCount = task.optInt("targetCount", Int.MIN_VALUE)
-            val currentCount = task.optInt("currentCount", 0)
-            if (targetCount != Int.MIN_VALUE) {
-                return (targetCount - currentCount).coerceAtLeast(0)
-            }
-
-            return null
-        }
-
         private suspend fun collectMerchantPointBalls(): Boolean = CoroutineUtils.run {
             try {
-                val jo = JSONObject(AntMemberRpcCall.merchantBallQuery())
+                val jo = JSONObject(AntMemberRpcCall.merchantBallQuery("normalVisit"))
                 val evaluation = evaluateMerchantRpc(jo)
                 if (!evaluation.success) {
                     logMerchantRpcFailure("查询积分球", jo, evaluation)
@@ -8420,34 +9107,6 @@ class AntMember : ModelTask() {
                 return@run received
             } catch (t: Throwable) {
                 Log.printStackTrace(TAG, "collectMerchantPointBalls err:", t)
-            }
-            false
-        }
-
-        private suspend fun receiveMerchantPointBall(
-            pointBallId: String,
-            title: String,
-            reward: String
-        ): Boolean = CoroutineUtils.run {
-            try {
-                val jo = JSONObject(AntMemberRpcCall.ballReceive(pointBallId))
-                if (stopMemberMarketingForRpcRisk("AntMember.merchant.ballReceive", jo)) {
-                    return@run false
-                }
-                if (!ResChecker.checkRes(TAG, jo)) {
-                    return@run false
-                }
-                val pointReceived = jo.optJSONObject("data")?.optString("pointReceived").orEmpty()
-                if (pointReceived.isNotEmpty()) {
-                    Log.member("商家服务🏬[$title]#领取积分$pointReceived")
-                } else if (reward.isNotEmpty()) {
-                    Log.member("商家服务🏬[$title]#领取积分$reward")
-                } else {
-                    Log.member("商家服务🏬[$title]#领取积分")
-                }
-                return@run true
-            } catch (t: Throwable) {
-                Log.printStackTrace(TAG, "receiveMerchantPointBall err:", t)
             }
             false
         }

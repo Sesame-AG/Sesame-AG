@@ -110,6 +110,7 @@ object Vitality {
                 if (!skuModel.has("spuId")) {
                     skuModel.put("spuId", spuId)
                 }
+                copyParentItemFields(skuModel, vitalityItem)
                 skuInfo[skuId] = skuModel
                 IdMapManager.getInstance(VitalityRewardsMap::class.java).add(skuId, oderInfo)
             }
@@ -134,6 +135,7 @@ object Vitality {
                 if (!skuModel.has("spuId")) {
                     skuModel.put("spuId", spuId)
                 }
+                copyParentItemFields(skuModel, ItemDetail)
                 skuInfo[skuId] = skuModel
                 IdMapManager.getInstance(VitalityRewardsMap::class.java).add(skuId, skuName)
             }
@@ -141,6 +143,14 @@ object Vitality {
         } catch (th: Throwable) {
             Log.runtime(TAG, "handleItemDetail err:")
             Log.printStackTrace(TAG, th)
+        }
+    }
+
+    private fun copyParentItemFields(skuModel: JSONObject, parentItem: JSONObject) {
+        listOf("spuName", "subTitle", "labelTypeList", "itemStatus", "spuExtendInfo").forEach { key ->
+            if (!skuModel.has(key) && parentItem.has(key)) {
+                skuModel.put(key, parentItem.opt(key))
+            }
         }
     }
 
@@ -152,7 +162,7 @@ object Vitality {
         }
 
         if (skuInfo.isEmpty()) {
-            initVitality("SC_ASSETS")
+            initVitality("")
         }
         
         var sku = skuInfo[skuId] ?: run {
@@ -238,7 +248,7 @@ object Vitality {
     fun findSkuInfoBySkuName(spuName: String): JSONObject? {
         try {
             if (skuInfo.isEmpty()) {
-                initVitality("SC_ASSETS")
+                initVitality("")
             }
             for ((_, sku) in skuInfo) {
                 if (sku.optString("skuName").contains(spuName)) {

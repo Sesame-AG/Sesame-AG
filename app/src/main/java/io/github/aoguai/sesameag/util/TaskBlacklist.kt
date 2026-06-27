@@ -178,6 +178,8 @@ object TaskBlacklist {
             "TASK_ID_INVALID" -> "任务ID非法"
             "PROMISE_TEMPLATE_NOT_EXIST", "生活记录模板不存在" -> "模板不存在"
             "FAKE_SUCCESS" -> "检测到伪成功"
+            "AD_TRAFFIC_RISK", "217", "61002" -> "广告流量风控"
+            "UNSUPPORTED_GAMEPLAY_TASK" -> "无稳定自动完成RPC闭环"
             else -> return
         }
 

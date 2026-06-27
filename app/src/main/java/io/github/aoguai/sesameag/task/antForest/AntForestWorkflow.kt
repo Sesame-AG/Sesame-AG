@@ -200,7 +200,12 @@ internal suspend fun AntForest.runForestHomeFollowUpWorkflow(selfHomeObj: JSONOb
                 useEnergyRainChanceCard()
                 tc.countDebug("使用能量雨卡")
             }
-            if (EnergyRainCoroutine.execEnergyRain()) {
+            if (EnergyRainCoroutine.execEnergyRain(
+                    gameTaskCloser = EnergyRainCoroutine.EnergyRainGameDriveCloser { request ->
+                        closeEnergyRainGameDriveTask(request)
+                    }
+                )
+            ) {
                 shouldRefreshForestHomeAfterEnergyRain = true
                 handleEnergyRainPostFlow()
             }
@@ -211,7 +216,7 @@ internal suspend fun AntForest.runForestHomeFollowUpWorkflow(selfHomeObj: JSONOb
     }
 
     if (forestMarket?.value == true) {
-        GreenLife.ForestMarket("GREEN_LIFE", "ANTFOREST")
+        GreenLife.ForestMarket("GREEN_LIFE")
         tc.countDebug("森林集市")
     }
 

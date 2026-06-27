@@ -9,7 +9,7 @@ object AntSesameCreditRpcCall {
     private const val SESAME_GROWTH_GUIDE_INVOKE_VERSION = "1.0.2025.10.27"
     private const val SESAME_TASK_VERSION = "new"
     private const val SESAME_TASK_SCENE_CODE = "DAILY_MUST_DO_CARD"
-    private const val SESAME_TASK_CH_INFO = "ch_zmxy_zmlsy__chsub_zmsy_jingangwei"
+    private const val SESAME_TASK_CH_INFO = "ch_zhimahome__chsub_zml_doudi"
     private const val SESAME_TASK_JOIN_CH_INFO = "seasameList"
     private const val METHOD_CREDIT_ACCUMULATE_QUERY_LIST_V3 =
         "com.antgroup.zmxy.zmmemberop.biz.rpc.creditaccumulate.CreditAccumulateStrategyRpcManager.queryListV3"
@@ -284,7 +284,7 @@ object AntSesameCreditRpcCall {
         }
         val args = JSONArray().put(JSONObject().apply {
             put("currentPage", page)
-            put("formDelivery", "true")
+            put("formDelivery", "false")
             put("pageSize", pageSize)
             put("privilegeSource", "")
             put("privilegeTab", "")
@@ -347,9 +347,10 @@ object AntSesameCreditRpcCall {
     }
 
     @JvmStatic
-    fun zhimaTreeCleanAndPush(treeCode: String): String? {
+    fun zhimaTreeCleanAndPush(treeCode: String, clearArea: String): String? {
         return try {
             val extInfo = JSONObject().apply {
+                put("clearArea", clearArea)
                 put("clickNum", "1")
                 put("treeCode", treeCode)
             }
@@ -618,9 +619,12 @@ object AntSesameCreditRpcCall {
 
             @JvmStatic
             fun alchemyExecute(): String {
+                val requestData = JSONArray().put(JSONObject().apply {
+                    put("outerNewHand", false)
+                }).toString()
                 return RequestManager.requestString(
                     "com.antgroup.zmxy.zmmemberop.biz.rpc.AlchemyRpcManager.alchemy",
-                    "[null]"
+                    requestData
                 )
             }
 

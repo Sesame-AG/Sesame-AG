@@ -9,15 +9,46 @@ import java.util.UUID
 
 object AntMemberRpcCall {
 
-    private const val GAME_CENTER_SOURCE = "ch_appcollect__chsub_my-recentlyUsed"
-    private const val GAME_CENTER_P2E_SOURCE = "ch_appcenter__chsub_recentUSE"
+    internal const val GAME_CENTER_SOURCE = "ch_appcollect__chsub_my-recentlyUsed"
+    internal const val GAME_CENTER_P2E_SOURCE = "ch_appcenter__chsub_recentUSE"
+    internal const val INSURED_GOLD_DEFAULT_ENTRANCE = "cfsy"
+    private const val INSURED_GOLD_PRODUCT_CODE = "GIFT_UNIVERSAL_COVERAGE"
+    private const val BEAN_POSITION_ENTRANCE = "insplatform_mine_anxindou"
+    private const val BEAN_POSITION_SCENE = "POSITION"
     private const val METHOD_QUERY_MULTI_SCENE_WAIT_TO_GAIN_LIST =
         "com.alipay.insgiftbff.insgiftMain.queryMultiSceneWaitToGainList"
     private const val METHOD_GAIN_MY_AND_FAMILY_SUM_INSURED =
         "com.alipay.insgiftbff.insgiftMain.gainMyAndFamilySumInsured"
-    
+
     private fun getUniqueId(): String {
         return System.currentTimeMillis().toString() + RandomUtil.nextLong()
+    }
+
+    private fun normalizeInsuredGoldEntrance(entrance: String?): String {
+        return entrance?.takeIf { it.isNotBlank() } ?: INSURED_GOLD_DEFAULT_ENTRANCE
+    }
+
+    private fun buildInsuredGoldRightNoList(): JSONArray {
+        return JSONArray().apply {
+            put("UNIVERSAL_ACCIDENT")
+            put("UNIVERSAL_HOSPITAL")
+            put("UNIVERSAL_OUTPATIENT")
+            put("UNIVERSAL_SERIOUSNESS")
+            put("UNIVERSAL_WEALTH")
+            put("UNIVERSAL_TRANS")
+            put("UNIVERSAL_FRAUD_LIABILITY")
+        }
+    }
+
+    private fun buildInsuredGoldGainWaitParam(giftProdCode: String): JSONObject {
+        return JSONObject().apply {
+            put("giftProdCode", giftProdCode)
+            put("rightNoList", buildInsuredGoldRightNoList())
+        }
+    }
+
+    private fun buildBeanPositionFactors(): JSONObject {
+        return JSONObject().put("entrance", BEAN_POSITION_ENTRANCE)
     }
 
     private fun buildMemberSourcePassMap(): JSONObject {
@@ -172,10 +203,41 @@ object AntMemberRpcCall {
     }
 
     @JvmStatic
-    fun taskListQuery(): String {
+    fun taskMoreQuery(orderTaskCode: String = ""): String {
+        val args = JSONObject().apply {
+            put(
+                "paramMap",
+                JSONObject().apply {
+                    put("orderTaskCode", orderTaskCode)
+                    put("platform", "Android")
+                    put("version", "2.0")
+                }
+            )
+            put("taskItemCode", "")
+        }
         return RequestManager.requestString(
             "alipay.mrchservbase.task.more.query",
-            """[{"paramMap":{"platform":"Android"},"taskItemCode":""}]"""
+            JSONArray().put(args).toString()
+        )
+    }
+
+    @JvmStatic
+    fun taskServiceQuery(orderTaskCode: String = ""): String {
+        val args = JSONObject().apply {
+            put(
+                "paramMap",
+                JSONObject().apply {
+                    put("orderTaskCode", orderTaskCode)
+                    put("platform", "Android")
+                    put("showFinishStageTask", "true")
+                    put("version", "2.0")
+                }
+            )
+            put("taskItemCode", "")
+        }
+        return RequestManager.requestString(
+            "alipay.mrchservbase.task.service.query",
+            JSONArray().put(args).toString()
         )
     }
 
@@ -255,15 +317,12 @@ object AntMemberRpcCall {
     }
 
     @JvmStatic
-    fun merchantBallQuery(): String {
+    fun merchantBallQuery(userPath: String = "normalVisit"): String {
         val args = JSONObject().apply {
             put(
                 "context",
                 JSONObject().apply {
-                    put("autoCheckIn", "true")
-                    put("isGuide", "true")
-                    put("underTakeTrace", "NULL")
-                    put("userPath", "undertakeVisit")
+                    put("userPath", userPath)
                 }
             )
         }
@@ -559,12 +618,13 @@ object AntMemberRpcCall {
      * 游戏中心赚现金首页
      */
     @JvmStatic
-    fun queryGameCenterP2eHomePage(): String {
+    fun queryGameCenterP2eHomePage(source: String = GAME_CENTER_SOURCE): String {
         val args = JSONObject().apply {
             put("canAddHome", true)
             put("deviceLevel", "high")
             put("screenType", 10)
-            put("source", GAME_CENTER_SOURCE)
+            put("source", source)
+            put("subscribePanelCheck", true)
             put("unityDeviceLevel", "high")
         }
         return RequestManager.requestString(
@@ -577,13 +637,17 @@ object AntMemberRpcCall {
      * 游戏中心赚现金任务列表
      */
     @JvmStatic
-    fun queryGameCenterP2eTaskList(sessionId: String = System.currentTimeMillis().toString()): String {
+    fun queryGameCenterP2eTaskList(
+        source: String = GAME_CENTER_P2E_SOURCE,
+        sessionId: String = System.currentTimeMillis().toString()
+    ): String {
         val args = JSONObject().apply {
             put("deviceLevel", "high")
             put("panelLaunchableCheckMap", JSONObject().put("SET_HEAD_TASK", true))
             put("sessionId", sessionId)
             put("setHeadPanelCheck", true)
-            put("source", GAME_CENTER_P2E_SOURCE)
+            put("source", source)
+            put("subscribePanelCheck", true)
             put("unityDeviceLevel", "high")
         }
         return RequestManager.requestString(
@@ -624,11 +688,16 @@ object AntMemberRpcCall {
      * 游戏中心赚现金平台任务报名
      */
     @JvmStatic
-    fun gameCenterP2ePlatformTaskSignUp(taskId: String, taskToken: String): String {
+    fun gameCenterP2ePlatformTaskSignUp(
+        taskId: String,
+        taskToken: String,
+        actionChannel: String,
+        source: String
+    ): String {
         val args = JSONObject().apply {
-            put("actionChannel", "taskList")
+            put("actionChannel", actionChannel)
             put("activityId", "P2E_PLATFORM_TASK")
-            put("source", GAME_CENTER_P2E_SOURCE)
+            put("source", source)
             put("taskId", taskId)
             put("taskToken", taskToken)
         }
@@ -642,11 +711,16 @@ object AntMemberRpcCall {
      * 游戏中心赚现金平台任务完成
      */
     @JvmStatic
-    fun gameCenterP2ePlatformTaskComplete(taskId: String, taskToken: String): String {
+    fun gameCenterP2ePlatformTaskComplete(
+        taskId: String,
+        taskToken: String,
+        actionChannel: String,
+        source: String
+    ): String {
         val args = JSONObject().apply {
-            put("actionChannel", "taskList")
+            put("actionChannel", actionChannel)
             put("activityId", "P2E_PLATFORM_TASK")
-            put("source", GAME_CENTER_P2E_SOURCE)
+            put("source", source)
             put("taskId", taskId)
             put("taskToken", taskToken)
         }
@@ -660,12 +734,17 @@ object AntMemberRpcCall {
      * 游戏中心赚现金任务领奖
      */
     @JvmStatic
-    fun gameCenterP2eTaskReceive(task: JSONObject): String {
+    fun gameCenterP2eTaskReceive(
+        task: JSONObject,
+        actionChannel: String,
+        source: String,
+        oriChInfo: String
+    ): String {
         val args = JSONObject().apply {
-            put("actionChannel", "taskList")
+            put("actionChannel", actionChannel)
             put("activityId", task.optString("activityId").ifBlank { "P2E_PLATFORM_TASK" })
-            put("oriChInfo", GAME_CENTER_P2E_SOURCE)
-            put("source", GAME_CENTER_P2E_SOURCE)
+            put("oriChInfo", oriChInfo)
+            put("source", source)
             put("taskId", task.optString("taskId"))
             put("taskToken", task.optString("taskToken"))
             put("taskType", task.optString("taskType"))
@@ -680,11 +759,17 @@ object AntMemberRpcCall {
      * 游戏中心赚现金签到
      */
     @JvmStatic
-    fun gameCenterP2eSignIn(date: String, index: Int, signSequenceId: String): String {
+    fun gameCenterP2eSignIn(
+        date: String,
+        index: Int,
+        signSequenceId: String,
+        source: String = GAME_CENTER_SOURCE
+    ): String {
         val args = JSONObject().apply {
             put("date", date)
             put("index", index)
             put("signSequenceId", signSequenceId)
+            put("source", source)
         }
         return RequestManager.requestString(
             "com.alipay.gamecenteruprod.biz.rpc.p2e.signIn",
@@ -708,35 +793,35 @@ object AntMemberRpcCall {
      * 获取所有可领取的保障金
      */
     @JvmStatic
-    fun queryAvailableCollectInsuredGold(): String {
+    fun queryAvailableCollectInsuredGold(entrance: String = INSURED_GOLD_DEFAULT_ENTRANCE): String {
+        val normalizedEntrance = normalizeInsuredGoldEntrance(entrance)
+        val args = JSONObject().apply {
+            put("entrance", normalizedEntrance)
+            put("eventToWaitParamDTO", buildInsuredGoldGainWaitParam(INSURED_GOLD_PRODUCT_CODE))
+            put("helpChildParamDTO", buildInsuredGoldGainWaitParam("GIFT_HEALTH_GOLD_CHILD"))
+            put("priorityChannelParamDTO", buildInsuredGoldGainWaitParam(INSURED_GOLD_PRODUCT_CODE))
+            put("signInParamDTO", buildInsuredGoldGainWaitParam(INSURED_GOLD_PRODUCT_CODE))
+        }
         return RequestManager.requestString(
             METHOD_QUERY_MULTI_SCENE_WAIT_TO_GAIN_LIST,
-            """[{"entrance":"cfsy","eventToWaitParamDTO":{"giftProdCode":"GIFT_UNIVERSAL_COVERAGE","rightNoList":["UNIVERSAL_ACCIDENT","UNIVERSAL_HOSPITAL","UNIVERSAL_OUTPATIENT","UNIVERSAL_SERIOUSNESS","UNIVERSAL_WEALTH","UNIVERSAL_TRANS","UNIVERSAL_FRAUD_LIABILITY"]},"helpChildParamDTO":{"giftProdCode":"GIFT_HEALTH_GOLD_CHILD","rightNoList":["UNIVERSAL_ACCIDENT","UNIVERSAL_HOSPITAL","UNIVERSAL_OUTPATIENT","UNIVERSAL_SERIOUSNESS","UNIVERSAL_WEALTH","UNIVERSAL_TRANS","UNIVERSAL_FRAUD_LIABILITY"]},"priorityChannelParamDTO":{"giftProdCode":"GIFT_UNIVERSAL_COVERAGE","rightNoList":["UNIVERSAL_ACCIDENT","UNIVERSAL_HOSPITAL","UNIVERSAL_OUTPATIENT","UNIVERSAL_SERIOUSNESS","UNIVERSAL_WEALTH","UNIVERSAL_TRANS","UNIVERSAL_FRAUD_LIABILITY"]},"signInParamDTO":{"giftProdCode":"GIFT_UNIVERSAL_COVERAGE","rightNoList":["UNIVERSAL_ACCIDENT","UNIVERSAL_HOSPITAL","UNIVERSAL_OUTPATIENT","UNIVERSAL_SERIOUSNESS","UNIVERSAL_WEALTH","UNIVERSAL_TRANS","UNIVERSAL_FRAUD_LIABILITY"]}}]""",
+            JSONArray().put(args).toString(),
             "insgiftbff", "queryMultiSceneWaitToGainList", "insgiftMain"
         )
     }
 
     @JvmStatic
-    fun queryInsuredOpenAndAllowAndUpgrade(entrance: String = "cfsy"): String {
-        val rightNoList = JSONArray().apply {
-            put("UNIVERSAL_ACCIDENT")
-            put("UNIVERSAL_HOSPITAL")
-            put("UNIVERSAL_OUTPATIENT")
-            put("UNIVERSAL_SERIOUSNESS")
-            put("UNIVERSAL_WEALTH")
-            put("UNIVERSAL_TRANS")
-            put("UNIVERSAL_FRAUD_LIABILITY")
-        }
+    fun queryInsuredOpenAndAllowAndUpgrade(entrance: String = INSURED_GOLD_DEFAULT_ENTRANCE): String {
+        val normalizedEntrance = normalizeInsuredGoldEntrance(entrance)
         val args = JSONObject().apply {
-            put("entrance", entrance)
-            put("giftProdCode", "GIFT_UNIVERSAL_COVERAGE")
+            put("entrance", normalizedEntrance)
+            put("giftProdCode", INSURED_GOLD_PRODUCT_CODE)
             put("pageRenderRequest", JSONObject().apply {
-                put("channelType", entrance)
+                put("channelType", normalizedEntrance)
                 put("contentKey", "couponId")
                 put("sceneCode", "INSGIFT_APP")
                 put("templateCode", "INSGIFT_APP_NEW_OPEN")
             })
-            put("rightNoList", rightNoList)
+            put("rightNoList", buildInsuredGoldRightNoList())
         }
         return RequestManager.requestString(
             "com.alipay.insgiftbff.insgiftMain.queryOpenAndAllowAndUpgrade",
@@ -746,9 +831,25 @@ object AntMemberRpcCall {
     }
 
     @JvmStatic
-    fun queryInsuredGiftHomeRender(entrance: String = "cfsy"): String {
+    fun queryInsuredOpenAndAllow(entrance: String = INSURED_GOLD_DEFAULT_ENTRANCE): String {
+        val normalizedEntrance = normalizeInsuredGoldEntrance(entrance)
+        val args = JSONObject().apply {
+            put("entrance", normalizedEntrance)
+            put("giftProdCode", INSURED_GOLD_PRODUCT_CODE)
+            put("rightNoList", buildInsuredGoldRightNoList())
+        }
+        return RequestManager.requestString(
+            "com.alipay.insgiftbff.insgiftMain.queryOpenAndAllow",
+            JSONArray().put(args).toString(),
+            "insgiftbff", "queryOpenAndAllow", "insgiftMain"
+        )
+    }
+
+    @JvmStatic
+    fun queryInsuredGiftHomeRender(entrance: String = INSURED_GOLD_DEFAULT_ENTRANCE): String {
+        val normalizedEntrance = normalizeInsuredGoldEntrance(entrance)
         fun buildPageOptions() = JSONObject().apply {
-            put("channelType", entrance)
+            put("channelType", normalizedEntrance)
             put("greatPromoPrefetchRPCFlag", true)
         }
 
@@ -769,7 +870,7 @@ object AntMemberRpcCall {
                 put("sceneCode", "INSGIFT_APP_VICE")
             })
             put("voucherQuery", JSONObject().apply {
-                put("entrance", entrance)
+                put("entrance", normalizedEntrance)
                 put("mktPrizeType", "VOUCHER_QUERY")
                 put("voucherQueryDTO", JSONObject())
             })
@@ -799,13 +900,14 @@ object AntMemberRpcCall {
         entrance: String,
         controlSolutionSceneCode: String? = null
     ): String {
+        val normalizedEntrance = normalizeInsuredGoldEntrance(entrance)
         val args = JSONObject().apply {
             put("bizData", JSONObject())
             if (!controlSolutionSceneCode.isNullOrBlank()) {
                 put("controlSolutionSceneCode", controlSolutionSceneCode)
                 put("displayTaskCount", 30)
             }
-            put("entrance", entrance)
+            put("entrance", normalizedEntrance)
             put("sceneCode", sceneCode)
             put("taskCenterId", taskCenterId)
         }
@@ -849,44 +951,6 @@ object AntMemberRpcCall {
         )
     }
 
-    /**
-     * 查询生活记录
-     *
-     * @return 结果
-     */
-
-    /**
-     * 查询待领取的保障金
-     *
-     * @return 结果
-     */
-    @JvmStatic
-    fun queryMultiSceneWaitToGainList(): String {
-        return RequestManager.requestString(
-            "com.alipay.insgiftbff.insgiftMain.queryMultiSceneWaitToGainList",
-            """[{"entrance":"jkj_zhima_dairy66","eventToWaitParamDTO":{"giftProdCode":"GIFT_UNIVERSAL_COVERAGE","rightNoList":["UNIVERSAL_ACCIDENT","UNIVERSAL_HOSPITAL","UNIVERSAL_OUTPATIENT","UNIVERSAL_SERIOUSNESS","UNIVERSAL_WEALTH","UNIVERSAL_TRANS","UNIVERSAL_FRAUD_LIABILITY"]},"helpChildParamDTO":{"giftProdCode":"GIFT_HEALTH_GOLD_CHILD","rightNoList":["UNIVERSAL_ACCIDENT","UNIVERSAL_HOSPITAL","UNIVERSAL_OUTPATIENT","UNIVERSAL_SERIOUSNESS","UNIVERSAL_WEALTH","UNIVERSAL_TRANS","UNIVERSAL_FRAUD_LIABILITY"]},"priorityChannelParamDTO":{"giftProdCode":"GIFT_UNIVERSAL_COVERAGE","rightNoList":["UNIVERSAL_ACCIDENT","UNIVERSAL_HOSPITAL","UNIVERSAL_OUTPATIENT","UNIVERSAL_SERIOUSNESS","UNIVERSAL_WEALTH","UNIVERSAL_TRANS","UNIVERSAL_FRAUD_LIABILITY"]},"signInParamDTO":{"giftProdCode":"GIFT_UNIVERSAL_COVERAGE","rightNoList":["UNIVERSAL_ACCIDENT","UNIVERSAL_HOSPITAL","UNIVERSAL_OUTPATIENT","UNIVERSAL_SERIOUSNESS","UNIVERSAL_WEALTH","UNIVERSAL_TRANS","UNIVERSAL_FRAUD_LIABILITY"]}}]"""
-        )
-    }
-
-    /**
-     * 领取保障金
-     *
-     * @param jsonObject jsonObject
-     * @return 结果
-     */
-    @JvmStatic
-    @Throws(JSONException::class)
-    fun gainMyAndFamilySumInsured(jsonObject: JSONObject): String {
-        jsonObject.apply {
-            put("disabled", false)
-            put("entrance", "jkj_zhima_dairy66")
-        }
-        return RequestManager.requestString(
-            "com.alipay.insgiftbff.insgiftMain.gainMyAndFamilySumInsured",
-            "[$jsonObject]"
-        )
-    }
-
     // 安心豆
     @JvmStatic
     fun querySignInProcess(appletId: String, scene: String): String {
@@ -914,9 +978,9 @@ object AntMemberRpcCall {
     @JvmStatic
     fun queryGuardianGradeAwards(): String {
         val args = JSONObject().apply {
-            put("entrance", "myb_tab_axd_qd")
+            put("entrance", BEAN_POSITION_ENTRANCE)
             put("queryAwardStatus", true)
-            put("sceneCode", "POSITION")
+            put("sceneCode", BEAN_POSITION_SCENE)
         }
         return RequestManager.requestString(
             "com.alipay.insmarketingbff.guardian.queryGradeAwards",
@@ -927,8 +991,8 @@ object AntMemberRpcCall {
     @JvmStatic
     fun guardianAwardSend(skuId: String): String {
         val args = JSONObject().apply {
-            put("entrance", "myb_tab_axd_qd")
-            put("sceneCode", "POSITION")
+            put("entrance", BEAN_POSITION_ENTRANCE)
+            put("sceneCode", BEAN_POSITION_SCENE)
             put("skuId", skuId)
         }
         return RequestManager.requestString(
@@ -949,10 +1013,62 @@ object AntMemberRpcCall {
     }
 
     @JvmStatic
+    fun queryUserQuestionDrama(userId: String, channel: String = "ANXINDOU"): String {
+        val args = JSONObject().apply {
+            put("channel", channel)
+            put("userId", userId)
+        }
+        return RequestManager.requestString(
+            "com.alipay.inscontentplatform.question.queryUserQuestionDrama",
+            JSONArray().put(args).toString()
+        )
+    }
+
+    @JvmStatic
+    fun addAskAnswerRecord(
+        askAnswerId: String,
+        userId: String,
+        answerResult: String = "rightAnswer"
+    ): String {
+        val args = JSONObject().apply {
+            put("answerResult", answerResult)
+            put("askAnswerId", askAnswerId)
+            put("userId", userId)
+        }
+        return RequestManager.requestString(
+            "com.alipay.mfinsnsprod.biz.service.gw.qa.api.AskAnswerGwManager.addAskAnswerRecord",
+            JSONArray().put(args).toString()
+        )
+    }
+
+    @JvmStatic
+    fun answerQuestionDrama(
+        dramaId: String,
+        scriptId: String,
+        userDramaId: String,
+        userId: String,
+        channel: String = "ANXINDOU",
+        answerResult: String = "SUCCESS"
+    ): String {
+        val args = JSONObject().apply {
+            put("answerResult", answerResult)
+            put("channel", channel)
+            put("dramaId", dramaId)
+            put("scriptId", scriptId)
+            put("userDramaId", userDramaId)
+            put("userId", userId)
+        }
+        return RequestManager.requestString(
+            "com.alipay.inscontentplatform.question.answerQuestionDrama",
+            JSONArray().put(args).toString()
+        )
+    }
+
+    @JvmStatic
     fun beanTaskCenterConsult(
         taskCenterId: String,
         sceneCode: String,
-        entrance: String
+        entrance: String = BEAN_POSITION_ENTRANCE
     ): String {
         val args = JSONObject().apply {
             put("bizData", JSONObject())
@@ -964,6 +1080,29 @@ object AntMemberRpcCall {
         }
         return RequestManager.requestString(
             "com.alipay.insmarketingbff.bean.taskCenterConsult",
+            JSONArray().put(args).toString()
+        )
+    }
+
+    @JvmStatic
+    fun queryAccountSummaryPoint(entrance: String = BEAN_POSITION_ENTRANCE): String {
+        val args = JSONObject().apply {
+            put("bizScene", BEAN_POSITION_SCENE)
+            put("entrance", entrance)
+        }
+        return RequestManager.requestString(
+            "com.alipay.insmarketingbff.bean.queryAccountSummaryPoint",
+            JSONArray().put(args).toString()
+        )
+    }
+
+    @JvmStatic
+    fun filterValidBizProperty(): String {
+        val args = JSONObject().apply {
+            put("userAccountFilter", false)
+        }
+        return RequestManager.requestString(
+            "com.alipay.insmarketingbff.bean.filterValidBizProperty",
             JSONArray().put(args).toString()
         )
     }
@@ -1161,7 +1300,7 @@ object AntMemberRpcCall {
             if (bizProperty.isNotBlank()) {
                 put("bizProperty", bizProperty)
             }
-            put("factors", JSONObject().put("entrance", "insplatform_mine_anxindou"))
+            put("factors", buildBeanPositionFactors())
             put("pageSize", pageSize)
             put("pageStartIndex", pageStartIndex)
             put("riskScore", 0)
@@ -1178,7 +1317,7 @@ object AntMemberRpcCall {
     @JvmStatic
     fun queryRightsDetail(rightsId: String): String {
         val args = JSONObject().apply {
-            put("factors", JSONObject().put("entrance", "insplatform_mine_anxindou"))
+            put("factors", buildBeanPositionFactors())
             put("rightsCode", rightsId)
         }
         return RequestManager.requestString(
@@ -1191,7 +1330,7 @@ object AntMemberRpcCall {
     fun queryRightsPreExchangeFlows(pageStartIndex: Int = 0, pageSize: Int = 99): String {
         val args = JSONObject().apply {
             put("bizScene", "BLUE_BEAN_POSITION")
-            put("factors", JSONObject().put("entrance", "insplatform_mine_anxindou"))
+            put("factors", buildBeanPositionFactors())
             put("pageSize", pageSize)
             put("pageStartIndex", pageStartIndex)
         }
@@ -1219,7 +1358,7 @@ object AntMemberRpcCall {
         val args = JSONObject().apply {
             put("assetAmount", assetAmount)
             put("bizScene", "BLUE_BEAN_POSITION")
-            put("factors", JSONObject().put("entrance", "insplatform_mine_anxindou"))
+            put("factors", buildBeanPositionFactors())
             put("needOrder", needOrder)
             put("rightsId", rightsId)
         }
@@ -1380,9 +1519,14 @@ object AntMemberRpcCall {
     }
 
     @JvmStatic
-    fun queryStickerCanReceive(year: String, month: String): String {
-        val data =
-            """[{"isFirstShow":"false","month":"$month","scene":"","year":"$year"}]"""
+    fun queryStickerCanReceiveList(year: String, month: String): String {
+        val data = """[{"month":"$month","year":"$year"}]"""
+        return RequestManager.requestString("alipay.memberasset.sticker.queryStickerCanReceive", data)
+    }
+
+    @JvmStatic
+    fun ackStickerCanReceiveFirstShow(): String {
+        val data = """[{"isFirstShow":"false"}]"""
         return RequestManager.requestString("alipay.memberasset.sticker.queryStickerCanReceive", data)
     }
 

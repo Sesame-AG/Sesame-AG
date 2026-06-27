@@ -3,11 +3,12 @@ package io.github.aoguai.sesameag.task.antForest
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.hook.Toast
-import io.github.aoguai.sesameag.util.GameTask
 import io.github.aoguai.sesameag.util.FriendGuard
+import io.github.aoguai.sesameag.util.GameTask
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.ResChecker
 import io.github.aoguai.sesameag.util.maps.UserMap
+import org.json.JSONArray
 import kotlinx.coroutines.delay
 import org.json.JSONObject
 import kotlin.random.Random
@@ -19,11 +20,54 @@ import kotlin.random.Random
  */
 object EnergyRainCoroutine {
     private const val TAG = "EnergyRain"
+    private const val FOREST_LMCT_TASK_TYPE = "GAME_DONE_LMCT"
+    private const val FOREST_SLJYD_TASK_TYPE = "GAME_DONE_SLJYD"
+    private val APP_ID_QUERY_REGEX = Regex("""(?:^|[?&])appId=([0-9]+)""")
+    private val ENERGY_RAIN_ACTIONABLE_STATUSES = setOf("TODO", "NOT_TRIGGER")
+    private val ENERGY_RAIN_TERMINAL_STATUSES = setOf("FINISHED", "DONE", "RECEIVED")
+    private val ENERGY_RAIN_DRIVE_TASK_MAPPING = mapOf(
+        "GAME_DONE_LMCT" to "LMCT_TASK_QUDONG",
+        "GAME_DONE_SGBHSD_new" to "SGBHSD_TASK_QUDONG",
+        "GAME_DONE_QYJ" to "QYJZFM_TASK_QUDONG",
+        "GAME_DONE_BWXRK" to "BWXRK_TASK_QUDONG",
+        "GAME_DONE_CNXDY" to "CNXDY_TASK_QUDONG",
+        "GAME_DONE_MHXCZ" to "MHXCZ_TASK_QUDONG",
+        "GAME_DONE_XJSKP" to "XJSKP_TASK_QUDONG",
+        "GAME_DONE_SCSST" to "SCSST_TASK_QUDONG",
+        "GAME_DONE_WDHYSJ" to "WDHYSJ_TASK_QUDONG"
+    )
     private val SILENT_GRANT_FAILURE_CODES = setOf(
         "FRIEND_NOT_FOREST_USER",
         "RAIN_ENERGY_GRANTED_BY_OTHER",
         "RAIN_ENERGY_GRANT_EXCEED"
     )
+
+    fun interface EnergyRainGameDriveCloser {
+        fun close(request: EnergyRainGameDriveRequest): EnergyRainGameDriveResult
+    }
+
+    data class EnergyRainGameDriveRequest(
+        val gameTaskType: String,
+        val gameTaskTitle: String,
+        val gameTaskStatus: String,
+        val appId: String?,
+        val driveTaskType: String
+    )
+
+    data class EnergyRainGameDriveResult(
+        val status: EnergyRainGameDriveStatus,
+        val message: String = ""
+    )
+
+    enum class EnergyRainGameDriveStatus {
+        CONFIRMED_DONE,
+        PROGRESSED,
+        NOT_FOUND,
+        SKIPPED_BLACKLISTED,
+        NO_PROGRESS,
+        RETRYABLE_FAILED,
+        NON_RETRYABLE_FAILED
+    }
 
     /**
      * 上次执行能量雨的时间戳
@@ -45,7 +89,10 @@ object EnergyRainCoroutine {
      * 执行能量雨功能
      * @param isManual 是否为手动触发
      */
-    suspend fun execEnergyRain(isManual: Boolean = false): Boolean {
+    suspend fun execEnergyRain(
+        isManual: Boolean = false,
+        gameTaskCloser: EnergyRainGameDriveCloser? = null
+    ): Boolean {
         try {
             // 执行频率检查：防止短时间内重复执行
             val currentTime = System.currentTimeMillis()
@@ -57,7 +104,7 @@ object EnergyRainCoroutine {
                 delay(cooldownSeconds * 1000.toLong())
             }
 
-            val executed = energyRain(isManual)
+            val executed = energyRain(isManual, gameTaskCloser)
 
             // 更新最后执行时间
             lastExecuteTime = System.currentTimeMillis()
@@ -76,11 +123,15 @@ object EnergyRainCoroutine {
      * 能量雨主逻辑（协程版本）
      * @param isManual 是否为手动触发
      */
-    private suspend fun energyRain(isManual: Boolean): Boolean {
+    private suspend fun energyRain(
+        isManual: Boolean,
+        gameTaskCloser: EnergyRainGameDriveCloser?
+    ): Boolean {
         try {
             var playedCount = 0
             val maxPlayLimit = 10
             var shouldRunPostFlow = false
+            val attemptedGameTaskKeys = mutableSetOf<String>()
 
             do {
                 val joEnergyRainHome = JSONObject(AntForestRpcCall.queryEnergyRainHome())
@@ -178,14 +229,17 @@ object EnergyRainCoroutine {
                 }
 
                 // 3️⃣ 检查是否可以能量雨游戏
-                // canPlayGame 好像一直是true        注意：能量雨游戏只能执行一次，执行后会设置标记防止重复
-                // 修复逻辑：只有常规机会用完 (!canPlayToday) 且赠送机会也已全部处理 (!canGrantStatus) 时，才检查收尾游戏任务
+                // 只有常规机会用完 (!canPlayToday) 且赠送机会也已全部处理 (!canGrantStatus) 时，才检查收尾游戏任务。
+                // 今日标记只用于服务端确认终态或无候选，不用于隐藏“入口已尝试但未完成”的任务。
                 val canEnterGameCheck = isManual || (!canPlayToday && (!canGrantStatus || grantExceedToday))
                 if (canEnterGameCheck) {
                     if (canPlayGame && (isManual || !Status.hasFlagToday(energyRainGameFlag))) {
                         Log.forest("检查能量雨游戏任务")
-                        val taskResult = checkAndDoEndGameTask()//检查能量雨 游戏任务 并接取
+                        val taskResult = checkAndDoEndGameTask(attemptedGameTaskKeys, gameTaskCloser)//检查能量雨 游戏任务 并接取
                         if (taskResult == TaskResult.SUCCESS) {
+                            if (!isManual) {
+                                Status.setFlagToday(energyRainGameFlag)
+                            }
                             randomDelay(3000, 5000) // 随机延迟3-5秒
                             playedCount++
                             shouldRunPostFlow = true
@@ -273,73 +327,411 @@ object EnergyRainCoroutine {
         NOT_FOUND       // 未发现任务（可能是接口更新延迟）
     }
 
+    private enum class EnergyRainGameExecutionResult {
+        CONFIRMED_DONE,
+        EXECUTED_NO_PROGRESS,
+        ALREADY_DONE,
+        RETRYABLE_FAILED,
+        NON_RETRYABLE_FAILED
+    }
+
+    private data class EnergyRainGameTaskCandidate(
+        val taskType: String,
+        val taskStatus: String,
+        val taskTitle: String,
+        val appId: String?,
+        val taskProgress: Int,
+        val taskRequire: Int,
+        val thirdLevel: String
+    ) {
+        val attemptKey: String
+            get() = listOf(taskType, appId.orEmpty(), taskStatus).joinToString("#")
+    }
+
     /**
      * 检查并领取能量雨后的额外游戏任务
      */
-    private suspend fun checkAndDoEndGameTask(): TaskResult {
+    private suspend fun checkAndDoEndGameTask(
+        attemptedGameTaskKeys: MutableSet<String>,
+        gameTaskCloser: EnergyRainGameDriveCloser?
+    ): TaskResult {
         try {
-            // 1. 查询当前是否有可接或已接的游戏任务
-            var response = AntForestRpcCall.queryEnergyRainEndGameList()
-            var jo = JSONObject(response)
+            val response = AntForestRpcCall.queryEnergyRainEndGameList()
+            val jo = JSONObject(response)
             if (!ResChecker.checkRes(TAG, jo)) {
                 return TaskResult.NOT_FOUND
             }
 
-            // 2. 先处理“有新任务可以接”的情况（需要初始化）
-            if (jo.optBoolean("needInitTask", false)) {
-                Log.forest("初始化能量雨机会任务...")
-                val initRes = JSONObject(AntForestRpcCall.initTask("GAME_DONE_SLJYD"))
-                if (ResChecker.checkRes(TAG, initRes)) {
-                    randomDelay(1000, 2000)
-                    // 初始化后必须重新查询列表，否则下面的 Step 3 使用的是旧数据
-                    response = AntForestRpcCall.queryEnergyRainEndGameList()
-                    jo = JSONObject(response)
-                    if (!ResChecker.checkRes(TAG, jo)) return TaskResult.NOT_FOUND
-                } else {
-                    return TaskResult.NOT_FOUND
-                }
-            }
+            val needInitTask = jo.optBoolean("needInitTask", false)
 
-            // 3. 核心逻辑：遍历任务列表，检查是否有处于 TO DO 状态的任务
             val groupTask = jo.optJSONObject("energyRainEndGameGroupTask")
             val taskInfoList = groupTask?.optJSONArray("taskInfoList")
-            if (taskInfoList != null && taskInfoList.length() > 0) {
-                for (i in 0 until taskInfoList.length()) {
-                    val task = taskInfoList.getJSONObject(i)
-                    val baseInfo = task.optJSONObject("taskBaseInfo") ?: continue
-                    val taskType = baseInfo.optString("taskType")
-                    val taskStatus = baseInfo.optString("taskStatus") // 关键状态
+            if (taskInfoList == null || taskInfoList.length() <= 0) {
+                if (!needInitTask) {
+                    Log.forest("能量雨机会任务当前无待处理候选，视为服务端已无待处理游戏任务")
+                    return TaskResult.ALREADY_DONE
+                }
+                Log.forest("能量雨机会任务提示 needInitTask，但未返回可初始化候选")
+                return TaskResult.NOT_FOUND
+            }
 
-                    if (taskType == "GAME_DONE_SLJYD") {
-                        if (taskStatus == "TODO" || taskStatus == "NOT_TRIGGER") {
-                            val bizInfoStr = baseInfo.optString("bizInfo")
-                            val taskTitle = if (bizInfoStr.isNotEmpty()) {
-                                JSONObject(bizInfoStr).optString("taskTitle", "能量雨游戏任务")
-                            } else {
-                                "能量雨游戏任务"
-                            }
+            val candidates = buildEnergyRainGameTaskCandidates(taskInfoList)
+            val actionableCandidates = candidates.filter { it.taskStatus in ENERGY_RAIN_ACTIONABLE_STATUSES }
+            if (actionableCandidates.isNotEmpty()) {
+                val candidate = selectEnergyRainGameTaskCandidate(actionableCandidates)
+                if (!attemptedGameTaskKeys.add(candidate.attemptKey)) {
+                    Log.forest("能量雨机会任务[${candidate.taskTitle}]本轮已尝试，跳过重复执行")
+                    return TaskResult.NOT_FOUND
+                }
+                return when (executeEnergyRainGameTask(candidate, needInitTask, gameTaskCloser)) {
+                    EnergyRainGameExecutionResult.CONFIRMED_DONE -> {
+                        Log.forest("能量雨游戏任务[${candidate.taskTitle}]已确认完成")
+                        TaskResult.SUCCESS
+                    }
 
-                            Log.forest("发现待完成任务[$taskTitle]，准备执行上报...")
-                            AntForestRpcCall.clickGame("2021005113684028")
-                            randomDelay(2000, 3000)
-                            if (GameTask.Forest_sljyd.report(1)) {
-                                Log.forest("森林能量雨机会任务[$taskTitle] 已完成")
-                                return TaskResult.SUCCESS
-                            }
-                            return TaskResult.NOT_FOUND
-                        } else if (taskStatus == "FINISHED" || taskStatus == "DONE") {
-                            Log.forest("能量雨机会任务今日已完成")
-                            return TaskResult.ALREADY_DONE
-                        }
+                    EnergyRainGameExecutionResult.ALREADY_DONE -> {
+                        Log.forest("能量雨机会任务今日已完成[${candidate.taskTitle}]")
+                        TaskResult.ALREADY_DONE
+                    }
+
+                    EnergyRainGameExecutionResult.EXECUTED_NO_PROGRESS -> {
+                        Log.forest("能量雨机会任务[${candidate.taskTitle}]未确认完成，本轮止损")
+                        TaskResult.NOT_FOUND
+                    }
+
+                    EnergyRainGameExecutionResult.NON_RETRYABLE_FAILED -> {
+                        Log.error(TAG, "能量雨机会任务[${candidate.taskTitle}]命中明确不可重试失败，本轮止损")
+                        TaskResult.NOT_FOUND
+                    }
+
+                    EnergyRainGameExecutionResult.RETRYABLE_FAILED -> {
+                        Log.forest("森林能量雨机会任务[${candidate.taskTitle}] 未形成有效进展")
+                        TaskResult.NOT_FOUND
                     }
                 }
             }
-            // 没找到特定任务
+
+            val terminalTask = candidates.firstOrNull { it.taskStatus in ENERGY_RAIN_TERMINAL_STATUSES }
+            if (terminalTask != null) {
+                Log.forest("能量雨机会任务今日已完成[${terminalTask.taskTitle}]")
+                return TaskResult.ALREADY_DONE
+            }
+
             return TaskResult.NOT_FOUND
         } catch (e: Exception) {
             Log.forest("检查能量雨任务异常: ${e.message}")
             return TaskResult.NOT_FOUND
         }
+    }
+
+    private fun buildEnergyRainGameTaskCandidates(taskInfoList: JSONArray): List<EnergyRainGameTaskCandidate> {
+        return buildList {
+            for (i in 0 until taskInfoList.length()) {
+                val task = taskInfoList.optJSONObject(i) ?: continue
+                val baseInfo = task.optJSONObject("taskBaseInfo") ?: continue
+                val taskType = baseInfo.optString("taskType")
+                if (taskType.isBlank()) {
+                    continue
+                }
+                val taskStatus = baseInfo.optString("taskStatus")
+                val bizInfo = parseEnergyRainTaskJson(baseInfo.opt("bizInfo"))
+                val prodPlayParam = parseEnergyRainTaskJson(baseInfo.opt("prodPlayParam"))
+                val taskCategorization = prodPlayParam.optJSONObject("taskCategorization")
+                val appId = taskCategorization
+                    ?.optJSONObject("categorizationParamModel")
+                    ?.optString("game_id")
+                    ?.takeIf { it.isNotBlank() }
+                    ?: extractEnergyRainTaskAppId(bizInfo.optString("taskJumpUrl"))
+                val taskTitle = sequenceOf(
+                    bizInfo.optString("taskTitle"),
+                    bizInfo.optString("title"),
+                    bizInfo.optString("taskDesc"),
+                    taskType
+                ).firstOrNull { it.isNotBlank() } ?: taskType
+                add(
+                    EnergyRainGameTaskCandidate(
+                        taskType = taskType,
+                        taskStatus = taskStatus,
+                        taskTitle = taskTitle,
+                        appId = appId,
+                        taskProgress = baseInfo.optInt("taskProgress", 0),
+                        taskRequire = baseInfo.optInt("taskRequire", 0),
+                        thirdLevel = taskCategorization?.optString("categorizationThirdLevel").orEmpty()
+                    )
+                )
+            }
+        }
+    }
+
+    private fun parseEnergyRainTaskJson(value: Any?): JSONObject {
+        return when (value) {
+            is JSONObject -> value
+            is String -> {
+                if (value.isBlank()) {
+                    JSONObject()
+                } else {
+                    runCatching { JSONObject(value) }.getOrElse { JSONObject() }
+                }
+            }
+            else -> JSONObject()
+        }
+    }
+
+    private fun extractEnergyRainTaskAppId(url: String): String? {
+        return APP_ID_QUERY_REGEX.find(url)?.groupValues?.getOrNull(1)?.takeIf { it.isNotBlank() }
+    }
+
+    private fun selectEnergyRainGameTaskCandidate(
+        candidates: List<EnergyRainGameTaskCandidate>
+    ): EnergyRainGameTaskCandidate {
+        return candidates.firstOrNull(::isForestLmctCandidate)
+            ?: candidates.firstOrNull(::isForestSljydCandidate)
+            ?: candidates.firstOrNull { !it.appId.isNullOrBlank() }
+            ?: candidates.first()
+    }
+
+    private fun isForestLmctCandidate(candidate: EnergyRainGameTaskCandidate): Boolean {
+        return candidate.taskType == FOREST_LMCT_TASK_TYPE
+    }
+
+    private fun isForestSljydCandidate(candidate: EnergyRainGameTaskCandidate): Boolean {
+        return candidate.taskType == FOREST_SLJYD_TASK_TYPE ||
+            candidate.appId == GameTask.Forest_sljyd.appId ||
+            candidate.taskTitle.contains("森林救援队")
+    }
+
+    private suspend fun executeEnergyRainGameTask(
+        candidate: EnergyRainGameTaskCandidate,
+        needInitTask: Boolean,
+        gameTaskCloser: EnergyRainGameDriveCloser?
+    ): EnergyRainGameExecutionResult {
+        return try {
+            val clickAppId = candidate.appId?.takeIf { it.isNotBlank() }
+                ?: GameTask.Forest_sljyd.appId.takeIf { isForestSljydCandidate(candidate) }
+            val appSuffix = " appId=$clickAppId"
+            val progressSuffix = " progress=${candidate.taskProgress}/${candidate.taskRequire}"
+            val levelSuffix = candidate.thirdLevel.takeIf { it.isNotBlank() }?.let { " level=$it" }.orEmpty()
+            Log.forest(
+                "发现能量雨机会任务[${candidate.taskTitle}][${candidate.taskType}] " +
+                    "status=${candidate.taskStatus}$appSuffix$progressSuffix$levelSuffix，准备执行根闭环"
+            )
+
+            var executedClosure = false
+            if (candidate.taskStatus == "NOT_TRIGGER") {
+                if (needInitTask) {
+                    val initResponse = JSONObject(AntForestRpcCall.initTask(candidate.taskType))
+                    if (!ResChecker.checkRes(TAG, initResponse)) {
+                        val failure = classifyEnergyRainRpcFailure(initResponse)
+                        Log.error(TAG, "初始化能量雨机会任务失败[${candidate.taskType}]: ${extractEnergyRainFailureMessage(initResponse)}")
+                        return failure
+                    }
+                    Log.forest("能量雨机会任务[${candidate.taskTitle}]入口已初始化，准备点击游戏入口")
+                    randomDelay(800, 1500)
+                } else {
+                    Log.forest("能量雨机会任务[${candidate.taskTitle}]无需初始化，准备点击游戏入口")
+                }
+            }
+            if (candidate.taskStatus in ENERGY_RAIN_ACTIONABLE_STATUSES) {
+                if (candidate.taskStatus == "TODO") {
+                    Log.forest("能量雨机会任务[${candidate.taskTitle}]已处于TODO，继续点击游戏入口以生成能量雨机会")
+                }
+                if (clickAppId.isNullOrBlank()) {
+                    Log.forest("能量雨机会任务[${candidate.taskTitle}][${candidate.taskType}]缺少 appId，转入普通驱动任务补充闭环")
+                } else {
+                    val clickResponse = JSONObject(AntForestRpcCall.clickEnergyRainGame(clickAppId))
+                    if (!ResChecker.checkRes(TAG, clickResponse)) {
+                        val failure = classifyEnergyRainRpcFailure(clickResponse)
+                        Log.error(TAG, "点击能量雨机会游戏失败[$clickAppId]: ${extractEnergyRainFailureMessage(clickResponse)}")
+                        return failure
+                    }
+                    Log.forest("能量雨游戏入口点击成功，检查是否生成机会")
+                    randomDelay(2000, 3000)
+                    when (val playResult = playEnergyRainChanceGeneratedByGame(candidate)) {
+                        EnergyRainGameExecutionResult.CONFIRMED_DONE -> executedClosure = true
+                        EnergyRainGameExecutionResult.EXECUTED_NO_PROGRESS,
+                        EnergyRainGameExecutionResult.ALREADY_DONE -> Unit
+                        EnergyRainGameExecutionResult.RETRYABLE_FAILED,
+                        EnergyRainGameExecutionResult.NON_RETRYABLE_FAILED -> return playResult
+                    }
+                }
+            }
+
+            if (!executedClosure && isForestSljydCandidate(candidate)) {
+                if (GameTask.Forest_sljyd.report(1)) {
+                    executedClosure = true
+                } else {
+                    Log.forest("能量雨机会任务[${candidate.taskTitle}]原 reporter 未确认成功，继续尝试普通驱动任务并回查服务端状态")
+                }
+            }
+
+            if (!executedClosure) {
+                val driveResult = closeMappedEnergyRainDriveTask(candidate, gameTaskCloser)
+                executedClosure = driveResult.status in setOf(
+                    EnergyRainGameDriveStatus.CONFIRMED_DONE,
+                    EnergyRainGameDriveStatus.PROGRESSED
+                )
+                if (driveResult.status == EnergyRainGameDriveStatus.NON_RETRYABLE_FAILED) {
+                    return EnergyRainGameExecutionResult.NON_RETRYABLE_FAILED
+                }
+                if (driveResult.status == EnergyRainGameDriveStatus.RETRYABLE_FAILED) {
+                    return EnergyRainGameExecutionResult.RETRYABLE_FAILED
+                }
+            }
+            randomDelay(1000, 2000)
+
+            val verifyResponse = JSONObject(AntForestRpcCall.queryEnergyRainEndGameList())
+            if (!ResChecker.checkRes(TAG, verifyResponse)) {
+                return classifyEnergyRainRpcFailure(verifyResponse)
+            }
+            verifyEnergyRainGameTask(candidate, verifyResponse, executedClosure)
+        } catch (e: Exception) {
+            Log.forest("执行能量雨机会任务根闭环异常: ${e.message}")
+            EnergyRainGameExecutionResult.RETRYABLE_FAILED
+        }
+    }
+
+    private suspend fun playEnergyRainChanceGeneratedByGame(
+        candidate: EnergyRainGameTaskCandidate
+    ): EnergyRainGameExecutionResult {
+        val homeResponse = JSONObject(
+            AntForestRpcCall.queryEnergyRainHome(AntForestRpcCall.ENERGY_RAIN_GAME_ENTRY_SOURCE)
+        )
+        if (!ResChecker.checkRes(TAG, homeResponse)) {
+            Log.forest("能量雨游戏入口点击后查询机会失败，等待后续重试")
+            return EnergyRainGameExecutionResult.RETRYABLE_FAILED
+        }
+        if (!homeResponse.optBoolean("canPlayToday", false)) {
+            Log.forest("能量雨游戏入口点击后暂未生成可玩机会，继续尝试补充闭环")
+            return EnergyRainGameExecutionResult.EXECUTED_NO_PROGRESS
+        }
+        Log.forest("已生成能量雨机会，开始执行能量雨")
+        return if (startEnergyRain()) {
+            Log.forest("能量雨游戏任务[${candidate.taskTitle}]已完成一次能量雨，准备回查任务状态")
+            EnergyRainGameExecutionResult.CONFIRMED_DONE
+        } else {
+            EnergyRainGameExecutionResult.RETRYABLE_FAILED
+        }
+    }
+
+    private fun closeMappedEnergyRainDriveTask(
+        candidate: EnergyRainGameTaskCandidate,
+        gameTaskCloser: EnergyRainGameDriveCloser?
+    ): EnergyRainGameDriveResult {
+        val driveTaskType = ENERGY_RAIN_DRIVE_TASK_MAPPING[candidate.taskType]
+        if (driveTaskType.isNullOrBlank()) {
+            Log.forest("能量雨机会任务[${candidate.taskTitle}][${candidate.taskType}]未找到普通森林驱动任务映射，等待抓包或任务列表补充")
+            return EnergyRainGameDriveResult(EnergyRainGameDriveStatus.NOT_FOUND)
+        }
+        if (gameTaskCloser == null) {
+            Log.forest("能量雨机会任务[${candidate.taskTitle}]缺少普通森林驱动闭环入口[$driveTaskType]")
+            return EnergyRainGameDriveResult(EnergyRainGameDriveStatus.NOT_FOUND)
+        }
+        val request = EnergyRainGameDriveRequest(
+            gameTaskType = candidate.taskType,
+            gameTaskTitle = candidate.taskTitle,
+            gameTaskStatus = candidate.taskStatus,
+            appId = candidate.appId,
+            driveTaskType = driveTaskType
+        )
+        val result = gameTaskCloser.close(request)
+        val suffix = result.message.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty()
+        when (result.status) {
+            EnergyRainGameDriveStatus.CONFIRMED_DONE,
+            EnergyRainGameDriveStatus.PROGRESSED -> Log.forest(
+                "能量雨机会任务[${candidate.taskTitle}]普通驱动任务[$driveTaskType]已执行，回查能量雨状态$suffix"
+            )
+
+            EnergyRainGameDriveStatus.SKIPPED_BLACKLISTED -> Log.forest(
+                "能量雨机会任务[${candidate.taskTitle}]普通驱动任务[$driveTaskType]已在黑名单，跳过驱动，不标记完成$suffix"
+            )
+
+            EnergyRainGameDriveStatus.NOT_FOUND,
+            EnergyRainGameDriveStatus.NO_PROGRESS -> Log.forest(
+                "能量雨机会任务[${candidate.taskTitle}]普通驱动任务[$driveTaskType]未形成进展$suffix"
+            )
+
+            EnergyRainGameDriveStatus.RETRYABLE_FAILED,
+            EnergyRainGameDriveStatus.NON_RETRYABLE_FAILED -> Log.forest(
+                "能量雨机会任务[${candidate.taskTitle}]普通驱动任务[$driveTaskType]执行失败$suffix"
+            )
+        }
+        return result
+    }
+
+    private fun verifyEnergyRainGameTask(
+        candidate: EnergyRainGameTaskCandidate,
+        verifyResponse: JSONObject,
+        executedClosure: Boolean
+    ): EnergyRainGameExecutionResult {
+        val verifyNeedInitTask = verifyResponse.optBoolean("needInitTask", false)
+        val verifyList = verifyResponse
+            .optJSONObject("energyRainEndGameGroupTask")
+            ?.optJSONArray("taskInfoList")
+        if (verifyList == null || verifyList.length() <= 0) {
+            return if (!verifyNeedInitTask && executedClosure) {
+                EnergyRainGameExecutionResult.CONFIRMED_DONE
+            } else {
+                EnergyRainGameExecutionResult.EXECUTED_NO_PROGRESS
+            }
+        }
+
+        val verifiedCandidates = buildEnergyRainGameTaskCandidates(verifyList)
+        val sameTask = verifiedCandidates.firstOrNull { isSameEnergyRainGameTask(candidate, it) }
+        if (sameTask == null && !verifyNeedInitTask && executedClosure) {
+            return EnergyRainGameExecutionResult.CONFIRMED_DONE
+        }
+        if (sameTask != null && sameTask.taskStatus in ENERGY_RAIN_TERMINAL_STATUSES) {
+            return EnergyRainGameExecutionResult.CONFIRMED_DONE
+        }
+        return EnergyRainGameExecutionResult.EXECUTED_NO_PROGRESS
+    }
+
+    private fun isSameEnergyRainGameTask(
+        expected: EnergyRainGameTaskCandidate,
+        actual: EnergyRainGameTaskCandidate
+    ): Boolean {
+        if (expected.taskType == actual.taskType) {
+            return true
+        }
+        val expectedAppId = expected.appId
+        val actualAppId = actual.appId
+        return !expectedAppId.isNullOrBlank() &&
+            expectedAppId == actualAppId &&
+            expected.taskTitle == actual.taskTitle
+    }
+
+    private fun classifyEnergyRainRpcFailure(response: JSONObject): EnergyRainGameExecutionResult {
+        val code = extractEnergyRainFailureCode(response)
+        val message = extractEnergyRainFailureMessage(response)
+        return when {
+            code == "400000030" ||
+                containsAnyEnergyRainFailure(message, "已领取", "已经领取", "重复领取", "重复完成", "已完成", "任务已完结", "任务已结束") ->
+                EnergyRainGameExecutionResult.ALREADY_DONE
+
+            code in setOf("20020012", "TASK_ID_INVALID", "ILLEGAL_ARGUMENT", "PROMISE_TEMPLATE_NOT_EXIST", "400000040") ||
+                containsAnyEnergyRainFailure(message, "参数错误", "任务ID非法", "模板不存在", "不支持rpc调用") ->
+                EnergyRainGameExecutionResult.NON_RETRYABLE_FAILED
+
+            else -> EnergyRainGameExecutionResult.RETRYABLE_FAILED
+        }
+    }
+
+    private fun containsAnyEnergyRainFailure(text: String, vararg keywords: String): Boolean {
+        return keywords.any { keyword -> text.contains(keyword, ignoreCase = true) }
+    }
+
+    private fun extractEnergyRainFailureCode(response: JSONObject): String {
+        return response.optString("code")
+            .ifBlank { response.optString("resultCode") }
+            .ifBlank { response.optString("errorCode") }
+    }
+
+    private fun extractEnergyRainFailureMessage(response: JSONObject): String {
+        return response.optString("desc")
+            .ifBlank { response.optString("resultDesc") }
+            .ifBlank { response.optString("errorMsg") }
+            .ifBlank { response.optString("errorMessage") }
+            .ifBlank { response.toString() }
     }
 }
 

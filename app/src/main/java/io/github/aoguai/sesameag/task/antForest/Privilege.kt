@@ -33,18 +33,21 @@ object Privilege {
     fun youthPrivilege(): Boolean {
         if (Status.hasFlagToday(StatusFlags.FLAG_ANTFOREST_PRIVILEGE_RECEIVED)) return false
 
-        val results = mutableListOf<String>()
+        var allCompleted = true
         for (task in YOUTH_TASKS) {
-            results += processYouthTask(task)
+            val result = processYouthTask(task)
+            if (!result.isCompleted()) {
+                allCompleted = false
+            }
         }
 
-        val allSuccess = results.all { it == "处理成功" }
-        if (allSuccess) Status.setFlagToday(StatusFlags.FLAG_ANTFOREST_PRIVILEGE_RECEIVED)
-        return allSuccess
+        if (allCompleted) Status.setFlagToday(StatusFlags.FLAG_ANTFOREST_PRIVILEGE_RECEIVED)
+        return allCompleted
     }
 
-    private fun processYouthTask(task: YouthTask): List<String> {
+    private fun processYouthTask(task: YouthTask): YouthTaskResult {
         val forestTasksNew = getForestTasks(task.queryParam)
+            ?: return YouthTaskResult(YouthTaskState.QUERY_FAILED, "查询失败")
         return handleForestTasks(forestTasksNew, task.receiveParam, task.name)
     }
 
@@ -58,53 +61,60 @@ object Privilege {
         }
     }
 
-    private fun handleForestTasks(forestTasks: JSONArray?, taskType: String, taskName: String): List<String> {
-        val results = mutableListOf<String>()
-
+    private fun handleForestTasks(forestTasks: JSONArray, taskType: String, taskName: String): YouthTaskResult {
         try {
-            if (forestTasks != null && forestTasks.length() > 0) {
-                for (i in 0 until forestTasks.length()) {
-                    val taskGroup = forestTasks.optJSONObject(i) ?: continue
-                    val taskInfoList = taskGroup.getJSONArray("taskInfoList") ?: continue
+            for (i in 0 until forestTasks.length()) {
+                val taskGroup = forestTasks.optJSONObject(i) ?: continue
+                val taskInfoList = taskGroup.getJSONArray("taskInfoList") ?: continue
 
-                    for (j in 0 until taskInfoList.length()) {
-                        val task = taskInfoList.optJSONObject(j) ?: continue
-                        val baseInfo = task.getJSONObject("taskBaseInfo") ?: continue
+                for (j in 0 until taskInfoList.length()) {
+                    val task = taskInfoList.optJSONObject(j) ?: continue
+                    val baseInfo = task.getJSONObject("taskBaseInfo") ?: continue
 
-                        if (baseInfo.optString("taskType") != taskType) continue
+                    if (baseInfo.optString("taskType") != taskType) continue
 
-                        processSingleYouthTask(baseInfo, taskType, taskName, results)
-                    }
+                    return processSingleYouthTask(baseInfo, taskType, taskName)
                 }
             }
         } catch (e: JSONException) {
             Log.error(TAG, "任务列表解析失败$e")
-            results.add("处理异常")
+            return YouthTaskResult(YouthTaskState.EXCEPTION, "处理异常")
         }
 
-        return results
+        Log.forest("$PREFIX_PRIVILEGE[$taskName]未命中目标任务")
+        return YouthTaskResult(YouthTaskState.TARGET_NOT_FOUND, "未命中目标任务")
     }
 
-    private fun processSingleYouthTask(baseInfo: JSONObject, taskType: String, taskName: String, results: MutableList<String>) {
+    private fun processSingleYouthTask(baseInfo: JSONObject, taskType: String, taskName: String): YouthTaskResult {
         val status = baseInfo.optString("taskStatus")
 
-        when (status) {
-            TASK_RECEIVED -> Log.forest("$PREFIX_PRIVILEGE[$taskName]已领取")
-            TASK_FINISHED -> handleYouthTaskAward(taskType, taskName, results)
+        return when (status) {
+            TASK_RECEIVED -> {
+                Log.forest("$PREFIX_PRIVILEGE[$taskName]已领取")
+                YouthTaskResult(YouthTaskState.RECEIVED, "已领取")
+            }
+            TASK_FINISHED -> handleYouthTaskAward(taskType, taskName)
+            else -> {
+                Log.forest("$PREFIX_PRIVILEGE[$taskName]任务状态：$status")
+                YouthTaskResult(YouthTaskState.BUSINESS_FAILED, status.ifEmpty { "任务状态未知" })
+            }
         }
     }
 
-    private fun handleYouthTaskAward(taskType: String, taskName: String, results: MutableList<String>) {
+    private fun handleYouthTaskAward(taskType: String, taskName: String): YouthTaskResult {
         try {
             val response = JSONObject(AntForestRpcCall.receiveTaskAwardV2(taskType))
             val resultDesc = response.optString("desc")
-            results.add(resultDesc)
-
             val logMessage = if (resultDesc == "处理成功") "领取成功" else "领取结果：$resultDesc"
             Log.forest("$PREFIX_PRIVILEGE[$taskName]$logMessage")
+            return if (resultDesc == "处理成功") {
+                YouthTaskResult(YouthTaskState.AWARD_SUCCESS, resultDesc)
+            } else {
+                YouthTaskResult(YouthTaskState.BUSINESS_FAILED, resultDesc.ifEmpty { "未知领奖结果" })
+            }
         } catch (e: JSONException) {
             Log.error(TAG, "奖励领取结果解析失败$e")
-            results.add("处理异常")
+            return YouthTaskResult(YouthTaskState.EXCEPTION, "处理异常")
         }
     }
 
@@ -182,4 +192,17 @@ object Privilege {
     }
 
     data class YouthTask(val queryParam: String, val receiveParam: String, val name: String)
+
+    private enum class YouthTaskState {
+        QUERY_FAILED,
+        TARGET_NOT_FOUND,
+        RECEIVED,
+        AWARD_SUCCESS,
+        BUSINESS_FAILED,
+        EXCEPTION
+    }
+
+    private data class YouthTaskResult(val state: YouthTaskState, val message: String) {
+        fun isCompleted(): Boolean = state == YouthTaskState.RECEIVED || state == YouthTaskState.AWARD_SUCCESS
+    }
 }

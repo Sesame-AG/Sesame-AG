@@ -123,9 +123,6 @@ object StatusFlags {
     /** 今日会员任务因风控/离线止损，不再继续刷新 */
     const val FLAG_ANTMEMBER_MEMBER_TASK_RISK_STOP_TODAY: String = "AntMember::memberTaskRiskStopToday"
 
-    /** 今日贴纸领取任务 */
-    const val FLAG_ANTMEMBER_STICKER: String = "Flag_AntMember_Sticker"
-
     /** 会员积分权益兑换：今日已完成权益列表刷新/扫描 */
     const val FLAG_ANTMEMBER_MEMBER_BENEFIT_REFRESH_DONE: String = "memberBenefit::refresh"
 

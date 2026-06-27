@@ -105,7 +105,12 @@ class AntSesameCredit : ModelTask() {
         val status: String,
         val taskId: String?,
         val taskIdCandidates: List<String>,
-        val needManuallyReceiveAward: Boolean
+        val needSignUp: Boolean,
+        val needManuallyReceiveAward: Boolean,
+        val templateCode: String,
+        val appletType: String,
+        val taskType: String,
+        val taskMaterialType: String
     ) {
         fun describeCandidates(): String {
             if (taskIdCandidates.isEmpty()) {
@@ -126,6 +131,11 @@ class AntSesameCredit : ModelTask() {
         val success: Boolean,
         val response: JSONObject?,
         val rawResponse: String?
+    )
+
+    private data class ZhimaTreeClearArea(
+        val clearArea: String,
+        val sort: Int
     )
 
     override fun getFields(): ModelFields {
@@ -530,40 +540,26 @@ class AntSesameCredit : ModelTask() {
         for (groupIndex in 0 until taskGroupList.length()) {
             val group = taskGroupList.optJSONObject(groupIndex) ?: continue
             val taskList = group.optJSONArray("taskList") ?: continue
+            val taskSummaries = mutableListOf<String>()
             for (taskIndex in 0 until taskList.length()) {
                 val task = taskList.optJSONObject(taskIndex) ?: continue
                 val taskCode = task.optString("taskCode")
-                val taskName = task.optString("taskName").ifBlank { task.optString("taskDesc").ifBlank { taskCode } }
+                val taskName = task.optString("taskName")
+                    .ifBlank { task.optString("taskDesc").ifBlank { taskCode } }
                 val taskType = task.optString("taskType")
                 val taskScene = task.optString("taskScene")
-                val riskText = "$taskName ${task.optString("taskDesc")} ${task.optString("flowDescText")} $taskScene ${task.optString("taskUrl")}"
-                if (taskType.equals("NORMAL_TASK", ignoreCase = true) ||
-                    containsAnyNewTaskCenterRisk(riskText)
-                ) {
-                    TaskBlacklist.addToBlacklist(sesameCreditTaskBlacklistModule, taskCode, taskName)
-                    Log.sesame("成长锦囊新任务中心[当前暂无稳定自动完成闭环，已加入自动跳过列表(黑名单)]#$taskName(taskCode=$taskCode,type=$taskType)")
-                    continue
-                }
-                if (taskType.equals("VIEW_TASK", ignoreCase = true)) {
-                    Log.sesame("成长锦囊新任务中心[浏览任务待观察]#$taskName(taskCode=$taskCode)，未发现可直接完成RPC，暂不自动推进")
-                }
+                val taskAction = task.optString("taskAction")
+                val taskSummary = "$taskName(taskCode=$taskCode,type=$taskType," +
+                    "action=$taskAction,scene=$taskScene)"
+                taskSummaries.add(taskSummary)
+            }
+            if (taskSummaries.isNotEmpty()) {
+                Log.sesame(
+                    "成长锦囊新任务中心[暂未接入自动执行流程，保留后续抓包复核]#" +
+                        "${taskSummaries.size}项: ${taskSummaries.joinToString("；")}"
+                )
             }
         }
-    }
-
-    private fun containsAnyNewTaskCenterRisk(value: String): Boolean {
-        return listOf(
-            "借呗",
-            "支用",
-            "借一笔",
-            "社保",
-            "养老金",
-            "充值",
-            "支付",
-            "缴费",
-            "开通",
-            "订阅"
-        ).any { value.contains(it, ignoreCase = true) }
     }
 
     private fun newTaskCenterErrorDesc(response: JSONObject): String {
@@ -636,6 +632,8 @@ class AntSesameCredit : ModelTask() {
         private var joinLimitReached = hasFlagToday(StatusFlags.FLAG_SESAME_JOIN_LIMIT_REACHED)
         private var joinLimitLogged = false
         private val joinedRecordIds = mutableMapOf<String, String>()
+        private val successfulFinishRecordIds = mutableSetOf<String>()
+        private val opRepeatFinishRecordIds = mutableSetOf<String>()
         private val processingTemplateRefreshKeys = mutableSetOf<String>()
         private val loggedSkipKeys = mutableSetOf<String>()
 
@@ -791,12 +789,6 @@ class AntSesameCredit : ModelTask() {
             if (!joinSuccess) {
                 RpcOfflineRisk.enterOfflineIfNeeded(TAG, responseObj)
                 val failureType = classifySesameTaskFailure(errorCode, resultView)
-                val continueCurrentRound = shouldContinueSesameCurrentRoundOnFailure(
-                    failureType,
-                    errorCode,
-                    resultView,
-                    responseObj
-                )
                 return TaskFlowActionResult.failure(
                     failureType = failureType,
                     code = errorCode,
@@ -804,8 +796,7 @@ class AntSesameCredit : ModelTask() {
                     rpc = "AntSesameCreditRpcCall.joinSesameTask",
                     raw = joinRes,
                     detail = sesameCreditActionDetail(item, "join"),
-                    stopCurrentRound = isSesameTaskFlowInterrupted(responseObj),
-                    continueCurrentRoundOnFailure = continueCurrentRound
+                    stopCurrentRound = isSesameTaskFlowInterrupted(responseObj)
                 )
             }
             val recordId = responseObj.optJSONObject("data")?.optString("recordId").orEmpty()
@@ -839,6 +830,24 @@ class AntSesameCredit : ModelTask() {
                     detail = sesameCreditActionDetail(item, "finish")
                 )
             }
+            if (recordId in successfulFinishRecordIds) {
+                return TaskFlowActionResult.failure(
+                    failureType = TaskRpcFailureType.TERMINAL_DONE,
+                    code = "RECORD_ID_ALREADY_FINISHED",
+                    message = "本轮recordId已完成",
+                    rpc = "AntSesameCreditRpcCall.finishSesameTask",
+                    detail = sesameCreditActionDetail(item, "finish")
+                )
+            }
+            if (recordId in opRepeatFinishRecordIds) {
+                return TaskFlowActionResult.failure(
+                    failureType = TaskRpcFailureType.RETRYABLE_RPC,
+                    code = "OP_REPEAT_CHECK",
+                    message = "本轮recordId已因OP_REPEAT_CHECK失败，等待下轮刷新",
+                    rpc = "AntSesameCreditRpcCall.finishSesameTask",
+                    detail = sesameCreditActionDetail(item, "finish")
+                )
+            }
 
             val feedbackResult = reportSesameTaskFeedbackResult(
                 raw,
@@ -860,12 +869,9 @@ class AntSesameCredit : ModelTask() {
             }
             if (!ResChecker.checkRes(TAG, responseObj)) {
                 val failureType = classifySesameTaskFailure(errorCode, resultView)
-                val continueCurrentRound = shouldContinueSesameCurrentRoundOnFailure(
-                    failureType,
-                    errorCode,
-                    resultView,
-                    responseObj
-                )
+                if (errorCode == "OP_REPEAT_CHECK") {
+                    opRepeatFinishRecordIds.add(recordId)
+                }
                 return TaskFlowActionResult.failure(
                     failureType = failureType,
                     code = errorCode,
@@ -873,16 +879,17 @@ class AntSesameCredit : ModelTask() {
                     rpc = "AntSesameCreditRpcCall.finishSesameTask",
                     raw = finishRes,
                     detail = sesameCreditActionDetail(item, "finish"),
-                    stopCurrentRound = isSesameTaskFlowInterrupted(responseObj),
-                    continueCurrentRoundOnFailure = continueCurrentRound
+                    stopCurrentRound = isSesameTaskFlowInterrupted(responseObj)
                 )
             }
 
             val completedNum = raw.optInt("completedNum", 0)
             val needCompleteNum = raw.optInt("needCompleteNum", 1).takeIf { it > 0 } ?: 1
+            successfulFinishRecordIds.add(recordId)
+            opRepeatFinishRecordIds.remove(recordId)
             joinedRecordIds.remove(raw.optString("templateId"))
             Log.sesame("芝麻信用💳[完成任务${item.title}]#(${completedNum + 1}/$needCompleteNum)")
-            return TaskFlowActionResult.success()
+            return TaskFlowActionResult.success(refreshAfterAction = true)
         }
 
         override fun afterSuccess(item: TaskFlowItem, action: TaskFlowAction, result: TaskFlowActionResult) {
@@ -893,6 +900,18 @@ class AntSesameCredit : ModelTask() {
             if (action == TaskFlowAction.SIGNUP) {
                 Log.sesame("芝麻信用💳[领取任务成功]#${item.title}")
             }
+        }
+
+        override fun actionKey(item: TaskFlowItem, action: TaskFlowAction): String {
+            if (action == TaskFlowAction.COMPLETE && item.type != "AD_TASK") {
+                val recordId = item.raw?.optString("recordId").orEmpty()
+                if (recordId.isNotBlank()) {
+                    return "${action.logName}:recordId:$recordId"
+                }
+            }
+            val progressKey = item.current?.toString() ?: item.progress.ifBlank { "NO_PROGRESS" }
+            val typeKey = item.actionType.ifBlank { item.type.ifBlank { "NO_TYPE" } }
+            return "${action.logName}:${item.id.ifBlank { item.title }}:$progressKey:$typeKey"
         }
 
         override fun afterFailure(
@@ -1757,9 +1776,9 @@ class AntSesameCredit : ModelTask() {
     private suspend fun doZhimaTreeTasks(): Unit = CoroutineUtils.run {
         val adapter = ZhimaTreeTaskFlowAdapter()
         val runResult = TaskFlowEngine(adapter, roundSleepMs = 800L).run()
-        if (adapter.hasHandledReceiveTask && runResult.completed) {
+        if (adapter.hasHandledReceiveTask && runResult.completed && adapter.canMarkTodayDone()) {
             setFlagToday(StatusFlags.FLAG_SESAME_ZHIMA_TREE_TASK_HANDLED_TODAY)
-            Log.sesame("芝麻树🌳[今日任务奖励已尝试领取，等待服务端刷新确认]")
+            Log.sesame("芝麻树🌳[今日任务奖励已确认处理完成]")
         }
     }
 
@@ -1771,8 +1790,18 @@ class AntSesameCredit : ModelTask() {
         private val handledReceiveTaskKeys = mutableSetOf<String>()
         private val pendingSentTaskRefs = linkedMapOf<String, ZhimaTreeTaskRef>()
         private val loggedSkipKeys = mutableSetOf<String>()
+        private var lastQuerySucceeded = false
+        private var lastUnknownCount = 0
+        private var lastActionableCount = 0
         val hasHandledReceiveTask: Boolean
             get() = handledReceiveTaskKeys.isNotEmpty()
+
+        fun canMarkTodayDone(): Boolean {
+            return lastQuerySucceeded &&
+                lastUnknownCount == 0 &&
+                lastActionableCount == 0 &&
+                pendingSentTaskRefs.isEmpty()
+        }
 
         override fun query(): JSONObject {
             val result = JSONObject()
@@ -1821,6 +1850,7 @@ class AntSesameCredit : ModelTask() {
             }
 
             result.put("success", hasConfirmedSource)
+            lastQuerySucceeded = hasConfirmedSource
             return result
         }
 
@@ -1849,6 +1879,13 @@ class AntSesameCredit : ModelTask() {
                     homeQueryResult.optJSONArray("taskStatusList"),
                     "home.taskStatusList"
                 )
+                appendZhimaTreeTaskItems(
+                    items,
+                    currentTaskRefs,
+                    seenTaskKeys,
+                    homeQueryResult.optJSONArray("staticSceneGuideTaskList"),
+                    "home.staticSceneGuideTaskList"
+                )
             }
 
             val rentTaskDetailList = response.optJSONObject("rentTaskDetailList")
@@ -1867,6 +1904,7 @@ class AntSesameCredit : ModelTask() {
             if (response.optBoolean("success", false)) {
                 appendPendingReceiveFallbacks(items, currentTaskRefs, seenTaskKeys)
             }
+            refreshZhimaTreeSnapshot(items)
             return items
         }
 
@@ -1875,6 +1913,7 @@ class AntSesameCredit : ModelTask() {
                 return TaskFlowPhase.READY_TO_COMPLETE
             }
             val needManualReceive = item.raw?.optBoolean("needManuallyReceiveAward", true) ?: true
+            val needSignUp = item.raw?.optBoolean("needSignUp", false) ?: false
             return when (item.status) {
                 "TO_RECEIVE" -> TaskFlowPhase.REWARD_READY
                 "RECEIVE_SUCCESS" -> if (needManualReceive) {
@@ -1882,8 +1921,16 @@ class AntSesameCredit : ModelTask() {
                 } else {
                     TaskFlowPhase.TERMINAL
                 }
+                "NONE_SIGNUP",
+                "UN_SIGNUP" -> if (needSignUp) {
+                    TaskFlowPhase.SIGNUP_REQUIRED
+                } else {
+                    TaskFlowPhase.READY_TO_COMPLETE
+                }
                 "NOT_DONE",
-                "SIGNUP_COMPLETE" -> TaskFlowPhase.SIGNUP_COMPLETE
+                "SIGNUP_COMPLETE",
+                "SIGNUP_COMPLETED" -> TaskFlowPhase.SIGNUP_COMPLETE
+                "WAIT_COMPLETE" -> TaskFlowPhase.READY_TO_COMPLETE
                 "DONE",
                 "COMPLETE",
                 "FINISHED",
@@ -1897,7 +1944,11 @@ class AntSesameCredit : ModelTask() {
                 return item.id in handledAdBizIds
             }
             val phase = mapPhase(item)
-            if ((phase == TaskFlowPhase.SIGNUP_COMPLETE || phase == TaskFlowPhase.REWARD_READY) && item.id.isBlank()) {
+            if ((phase == TaskFlowPhase.SIGNUP_REQUIRED ||
+                    phase == TaskFlowPhase.SIGNUP_COMPLETE ||
+                    phase == TaskFlowPhase.REWARD_READY) &&
+                item.id.isBlank()
+            ) {
                 logZhimaTreeSkipOnce(item, "跳过无有效任务ID")
                 return true
             }
@@ -1928,6 +1979,21 @@ class AntSesameCredit : ModelTask() {
                 spaceCode = item.raw?.optString("spaceCode").orEmpty().takeIf { it.isNotBlank() }
             )
             return finishZhimaTreeAdTaskResult(taskRef)
+        }
+
+        override fun signup(item: TaskFlowItem): TaskFlowActionResult {
+            val taskRef = item.toZhimaTreeTaskRef()
+            val taskId = taskRef.taskId
+            if (taskId.isNullOrBlank()) {
+                return missingZhimaTreeTaskIdResult(item, "signup")
+            }
+            val signupResult = doTaskActionResult(taskId, "signup")
+            if (signupResult.success) {
+                val rewardSuffix = taskRef.prizeName.takeIf { it.isNotBlank() }?.let { " #$it" }.orEmpty()
+                Log.sesame("芝麻树🌳[报名成功] ${taskRef.title}$rewardSuffix")
+                return TaskFlowActionResult.success()
+            }
+            return zhimaTreeActionFailureResult(item, "signup", signupResult)
         }
 
         override fun send(item: TaskFlowItem): TaskFlowActionResult {
@@ -2001,6 +2067,28 @@ class AntSesameCredit : ModelTask() {
 
         override fun logError(message: String) {
             Log.error(TAG, message)
+        }
+
+        private fun refreshZhimaTreeSnapshot(items: List<TaskFlowItem>) {
+            lastUnknownCount = 0
+            lastActionableCount = 0
+            for (item in items) {
+                val phase = mapPhase(item)
+                if ((phase != TaskFlowPhase.REWARD_READY && isBlacklisted(item)) || shouldSkip(item)) {
+                    continue
+                }
+                if (phase == TaskFlowPhase.UNKNOWN) {
+                    lastUnknownCount++
+                    continue
+                }
+                if (phase == TaskFlowPhase.REWARD_READY ||
+                    phase == TaskFlowPhase.READY_TO_COMPLETE ||
+                    phase == TaskFlowPhase.SIGNUP_REQUIRED ||
+                    phase == TaskFlowPhase.SIGNUP_COMPLETE
+                ) {
+                    lastActionableCount++
+                }
+            }
         }
 
         private fun appendZhimaTreeTaskItems(
@@ -2096,17 +2184,27 @@ class AntSesameCredit : ModelTask() {
                 .put("status", status)
                 .put("taskId", taskId ?: "")
                 .put("taskIdCandidates", JSONArray(taskIdCandidates))
+                .put("needSignUp", needSignUp)
                 .put("needManuallyReceiveAward", needManuallyReceiveAward)
+                .put("templateCode", templateCode)
+                .put("appletType", appletType)
+                .put("taskType", taskType)
+                .put("taskMaterialType", taskMaterialType)
                 .put("_sourceList", sourceName)
                 .put("_syntheticReceive", syntheticReceive)
             val safeTaskId = taskId.orEmpty()
+            val combinedBlacklistKey = if (safeTaskId.isNotBlank() && title.isNotBlank()) {
+                "$safeTaskId|$title"
+            } else {
+                safeTaskId.ifBlank { title }
+            }
             return TaskFlowItem(
                 id = safeTaskId,
                 title = title,
                 status = status,
                 type = "ZHIMA_TREE_TASK",
                 actionType = "rentGreenTaskFinish",
-                blacklistKeys = listOf(safeTaskId, title).filter { it.isNotBlank() },
+                blacklistKeys = listOf(combinedBlacklistKey, safeTaskId, title).filter { it.isNotBlank() },
                 raw = raw,
                 progress = prizeName
             )
@@ -2145,7 +2243,12 @@ class AntSesameCredit : ModelTask() {
                 status = status,
                 taskId = normalizeZhimaTreeTaskId(raw.optString("taskId").ifBlank { id }),
                 taskIdCandidates = candidates.ifEmpty { listOf(id) },
-                needManuallyReceiveAward = raw.optBoolean("needManuallyReceiveAward", true)
+                needSignUp = raw.optBoolean("needSignUp", false),
+                needManuallyReceiveAward = raw.optBoolean("needManuallyReceiveAward", true),
+                templateCode = raw.optString("templateCode"),
+                appletType = raw.optString("appletType"),
+                taskType = raw.optString("taskType"),
+                taskMaterialType = raw.optString("taskMaterialType")
             )
         }
 
@@ -2196,6 +2299,10 @@ class AntSesameCredit : ModelTask() {
             val raw = item.raw
             return "taskId=${item.id} taskName=${item.title} action=$action " +
                 "prize=${raw?.optString("prizeName").orEmpty()} " +
+                "templateCode=${raw?.optString("templateCode").orEmpty()} " +
+                "appletType=${raw?.optString("appletType").orEmpty()} " +
+                "taskType=${raw?.optString("taskType").orEmpty()} " +
+                "taskMaterialType=${raw?.optString("taskMaterialType").orEmpty()} " +
                 "candidates=${raw?.optJSONArray("taskIdCandidates") ?: JSONArray()} " +
                 "source=${raw?.optString("_sourceList").orEmpty()}"
         }
@@ -2357,17 +2464,20 @@ class AntSesameCredit : ModelTask() {
     }
 
     private fun buildZhimaTreeTaskRef(task: JSONObject): ZhimaTreeTaskRef? {
-        val sendCampTriggerType = task.optString("sendCampTriggerType")
-        if ("EVENT_TRIGGER" == sendCampTriggerType) {
-            return null
-        }
         val taskBaseInfo = task.optJSONObject("taskBaseInfo") ?: return null
+        val taskMaterial = task.optJSONObject("taskMaterial")
+        val morphoDetail = task.optJSONObject("taskExtProps")
+            ?.opt("TASK_MORPHO_DETAIL")
+            ?.let { detail ->
+                when (detail) {
+                    is JSONObject -> detail
+                    is String -> parseJSONObjectOrNull(detail)
+                    else -> null
+                }
+            }
         val taskIdCandidates = collectZhimaTreeTaskIdCandidates(task, taskBaseInfo)
         val taskId = taskIdCandidates.mapNotNull { normalizeZhimaTreeTaskId(it) }.firstOrNull()
-        var title = taskBaseInfo.optString("appletName")
-        if (title.isEmpty()) {
-            title = taskBaseInfo.optString("title", taskId ?: "未知任务")
-        }
+        val title = resolveZhimaTreeTaskTitle(task, taskBaseInfo, taskId ?: "未知任务")
         if (title.contains("邀请") || title.contains("下单") || title.contains("开通")) {
             return null
         }
@@ -2377,8 +2487,41 @@ class AntSesameCredit : ModelTask() {
             status = task.optString("taskProcessStatus"),
             taskId = taskId,
             taskIdCandidates = taskIdCandidates,
-            needManuallyReceiveAward = task.optBoolean("needManuallyReceiveAward", true)
+            needSignUp = resolveZhimaTreeNeedSignUp(task),
+            needManuallyReceiveAward = task.optBoolean("needManuallyReceiveAward", true),
+            templateCode = taskBaseInfo.optString("templateCode"),
+            appletType = taskBaseInfo.optString("appletType"),
+            taskType = task.optString("taskType"),
+            taskMaterialType = taskMaterial?.optString("taskType").orEmpty()
+                .ifBlank { morphoDetail?.optString("taskType").orEmpty() }
         )
+    }
+
+    private fun resolveZhimaTreeTaskTitle(task: JSONObject, taskBaseInfo: JSONObject, defaultTitle: String): String {
+        val taskMaterial = task.optJSONObject("taskMaterial")
+        val morphoDetail = task.optJSONObject("taskExtProps")
+            ?.opt("TASK_MORPHO_DETAIL")
+            ?.let { detail ->
+                when (detail) {
+                    is JSONObject -> detail
+                    is String -> parseJSONObjectOrNull(detail)
+                    else -> null
+                }
+            }
+        return taskMaterial?.optString("title").orEmpty()
+            .ifBlank { morphoDetail?.optString("title").orEmpty() }
+            .ifBlank { taskBaseInfo.optString("appletName") }
+            .ifBlank { taskBaseInfo.optString("title") }
+            .ifBlank { defaultTitle }
+    }
+
+    private fun resolveZhimaTreeNeedSignUp(task: JSONObject): Boolean {
+        if (task.optBoolean("needSignUp", false)) {
+            return true
+        }
+        val taskExtProps = task.optJSONObject("taskExtProps") ?: return false
+        return taskExtProps.optBoolean("needSignUp", false) ||
+            taskExtProps.optString("needSignUp").equals("true", ignoreCase = true)
     }
 
     private fun normalizeZhimaTreeTaskId(rawTaskId: String?): String? {
@@ -2450,7 +2593,7 @@ class AntSesameCredit : ModelTask() {
             .ifBlank { response?.optString("code").orEmpty() }
         val message = response?.let { extractZhimaTreeActionFailureMessage(it) }.orEmpty()
         return when (code) {
-            "20020012" -> "parameter_invalid"
+            "20020012" -> "rpc_failed"
             "10001011" -> "business_limited"
             "10000702" -> "business_restricted"
             else -> when {
@@ -2596,16 +2739,13 @@ class AntSesameCredit : ModelTask() {
             val result = homeJson.optJSONObject("extInfo")?.optJSONObject("zhimaTreeHomePageQueryResult")
             if (result == null) return@run
 
-            // 获取净化分数（兼容 currentCleanNum）
             val score = result.optInt("purificationScore", result.optInt("currentCleanNum", 0))
             var treeCode = "ZHIMA_TREE"
-
-            // 尝试获取 remainPurificationClickNum（新逻辑）
-            var clicks = score / 100 // 默认兜底：按分数计算
-            if (result.has("trees") && result.getJSONArray("trees").length() > 0) {
-                val tree = result.getJSONArray("trees").getJSONObject(0)
+            var clicks = score / 100
+            val trees = result.optJSONArray("trees")
+            if (trees != null && trees.length() > 0) {
+                val tree = trees.optJSONObject(0) ?: JSONObject()
                 treeCode = tree.optString("treeCode", "ZHIMA_TREE")
-                // 若服务端明确提供剩余点击次数，则优先使用
                 if (tree.has("remainPurificationClickNum")) {
                     clicks = max(0, tree.optInt("remainPurificationClickNum", clicks))
                 }
@@ -2616,33 +2756,87 @@ class AntSesameCredit : ModelTask() {
                 return@run
             }
 
-            Log.sesame("芝麻树🌳[开始净化] 可点击 $clicks 次")
+            val clearAreas = extractZhimaTreeClearAreas(result)
+            if (clearAreas.isEmpty()) {
+                Log.sesame("芝麻树🌳[净化区域缺失] 服务端返回可点击 $clicks 次，但未返回clearArea，保留后续重试机会")
+                return@run
+            }
 
-            for (i in 0..<clicks) {
-                val res = AntSesameCreditRpcCall.zhimaTreeCleanAndPush(treeCode) ?: break
+            val targetAreas = clearAreas.take(clicks)
+            Log.sesame("芝麻树🌳[开始净化] 可点击 $clicks 次，待清理 ${targetAreas.size} 处")
+
+            for ((index, area) in targetAreas.withIndex()) {
+                val res = AntSesameCreditRpcCall.zhimaTreeCleanAndPush(treeCode, area.clearArea) ?: break
 
                 val json = JSONObject(res)
                 if (!ResChecker.checkRes(TAG, json)) break
 
                 val ext = json.optJSONObject("extInfo") ?: continue
+                val cleanResult = ext.optJSONObject("zhimaTreeCleanAndPushResult")
 
-                // 优先从标准路径取分数
-                var newScore = ext.optJSONObject("zhimaTreeCleanAndPushResult")?.optInt("purificationScore", -1) ?: -1
-                // 兼容旧结构：直接在 extInfo 顶层
+                var newScore = cleanResult?.optInt("purificationScore", -1) ?: -1
                 if (newScore == -1) {
-                    newScore = ext.optInt("purificationScore", score - (i + 1) * 100)
+                    newScore = ext.optInt("purificationScore", score - (index + 1) * 100)
                 }
 
-                val growth = ext.optJSONObject("zhimaTreeCleanAndPushResult")?.optJSONObject("currentTreeInfo")?.optInt("scoreSummary", -1) ?: -1
+                val currentTreeInfo = cleanResult?.optJSONObject("currentTreeInfo")
+                val growth = currentTreeInfo?.optInt("scoreSummary", -1) ?: -1
+                val remainClicks = currentTreeInfo?.optInt("remainPurificationClickNum", -1) ?: -1
 
-                var log = "芝麻树🌳[净化]第" + (i + 1) + "次 | 剩:" + newScore + "g"
+                var log = "芝麻树🌳[净化]第" + (index + 1) + "次#" + area.clearArea + " | 剩:" + newScore + "g"
                 if (growth != -1) log += "|成长:$growth"
+                if (remainClicks != -1) log += "|剩余次数:$remainClicks"
                 Log.sesame("$log ✅")
 
+                if (remainClicks == 0) {
+                    break
+                }
             }
         } catch (e: Exception) {
             Log.printStackTrace(TAG, e)
         }
+    }
+
+    private fun extractZhimaTreeClearAreas(homeResult: JSONObject): List<ZhimaTreeClearArea> {
+        val garbageMap = homeResult.optJSONObject("garbageMap") ?: return emptyList()
+        val areas = mutableListOf<ZhimaTreeClearArea>()
+        val seenAreas = linkedSetOf<String>()
+        val typeKeys = garbageMap.keys()
+        while (typeKeys.hasNext()) {
+            val typeList = garbageMap.optJSONArray(typeKeys.next()) ?: continue
+            for (typeIndex in 0 until typeList.length()) {
+                val group = typeList.optJSONObject(typeIndex) ?: continue
+                val groupArea = group.optString("subType")
+                val groupSort = group.optInt("subShowSort", Int.MAX_VALUE)
+                val garbageSubList = group.optJSONArray("garbageSubList")
+                if (garbageSubList == null || garbageSubList.length() == 0) {
+                    addZhimaTreeClearArea(areas, seenAreas, groupArea, groupSort)
+                    continue
+                }
+                for (subIndex in 0 until garbageSubList.length()) {
+                    val garbage = garbageSubList.optJSONObject(subIndex) ?: continue
+                    val clearArea = garbage.optString("trashSubType").ifBlank { groupArea }
+                    val sort = garbage.optInt(
+                        "trashClearSort",
+                        garbage.optInt("trashSubShowSort", groupSort)
+                    )
+                    addZhimaTreeClearArea(areas, seenAreas, clearArea, sort)
+                }
+            }
+        }
+        return areas.sortedWith(compareBy<ZhimaTreeClearArea> { it.sort }.thenBy { it.clearArea })
+    }
+
+    private fun addZhimaTreeClearArea(
+        areas: MutableList<ZhimaTreeClearArea>,
+        seenAreas: MutableSet<String>,
+        clearArea: String,
+        sort: Int
+    ) {
+        if (clearArea.isBlank() || !seenAreas.add(clearArea)) {
+            return
+        }
+        areas.add(ZhimaTreeClearArea(clearArea, sort))
     }
 
     companion object {
@@ -2733,30 +2927,30 @@ class AntSesameCredit : ModelTask() {
          */
         internal fun checkSesameCanRun(): Boolean {
             try {
-                val s = AntSesameCreditRpcCall.queryHome()
+                val s = AntSesameCreditRpcCall.queryHomeV8()
                 val jo = JSONObject(s)
                 if (ResChecker.checkRes(TAG, jo)) {
-                    val entrance = jo.optJSONObject("entrance") ?: return false
-                    if (!entrance.optBoolean("openApp")) {
+                    val entrance = jo.optJSONObject("entrance")
+                    if (entrance != null && !entrance.optBoolean("openApp", true)) {
                         Log.sesame("芝麻信用💳[未开通，本轮跳过]")
                         return false
                     }
                     return true
                 }
-                Log.sesame("芝麻信用💳[V7首页探活失败，回退V8]")
+                Log.sesame("芝麻信用💳[V8首页探活失败，回退V7]")
             } catch (t: Throwable) {
-                Log.sesame("芝麻信用💳[V7首页探活异常，回退V8]#${t.message}")
+                Log.sesame("芝麻信用💳[V8首页探活异常，回退V7]#${t.message}")
             }
 
             try {
-                val s = AntSesameCreditRpcCall.queryHomeV8()
+                val s = AntSesameCreditRpcCall.queryHome()
                 val jo = JSONObject(s)
                 if (!ResChecker.checkRes(TAG, jo)) {
-                    Log.error("$TAG.checkSesameCanRun.queryHomeV8", "芝麻信用💳[首页响应失败]#$s")
+                    Log.error("$TAG.checkSesameCanRun.queryHomeV7", "芝麻信用💳[首页响应失败]#$s")
                     return false
                 }
-                val entrance = jo.optJSONObject("entrance") ?: return false
-                if (!entrance.optBoolean("openApp")) {
+                val entrance = jo.optJSONObject("entrance")
+                if (entrance != null && !entrance.optBoolean("openApp", true)) {
                     Log.sesame("芝麻信用💳[未开通，本轮跳过]")
                     return false
                 }
@@ -3343,12 +3537,7 @@ class AntSesameCredit : ModelTask() {
                 message = lastResultView,
                 rpc = "AntSesameCreditRpcCall.feedBackSesameTask",
                 raw = lastFeedbackRes,
-                detail = "module=$moduleName taskId=$templateId taskName=$taskTitle action=feedback bizType=$bizType",
-                continueCurrentRoundOnFailure = shouldContinueSesameCurrentRoundOnFailure(
-                    failureType,
-                    lastErrorCode,
-                    lastResultView.ifEmpty { lastFeedbackRes }
-                )
+                detail = "module=$moduleName taskId=$templateId taskName=$taskTitle action=feedback bizType=$bizType"
             )
         }
 
@@ -3418,13 +3607,7 @@ class AntSesameCredit : ModelTask() {
                             message = rewardMsg,
                             rpc = "AntSesameCreditRpcCall.adRewardLjcs",
                             raw = rewardRes,
-                            detail = "module=$moduleName taskId=$bizId taskName=$taskTitle action=adRewardLjcs",
-                            continueCurrentRoundOnFailure = shouldContinueSesameCurrentRoundOnFailure(
-                                TaskRpcFailureType.RETRYABLE_RPC,
-                                rewardCode,
-                                rewardMsg,
-                                rewardJo
-                            )
+                            detail = "module=$moduleName taskId=$bizId taskName=$taskTitle action=adRewardLjcs"
                         )
                     } else {
                         Log.error(TAG, "$logPrefix[炼金次数登记失败]#$taskTitle - $rewardMsg")
@@ -3460,13 +3643,7 @@ class AntSesameCredit : ModelTask() {
                             message = layerMsg,
                             rpc = "AntSesameCreditRpcCall.adTaskApplayerQuery",
                             raw = layerRes,
-                            detail = "module=$moduleName taskId=$bizId taskName=$taskTitle action=adLayer",
-                            continueCurrentRoundOnFailure = shouldContinueSesameCurrentRoundOnFailure(
-                                TaskRpcFailureType.RETRYABLE_RPC,
-                                layerCode,
-                                layerMsg,
-                                layerResponse
-                            )
+                            detail = "module=$moduleName taskId=$bizId taskName=$taskTitle action=adLayer"
                         )
                     } else {
                         Log.error(TAG, "$logPrefix[广告浏览配置失败]#$taskTitle - code=$layerCode msg=$layerMsg")
@@ -3515,35 +3692,8 @@ class AntSesameCredit : ModelTask() {
                 message = resultView,
                 rpc = "AntSesameCreditRpcCall.taskFinish",
                 raw = adFinishRes,
-                detail = "module=$moduleName taskId=$bizId taskName=$taskTitle action=adFinish",
-                continueCurrentRoundOnFailure = shouldContinueSesameCurrentRoundOnFailure(
-                    failureType,
-                    errorCode,
-                    resultView,
-                    adFinishJo
-                )
+                detail = "module=$moduleName taskId=$bizId taskName=$taskTitle action=adFinish"
             )
-        }
-
-        private fun shouldContinueSesameCurrentRoundOnFailure(
-            failureType: TaskRpcFailureType,
-            errorCode: String,
-            resultView: String,
-            response: JSONObject? = null
-        ): Boolean {
-            if (failureType != TaskRpcFailureType.RETRYABLE_RPC) {
-                return false
-            }
-            if (isSesameTaskFlowInterrupted(response)) {
-                return false
-            }
-            if (containsAnySesame(resultView, "需要验证")) {
-                return false
-            }
-            val code = errorCode.trim()
-            val message = resultView.trim()
-            return code == "OP_REPEAT_CHECK" ||
-                containsAnySesame(message, "操作太频繁", "频繁", "稍后再试")
         }
 
         private fun isSesameTaskFlowInterrupted(response: JSONObject? = null): Boolean {
@@ -3695,6 +3845,8 @@ class AntSesameCredit : ModelTask() {
             val sesameGiftMap = IdMapManager.getInstance(SesameGiftMap::class.java)
             var tabIndex = 0
             var refreshedCount = 0
+            var scanCompleted = true
+            var allSelectedTargetsHandled = true
 
             while (tabIndex < pendingTabs.size) {
                 val tab = pendingTabs[tabIndex++]
@@ -3709,10 +3861,15 @@ class AntSesameCredit : ModelTask() {
                     val jo = JSONObject(AntSesameCreditRpcCall.queryExchangeList(currentPage, pageSize, tab))
                     if (!ResChecker.checkRes(TAG, jo)) {
                         Log.error(TAG, "芝麻粒商品列表校验失败: $jo")
+                        scanCompleted = false
                         break
                     }
 
-                    val data = jo.optJSONObject("data") ?: break
+                    val data = jo.optJSONObject("data")
+                    if (data == null) {
+                        scanCompleted = false
+                        break
+                    }
                     val tabList = data.optJSONArray("tabList")
                     if (tabList != null) {
                         for (i in 0 until tabList.length()) {
@@ -3727,7 +3884,11 @@ class AntSesameCredit : ModelTask() {
                             }
                         }
                     }
-                    val list = data.optJSONArray("awardTemplateList") ?: break
+                    val list = data.optJSONArray("awardTemplateList")
+                    if (list == null) {
+                        scanCompleted = false
+                        break
+                    }
                     for (i in 0 until list.length()) {
                         val candidate = buildSesameExchangeCandidate(list.optJSONObject(i) ?: continue) ?: continue
                         sesameGiftMap.add(candidate.item.id, candidate.item.displayName())
@@ -3748,20 +3909,31 @@ class AntSesameCredit : ModelTask() {
                             }
                             ExchangeSafety.AUTO -> {
                                 Log.sesame("芝麻粒兑换🛒准备兑换[${candidate.item.name}]#消耗${candidate.pointNeeded}粒")
-                                exchangeSesameGift(candidate.templateId, candidate.item.name, candidate.pointNeeded)
+                                if (!exchangeSesameGift(candidate.templateId, candidate.item.name, candidate.pointNeeded)) {
+                                    allSelectedTargetsHandled = false
+                                }
                             }
                         }
                     }
                     hasNextPage = data.optBoolean("hasNext", false)
                     currentPage++
                 }
+                if (hasNextPage && currentPage > maxPage) {
+                    scanCompleted = false
+                    Log.sesame("芝麻粒兑换🛒列表页数超过安全上限#$maxPage，保留后续重试机会")
+                }
             }
 
             sesameGiftMap.save(userId)
-            remainingTargetIds
-                ?.forEach { Log.sesame("芝麻粒兑换🛒已勾选[$it]#本次列表未返回，保留配置不删除") }
+            val unresolvedTargetIds = remainingTargetIds.orEmpty()
+            unresolvedTargetIds
+                .forEach { Log.sesame("芝麻粒兑换🛒已勾选[$it]#本次列表未返回，保留配置不删除") }
             Log.sesame("芝麻粒兑换列表刷新完成#$refreshedCount")
-            setFlagToday(StatusFlags.FLAG_SESAME_GRAIN_EXCHANGE_DONE)
+            if (scanCompleted && allSelectedTargetsHandled && unresolvedTargetIds.isEmpty()) {
+                setFlagToday(StatusFlags.FLAG_SESAME_GRAIN_EXCHANGE_DONE)
+            } else {
+                Log.sesame("芝麻粒兑换🛒本轮未确认全部完成，保留今日后续重试机会")
+            }
 
         } catch (t: Throwable) {//这里
             Log.printStackTrace(TAG, "doSesameGrainExchange 运行异常:", t)
