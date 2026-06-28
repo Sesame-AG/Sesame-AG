@@ -126,6 +126,17 @@ class AntOcean : ModelTask() {
         val pieceIds: LinkedHashSet<Int>
     )
 
+    private data class FriendCleanAttemptResult(
+        val cleaned: Boolean,
+        val limitReached: Boolean = false
+    )
+
+    private enum class OceanNoticeScene {
+        HOME_FULL,
+        TASK_AND_GAME,
+        GAME_ONLY
+    }
+
     /**
      * 海洋任务
      */
@@ -174,6 +185,7 @@ class AntOcean : ModelTask() {
         return "$sceneCode|$taskType|$taskTitle"
     }
     private var currentOceanUserId: String? = null
+    private var currentSeaAreaCode: String? = null
     private var lastKnownRubbishNumber: Int = -1
     private var selfOceanCleanRetried = false
     private var noticeLinkedRefreshNeeded = false
@@ -273,6 +285,7 @@ class AntOcean : ModelTask() {
             Log.ocean("执行开始-" + getName())
             loggedMessages.clear()
             currentOceanUserId = null
+            currentSeaAreaCode = null
             lastKnownRubbishNumber = -1
             selfOceanCleanRetried = false
             noticeLinkedRefreshNeeded = false
@@ -431,6 +444,83 @@ class AntOcean : ModelTask() {
         }
     }
 
+    private fun rememberCurrentSeaAreaCode(container: JSONObject?) {
+        val seaAreaCode = extractCurrentSeaAreaCode(container)
+        if (seaAreaCode.isNotBlank()) {
+            currentSeaAreaCode = seaAreaCode
+        }
+    }
+
+    private fun extractCurrentSeaAreaCode(container: JSONObject?): String {
+        if (container == null) {
+            return ""
+        }
+        listOf(
+            container.optJSONObject("displaySeaAreaVO")?.optString("code").orEmpty(),
+            container.optJSONObject("currentSeaAreaVO")?.optString("code").orEmpty(),
+            container.optJSONObject("seaAreaVO")?.optString("code").orEmpty(),
+            container.optString("currentSeaAreaCode")
+        ).firstOrNull { it.isNotBlank() }?.let { return it }
+
+        val seaAreaVOs = container.optJSONArray("seaAreaVOs") ?: return ""
+        for (index in 0 until seaAreaVOs.length()) {
+            val seaAreaVO = seaAreaVOs.optJSONObject(index) ?: continue
+            if (!isSeaAreaLocked(seaAreaVO)) {
+                return seaAreaVO.optString("code")
+            }
+        }
+        return seaAreaVOs.optJSONObject(0)?.optString("code").orEmpty()
+    }
+
+    private fun buildOceanMiscQueryBizTypes(includeActivityProbe: Boolean): List<String> {
+        return if (includeActivityProbe) {
+            listOf(
+                "KNOWLEDGE_TIPS",
+                "EMERGENCY",
+                "HOME_TIPS_REFRESH",
+                "NEW_SEA_AREA_CAN_BE_REPAIRED_TIP"
+            )
+        } else {
+            listOf("HOME_TIPS_REFRESH")
+        }
+    }
+
+    private fun buildNoticeRequest(noticeType: String, fromAct: String? = null): JSONObject {
+        return JSONObject().apply {
+            put("needDetail", false)
+            put("noticeType", noticeType)
+            if (!fromAct.isNullOrBlank()) {
+                put("extInfo", JSONObject().put("fromAct", fromAct))
+            }
+        }
+    }
+
+    private fun buildOceanNoticeReqList(scene: OceanNoticeScene): JSONArray {
+        val requests = JSONArray()
+        when (scene) {
+            OceanNoticeScene.HOME_FULL -> {
+                requests.put(buildNoticeRequest("INDEX_TASK_NOTICE", fromAct = "dynamic_task"))
+                requests.put(buildNoticeRequest("CULTIVATION_LIST_ENTRANCE"))
+                requests.put(buildNoticeRequest("INDEX_GAME_ENTRY_NOTICE"))
+                requests.put(buildNoticeRequest("INTERACT_RECEIVE_PIECE"))
+            }
+
+            OceanNoticeScene.TASK_AND_GAME -> {
+                requests.put(buildNoticeRequest("INDEX_TASK_NOTICE", fromAct = "dynamic_task"))
+                requests.put(buildNoticeRequest("INDEX_GAME_ENTRY_NOTICE"))
+            }
+
+            OceanNoticeScene.GAME_ONLY -> {
+                requests.put(buildNoticeRequest("INDEX_GAME_ENTRY_NOTICE"))
+            }
+        }
+        return requests
+    }
+
+    private fun logOceanActivityEntranceDetected() {
+        logOceanTaskOnce("神奇海洋🌊[检测到海洋活动入口]")
+    }
+
     private fun extractOceanResultDesc(jo: JSONObject): String {
         return jo.optString("resultDesc").ifBlank {
             jo.optString("memo").ifBlank {
@@ -509,24 +599,8 @@ class AntOcean : ModelTask() {
                 taskTitle.contains("清理海域"))
     }
 
-    private fun resolveOceanTaskFinishSource(taskType: String, taskTitle: String, bizInfo: JSONObject): String {
-        val jumpUrl = bizInfo.optString("taskJumpUrl")
-        val fallbackUrl = bizInfo.optString("fallbackUrl")
-        val taskDesc = bizInfo.optString("taskDesc")
-        val indicators = listOf(taskType, taskTitle, taskDesc, jumpUrl, fallbackUrl)
-        return if (
-            taskType.startsWith("BUSINESS_LIGHTS") ||
-            taskType.contains("XLIGHT", ignoreCase = true) ||
-            indicators.any { indicator ->
-                indicator.contains("iepTaskType=", ignoreCase = true) ||
-                    indicator.contains("renderConfigKey=", ignoreCase = true) ||
-                    indicator.contains("adPosId=", ignoreCase = true)
-            }
-        ) {
-            "ADBASICLIB"
-        } else {
-            "ANTFOCEAN"
-        }
+    private fun isUnsupportedNoClosureOceanTask(taskType: String): Boolean {
+        return taskType == "CNXDY_QDRW_HAIYANG" || taskType == "mokuai_senlin_hydrw"
     }
 
     private fun markOceanTasksDoneInvalidated() {
@@ -556,6 +630,7 @@ class AntOcean : ModelTask() {
         Log.ocean("神奇海洋🌊[$reason]刷新主页，检查新增能量球")
         extractBubbleVOList(refreshedHomePage)?.let { collectEnergy(it) }
         rememberSelfOceanState(refreshedHomePage.optJSONObject("userInfoVO"))
+        rememberCurrentSeaAreaCode(refreshedHomePage)
     }
 
     private fun isActiveExtraCollect(extraCollectVO: JSONObject?): Boolean {
@@ -687,6 +762,7 @@ class AntOcean : ModelTask() {
             extractBubbleVOList(joHomePage)?.let { collectEnergy(it) }
             val userInfoVO = joHomePage.optJSONObject("userInfoVO")
             rememberSelfOceanState(userInfoVO)
+            rememberCurrentSeaAreaCode(joHomePage)
             if (cleanOcean?.value == true) {
                 val rubbishNumber = lastKnownRubbishNumber.coerceAtLeast(0)
                 val userId = currentOceanUserId.orEmpty()
@@ -699,8 +775,8 @@ class AntOcean : ModelTask() {
                     ipOpenSurprise()
                 }
             }
-            queryMiscInfo()
-            queryNotice()
+            queryMiscInfo(includeActivityProbe = true)
+            queryNotice(OceanNoticeScene.HOME_FULL)
             queryRefinedMaterial()
             queryReplicaHome()
             if (cleanOcean?.value == true) {
@@ -713,18 +789,24 @@ class AntOcean : ModelTask() {
         }
     }
 
-    private suspend fun queryMiscInfo() {
+    private fun queryMiscInfo(
+        includeActivityProbe: Boolean = false,
+        targetUserId: String? = null
+    ) {
         try {
-            val s = AntOceanRpcCall.queryMiscInfo()
+            val s = AntOceanRpcCall.queryMiscInfo(
+                queryBizTypes = buildOceanMiscQueryBizTypes(includeActivityProbe),
+                targetUserId = targetUserId
+            )
             val jo = JsonUtil.parseJSONObjectOrNull(s) ?: return
             if (ResChecker.checkRes(TAG, jo)) {
                 val miscHandlerVOMap = jo.optJSONObject("miscHandlerVOMap") ?: return
                 val emergency = miscHandlerVOMap.optJSONObject("EMERGENCY")
                 if (emergency?.optBoolean("showEmergency") == true || emergency?.optBoolean("showIntroduceBubble") == true) {
-                    Log.ocean("神奇海洋🌊[检测到海洋活动入口]")
+                    logOceanActivityEntranceDetected()
                 }
             } else {
-                Log.runtime(TAG, jo.getString("resultDesc"))
+                Log.runtime(TAG, extractOceanResultDesc(jo))
             }
         } catch (t: Throwable) {
             Log.runtime(TAG, "queryMiscInfo err:")
@@ -743,9 +825,6 @@ class AntOcean : ModelTask() {
         for (i in 0 until bubbleVOList.length()) {
             try {
                 val bubble = bubbleVOList.optJSONObject(i) ?: continue
-                if ("ocean" != bubble.optString("channel")) {
-                    continue
-                }
                 if ("AVAILABLE" != bubble.optString("collectStatus")) {
                     continue
                 }
@@ -975,9 +1054,11 @@ class AntOcean : ModelTask() {
         }
     }
 
-    private suspend fun createSeaAreaExtraCollect() {
+    private suspend fun createSeaAreaExtraCollect(seaAreaCode: String) {
         try {
-            val jo = JsonUtil.parseJSONObjectOrNull(AntOceanRpcCall.createSeaAreaExtraCollect()) ?: return
+            val jo = JsonUtil.parseJSONObjectOrNull(
+                AntOceanRpcCall.createSeaAreaExtraCollect(seaAreaCode)
+            ) ?: return
             if (ResChecker.checkRes(TAG, jo)) {
                 val extraCollectVO = jo.optJSONObject("seaAreaExtraCollectVO")
                 val extraCollectName = extraCollectVO?.optJSONObject("seaAreaVO")?.optString("name")
@@ -1067,7 +1148,15 @@ class AntOcean : ModelTask() {
             val advanceState = buildSeaAreaAdvanceState(detailJo, seaAreaVOs)
 
             if (advanceState.canCreateExtraCollect) {
-                createSeaAreaExtraCollect()
+                val seaAreaCode = currentSeaAreaCode.orEmpty().ifBlank {
+                    extractCurrentSeaAreaCode(detailJo)
+                }
+                if (seaAreaCode.isBlank()) {
+                    Log.runtime(TAG, "createSeaAreaExtraCollect skip: currentSeaAreaCode为空")
+                    return
+                }
+                querySeaAreaDetailData(seaAreaCode) ?: return
+                createSeaAreaExtraCollect(seaAreaCode)
                 return
             }
             if (advanceState.canRepairNextSeaArea) {
@@ -1081,13 +1170,14 @@ class AntOcean : ModelTask() {
         }
     }
 
-    private suspend fun querySeaAreaDetailData(): JSONObject? {
-        val s = AntOceanRpcCall.querySeaAreaDetailList()
+    private suspend fun querySeaAreaDetailData(seaAreaCode: String = ""): JSONObject? {
+        val s = AntOceanRpcCall.querySeaAreaDetailList(seaAreaCode)
         val jo = JsonUtil.parseJSONObjectOrNull(s) ?: return null
         if (!ResChecker.checkRes(TAG, jo)) {
             Log.runtime(TAG, extractOceanResultDesc(jo))
             return null
         }
+        rememberCurrentSeaAreaCode(jo)
         return jo
     }
 
@@ -1156,6 +1246,133 @@ class AntOcean : ModelTask() {
         return false
     }
 
+    private fun extractNestedJsonArray(container: JSONObject, key: String): JSONArray? {
+        return container.optJSONArray(key) ?: container.optJSONObject("resData")?.optJSONArray(key)
+    }
+
+    private fun shouldCleanFriend(userId: String): Boolean {
+        if (FriendGuard.shouldSkipFriend(userId, TAG, "神奇海洋好友清理")) {
+            return false
+        }
+        var isOceanClean = cleanOceanList?.contains(userId) == true
+        if (cleanOceanType?.value == CleanOceanType.DONT_CLEAN) {
+            isOceanClean = !isOceanClean
+        }
+        return isOceanClean
+    }
+
+    private fun giveFriendPiece(userId: String) {
+        try {
+            val jo = JsonUtil.parseJSONObjectOrNull(AntOceanRpcCall.giveFriendPiece(userId)) ?: return
+            if (isFriendPieceAlreadyGiven(jo)) {
+                return
+            }
+            if (!ResChecker.checkRes(TAG, jo)) {
+                return
+            }
+            extractNestedJsonArray(jo, "normalRewardVOS")?.let { checkReward(it) }
+        } catch (t: Throwable) {
+            Log.runtime(TAG, "giveFriendPiece err:")
+            Log.printStackTrace(TAG, t)
+        }
+    }
+
+    private fun refreshOceanPropListState() {
+        try {
+            val jo = JsonUtil.parseJSONObjectOrNull(AntOceanRpcCall.queryOceanPropList()) ?: return
+            ResChecker.checkRes(TAG, jo)
+        } catch (t: Throwable) {
+            Log.runtime(TAG, "refreshOceanPropListState err:")
+            Log.printStackTrace(TAG, t)
+        }
+    }
+
+    private fun refreshUserRankingState() {
+        try {
+            val jo = JsonUtil.parseJSONObjectOrNull(AntOceanRpcCall.queryUserRanking()) ?: return
+            if (!ResChecker.checkRes(TAG, jo)) {
+                if (isHelpCleanLimit(jo)) {
+                    markHelpCleanLimit(jo)
+                }
+            }
+        } catch (t: Throwable) {
+            Log.runtime(TAG, "refreshUserRankingState err:")
+            Log.printStackTrace(TAG, t)
+        }
+    }
+
+    private fun refreshUserDynamicStatisticsState() {
+        try {
+            val jo = JsonUtil.parseJSONObjectOrNull(AntOceanRpcCall.queryUserDynamicStatistics()) ?: return
+            ResChecker.checkRes(TAG, jo)
+        } catch (t: Throwable) {
+            Log.runtime(TAG, "refreshUserDynamicStatisticsState err:")
+            Log.printStackTrace(TAG, t)
+        }
+    }
+
+    private fun cleanFriendByUserId(userId: String): FriendCleanAttemptResult {
+        if (Status.hasFlagToday(StatusFlags.FLAG_ANTOCEAN_HELP_CLEAN_ALL_FRIEND_LIMIT)) {
+            return FriendCleanAttemptResult(cleaned = false, limitReached = true)
+        }
+        if (!shouldCleanFriend(userId)) {
+            return FriendCleanAttemptResult(cleaned = false)
+        }
+        try {
+            val friendPageResponse = AntOceanRpcCall.queryFriendPage(
+                userId = userId,
+                fromAct = "SAIL_AWAY",
+                currentUserId = currentOceanUserId
+            )
+            var jo = JsonUtil.parseJSONObjectOrNull(friendPageResponse) ?: return FriendCleanAttemptResult(cleaned = false)
+            if (!ResChecker.checkRes(TAG, jo)) {
+                if (isHelpCleanLimit(jo)) {
+                    markHelpCleanLimit(jo)
+                    return FriendCleanAttemptResult(cleaned = false, limitReached = true)
+                }
+                if (isOceanFriendNotOpen(jo)) {
+                    FriendCapabilityRecorder.record(
+                        userId,
+                        "OCEAN",
+                        FriendCapabilityState.NOT_OPEN,
+                        "AntOcean.queryFriendPage",
+                        extractOceanResultDesc(jo)
+                    )
+                }
+                Log.runtime(TAG, extractOceanResultDesc(jo))
+                return FriendCleanAttemptResult(cleaned = false)
+            }
+
+            FriendCapabilityRecorder.record(userId, "OCEAN", FriendCapabilityState.OPEN, "AntOcean.queryFriendPage")
+            queryMiscInfo(includeActivityProbe = true, targetUserId = userId)
+            if (Status.hasFlagToday(StatusFlags.FLAG_ANTOCEAN_HELP_CLEAN_ALL_FRIEND_LIMIT)) {
+                return FriendCleanAttemptResult(cleaned = false, limitReached = true)
+            }
+
+            jo = JsonUtil.parseJSONObjectOrNull(AntOceanRpcCall.cleanFriendOcean(userId))
+                ?: return FriendCleanAttemptResult(cleaned = false)
+            if (!ResChecker.checkRes(TAG, jo)) {
+                if (isHelpCleanLimit(jo)) {
+                    markHelpCleanLimit(jo)
+                    return FriendCleanAttemptResult(cleaned = false, limitReached = true)
+                }
+                Log.runtime(TAG, extractOceanResultDesc(jo))
+                return FriendCleanAttemptResult(cleaned = false)
+            }
+
+            val maskName = UserMap.getMaskName(userId) ?: userId
+            Log.ocean("神奇海洋🌊[帮助:${maskName}清理海域]")
+            extractNestedJsonArray(jo, "cleanRewardVOS")?.let { checkReward(it) }
+            giveFriendPiece(userId)
+            markOceanHomeRefreshNeeded()
+            return FriendCleanAttemptResult(cleaned = true)
+        } catch (t: Throwable) {
+            Log.runtime(TAG, "cleanFriendByUserId err:")
+            Log.printStackTrace(TAG, t)
+        }
+        return FriendCleanAttemptResult(cleaned = false)
+    }
+
     @Suppress("ReturnCount")
     private fun cleanFriendOcean(fillFlag: JSONObject): Int {
         if (!fillFlag.optBoolean("canClean")) {
@@ -1164,61 +1381,11 @@ class AntOcean : ModelTask() {
         if (Status.hasFlagToday(StatusFlags.FLAG_ANTOCEAN_HELP_CLEAN_ALL_FRIEND_LIMIT)) {
             return 0
         }
-        try {
-            val userId = fillFlag.getString("userId")
-            if (FriendGuard.shouldSkipFriend(userId, TAG, "神奇海洋好友清理")) {
-                return 0
-            }
-            var isOceanClean = cleanOceanList?.contains(userId) == true
-            if (cleanOceanType?.value == CleanOceanType.DONT_CLEAN) {
-                isOceanClean = !isOceanClean
-            }
-            if (!isOceanClean) {
-                return 0
-            }
-            var s = AntOceanRpcCall.queryFriendPage(userId)
-            var jo = JsonUtil.parseJSONObjectOrNull(s) ?: return 0
-            if (ResChecker.checkRes(TAG, jo)) {
-                FriendCapabilityRecorder.record(userId, "OCEAN", FriendCapabilityState.OPEN, "AntOcean.queryFriendPage")
-                if (Status.hasFlagToday(StatusFlags.FLAG_ANTOCEAN_HELP_CLEAN_ALL_FRIEND_LIMIT)) {
-                    return 0
-                }
-                s = AntOceanRpcCall.cleanFriendOcean(userId)
-                jo = JsonUtil.parseJSONObjectOrNull(s) ?: return 0
-                if (ResChecker.checkRes(TAG, jo)) {
-                    val maskName = UserMap.getMaskName(userId) ?: userId
-                    Log.ocean("神奇海洋🌊[帮助:${maskName}清理海域]")
-                    jo.optJSONArray("cleanRewardVOS")?.let { checkReward(it) }
-                    markOceanHomeRefreshNeeded()
-                    return 1
-                } else {
-                    if (isHelpCleanLimit(jo)) {
-                        markHelpCleanLimit(jo)
-                    } else {
-                        Log.runtime(TAG, extractOceanResultDesc(jo))
-                    }
-                }
-            } else {
-                if (isHelpCleanLimit(jo)) {
-                    markHelpCleanLimit(jo)
-                } else {
-                    if (isOceanFriendNotOpen(jo)) {
-                        FriendCapabilityRecorder.record(
-                            userId,
-                            "OCEAN",
-                            FriendCapabilityState.NOT_OPEN,
-                            "AntOcean.queryFriendPage",
-                            extractOceanResultDesc(jo)
-                        )
-                    }
-                    Log.runtime(TAG, extractOceanResultDesc(jo))
-                }
-            }
-        } catch (t: Throwable) {
-            Log.runtime(TAG, "cleanFriendOcean err:")
-            Log.printStackTrace(TAG, t)
+        val userId = fillFlag.optString("userId")
+        if (userId.isBlank()) {
+            return 0
         }
-        return 0
+        return if (cleanFriendByUserId(userId).cleaned) 1 else 0
     }
 
     private fun fillUserFlagAndClean(
@@ -1522,6 +1689,7 @@ class AntOcean : ModelTask() {
                 return TaskFlowActionResult.success()
             }
             return oceanTaskActionFailureResult(
+                item = item,
                 response = result,
                 rpc = "AntOceanRpcCall.receiveTaskAward",
                 detail = oceanTaskActionDetail(item, "receiveTaskAward")
@@ -1563,8 +1731,7 @@ class AntOcean : ModelTask() {
                 }
             }
 
-            val bizInfo = item.raw?.optJSONObject("bizInfo") ?: JSONObject()
-            return finishOceanTaskWithSourceFallback(item, bizInfo)
+            return finishOceanTask(item)
         }
 
         override fun actionKey(item: TaskFlowItem, action: TaskFlowAction): String {
@@ -1630,24 +1797,80 @@ class AntOcean : ModelTask() {
                 detail = oceanTaskActionDetail(item, "helpFriendCleanTask")
             )
         rememberSelfOceanState(taskEntryHomePage.optJSONObject("userInfoVO"))
+        rememberCurrentSeaAreaCode(taskEntryHomePage)
         logOceanTaskOnce("海洋任务🌊[${item.title}]从任务面板入口触发一次好友清理")
 
-        val cleanedCount = queryUserRanking(maxSuccessfulCleans = 1)
-        if (cleanedCount > 0) {
-            return TaskFlowActionResult.success(refreshAfterAction = true)
+        val skipUsers = JSONObject()
+        repeat(20) {
+            val sailingAwayResponse = AntOceanRpcCall.sailingAway(skipUsers)
+            val sailingAwayResult = JsonUtil.parseJSONObjectOrNull(sailingAwayResponse)
+                ?: return TaskFlowActionResult.failure(
+                    failureType = TaskRpcFailureType.RETRYABLE_RPC,
+                    message = "sailingAway返回空或无法解析",
+                    rpc = "AntOceanRpcCall.sailingAway",
+                    raw = sailingAwayResponse,
+                    detail = oceanTaskActionDetail(item, "helpFriendCleanTask")
+                )
+            if (!ResChecker.checkRes(TAG, sailingAwayResult)) {
+                if (isHelpCleanLimit(sailingAwayResult)) {
+                    markHelpCleanLimit(sailingAwayResult)
+                    return TaskFlowActionResult.failure(
+                        failureType = TaskRpcFailureType.BUSINESS_LIMIT,
+                        message = "帮助清理次数已达上限",
+                        rpc = "AntOceanRpcCall.sailingAway",
+                        detail = oceanTaskActionDetail(item, "helpFriendCleanTask")
+                    )
+                }
+                return TaskFlowActionResult.failure(
+                    failureType = TaskRpcFailureType.RETRYABLE_RPC,
+                    code = extractOceanTaskFailureCode(sailingAwayResult),
+                    message = extractOceanResultDesc(sailingAwayResult),
+                    rpc = "AntOceanRpcCall.sailingAway",
+                    raw = sailingAwayResult.toString(),
+                    detail = oceanTaskActionDetail(item, "helpFriendCleanTask")
+                )
+            }
+
+            val friendUserId = sailingAwayResult.optString("friendId").ifBlank {
+                sailingAwayResult.optJSONObject("resData")?.optString("friendId").orEmpty()
+            }
+            if (friendUserId.isBlank()) {
+                return TaskFlowActionResult.failure(
+                    failureType = TaskRpcFailureType.BUSINESS_LIMIT,
+                    message = "任务入口未返回可清理好友",
+                    rpc = "AntOceanRpcCall.sailingAway",
+                    detail = oceanTaskActionDetail(item, "helpFriendCleanTask")
+                )
+            }
+            if (!shouldCleanFriend(friendUserId)) {
+                skipUsers.put(friendUserId, "clean")
+                return@repeat
+            }
+
+            val cleanResult = cleanFriendByUserId(friendUserId)
+            if (cleanResult.cleaned) {
+                queryMiscInfo()
+                refreshOceanPropListState()
+                queryNotice(OceanNoticeScene.TASK_AND_GAME)
+                refreshUserRankingState()
+                refreshUserDynamicStatisticsState()
+                return TaskFlowActionResult.success(refreshAfterAction = true)
+            }
+            if (cleanResult.limitReached || Status.hasFlagToday(StatusFlags.FLAG_ANTOCEAN_HELP_CLEAN_ALL_FRIEND_LIMIT)) {
+                return TaskFlowActionResult.failure(
+                    failureType = TaskRpcFailureType.BUSINESS_LIMIT,
+                    message = "帮助清理次数已达上限",
+                    rpc = "AntOcean.completeHelpFriendCleanTask",
+                    detail = oceanTaskActionDetail(item, "helpFriendCleanTask")
+                )
+            }
+            skipUsers.put(friendUserId, "clean")
         }
-        if (Status.hasFlagToday(StatusFlags.FLAG_ANTOCEAN_HELP_CLEAN_ALL_FRIEND_LIMIT)) {
-            return TaskFlowActionResult.failure(
-                failureType = TaskRpcFailureType.BUSINESS_LIMIT,
-                message = "帮助清理次数已达上限",
-                rpc = "AntOcean.queryUserRanking",
-                detail = oceanTaskActionDetail(item, "helpFriendCleanTask")
-            )
-        }
+
         return TaskFlowActionResult.failure(
             failureType = TaskRpcFailureType.BUSINESS_LIMIT,
-            message = "任务入口未找到可清理好友，等待手动完成",
-            rpc = "AntOcean.queryUserRanking",
+            message = "任务入口未找到符合清理规则的好友，等待手动完成",
+            rpc = "AntOcean.completeHelpFriendCleanTask",
             detail = oceanTaskActionDetail(item, "helpFriendCleanTask")
         )
     }
@@ -1658,99 +1881,57 @@ class AntOcean : ModelTask() {
             !currentOceanUserId.isNullOrBlank()
     }
 
-    private fun finishOceanTaskWithSourceFallback(
-        item: TaskFlowItem,
-        bizInfo: JSONObject
-    ): TaskFlowActionResult {
-        val finishSource = resolveOceanTaskFinishSource(item.type, item.title, bizInfo)
-        val fallbackSource = if (finishSource == "ADBASICLIB") "ANTFOCEAN" else "ADBASICLIB"
-        val sourcesToTry = listOf(finishSource, fallbackSource).distinct()
-        val failures = mutableListOf<TaskFlowActionResult>()
-        var hasUnparsedResponse = false
-        var unparsedRaw = ""
-
-        for (source in sourcesToTry) {
-            val response = AntOceanRpcCall.finishTask(item.sceneCode, item.type, source)
-            val result = JsonUtil.parseJSONObjectOrNull(response)
-            if (result == null) {
-                hasUnparsedResponse = true
-                if (unparsedRaw.isBlank()) {
-                    unparsedRaw = response
-                }
-                continue
-            }
-
-            if (isOceanTaskRpcSuccess(result)) {
-                Log.ocean("海洋任务🌊完成[${item.title}]")
-                return TaskFlowActionResult.success()
-            }
-
-            failures.add(
-                oceanTaskActionFailureResult(
-                    response = result,
-                    rpc = "AntOceanRpcCall.finishTask",
-                    detail = oceanTaskActionDetail(item, "finishTask", "source=$source")
-                )
-            )
-        }
-
-        return selectOceanFinishFailure(item, sourcesToTry.size, failures, hasUnparsedResponse, unparsedRaw)
-    }
-
-    private fun selectOceanFinishFailure(
-        item: TaskFlowItem,
-        sourceCount: Int,
-        failures: List<TaskFlowActionResult>,
-        hasUnparsedResponse: Boolean,
-        unparsedRaw: String
-    ): TaskFlowActionResult {
-        if (failures.isEmpty()) {
-            return TaskFlowActionResult.failure(
-                failureType = TaskRpcFailureType.RETRYABLE_RPC,
-                message = "finishTask兜底路由未得到可解析响应",
-                rpc = "AntOceanRpcCall.finishTask",
-                raw = unparsedRaw,
-                detail = oceanTaskActionDetail(item, "finishTask"),
-                stopCurrentRound = true
-            )
-        }
-
-        if (!hasUnparsedResponse &&
-            failures.size == sourceCount &&
-            failures.all { it.failureType == TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE }
-        ) {
-            return failures.last()
-        }
-
-        failures.firstOrNull { it.failureType == TaskRpcFailureType.TERMINAL_DONE }?.let { return it }
-        failures.firstOrNull { it.failureType == TaskRpcFailureType.RETRYABLE_RPC }?.let { return it }
-        failures.firstOrNull { it.failureType == TaskRpcFailureType.BUSINESS_LIMIT }?.let { return it }
-        failures.firstOrNull { it.failureType == TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW }?.let { return it }
-        failures.firstOrNull { it.failureType == TaskRpcFailureType.NON_RETRYABLE_INVALID }?.let { return it }
-
-        return TaskFlowActionResult.failure(
+    private fun finishOceanTask(item: TaskFlowItem): TaskFlowActionResult {
+        val response = AntOceanRpcCall.finishTask(item.sceneCode, item.type)
+        val result = JsonUtil.parseJSONObjectOrNull(response) ?: return TaskFlowActionResult.failure(
             failureType = TaskRpcFailureType.RETRYABLE_RPC,
-            message = "finishTask多路兜底失败但不足以确认永久失败",
+            message = "finishTask返回空或无法解析",
             rpc = "AntOceanRpcCall.finishTask",
-            raw = failures.joinToString(separator = ";") { it.raw },
+            raw = response,
             detail = oceanTaskActionDetail(item, "finishTask"),
             stopCurrentRound = true
+        )
+        if (isOceanTaskRpcSuccess(result)) {
+            Log.ocean("海洋任务🌊完成[${item.title}]")
+            return TaskFlowActionResult.success()
+        }
+        return oceanTaskActionFailureResult(
+            item = item,
+            response = result,
+            rpc = "AntOceanRpcCall.finishTask",
+            detail = oceanTaskActionDetail(item, "finishTask")
         )
     }
 
     private fun oceanTaskActionFailureResult(
+        item: TaskFlowItem,
         response: JSONObject,
         rpc: String,
         detail: String
     ): TaskFlowActionResult {
+        val failureType = normalizeOceanTaskFailureType(item.type, classifyOceanTaskFailure(response))
         return TaskFlowActionResult.failure(
-            failureType = classifyOceanTaskFailure(response),
+            failureType = failureType,
             code = extractOceanTaskFailureCode(response),
             message = extractOceanTaskFailureMessage(response),
             rpc = rpc,
             raw = response.toString(),
             detail = detail
         )
+    }
+
+    private fun normalizeOceanTaskFailureType(
+        taskType: String,
+        failureType: TaskRpcFailureType
+    ): TaskRpcFailureType {
+        if (failureType != TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE) {
+            return failureType
+        }
+        return if (isUnsupportedNoClosureOceanTask(taskType)) {
+            TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE
+        } else {
+            TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW
+        }
     }
 
     private fun oceanTaskActionDetail(
@@ -1894,6 +2075,13 @@ class AntOcean : ModelTask() {
         }
     }
 
+    private fun isFriendPieceAlreadyGiven(response: JSONObject): Boolean {
+        val code = extractOceanTaskFailureCode(response)
+        val message = extractOceanTaskFailureMessage(response)
+        return code == "PIECE_HAVE_GAVE" ||
+            containsAnyOcean(message, "碎片已经成功送出啦")
+    }
+
     private fun extractOceanTaskFailureCode(response: JSONObject): String {
         return response.optString("code")
             .ifBlank { response.optString("errorCode") }
@@ -1973,7 +2161,7 @@ class AntOcean : ModelTask() {
         taskTitle: String,
         response: JSONObject
     ) {
-        val failureType = classifyOceanTaskFailure(response)
+        val failureType = normalizeOceanTaskFailureType(taskType, classifyOceanTaskFailure(response))
         val code = extractOceanTaskFailureCode(response).ifBlank { "UNKNOWN" }
         val message = extractOceanTaskFailureMessage(response).ifBlank { "UNKNOWN" }
         val detail = "module=神奇海洋 taskType=$taskType taskName=$taskTitle " +
@@ -1998,9 +2186,11 @@ class AntOcean : ModelTask() {
         }
     }
 
-    private suspend fun queryNotice() {
+    private fun queryNotice(scene: OceanNoticeScene) {
         try {
-            val jo = JsonUtil.parseJSONObjectOrNull(AntOceanRpcCall.queryNotice()) ?: return
+            val jo = JsonUtil.parseJSONObjectOrNull(
+                AntOceanRpcCall.queryNotice(buildOceanNoticeReqList(scene))
+            ) ?: return
             if (!ResChecker.checkRes(TAG, jo)) {
                 return
             }
@@ -2024,7 +2214,7 @@ class AntOcean : ModelTask() {
                     "CULTIVATION_LIST_ENTRANCE" -> {
                         if (haveNotice) {
                             needQueryPopup = true
-                            Log.ocean("神奇海洋🌊[检测到海洋活动入口]")
+                            logOceanActivityEntranceDetected()
                         }
                     }
 
@@ -2054,7 +2244,7 @@ class AntOcean : ModelTask() {
         }
     }
 
-    private suspend fun queryPopupWin() {
+    private fun queryPopupWin() {
         try {
             val jo = JsonUtil.parseJSONObjectOrNull(AntOceanRpcCall.popupWin()) ?: return
             if (!ResChecker.checkRes(TAG, jo)) {
@@ -2066,7 +2256,7 @@ class AntOcean : ModelTask() {
                 val renderValue = item.optJSONObject("renderValue")
                 val jumpUrl = renderValue?.optString("jumpUrl").orEmpty()
                 if (jumpUrl.contains("cultivationDetail") || jumpUrl.contains("projectCode")) {
-                    Log.ocean("神奇海洋🌊[检测到海洋活动入口]")
+                    logOceanActivityEntranceDetected()
                     return
                 }
             }

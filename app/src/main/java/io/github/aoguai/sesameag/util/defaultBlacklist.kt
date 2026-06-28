@@ -300,6 +300,7 @@ private val stallDefaultBlacklist = setOf(
     "ANTSTALL_NORMAL_DAILY_DONATE_COUNT|助力就业岗位",
     "ANTSTALL_TASK_xcjmjyjuankuan2026|帮乡村姐妹家乡就业",
     "ANTSTALL_TASK_kuaishouhuanduan|去快手逛一逛",
+    "ANTSTALL_ELEME_VISIT|去饿了么果园逛一逛",
     "ANTSTALL_TASK_taojinbihuanduan|进入淘宝芭芭农场领免费水果",
     "ANTSTALL_P2P_DAILY_SHARER|邀请好友助力"
 )

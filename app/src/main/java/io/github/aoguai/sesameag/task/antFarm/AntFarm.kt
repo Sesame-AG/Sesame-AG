@@ -2,6 +2,7 @@
 
 package io.github.aoguai.sesameag.task.antFarm
 
+import android.net.Uri
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.databind.DeserializationFeature
@@ -140,6 +141,7 @@ class AntFarm : ModelTask() {
     internal var lastDonationNoMoreActivities: Boolean = false
         private set
     private val specialFoodUnitProduce: MutableMap<String, Double> = linkedMapOf()
+    private var specialFoodCuisineSnapshot: JSONArray? = null
 
     /**
      * 标记农场是否已满（用于雇佣小鸡逻辑）
@@ -934,8 +936,8 @@ class AntFarm : ModelTask() {
                 return
             }
             val pendingFarmTaskFinalization = runFarmTaskWorkflow(tc, userId)
-            runFarmSocialWorkflow(tc, pendingFarmTaskFinalization)
-            runFarmFinalizeWorkflow(tc)
+            val pendingFarmTaskFinalizationAfterSocial = runFarmSocialWorkflow(tc, pendingFarmTaskFinalization)
+            runFarmFinalizeWorkflow(tc, pendingFarmTaskFinalizationAfterSocial)
         } catch (e: CancellationException) {
             // 协程取消是正常现象，不记录为错误
              Log.farm("AntFarm 协程被取消")
@@ -1021,6 +1023,66 @@ class AntFarm : ModelTask() {
 
     internal fun isAutoUseSpecialFoodEnabled(): Boolean {
         return useSpecialFood?.value == true
+    }
+
+    private fun rememberSpecialFoodCuisineSnapshot(cuisineList: JSONArray?) {
+        if (cuisineList == null) {
+            return
+        }
+        specialFoodCuisineSnapshot = JSONArray(cuisineList.toString())
+    }
+
+    private fun copySpecialFoodCuisineSnapshot(): JSONArray? {
+        return specialFoodCuisineSnapshot?.let { JSONArray(it.toString()) }
+    }
+
+    internal fun useDailySpecialFoodIfNeeded(): Int {
+        if (!isAutoUseSpecialFoodEnabled()) {
+            return 0
+        }
+        if (isOwnerAnimalSleeping()) {
+            Log.farm("小鸡正在睡觉，跳过特殊食品")
+            return 0
+        }
+        if (!isOwnerAnimalAtHome()) {
+            Log.farm("小鸡当前不在庄园，暂不使用特殊食品，等待召回后再试")
+            return 0
+        }
+
+        val dailyLimit = useSpecialFoodCount?.value ?: -1
+        val usedToday = Status.getIntFlagToday(StatusFlags.FLAG_FARM_SPECIAL_FOOD_DAILY_COUNT) ?: 0
+        if (dailyLimit > 0 &&
+            (Status.hasFlagToday(StatusFlags.FLAG_FARM_SPECIAL_FOOD_LIMIT) || usedToday >= dailyLimit)
+        ) {
+            Status.setFlagToday(StatusFlags.FLAG_FARM_SPECIAL_FOOD_LIMIT)
+            Log.farm("特殊食品今日已使用${usedToday}个，达到每日上限${dailyLimit}个，跳过")
+            return 0
+        }
+
+        var cuisineList = copySpecialFoodCuisineSnapshot()
+        if (cuisineList == null) {
+            if (ownerFarmId.isNullOrBlank()) {
+                Log.farm("特殊食品读取库存快照失败：ownerFarmId为空，跳过本轮")
+                return 0
+            }
+            syncAnimalStatus(ownerFarmId)
+            cuisineList = copySpecialFoodCuisineSnapshot()
+        }
+        if (cuisineList == null) {
+            Log.farm("特殊食品读取库存快照失败：cuisineList为空，跳过本轮")
+            return 0
+        }
+
+        val remainingDailyQuota = if (dailyLimit > 0) dailyLimit - usedToday else -1
+        val usedCount = useSpecialFood(
+            cuisineList = cuisineList,
+            maxUsage = remainingDailyQuota,
+            guardScene = "庄园自动链路"
+        )
+        if (usedCount > 0) {
+            specialFoodCuisineSnapshot = null
+        }
+        return usedCount
     }
 
     private fun persistentFarmDedupeKey(childId: String): String {
@@ -2051,6 +2113,7 @@ class AntFarm : ModelTask() {
                 harvestBenevolenceScore = joFarmVO.getDouble("harvestBenevolenceScore")
 
                 parseSyncAnimalStatusResponse(joFarmVO)
+                rememberSpecialFoodCuisineSnapshot(jo.optJSONArray("cuisineList"))
 
                 joFarmVO.getJSONObject("masterUserInfoVO").getString("userId")
                 familyGroupId = familyInfoVO.optString("groupId", "")
@@ -2066,33 +2129,6 @@ class AntFarm : ModelTask() {
                                 val gift = gifts.optJSONObject(i)
                                 clickForGiftV2(gift)
                             }
-                        }
-                    }
-                }
-                if (useSpecialFood?.value == true) { //使用特殊食品
-                    val cuisineList = jo.optJSONArray("cuisineList")
-                    if (cuisineList != null &&
-                        AnimalInteractStatus.HOME.name != ownerAnimal.animalInteractStatus
-                    ) {
-                        Log.farm("小鸡当前不在庄园，暂不使用特殊食品，等待召回后再试")
-                    } else if (cuisineList != null &&
-                        AnimalFeedStatus.SLEEPY.name != ownerAnimal.animalFeedStatus
-                    ) {
-                        val dailyLimit = useSpecialFoodCount?.value ?: -1
-                        val usedToday =
-                            Status.getIntFlagToday(StatusFlags.FLAG_FARM_SPECIAL_FOOD_DAILY_COUNT) ?: 0
-                        if (dailyLimit > 0 &&
-                            (Status.hasFlagToday(StatusFlags.FLAG_FARM_SPECIAL_FOOD_LIMIT) || usedToday >= dailyLimit)
-                        ) {
-                            Status.setFlagToday(StatusFlags.FLAG_FARM_SPECIAL_FOOD_LIMIT)
-                            Log.farm("特殊食品今日已使用${usedToday}个，达到每日上限${dailyLimit}个，跳过")
-                        } else {
-                            val remainingDailyQuota = if (dailyLimit > 0) dailyLimit - usedToday else -1
-                            useSpecialFood(
-                                cuisineList = cuisineList,
-                                maxUsage = remainingDailyQuota,
-                                guardScene = "庄园自动链路"
-                            )
                         }
                     }
                 }
@@ -3149,8 +3185,192 @@ class AntFarm : ModelTask() {
         }
     }
 
+    private sealed interface FarmTaskClosureRoute {
+        data class OwnerBusiness(val ownerFlowName: String) : FarmTaskClosureRoute
+        data class DirectFinishTask(val sceneCode: String) : FarmTaskClosureRoute
+        data object LegacyDoFarmTask : FarmTaskClosureRoute
+    }
+
+    private data class FarmTaskRouteMeta(
+        val taskType: String,
+        val tracerTaskType: String,
+        val tracerSceneCode: String,
+        val tracerGroupId: String,
+        val targetTaskType: String,
+        val targetSceneCode: String,
+        val targetSource: String,
+        val targetUrl: String,
+        val innerAction: String,
+        val categorizationThirdLevel: String,
+        val categorizationGameId: String
+    )
+
+    private fun resolveFarmTaskClosureRoute(item: TaskFlowItem): FarmTaskClosureRoute {
+        return resolveFarmTaskClosureRoute(item.raw, item.type, item.id)
+    }
+
+    private fun resolveFarmTaskClosureRoute(
+        raw: JSONObject?,
+        fallbackTaskType: String,
+        fallbackTaskId: String
+    ): FarmTaskClosureRoute {
+        val meta = buildFarmTaskRouteMeta(raw, fallbackTaskType, fallbackTaskId)
+        return when {
+            meta.taskType == "COOK" -> FarmTaskClosureRoute.OwnerBusiness("小鸡厨房")
+            meta.taskType == "SLEEP" -> FarmTaskClosureRoute.OwnerBusiness("小鸡睡觉")
+            meta.taskType == "HIRE_LOW_ACTIVITY" -> FarmTaskClosureRoute.OwnerBusiness("雇佣小鸡")
+            meta.taskType in setOf("chouchoule_xiaritianpin", "IPchouchoule_26wanjuzongdongyuan5") ||
+                (
+                    meta.targetUrl.contains("prizeMachine.html", ignoreCase = true) &&
+                        meta.targetSource in setOf("siliaorenwu", "ip_ccl")
+                    ) -> FarmTaskClosureRoute.OwnerBusiness("抽抽乐")
+
+            meta.taskType in setOf("XJLY_xxljy", "XJLYKBX1_sl90") ||
+                meta.tracerGroupId == "26wufuczhl" ||
+                meta.categorizationGameId == "2021005181698249" ||
+                (
+                    meta.innerAction == "PARADISE" &&
+                        meta.categorizationThirdLevel == "AccOpenBox"
+                    ) -> FarmTaskClosureRoute.OwnerBusiness("小鸡乐园开宝箱")
+
+            meta.taskType == "SHANGYEHUA_90_1" &&
+                (
+                    meta.targetTaskType == "SHANGYEHUA_90_1" ||
+                        meta.tracerTaskType == "SHANGYEHUA_90_1"
+                    ) &&
+                (
+                    meta.targetSceneCode == "ANTFARM_FOOD_TASK" ||
+                        meta.tracerSceneCode == "ANTFARM_FOOD_TASK"
+                    ) -> FarmTaskClosureRoute.DirectFinishTask("ANTFARM_FOOD_TASK")
+
+            else -> FarmTaskClosureRoute.LegacyDoFarmTask
+        }
+    }
+
+    private fun buildFarmTaskRouteMeta(
+        raw: JSONObject?,
+        fallbackTaskType: String,
+        fallbackTaskId: String
+    ): FarmTaskRouteMeta {
+        val task = raw ?: JSONObject()
+        val taskId = task.optString("taskId").trim().ifBlank { fallbackTaskId }
+        val bizKey = task.optString("bizKey").trim().ifBlank { fallbackTaskType }
+        val tracerFields = parseFarmTaskTracer(
+            task.optJSONObject("deliveryControlItem")?.optString("iepTaskTracer").orEmpty()
+        )
+        val targetUrl = task.optString("targetUrl").trim()
+        val targetTaskType = readFarmTaskUrlParam(targetUrl, "iepTaskType")
+        val tracerTaskType = tracerFields["taskType"].orEmpty()
+        val resolvedTaskType = taskId
+            .ifBlank { bizKey }
+            .ifBlank { tracerTaskType }
+            .ifBlank { targetTaskType }
+
+        return FarmTaskRouteMeta(
+            taskType = resolvedTaskType,
+            tracerTaskType = tracerTaskType,
+            tracerSceneCode = tracerFields["sceneCode"].orEmpty(),
+            tracerGroupId = tracerFields["groupId"].orEmpty(),
+            targetTaskType = targetTaskType,
+            targetSceneCode = readFarmTaskUrlParam(targetUrl, "iepTaskSceneCode"),
+            targetSource = readFarmTaskUrlParam(targetUrl, "source"),
+            targetUrl = targetUrl,
+            innerAction = task.optString("innerAction").trim(),
+            categorizationThirdLevel = task.optString("categorizationThirdLevel").trim(),
+            categorizationGameId = task.optJSONObject("categorizationParamModel")
+                ?.optString("game_id")
+                .orEmpty()
+                .trim()
+        )
+    }
+
+    private fun parseFarmTaskTracer(tracer: String): Map<String, String> {
+        if (tracer.isBlank()) {
+            return emptyMap()
+        }
+        val fields = linkedMapOf<String, String>()
+        tracer.split("~").forEach { segment ->
+            val separatorIndex = segment.indexOf(':')
+            if (separatorIndex <= 0 || separatorIndex >= segment.lastIndex) {
+                return@forEach
+            }
+            fields[segment.substring(0, separatorIndex)] = segment.substring(separatorIndex + 1)
+        }
+        return fields
+    }
+
+    private fun readFarmTaskUrlParam(targetUrl: String, key: String): String {
+        if (targetUrl.isBlank()) {
+            return ""
+        }
+        val outerUri = runCatching { Uri.parse(targetUrl) }.getOrNull() ?: return ""
+        outerUri.getQueryParameter(key)
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?.let { return it }
+
+        val nestedUrl = outerUri.getQueryParameter("url")
+            .orEmpty()
+            .ifBlank { outerUri.getQueryParameter("page").orEmpty() }
+        if (nestedUrl.isBlank()) {
+            return ""
+        }
+        return runCatching { Uri.parse(nestedUrl).getQueryParameter(key).orEmpty().trim() }
+            .getOrDefault("")
+    }
+
+    private fun buildFarmTaskFinishOutBizNo(taskType: String, index: Int = 0): String {
+        return buildString {
+            append(taskType)
+            append("_")
+            append(System.currentTimeMillis())
+            append("_")
+            append(index)
+            append("_")
+            append(Integer.toHexString((Math.random() * 0xFFFFFF).toInt()))
+        }
+    }
+
+    private fun finishFarmFoodTask(taskType: String, title: String, sceneCode: String): TaskFlowActionResult {
+        val result = AntFarmRpcCall.finishTask(taskType, sceneCode, buildFarmTaskFinishOutBizNo(taskType))
+        if (result.isEmpty()) {
+            return TaskFlowActionResult.failure(
+                failureType = TaskRpcFailureType.RETRYABLE_RPC,
+                message = "finishTask返回空",
+                rpc = "AntFarmRpcCall.finishTask",
+                detail = "taskId=$taskType taskName=$title sceneCode=$sceneCode",
+                stopCurrentRound = true
+            )
+        }
+
+        val jo = JSONObject(result)
+        if (isFarmTaskQuotaReachedResponse(jo)) {
+            Status.setFlagToday(StatusFlags.FLAG_FARM_TASK_LIMIT_PREFIX + taskType)
+            Log.farm("庄园任务[$title]已达上限")
+            return buildFarmTaskFailureResult(
+                jo,
+                taskType,
+                title,
+                "finishTask(scene=$sceneCode)",
+                "AntFarmRpcCall.finishTask"
+            )
+        }
+
+        if (ResChecker.checkRes(TAG, jo)) {
+            Log.farm("庄园任务使用finishTask新闭环🧾[$title]")
+            return TaskFlowActionResult.success()
+        }
+        return buildFarmTaskFailureResult(
+            jo,
+            taskType,
+            title,
+            "finishTask(scene=$sceneCode)",
+            "AntFarmRpcCall.finishTask"
+        )
+    }
+
     private inner class FarmDailyTaskFlowAdapter : TaskFlowAdapter {
-        private val loggedSkipKeys = mutableSetOf<String>()
+        private val loggedTaskDecisionKeys = mutableSetOf<String>()
         private val handledCompleteKeys = mutableSetOf<String>()
 
         override val moduleName: String = farmTaskBlacklistModule
@@ -3208,6 +3428,7 @@ class AntFarm : ModelTask() {
                 TaskStatus.TODO.name,
                 "WAIT_COMPLETE" -> when {
                     item.type == "tab3_gyg" -> TaskFlowPhase.BUSINESS_ACTION
+                    resolveFarmTaskClosureRoute(item) is FarmTaskClosureRoute.OwnerBusiness -> TaskFlowPhase.BUSINESS_ACTION
                     item.type.isBlank() -> TaskFlowPhase.UNKNOWN
                     else -> TaskFlowPhase.READY_TO_COMPLETE
                 }
@@ -3225,7 +3446,7 @@ class AntFarm : ModelTask() {
 
         override fun shouldSkipByTodayState(item: TaskFlowItem): Boolean {
             if (Status.hasFlagToday(StatusFlags.FLAG_FARM_TASK_LIMIT_PREFIX + item.type)) {
-                logFarmTaskSkipOnce(item, "今日已达该任务上限，跳过")
+                logFarmTaskDecisionOnce(item, "今日已达该任务上限，跳过")
                 return true
             }
             return false
@@ -3235,14 +3456,18 @@ class AntFarm : ModelTask() {
             if (Thread.currentThread().isInterrupted) {
                 return true
             }
+            val route = resolveFarmTaskClosureRoute(item)
+            if (route is FarmTaskClosureRoute.OwnerBusiness) {
+                logFarmTaskDecisionOnce(item, "由${route.ownerFlowName}业务链负责，本轮不在此处complete")
+            }
             if (item.type == "tab3_gyg" && enableChouchoule?.value != true) {
-                logFarmTaskSkipOnce(item, "抽抽乐未开启，跳过饲料任务收敛检查")
+                logFarmTaskDecisionOnce(item, "抽抽乐未开启，跳过饲料任务收敛检查")
                 return true
             }
             if (mapPhase(item) == TaskFlowPhase.READY_TO_COMPLETE &&
                 actionKey(item, TaskFlowAction.COMPLETE) in handledCompleteKeys
             ) {
-                logFarmTaskSkipOnce(item, "本轮已推进，等待刷新后再处理")
+                logFarmTaskDecisionOnce(item, "本轮已推进，等待刷新后再处理")
                 return true
             }
             return false
@@ -3251,16 +3476,31 @@ class AntFarm : ModelTask() {
         override fun isBlacklisted(item: TaskFlowItem): Boolean {
             val blacklisted = super<TaskFlowAdapter>.isBlacklisted(item)
             if (blacklisted) {
-                logFarmTaskSkipOnce(item, "已在黑名单中，跳过处理")
+                logFarmTaskDecisionOnce(item, "已在黑名单中，跳过处理")
             }
             return blacklisted
         }
 
         override fun complete(item: TaskFlowItem): TaskFlowActionResult {
-            return when (item.type) {
-                "VIDEO_TASK" -> handleVideoTask(item.type, item.title)
-                "ANSWER" -> completeFarmAnswerTask(item.title)
-                else -> handleGeneralTask(item.type, item.title, blacklistOnTerminalFailure = false)
+            return when {
+                item.type == "VIDEO_TASK" -> handleVideoTask(item.type, item.title)
+                item.type == "ANSWER" -> completeFarmAnswerTask(item.title)
+                else -> when (val route = resolveFarmTaskClosureRoute(item)) {
+                    is FarmTaskClosureRoute.DirectFinishTask -> {
+                        logFarmTaskDecisionOnce(item, "使用finishTask新闭环(scene=${route.sceneCode})")
+                        finishFarmFoodTask(item.type.ifBlank { item.id }, item.title, route.sceneCode)
+                    }
+
+                    FarmTaskClosureRoute.LegacyDoFarmTask -> {
+                        logFarmTaskDecisionOnce(item, "保留doFarmTask旧闭环")
+                        handleGeneralTask(item.type, item.title, blacklistOnTerminalFailure = false)
+                    }
+
+                    is FarmTaskClosureRoute.OwnerBusiness -> {
+                        logFarmTaskDecisionOnce(item, "由${route.ownerFlowName}业务链负责，本轮不在此处complete")
+                        TaskFlowActionResult.success(progressChanged = false)
+                    }
+                }
             }
         }
 
@@ -3297,9 +3537,9 @@ class AntFarm : ModelTask() {
             Log.error(TAG, message)
         }
 
-        private fun logFarmTaskSkipOnce(item: TaskFlowItem, reason: String) {
+        private fun logFarmTaskDecisionOnce(item: TaskFlowItem, reason: String) {
             val key = "${item.type.ifBlank { item.id }}:$reason"
-            if (loggedSkipKeys.add(key)) {
+            if (loggedTaskDecisionKeys.add(key)) {
                 Log.farm("庄园饲料任务[${item.title}]$reason")
             }
         }
@@ -5055,6 +5295,7 @@ class AntFarm : ModelTask() {
      */
     private fun parseSyncAnimalStatusResponse(jo: JSONObject) {
         try {
+            rememberSpecialFoodCuisineSnapshot(jo.optJSONArray("cuisineList"))
             if (!jo.has("subFarmVO")) {
                 return
             }
@@ -5375,11 +5616,6 @@ class AntFarm : ModelTask() {
         val deltaProduce: Double = 0.0
     )
 
-    private data class SpecialFoodCuisineRefresh(
-        val cuisineList: JSONArray?,
-        val refreshed: Boolean
-    )
-
     private data class SpecialFoodRiskContext(
         val sourceMethod: String,
         val sourceCode: String,
@@ -5446,9 +5682,7 @@ class AntFarm : ModelTask() {
     ): Int {
         var usedCount = 0
         try {
-            val refreshedCuisine = refreshSpecialFoodCuisineList("使用前")
-            val sourceCuisineList = refreshedCuisine.cuisineList ?: cuisineList
-            val stockList = buildSpecialFoodStocks(sourceCuisineList)
+            val stockList = buildSpecialFoodStocks(cuisineList)
             val totalInventory = totalSpecialFoodStock(stockList)
             Log.farm("美食处理：统计到美食库共有美食 $totalInventory 个")
             if (totalInventory <= 0) {
@@ -5540,70 +5774,6 @@ class AntFarm : ModelTask() {
             Log.farm("${usageLabel}今日已累计使用${newUsedToday}个")
         }
         return usedCount
-    }
-
-    private fun refreshSpecialFoodCuisineList(reason: String): SpecialFoodCuisineRefresh {
-        var latestCuisineList: JSONArray? = null
-        var refreshed = false
-        val userId = UserMap.currentUid
-        if (userId.isNullOrBlank()) {
-            return SpecialFoodCuisineRefresh(null, false)
-        }
-
-        runCatching {
-            JSONObject(AntFarmRpcCall.enterFarm(userId, userId))
-        }.onSuccess { farmHome ->
-            if (ResChecker.checkRes(TAG, farmHome)) {
-                updateSpecialFoodFarmSnapshot(farmHome)
-                farmHome.optJSONArray("cuisineList")?.let {
-                    latestCuisineList = it
-                    refreshed = true
-                }
-            } else {
-                Log.farm("美食库存回查[$reason] enterFarm失败 raw=$farmHome")
-            }
-        }.onFailure {
-            Log.printStackTrace(TAG, "美食库存回查[$reason] enterFarm异常:", it)
-        }
-
-        runCatching {
-            JSONObject(AntFarmRpcCall.enterKitchen(userId))
-        }.onSuccess { kitchen ->
-            if (ResChecker.checkRes(TAG, kitchen)) {
-                kitchen.optJSONArray("cuisineList")?.let {
-                    latestCuisineList = it
-                    refreshed = true
-                }
-            } else {
-                Log.farm("美食库存回查[$reason] enterKitchen失败 raw=$kitchen")
-            }
-        }.onFailure {
-            Log.printStackTrace(TAG, "美食库存回查[$reason] enterKitchen异常:", it)
-        }
-
-        runCatching {
-            JSONObject(AntFarmRpcCall.listCookbook())
-        }.onSuccess { cookbook ->
-            if (!ResChecker.checkRes(TAG, cookbook)) {
-                Log.farm("美食菜谱回查[$reason] listCookbook失败 raw=$cookbook")
-            }
-        }.onFailure {
-            Log.printStackTrace(TAG, "美食菜谱回查[$reason] listCookbook异常:", it)
-        }
-
-        return SpecialFoodCuisineRefresh(latestCuisineList, refreshed)
-    }
-
-    private fun updateSpecialFoodFarmSnapshot(response: JSONObject) {
-        val farmProduce = response.optJSONObject("farmVO")?.optJSONObject("farmProduce")
-            ?: response.optJSONObject("farmProduce")
-            ?: response.optJSONObject("foodEffect")
-        val latestBenevolenceScore = farmProduce?.optDouble("benevolenceScore", Double.NaN) ?: Double.NaN
-        val targetProduce = farmProduce?.optDouble("targetProduce", Double.NaN) ?: Double.NaN
-        when {
-            !latestBenevolenceScore.isNaN() -> benevolenceScore = latestBenevolenceScore
-            !targetProduce.isNaN() -> benevolenceScore = targetProduce
-        }
     }
 
     private fun buildSpecialFoodStocks(cuisineList: JSONArray): MutableList<SpecialFoodStock> {
@@ -5855,13 +6025,7 @@ class AntFarm : ModelTask() {
             benevolenceScore = targetProduce
         }
         learnSpecialFoodProduce(plan.uses, deltaProduce)
-        val refreshedCuisine = refreshSpecialFoodCuisineList("使用后")
-        if (refreshedCuisine.refreshed && refreshedCuisine.cuisineList != null) {
-            stockList.clear()
-            stockList.addAll(buildSpecialFoodStocks(refreshedCuisine.cuisineList))
-        } else {
-            updateSpecialFoodStockAfterUse(stockList, joRes, plan.uses)
-        }
+        updateSpecialFoodStockAfterUse(stockList, joRes, plan.uses)
 
         val targetProduceText = if (targetProduce.isNaN()) "" else "，使用后进度${formatSpecialFoodProduce(targetProduce)}"
         Log.farm(

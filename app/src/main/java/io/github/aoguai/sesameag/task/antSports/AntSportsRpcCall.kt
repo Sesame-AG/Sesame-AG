@@ -1607,7 +1607,7 @@ object AntSportsRpcCall {
          * @brief 查询签到状态
          * 
          * @param signType 签到类型（健康岛固定为 3）
-         * @param source 来源标识（固定为 "jkdsportcard"）
+         * @param source 来源标识（当前运动首页抓包稳定使用 "ch_toufang__yundongshouye"）
          * 
          * @return RPC调用结果的 JSON 字符串
          * 
@@ -1624,7 +1624,7 @@ object AntSportsRpcCall {
          * @brief 执行签到
          * 
          * @param signType 签到类型（健康岛固定为 3）
-         * @param source 来源标识（固定为 "jkdsportcard"）
+         * @param source 来源标识（当前运动首页抓包稳定使用 "ch_toufang__yundongshouye"）
          * 
          * @return RPC调用结果的 JSON 字符串
          * 
@@ -1874,17 +1874,34 @@ object AntSportsRpcCall {
 
         /**
          * @brief 查询任务中心
-         * 
-         * @details 获取健康岛任务大厅的任务列表。
-         * 
+         *
+         * @details 获取健康岛任务大厅的任务列表，请求体按当前运动首页抓包同步。
+         *
+         * @param source 来源标识
+         * @param cityCode 城市编码
+         * @param apDid 可选设备标识；当前模块内没有可靠运行时来源时不传固定值
+         *
          * @return RPC调用结果的 JSON 字符串
-         * 
+         *
          * @remark 对应API：com.alipay.neverland.biz.rpc.queryTaskCenter
          */
-        fun queryTaskCenter(source: String = DEFAULT_SOURCE): String {
+        fun queryTaskCenter(
+            source: String,
+            cityCode: String = QUICK_GAME_CITY_CODE,
+            apDid: String = ""
+        ): String {
+            val args = JSONArray().put(JSONObject().apply {
+                if (apDid.isNotBlank()) {
+                    put("apDid", apDid)
+                }
+                put("cityCode", cityCode)
+                put("deviceLevel", "high")
+                put("newGame", 1)
+                put("source", source)
+            }).toString()
             return RequestManager.requestString(
                 NEVERLAND_QUERY_TASK_CENTER_RPC,
-                """[{"apDid":"6b30jO17Z6Wbr2ggRytFxB09hZdhixfSekjytgi9Ytc=","cityCode":"","deviceLevel":"high","newGame":0,"source":"$source"}]"""
+                args
             )
         }
 

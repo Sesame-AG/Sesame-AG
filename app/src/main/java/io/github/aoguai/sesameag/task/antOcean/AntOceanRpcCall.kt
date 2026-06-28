@@ -13,16 +13,49 @@ import org.json.JSONObject
  */
 object AntOceanRpcCall {
     private const val VERSION = "20241203"
+    private const val TASK_TYPE_BUSINESS_LIGHTS03 = "BUSINESS_LIGHTS03"
     private const val SOURCE_APP_CENTER = "chInfo_ch_appcenter__chsub_9patch"
     private const val SOURCE_ATLAS = "chInfo_ch_url-https://2021003115672468.h5app.alipay.com/www/atlasOcean.html"
     private const val SOURCE_FOREST = "ANT_FOREST"
     private const val SOURCE_OCEAN = "ANTFOCEAN"
-    private const val SOURCE_RECENTLY_USED = "chInfo_ch_appcollect__chsub_my-recentlyUsed"
     private const val SOURCE_REPLICA = "senlinzuoshangjiao"
     private const val SOURCE_SEA_AREA_LIST = "seaAreaList"
     
     private fun getUniqueId(): String {
         return "${System.currentTimeMillis()}${RandomUtil.nextLong()}"
+    }
+
+    private fun getRandomHex(length: Int): String {
+        val hexChars = "0123456789abcdef"
+        return buildString(length) {
+            repeat(length) {
+                append(hexChars[RandomUtil.nextInt(0, hexChars.length)])
+            }
+        }
+    }
+
+    private fun buildFinishTaskPayload(sceneCode: String, taskType: String): JSONObject {
+        val payload = JSONObject().apply {
+            put("outBizNo", buildTaskOutBizNo(taskType))
+            put("requestType", "RPC")
+            put("sceneCode", sceneCode)
+            put("taskType", taskType)
+        }
+        if (taskType == TASK_TYPE_BUSINESS_LIGHTS03) {
+            payload.put("source", "ADBASICLIB")
+        } else {
+            payload.put("source", SOURCE_OCEAN)
+            payload.put("uniqueId", getUniqueId())
+        }
+        return payload
+    }
+
+    private fun buildTaskOutBizNo(taskType: String): String {
+        return if (taskType == TASK_TYPE_BUSINESS_LIGHTS03) {
+            "${taskType}_${System.currentTimeMillis()}_${getRandomHex(8)}"
+        } else {
+            "${taskType}_${RandomUtil.nextDouble()}"
+        }
     }
     
     @JvmStatic
@@ -37,7 +70,7 @@ object AntOceanRpcCall {
     fun queryHomePage(showTaskPanel: Boolean = false): String {
         val payload = StringBuilder()
             .append("[{\"source\":\"")
-            .append(SOURCE_FOREST)
+            .append(SOURCE_APP_CENTER)
             .append("\",\"uniqueId\":\"")
             .append(getUniqueId())
             .append("\",\"version\":\"")
@@ -86,11 +119,10 @@ object AntOceanRpcCall {
     }
     
     @JvmStatic
-    fun finishTask(sceneCode: String, taskType: String, source: String = SOURCE_OCEAN): String {
-        val outBizNo = "${taskType}_${RandomUtil.nextDouble()}"
+    fun finishTask(sceneCode: String, taskType: String): String {
         return RequestManager.requestString(
             "com.alipay.antiep.finishTask",
-            "[{\"outBizNo\":\"$outBizNo\",\"requestType\":\"RPC\",\"sceneCode\":\"$sceneCode\",\"source\":\"$source\",\"taskType\":\"$taskType\",\"uniqueId\":\"${getUniqueId()}\"}]"
+            "[${buildFinishTaskPayload(sceneCode, taskType)}]"
         )
     }
     
@@ -127,7 +159,7 @@ object AntOceanRpcCall {
             payload.append(",\"propTypeList\":\"").append(propTypeList).append("\"")
         }
         payload.append(",\"source\":\"")
-            .append(SOURCE_FOREST)
+            .append(SOURCE_APP_CENTER)
             .append("\",\"uniqueId\":\"")
             .append(getUniqueId())
             .append("\"}]")
@@ -138,18 +170,18 @@ object AntOceanRpcCall {
     }
 
     @JvmStatic
-    fun createSeaAreaExtraCollect(): String {
+    fun createSeaAreaExtraCollect(seaAreaCode: String): String {
         return RequestManager.requestString(
             "alipay.antocean.ocean.h5.createSeaAreaExtraCollect",
-            "[{\"source\":\"$SOURCE_RECENTLY_USED\",\"uniqueId\":\"${getUniqueId()}\"}]"
+            "[{\"seaAreaCode\":\"$seaAreaCode\",\"source\":\"$SOURCE_APP_CENTER\",\"uniqueId\":\"${getUniqueId()}\"}]"
         )
     }
     
     @JvmStatic
-    fun querySeaAreaDetailList(): String {
+    fun querySeaAreaDetailList(seaAreaCode: String = ""): String {
         return RequestManager.requestString(
             "alipay.antocean.ocean.h5.querySeaAreaDetailList",
-            "[{\"seaAreaCode\":\"\",\"source\":\"$SOURCE_APP_CENTER\",\"targetUserId\":\"\",\"uniqueId\":\"${getUniqueId()}\"}]"
+            "[{\"seaAreaCode\":\"$seaAreaCode\",\"source\":\"$SOURCE_APP_CENTER\",\"targetUserId\":\"\",\"uniqueId\":\"${getUniqueId()}\"}]"
         )
     }
     
@@ -170,18 +202,23 @@ object AntOceanRpcCall {
     }
     
     @JvmStatic
-    fun queryMiscInfo(includeEmergency: Boolean = false): String {
-        val queryBizTypes = JSONArray().apply {
-            put("HOME_TIPS_REFRESH")
-            if (includeEmergency) {
-                put("EMERGENCY")
-                put("NEW_SEA_AREA_CAN_BE_REPAIRED_TIP")
+    fun queryMiscInfo(
+        queryBizTypes: List<String>,
+        targetUserId: String? = null
+    ): String {
+        val includeEmergency = queryBizTypes.any { it == "EMERGENCY" }
+        val queryBizTypeArray = JSONArray().apply {
+            for (queryBizType in queryBizTypes) {
+                put(queryBizType)
             }
         }
         val payload = JSONObject().apply {
-            put("queryBizTypes", queryBizTypes)
+            put("queryBizTypes", queryBizTypeArray)
             put("source", SOURCE_APP_CENTER)
             put("uniqueId", getUniqueId())
+            if (!targetUserId.isNullOrBlank()) {
+                put("targetUserId", targetUserId)
+            }
             if (includeEmergency) {
                 put(
                     "extInfo",
@@ -198,10 +235,10 @@ object AntOceanRpcCall {
     }
 
     @JvmStatic
-    fun queryNotice(): String {
+    fun queryNotice(noticeReqList: JSONArray): String {
         return RequestManager.requestString(
             "alipay.antocean.ocean.h5.notice",
-            "[{\"noticeReqList\":[{\"needDetail\":false,\"noticeType\":\"CULTIVATION_LIST_ENTRANCE\"},{\"needDetail\":false,\"noticeType\":\"INDEX_GAME_ENTRY_NOTICE\"},{\"needDetail\":false,\"noticeType\":\"INTERACT_RECEIVE_PIECE\"}],\"source\":\"$SOURCE_FOREST\",\"uniqueId\":\"${getUniqueId()}\",\"version\":\"$VERSION\"}]"
+            "[{\"noticeReqList\":$noticeReqList,\"source\":\"$SOURCE_APP_CENTER\",\"uniqueId\":\"${getUniqueId()}\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -217,7 +254,7 @@ object AntOceanRpcCall {
     fun queryRefinedMaterial(): String {
         return RequestManager.requestString(
             "alipay.antocean.ocean.h5.queryRefinedMaterial",
-            "[{\"source\":\"$SOURCE_FOREST\",\"uniqueId\":\"${getUniqueId()}\"}]"
+            "[{\"source\":\"$SOURCE_APP_CENTER\",\"uniqueId\":\"${getUniqueId()}\"}]"
         )
     }
     
@@ -233,7 +270,7 @@ object AntOceanRpcCall {
     fun collectEnergy(bubbleId: String, userId: String): String {
         return RequestManager.requestString(
             "alipay.antmember.forest.h5.collectEnergy",
-            "[{\"bubbleIds\":[$bubbleId],\"channel\":\"ocean\",\"source\":\"ANT_FOREST\",\"uniqueId\":\"${getUniqueId()}\",\"userId\":\"$userId\",\"version\":\"$VERSION\"}]"
+            "[{\"bubbleIds\":[$bubbleId],\"channel\":\"ocean\",\"source\":\"$SOURCE_APP_CENTER\",\"uniqueId\":\"${getUniqueId()}\",\"userId\":\"$userId\"}]"
         )
     }
     
@@ -241,15 +278,49 @@ object AntOceanRpcCall {
     fun cleanFriendOcean(userId: String): String {
         return RequestManager.requestString(
             "alipay.antocean.ocean.h5.cleanFriendOcean",
-            "[{\"cleanedUserId\":\"$userId\",\"source\":\"$SOURCE_FOREST\",\"uniqueId\":\"${getUniqueId()}\"}]"
+            "[{\"cleanedUserId\":\"$userId\",\"source\":\"$SOURCE_APP_CENTER\",\"uniqueId\":\"${getUniqueId()}\"}]"
         )
     }
     
     @JvmStatic
-    fun queryFriendPage(userId: String): String {
+    fun sailingAway(skipUsers: JSONObject = JSONObject()): String {
+        return RequestManager.requestString(
+            "alipay.antocean.ocean.h5.sailingAway",
+            "[{\"skipUsers\":$skipUsers,\"source\":\"$SOURCE_APP_CENTER\",\"uniqueId\":\"${getUniqueId()}\"}]"
+        )
+    }
+
+    @JvmStatic
+    fun giveFriendPiece(friendUserId: String): String {
+        return RequestManager.requestString(
+            "alipay.antocean.ocean.h5.giveFriendPiece",
+            "[{\"friendUserId\":\"$friendUserId\",\"source\":\"$SOURCE_APP_CENTER\",\"uniqueId\":\"${getUniqueId()}\"}]"
+        )
+    }
+
+    @JvmStatic
+    fun queryFriendPage(
+        userId: String,
+        fromAct: String? = null,
+        interactFlags: String = "",
+        currentUserId: String? = null
+    ): String {
+        val payload = JSONObject().apply {
+            put("friendUserId", userId)
+            put("interactFlags", interactFlags)
+            put("source", SOURCE_APP_CENTER)
+            put("uniqueId", getUniqueId())
+            put("version", VERSION)
+            if (!fromAct.isNullOrBlank()) {
+                put("fromAct", fromAct)
+            }
+            if (!currentUserId.isNullOrBlank()) {
+                put("userId", currentUserId)
+            }
+        }
         return RequestManager.requestString(
             "alipay.antocean.ocean.h5.queryFriendPage",
-            "[{\"friendUserId\":\"$userId\",\"interactFlags\":\"T\",\"source\":\"$SOURCE_FOREST\",\"uniqueId\":\"${getUniqueId()}\",\"version\":\"$VERSION\"}]"
+            "[$payload]"
         )
     }
     
@@ -257,7 +328,15 @@ object AntOceanRpcCall {
     fun queryUserRanking(): String {
         return RequestManager.requestString(
             "alipay.antocean.ocean.h5.queryUserRanking",
-            "[{\"source\":\"$SOURCE_FOREST\",\"uniqueId\":\"${getUniqueId()}\"}]"
+            "[{\"source\":\"$SOURCE_APP_CENTER\",\"uniqueId\":\"${getUniqueId()}\",\"version\":\"$VERSION\"}]"
+        )
+    }
+
+    @JvmStatic
+    fun queryUserDynamicStatistics(): String {
+        return RequestManager.requestString(
+            "alipay.antocean.ocean.h5.queryUserDynamicStatistics",
+            "[{\"showDynamic\":true,\"source\":\"$SOURCE_APP_CENTER\",\"uniqueId\":\"${getUniqueId()}\"}]"
         )
     }
 
@@ -338,7 +417,7 @@ object AntOceanRpcCall {
     fun queryTaskList(): String {
         return RequestManager.requestString(
             "alipay.antocean.ocean.h5.queryTaskList",
-            "[{\"extend\":{},\"fromAct\":\"dynamic_task\",\"sceneCode\":\"ANTOCEAN_TASK\",\"source\":\"$SOURCE_FOREST\",\"uniqueId\":\"${getUniqueId()}\",\"version\":\"$VERSION\"}]"
+            "[{\"extend\":{\"taskEntranceSubscript\":true},\"fromAct\":\"dynamic_task\",\"sceneCode\":\"ANTOCEAN_TASK\",\"source\":\"$SOURCE_APP_CENTER\",\"uniqueId\":\"${getUniqueId()}\",\"version\":\"$VERSION\"}]"
         )
     }
     

@@ -17,6 +17,10 @@ internal suspend fun AntFarm.runFarmLifecycleWorkflow(tc: TimeCounter): Boolean 
     recallAnimal()
     tc.countDebug("召回小鸡")
 
+    if (useDailySpecialFoodIfNeeded() > 0) {
+        tc.countDebug("特殊食品")
+    }
+
     if (shouldHireAnimalNow()) {
         hireAnimal()
     }
@@ -136,7 +140,7 @@ internal suspend fun AntFarm.runFarmTaskWorkflow(tc: TimeCounter, userId: String
 internal suspend fun AntFarm.runFarmSocialWorkflow(
     tc: TimeCounter,
     pendingFarmTaskFinalization: Boolean
-) {
+): Boolean {
     var pendingFinalization = pendingFarmTaskFinalization
 
     if (visitAnimal?.value == true) {
@@ -180,6 +184,9 @@ internal suspend fun AntFarm.runFarmSocialWorkflow(
     if (enableDdrawGameCenterAward?.value == true) {
         FarmGame.drawGameCenterAward()
         tc.countDebug("开宝箱")
+        if (pendingFinalization) {
+            pendingFinalization = finalizeFarmTaskAfterMultiStage("开宝箱流程后")
+        }
     }
     if (paradiseCoinExchangeBenefit?.value == true) {
         paradiseCoinExchangeBenefit()
@@ -190,11 +197,20 @@ internal suspend fun AntFarm.runFarmSocialWorkflow(
         handleOrnamentMall()
         tc.countDebug("装扮商城")
     }
+
+    return pendingFinalization
 }
 
-internal suspend fun AntFarm.runFarmFinalizeWorkflow(tc: TimeCounter) {
+internal suspend fun AntFarm.runFarmFinalizeWorkflow(
+    tc: TimeCounter,
+    pendingFarmTaskFinalization: Boolean
+) {
     animalSleepAndWake()
     tc.countDebug("小鸡睡觉&起床")
+
+    if (pendingFarmTaskFinalization) {
+        finalizeFarmTaskAfterMultiStage("睡觉流程后")
+    }
 
     syncAnimalStatus(ownerFarmId)
     if (isOwnerAnimalSleeping()) {

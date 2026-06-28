@@ -1,6 +1,7 @@
 package io.github.aoguai.sesameag.task.antStall
 
 import io.github.aoguai.sesameag.hook.RequestManager
+import io.github.aoguai.sesameag.util.RandomUtil
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -15,12 +16,25 @@ import java.util.UUID
 object AntStallRpcCall {
 
     /** 接口版本号 */
-    private const val VERSION = "0.1.2601161444.47"
+    private const val VERSION = "0.1.2606011409.44"
+    private const val BASE_SOURCE = "ch_appcenter__chsub_9patch"
+    private const val IEP_SOURCE = "AST"
+    private const val SHARE_SOURCE = "ANTSTALL"
+    private const val RANK_SOURCE = "ANTFARM"
+    private const val XLIGHT_AD_COMPONENT_TYPE = "FEEDS"
+    private const val XLIGHT_AD_COMPONENT_VERSION = "4.30.62"
+    private const val XLIGHT_ENABLE_FUSION = true
+    private const val XLIGHT_NETWORK_TYPE = "WWAN"
+    private const val XLIGHT_PAGE_NO = 1
+    private const val XLIGHT_UNION_APP_ID = "2060090000304921"
+    private const val XLIGHT_RUNTIME_SDK_VERSION = "4.30.62"
+    private const val XLIGHT_SDK_TYPE = "h5"
+    private const val XLIGHT_SDK_VERSION = "4.30.62"
     private const val METHOD_TASK_LIST = "com.alipay.antstall.task.list"
     private const val METHOD_SIGN_TODAY = "com.alipay.antstall.sign.today"
     private const val METHOD_FINISH_TASK = "com.alipay.antiep.finishTask"
+    private const val METHOD_GENERATE_TOKEN = "com.alipay.antiep.generateToken"
     private const val METHOD_RECEIVE_TASK_AWARD = "com.alipay.antiep.receiveTaskAward"
-    private const val METHOD_TASK_FINISH = "com.alipay.antstall.task.finish"
     private const val METHOD_TASK_AWARD = "com.alipay.antstall.task.award"
 
     /**
@@ -30,7 +44,7 @@ object AntStallRpcCall {
     fun home(): String {
         return RequestManager.requestString(
             "com.alipay.antstall.self.home",
-            "[{\"arouseAppParams\":{},\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"arouseAppParams\":{},\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -40,10 +54,10 @@ object AntStallRpcCall {
      * @param settleCoin 结算金币数量
      * @return 响应字符串
      */
-    fun settle(assetId: String, settleCoin: Int): String {
+    fun settle(assetId: String, settleCoin: String): String {
         return RequestManager.requestString(
             "com.alipay.antstall.self.settle",
-            "[{\"assetId\":\"$assetId\",\"coinType\":\"MASTER\",\"settleCoin\":$settleCoin,\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"assetId\":\"$assetId\",\"coinType\":\"MASTER\",\"settleCoin\":$settleCoin,\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -54,7 +68,7 @@ object AntStallRpcCall {
     fun shopList(): String {
         return RequestManager.requestString(
             "com.alipay.antstall.shop.list",
-            "[{\"freeTop\":false,\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"freeTop\":false,\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -65,7 +79,7 @@ object AntStallRpcCall {
     fun preOneKeyClose(): String {
         return RequestManager.requestString(
             "com.alipay.antstall.user.shop.close.preOneKey",
-            "[{\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -76,7 +90,7 @@ object AntStallRpcCall {
     fun oneKeyClose(): String {
         return RequestManager.requestString(
             "com.alipay.antstall.user.shop.oneKeyClose",
-            "[{\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -89,7 +103,7 @@ object AntStallRpcCall {
     fun preShopClose(shopId: String, billNo: String): String {
         return RequestManager.requestString(
             "com.alipay.antstall.user.shop.close.pre",
-            "[{\"billNo\":\"$billNo\",\"shopId\":\"$shopId\",\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"billNo\":\"$billNo\",\"shopId\":\"$shopId\",\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -101,7 +115,7 @@ object AntStallRpcCall {
     fun shopClose(shopId: String): String {
         return RequestManager.requestString(
             "com.alipay.antstall.user.shop.close",
-            "[{\"shopId\":\"$shopId\",\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"shopId\":\"$shopId\",\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -112,7 +126,7 @@ object AntStallRpcCall {
     fun oneKeyOpen(): String {
         return RequestManager.requestString(
             "com.alipay.antstall.user.shop.oneKeyOpen",
-            "[{\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -126,7 +140,7 @@ object AntStallRpcCall {
     fun shopOpen(friendSeatId: String, friendUserId: String, shopId: String): String {
         return RequestManager.requestString(
             "com.alipay.antstall.user.shop.open",
-            "[{\"friendSeatId\":\"$friendSeatId\",\"friendUserId\":\"$friendUserId\",\"shopId\":\"$shopId\",\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"friendSeatId\":\"$friendSeatId\",\"friendUserId\":\"$friendUserId\",\"shopId\":\"$shopId\",\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -137,7 +151,7 @@ object AntStallRpcCall {
     fun rankCoinDonate(): String {
         return RequestManager.requestString(
             "com.alipay.antstall.rank.coin.donate",
-            "[{\"source\":\"ANTFARM\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"source\":\"$RANK_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -149,7 +163,7 @@ object AntStallRpcCall {
     fun friendHome(userId: String): String {
         return RequestManager.requestString(
             "com.alipay.antstall.friend.home",
-            "[{\"arouseAppParams\":{},\"friendUserId\":\"$userId\",\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"arouseAppParams\":{},\"friendUserId\":\"$userId\",\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -160,7 +174,7 @@ object AntStallRpcCall {
     fun taskList(): String {
         return RequestManager.requestString(
             METHOD_TASK_LIST,
-            "[{\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -171,7 +185,7 @@ object AntStallRpcCall {
     fun signToday(): String {
         val response = RequestManager.requestString(
             METHOD_SIGN_TODAY,
-            "[{\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
         return response
     }
@@ -185,20 +199,83 @@ object AntStallRpcCall {
     fun finishTask(outBizNo: String, taskType: String): String {
         val response = RequestManager.requestString(
             METHOD_FINISH_TASK,
-            "[{\"outBizNo\":\"$outBizNo\",\"requestType\":\"RPC\",\"sceneCode\":\"ANTSTALL_TASK\",\"source\":\"AST\",\"systemType\":\"android\",\"taskType\":\"$taskType\",\"version\":\"$VERSION\"}]"
+            "[{\"outBizNo\":\"$outBizNo\",\"requestType\":\"RPC\",\"sceneCode\":\"ANTSTALL_TASK\",\"source\":\"$IEP_SOURCE\",\"systemType\":\"android\",\"taskType\":\"$taskType\",\"version\":\"$VERSION\"}]"
         )
         return response
+    }
+
+    /**
+     * @brief 生成外跳任务 token
+     * @param taskType 任务类型
+     * @return 响应字符串
+     */
+    fun generateToken(taskType: String): String {
+        return RequestManager.requestString(
+            METHOD_GENERATE_TOKEN,
+            "[{\"requestType\":\"RPC\",\"sceneCode\":\"ANTSTALL_TASK\",\"source\":\"$IEP_SOURCE\",\"systemType\":\"android\",\"taskType\":\"$taskType\",\"version\":\"$VERSION\"}]"
+        )
     }
 
     /**
      * @brief 调用广告/插件接口
      * @return 响应字符串
      */
-    fun xlightPlugin(): String {
-        return RequestManager.requestString(
-            "com.alipay.adexchange.ad.facade.xlightPlugin",
-            "[{\"positionRequest\":{\"extMap\":{\"xlightPlayInstanceId\":\"300004\"},\"referInfo\":{},\"spaceCode\":\"ANT_FARM_NEW_VILLAGE\"},\"sdkPageInfo\":{\"adComponentType\":\"FEEDS\",\"adComponentVersion\":\"4.11.13\",\"enableFusion\":true,\"networkType\":\"WIFI\",\"pageFrom\":\"ch_url-https://68687809.h5app.alipay.com/www/game.html\",\"pageNo\":1,\"pageUrl\":\"https://render.alipay.com/p/yuyan/180020010001256918/multi-stage-task.html?caprMode=sync&spaceCodeFeeds=ANT_FARM_NEW_VILLAGE&usePlayLink=true&xlightPlayInstanceId=300004\",\"session\":\"u_54b721d9fffd6_1904b8eba8f\",\"unionAppId\":\"2060090000304921\",\"usePlayLink\":\"true\",\"xlightSDKType\":\"h5\",\"xlightSDKVersion\":\"4.11.13\"}}]"
-        )
+    fun xlightPlugin(
+        pageUrl: String,
+        pageFrom: String,
+        spaceCode: String,
+        session: String = "u_${RandomUtil.getRandomString(5)}_${RandomUtil.getRandomString(5)}",
+        referToken: String? = null,
+        searchInfo: JSONObject? = null,
+        playingPageInfo: String? = null,
+        positionExtMap: JSONObject? = null,
+        pageNo: Int = XLIGHT_PAGE_NO,
+        networkType: String = XLIGHT_NETWORK_TYPE
+    ): String {
+        val args = JSONArray().apply {
+            put(
+                JSONObject().apply {
+                    put(
+                        "positionRequest",
+                        JSONObject().apply {
+                            put("extMap", positionExtMap ?: JSONObject())
+                            put(
+                                "referInfo",
+                                JSONObject().apply {
+                                    if (!referToken.isNullOrBlank()) {
+                                        put("referToken", referToken)
+                                    }
+                                }
+                            )
+                            put("searchInfo", searchInfo ?: JSONObject())
+                            put("spaceCode", spaceCode)
+                        }
+                    )
+                    put(
+                        "sdkPageInfo",
+                        JSONObject().apply {
+                            put("adComponentType", XLIGHT_AD_COMPONENT_TYPE)
+                            put("adComponentVersion", XLIGHT_AD_COMPONENT_VERSION)
+                            put("enableFusion", XLIGHT_ENABLE_FUSION)
+                            put("networkType", if (networkType.isBlank()) XLIGHT_NETWORK_TYPE else networkType)
+                            put("pageFrom", pageFrom)
+                            put("pageNo", if (pageNo > 0) pageNo else XLIGHT_PAGE_NO)
+                            put("pageUrl", pageUrl)
+                            if (!playingPageInfo.isNullOrBlank()) {
+                                put("playingPageInfo", playingPageInfo)
+                            }
+                            put("session", session)
+                            put("unionAppId", XLIGHT_UNION_APP_ID)
+                            put("usePlayLink", "true")
+                            put("xlightRuntimeSDKversion", XLIGHT_RUNTIME_SDK_VERSION)
+                            put("xlightSDKType", XLIGHT_SDK_TYPE)
+                            put("xlightSDKVersion", XLIGHT_SDK_VERSION)
+                        }
+                    )
+                }
+            )
+        }
+        return RequestManager.requestString("com.alipay.adexchange.ad.facade.xlightPlugin", args.toString())
     }
 
     /**
@@ -207,22 +284,23 @@ object AntStallRpcCall {
      * @param jsonObject 事件信息
      * @return 响应字符串
      */
-    fun finish(playBizId: String, jsonObject: JSONObject): String {
+    fun finish(
+        playBizId: String,
+        jsonObject: JSONObject,
+        iepTaskSceneCode: String? = null,
+        iepTaskType: String? = null
+    ): String {
+        val extendInfo = JSONObject().apply {
+            if (!iepTaskSceneCode.isNullOrBlank()) {
+                put("iepTaskSceneCode", iepTaskSceneCode)
+            }
+            if (!iepTaskType.isNullOrBlank()) {
+                put("iepTaskType", iepTaskType)
+            }
+        }
         return RequestManager.requestString(
             "com.alipay.adtask.biz.mobilegw.service.interaction.finish",
-            "[{\"extendInfo\":{\"iepTaskSceneCode\":\"ANTSTALL_TASK\",\"iepTaskType\":\"ANTSTALL_XLIGHT_VARIABLE_AWARD\"},\"playBizId\":\"$playBizId\",\"playEventInfo\":$jsonObject,\"source\":\"adx\" }]"
-        )
-    }
-
-    /**
-     * @brief 查询应用跳转 Schema
-     * @param sceneCode 场景代码
-     * @return 响应字符串
-     */
-    fun queryCallAppSchema(sceneCode: String): String {
-        return RequestManager.requestString(
-            "alipay.antmember.callApp.queryCallAppSchema",
-            "[{\"sceneCode\":\"$sceneCode\" }]"
+            "[{\"extendInfo\":$extendInfo,\"playBizId\":\"$playBizId\",\"playEventInfo\":$jsonObject,\"source\":\"adx\" }]"
         )
     }
 
@@ -234,20 +312,7 @@ object AntStallRpcCall {
     fun receiveTaskAward(taskType: String): String {
         val response = RequestManager.requestString(
             METHOD_RECEIVE_TASK_AWARD,
-            "[{\"ignoreLimit\":true,\"requestType\":\"RPC\",\"sceneCode\":\"ANTSTALL_TASK\",\"source\":\"AST\",\"systemType\":\"android\",\"taskType\":\"$taskType\",\"version\":\"$VERSION\"}]"
-        )
-        return response
-    }
-
-    /**
-     * @brief 完成小铺任务
-     * @param taskType 任务类型
-     * @return 响应字符串
-     */
-    fun taskFinish(taskType: String): String {
-        val response = RequestManager.requestString(
-            METHOD_TASK_FINISH,
-            "[{\"source\":\"search\",\"systemType\":\"android\",\"taskType\":\"$taskType\",\"version\":\"$VERSION\"}]"
+            "[{\"ignoreLimit\":true,\"requestType\":\"RPC\",\"sceneCode\":\"ANTSTALL_TASK\",\"source\":\"$IEP_SOURCE\",\"systemType\":\"android\",\"taskType\":\"$taskType\",\"version\":\"$VERSION\"}]"
         )
         return response
     }
@@ -262,7 +327,7 @@ object AntStallRpcCall {
     fun taskAward(amount: String, prizeId: String, taskType: String): String {
         val response = RequestManager.requestString(
             METHOD_TASK_AWARD,
-            "[{\"amount\":$amount,\"prizeId\":\"$prizeId\",\"source\":\"search\",\"systemType\":\"android\",\"taskType\":\"$taskType\",\"version\":\"$VERSION\"}]"
+            "[{\"amount\":$amount,\"prizeId\":\"$prizeId\",\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"taskType\":\"$taskType\",\"version\":\"$VERSION\"}]"
         )
         return response
     }
@@ -274,7 +339,7 @@ object AntStallRpcCall {
     fun taskBenefit(): String {
         return RequestManager.requestString(
             "com.alipay.antstall.task.benefit",
-            "[{\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -285,7 +350,7 @@ object AntStallRpcCall {
     fun collectManure(): String {
         return RequestManager.requestString(
             "com.alipay.antstall.manure.collectManure",
-            "[{\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -296,7 +361,7 @@ object AntStallRpcCall {
     fun queryManureInfo(): String {
         return RequestManager.requestString(
             "com.alipay.antstall.manure.queryManureInfo",
-            "[{\"queryManureType\":\"ANTSTALL\",\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"queryManureType\":\"ANTSTALL\",\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -307,7 +372,7 @@ object AntStallRpcCall {
     fun projectList(): String {
         return RequestManager.requestString(
             "com.alipay.antstall.project.list",
-            "[{\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -319,7 +384,7 @@ object AntStallRpcCall {
     fun projectDetail(projectId: String): String {
         return RequestManager.requestString(
             "com.alipay.antstall.project.detail",
-            "[{\"projectId\":\"$projectId\",\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"projectId\":\"$projectId\",\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -331,7 +396,7 @@ object AntStallRpcCall {
     fun projectDonate(projectId: String): String {
         return RequestManager.requestString(
             "com.alipay.antstall.project.donate",
-            "[{\"bizNo\":\"${UUID.randomUUID()}\",\"projectId\":\"$projectId\",\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"bizNo\":\"${UUID.randomUUID()}\",\"projectId\":\"$projectId\",\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -342,7 +407,7 @@ object AntStallRpcCall {
     fun roadmap(): String {
         return RequestManager.requestString(
             "com.alipay.antstall.village.roadmap",
-            "[{\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -353,7 +418,7 @@ object AntStallRpcCall {
     fun nextVillage(): String {
         return RequestManager.requestString(
             "com.alipay.antstall.user.ast.next.village",
-            "[{\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -364,7 +429,7 @@ object AntStallRpcCall {
     fun rankInviteRegister(): String {
         return RequestManager.requestString(
             "com.alipay.antstall.rank.invite.register",
-            "[{\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -376,7 +441,7 @@ object AntStallRpcCall {
     fun friendInviteRegister(friendUserId: String): String {
         return RequestManager.requestString(
             "com.alipay.antstall.friend.invite.register",
-            "[{\"friendUserId\":\"$friendUserId\",\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"friendUserId\":\"$friendUserId\",\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -387,7 +452,7 @@ object AntStallRpcCall {
     fun shareP2P(): String {
         return RequestManager.requestString(
             "com.alipay.antiep.shareP2P",
-            "[{\"requestType\":\"RPC\",\"sceneCode\":\"ANTSTALL_P2P_SHARER\",\"source\":\"ANTSTALL\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"requestType\":\"RPC\",\"sceneCode\":\"ANTSTALL_P2P_SHARER\",\"source\":\"$SHARE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -399,7 +464,7 @@ object AntStallRpcCall {
     fun achieveBeShareP2P(shareId: String): String {
         return RequestManager.requestString(
             "com.alipay.antiep.achieveBeShareP2P",
-            "[{\"requestType\":\"RPC\",\"sceneCode\":\"ANTSTALL_P2P_SHARER\",\"shareId\":\"$shareId\",\"source\":\"ANTSTALL\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"requestType\":\"RPC\",\"sceneCode\":\"ANTSTALL_P2P_SHARER\",\"shareId\":\"$shareId\",\"source\":\"$SHARE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -419,7 +484,7 @@ object AntStallRpcCall {
     ): String {
         return RequestManager.requestString(
             "com.alipay.antstall.friend.shop.sendback.pre",
-            "[{\"billNo\":\"$billNo\",\"seatId\":\"$seatId\",\"shopId\":\"$shopId\",\"shopUserId\":\"$shopUserId\",\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"billNo\":\"$billNo\",\"seatId\":\"$seatId\",\"shopId\":\"$shopId\",\"shopUserId\":\"$shopUserId\",\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -431,7 +496,7 @@ object AntStallRpcCall {
     fun shopSendBack(seatId: String): String {
         return RequestManager.requestString(
             "com.alipay.antstall.friend.shop.sendback",
-            "[{\"seatId\":\"$seatId\",\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"seatId\":\"$seatId\",\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -442,7 +507,7 @@ object AntStallRpcCall {
     fun rankInviteOpen(): String {
         return RequestManager.requestString(
             "com.alipay.antstall.rank.invite.open",
-            "[{\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -455,7 +520,7 @@ object AntStallRpcCall {
     fun oneKeyInviteOpenShop(friendUserId: String, mySeatId: String): String {
         return RequestManager.requestString(
             "com.alipay.antstall.user.shop.oneKeyInviteOpenShop",
-            "[{\"friendUserId\":\"$friendUserId\",\"mySeatId\":\"$mySeatId\",\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"friendUserId\":\"$friendUserId\",\"mySeatId\":\"$mySeatId\",\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -466,7 +531,7 @@ object AntStallRpcCall {
     fun dynamicLoss(): String {
         return RequestManager.requestString(
             "com.alipay.antstall.dynamic.loss",
-            "[{\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -478,7 +543,7 @@ object AntStallRpcCall {
     fun throwManure(dynamicList: JSONArray): String {
         return RequestManager.requestString(
             "com.alipay.antstall.manure.throwManure",
-            "[{\"dynamicList\":$dynamicList,\"sendMsg\":false,\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"dynamicList\":$dynamicList,\"sendMsg\":false,\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -489,7 +554,7 @@ object AntStallRpcCall {
     fun settleReceivable(): String {
         return RequestManager.requestString(
             "com.alipay.antstall.self.settle.receivable",
-            "[{\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -500,7 +565,7 @@ object AntStallRpcCall {
     fun nextTicketFriend(): String {
         return RequestManager.requestString(
             "com.alipay.antstall.friend.nextTicketFriend",
-            "[{\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -522,7 +587,7 @@ object AntStallRpcCall {
     ): String {
         return RequestManager.requestString(
             "com.alipay.antstall.friend.paste.ticket",
-            "[{\"billNo\":\"$billNo\",\"seatId\":\"$seatId\",\"shopId\":\"$shopId\",\"shopUserId\":\"$shopUserId\",\"seatUserId\": \"$seatUserId\",\"source\":\"search\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
+            "[{\"billNo\":\"$billNo\",\"seatId\":\"$seatId\",\"shopId\":\"$shopId\",\"shopUserId\":\"$shopUserId\",\"seatUserId\": \"$seatUserId\",\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 }

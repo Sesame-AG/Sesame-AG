@@ -15,7 +15,6 @@ internal fun AntSports.runBattleForFriendsWorkflow() {
     if (battleForFriends.value != true) {
         return
     }
-    queryClubHome()
     if (trainFriend.value == true) {
         queryTrainItem()
     }
