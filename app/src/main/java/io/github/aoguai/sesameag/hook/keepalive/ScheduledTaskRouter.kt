@@ -5,6 +5,7 @@ import android.content.Intent
 import io.github.aoguai.sesameag.hook.ApplicationHook
 import io.github.aoguai.sesameag.hook.ApplicationHookCore
 import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
+import io.github.aoguai.sesameag.hook.ApplicationResumeCoordinator
 import io.github.aoguai.sesameag.data.General
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.model.Model
@@ -379,6 +380,11 @@ object ScheduledTaskRouter {
             return false
         }
         if (!shouldLaunchTarget(schedule)) {
+            return false
+        }
+        if (ApplicationResumeCoordinator.isHostAppForeground()) {
+            clearLaunchFailures(schedule)
+            Log.record(TAG, "目标应用已在前台，跳过重复拉起[${schedule.name}]")
             return false
         }
         if (!consumeLaunchQuota(schedule)) {

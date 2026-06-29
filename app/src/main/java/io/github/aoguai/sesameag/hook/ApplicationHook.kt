@@ -291,6 +291,7 @@ class ApplicationHook {
                 val result = chain.proceed()
                 val persistentAlarmLaunch =
                     consumePersistentAlarmLaunch(chain.getThisObject() as? android.app.Activity)
+                ApplicationResumeCoordinator.markHostAppForegrounded()
                 ApplicationHookConstants.submitEntry("launcher_onResume") {
                             val targetUid = HookUtil.getUserId(classLoader!!) ?: run {
                                 show("用户未登录")
@@ -366,6 +367,7 @@ class ApplicationHook {
                 val result = chain.proceed()
                 val persistentAlarmLaunch =
                     consumePersistentAlarmLaunch(chain.getThisObject() as? android.app.Activity)
+                ApplicationResumeCoordinator.markHostAppForegrounded()
                 ApplicationHookConstants.submitEntry("login_onResume") {
                             if (!init) {
                                 if (persistentAlarmLaunch) {

@@ -423,6 +423,22 @@ object AntSesameCreditRpcCall {
         )
     }
 
+    @JvmStatic
+    internal fun alchemyCheckInCompleteTask(
+        checkInDate: String,
+        doubleRewardAdTaskBizId: String = ""
+    ): String {
+        val args = JSONArray().put(JSONObject().apply {
+            put("checkInDate", checkInDate)
+            put("doubleRewardAdTaskBizId", doubleRewardAdTaskBizId)
+            put("sceneCode", "alchemy")
+        }).toString()
+        return RequestManager.requestString(
+            "com.antgroup.zmxy.zmmemberop.biz.rpc.pointtask.CheckInTaskRpcManager.completeTask",
+            args
+        )
+    }
+
     /**
      * 芝麻信用相关 RPC 归类到 Zmxy 命名空间下，供 AntSesameCredit 调用。
      */

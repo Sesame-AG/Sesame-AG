@@ -22,8 +22,9 @@ object AntForestRpcCall {
     private const val FOREST_LEYUAN_DAILY_TASK_SCENE_CODE = "ANTFOREST_LEYUAN_DAILY_TASK"
     private const val PROTECT_BUBBLE_SOURCE = HOME_TASK_SOURCE
     private const val PROTECT_BUBBLE_VERSION = "20230501"
-    private const val PATROL_SOURCE = "huolizhirenwu_xunhu"
+    private const val PATROL_SOURCE = "ant_forest"
     private const val PATROL_TIMEZONE = "Asia/Shanghai"
+    private const val PATROL_GO_VERSION = "20231123"
     private const val VITALITY_PROP_SOURCE = "vitality"
     private const val VITALITY_PROP_VERSION = "20250813"
     private const val ONE_CLICK_WATERING_SCENE_CODE = "ONE_CLICK_WATERING_V1"
@@ -870,6 +871,42 @@ object AntForestRpcCall {
         )
     }
 
+    internal fun guideEnergyRainEnd(currentEnergy: Int, source: String = ENERGY_RAIN_GAME_ENTRY_SOURCE): String {
+        val arg = JSONObject().apply {
+            put(
+                "bizParam",
+                JSONObject().apply {
+                    put("currentEnergy", currentEnergy)
+                }
+            )
+            put("bizType", "ANTFOREST")
+            put(
+                "chInfoList",
+                JSONArray().put(
+                    JSONObject().apply {
+                        put("chParam", source)
+                        put("chType", "LINK_SOURCE")
+                    }
+                )
+            )
+            put("eventCode", "PWGROWTH_FOREST_RAIN_END")
+            put("fromPageTag", "FOREST_RAIN_END_PAGE")
+            put("requestType", "RPC")
+            put("source", "ANTFOREST")
+        }
+        return RequestManager.requestString(
+            "com.alipay.antpwgrowth.guideDecisionEntrance",
+            JSONArray().put(arg).toString()
+        )
+    }
+
+    internal fun queryEnergyRainRanking(startPoint: String = "0"): String {
+        return RequestManager.requestString(
+            "alipay.antforest.forest.h5.queryEnergyRainRanking",
+            "[{\"startPoint\":\"$startPoint\",\"version\":\"$ENERGY_RAIN_VERSION\"}]"
+        )
+    }
+
     @JvmStatic
     fun queryEnergyRainCanGrantList(): String {
         return RequestManager.requestString("alipay.antforest.forest.h5.queryEnergyRainCanGrantList", "[{}]")
@@ -1308,6 +1345,7 @@ object AntForestRpcCall {
             buildPatrolPayload {
                 put("nodeIndex", nodeIndex)
                 put("patrolId", patrolId)
+                put("version", PATROL_GO_VERSION)
             }
         )
     }
@@ -1326,6 +1364,7 @@ object AntForestRpcCall {
                 put("nodeIndex", nodeIndex)
                 put("patrolId", patrolId)
                 put("reactParam", reactParam)
+                put("version", PATROL_GO_VERSION)
             }
         )
     }
@@ -1349,7 +1388,10 @@ object AntForestRpcCall {
                     put("withDetail", "N")
                 }
 
-                animalId != 0 -> put("animalId", animalId)
+                animalId != 0 -> {
+                    put("animalId", animalId)
+                    put("withDetail", "N")
+                }
                 else -> {
                     put("withDetail", "N")
                     put("withGift", true)
@@ -1819,16 +1861,22 @@ object AntForestRpcCall {
 
     @JvmStatic
     @Throws(JSONException::class)
-    fun finishTaskopengreen(taskType: String, sceneCode: String): String {
+    fun finishTaskopengreen(taskType: String, sceneCode: String, source: String = "task_entry"): String {
         val params = JSONObject().apply {
             put("outBizNo", taskType + RandomUtil.getRandomTag())
             put("requestType", "RPC")
             put("sceneCode", sceneCode)
-            put("source", "task_entry")
+            put("source", source)
             put("taskType", taskType)
         }
         Log.forest("finishTaskopengreen - 任务: $taskType")
-        return RequestManager.requestString("com.alipay.antieptask.finishTaskopengreen", "[$params]")
+        return RequestManager.requestString(
+            RpcEntity(
+                "com.alipay.antieptask.finishTaskopengreen",
+                "[$params]",
+                headers = forestHeaders(source)
+            )
+        )
     }
 
     @JvmStatic

@@ -5,15 +5,59 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 object AntOrchardRpcCall {
-    private const val VERSION = "20260204.01"
+    private const val VERSION = "20260529.01"
     private const val CHARITY_GAME_CENTER_VERSION = "10.8.20"
-    private const val DEFAULT_SOURCE = "ch_appcenter__chsub_9patch"
+    private const val ENTRY_SOURCE = "ch_appcenter__chsub_9patch"
+    private const val ACTION_SOURCE = "gonggexiguan"
     private const val YEB_SOURCE = "yaoqianshu_qiehuan"
+    private const val ANIMAL_SHOW_SOURCE = "ANTORCHARD"
 
-    fun orchardIndex(): String {
+    fun orchardIndex(source: String = ENTRY_SOURCE, wua: String = ""): String {
+        val requestData = JSONObject().apply {
+            put("appMode", "normal")
+            put(
+                "commonDegradeResult",
+                JSONObject().apply {
+                    put("deviceLevel", "high")
+                    put("resultReason", 0)
+                    put("resultType", 0)
+                }
+            )
+            put(
+                "darwinSceneList",
+                JSONArray()
+                    .put("gameListTwoOptimize")
+                    .put("hd_mode")
+                    .put("yebTreeTalk")
+                    .put("transferPopupYebSwitchMainTree")
+                    .put("yebLotteryPlus")
+                    .put("teamPlantNewStyle")
+                    .put("taskDarwGroup2")
+                    .put("awardPreviewExp")
+                    .put("unifiedVoucher")
+                    .put("indexFeedsAB")
+                    .put("goldenBeanSwiper")
+                    .put("quickWaterOptimize")
+                    .put("hideLeafCollectAniAB")
+                    .put("farmButlerRouteBubble")
+            )
+            put("growthExtInfo", "")
+            put("growthTask", "")
+            put("inHomepage", true)
+            put("requestType", "NORMAL")
+            put("sceneCode", "ORCHARD")
+            put("source", source)
+            put("version", VERSION)
+            if (source == YEB_SOURCE && wua.isNotBlank()) {
+                put("useWua", true)
+                put("wua", wua)
+            } else {
+                put("useWua", "")
+            }
+        }
         return RequestManager.requestString(
             "com.alipay.antfarm.orchardIndex",
-            "[{\"commonDegradeResult\":{\"deviceLevel\":\"high\",\"resultReason\":0,\"resultType\":0},\"darwinSceneList\":[\"gameListTwoOptimize\",\"hd_mode\",\"yebTreeTalk\",\"transferPopupYebSwitchMainTree\",\"yebLotteryPlus\",\"teamPlantNewStyle\",\"taskDarwGroup2\",\"awardPreviewExp\",\"storage\",\"fertiBagAB\"],\"growthExtInfo\":\"\",\"growthTask\":\"\",\"inHomepage\":true,\"requestType\":\"NORMAL\",\"sceneCode\":\"ORCHARD\",\"source\":\"$DEFAULT_SOURCE\",\"useWua\":\"\",\"version\":\"$VERSION\"}]"
+            JSONArray().put(requestData).toString()
         )
     }
 
@@ -21,21 +65,21 @@ object AntOrchardRpcCall {
      * 获取额外信息（包含每日肥料、施肥礼盒）
      * @param from 来源：entry(首页), water(施肥后)
      */
-    fun extraInfoGet(from: String = "entry", source: String = DEFAULT_SOURCE): String {
+    fun extraInfoGet(from: String = "entry", source: String = ENTRY_SOURCE): String {
         return RequestManager.requestString(
             "com.alipay.antorchard.extraInfoGet",
             "[{\"from\":\"$from\",\"requestType\":\"NORMAL\",\"sceneCode\":\"FUGUO\",\"source\":\"$source\",\"version\":\"$VERSION\"}]"
         )
     }
 
-    fun refinedOperation(actionId: String, source: String = "gonggexiguan"): String {
+    fun refinedOperation(actionId: String, source: String = ACTION_SOURCE): String {
         return RequestManager.requestString(
             "com.alipay.antorchard.refinedOperation",
             "[{\"actionId\":\"$actionId\",\"appMode\":\"normal\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ORCHARD\",\"source\":\"$source\",\"version\":\"$VERSION\"}]"
         )
     }
 
-    fun extraInfoSet(source: String = DEFAULT_SOURCE): String {
+    fun extraInfoSet(source: String = ENTRY_SOURCE): String {
         return RequestManager.requestString(
             "com.alipay.antorchard.extraInfoSet",
             "[{\"bizCode\":\"fertilizerPacket\",\"bizParam\":{\"action\":\"queryCollectFertilizerPacket\"},\"requestType\":\"NORMAL\",\"sceneCode\":\"ORCHARD\",\"source\":\"$source\",\"version\":\"$VERSION\"}]"
@@ -46,21 +90,21 @@ object AntOrchardRpcCall {
     fun querySubplotsActivity(treeLevel: String): String {
         return RequestManager.requestString(
             "com.alipay.antorchard.querySubplotsActivity",
-            "[{\"activityType\":[\"WISH\",\"BATTLE\",\"HELP_FARMER\",\"DEFOLIATION\",\"CAMP_TAKEOVER\",\"LIMITED_TIME_CHALLENGE\",\"LOTTERY_PLUS\"],\"inHomepage\":false,\"requestType\":\"NORMAL\",\"sceneCode\":\"ORCHARD\",\"source\":\"ch_appcenter__chsub_9patch\",\"treeLevel\":\"$treeLevel\",\"version\":\"$VERSION\"}]"
+            "[{\"activityType\":[\"WISH\",\"BATTLE\",\"HELP_FARMER\",\"DEFOLIATION\",\"CAMP_TAKEOVER\",\"LIMITED_TIME_CHALLENGE\",\"LOTTERY_PLUS\"],\"appMode\":\"normal\",\"inHomepage\":true,\"requestType\":\"NORMAL\",\"sceneCode\":\"ORCHARD\",\"source\":\"$ENTRY_SOURCE\",\"treeLevel\":\"$treeLevel\",\"version\":\"$VERSION\"}]"
         )
     }
 
     fun triggerSubplotsActivity(activityId: String, activityType: String, optionKey: String): String {
         return RequestManager.requestString(
             "com.alipay.antorchard.triggerSubplotsActivity",
-            "[{\"activityId\":\"$activityId\",\"activityType\":\"$activityType\",\"optionKey\":\"$optionKey\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ORCHARD\",\"source\":\"ch_appcenter__chsub_9patch\",\"version\":\"$VERSION\"}]"
+            "[{\"activityId\":\"$activityId\",\"activityType\":\"$activityType\",\"optionKey\":\"$optionKey\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ORCHARD\",\"source\":\"$ENTRY_SOURCE\",\"version\":\"$VERSION\"}]"
         )
     }
 
     fun receiveOrchardRights(activityId: String, activityType: String): String {
         return RequestManager.requestString(
             "com.alipay.antorchard.receiveOrchardRights",
-            "[{\"activityId\":\"$activityId\",\"activityType\":\"$activityType\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ORCHARD\",\"source\":\"ch_appcenter__chsub_9patch\",\"version\":\"$VERSION\"}]"
+            "[{\"activityId\":\"$activityId\",\"activityType\":\"$activityType\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ORCHARD\",\"source\":\"$ENTRY_SOURCE\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -68,7 +112,7 @@ object AntOrchardRpcCall {
     fun drawLottery(): String {
         return RequestManager.requestString(
             "com.alipay.antorchard.drawLottery",
-            "[{\"lotteryScene\":\"receiveLotteryPlus\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ORCHARD\",\"source\":\"ch_appcenter__chsub_9patch\",\"version\":\"$VERSION\"}]"
+            "[{\"lotteryScene\":\"receiveLotteryPlus\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ORCHARD\",\"source\":\"$ENTRY_SOURCE\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -76,7 +120,7 @@ object AntOrchardRpcCall {
      * 切换种植场景
      * @param plantScene main(果树) 或 yeb(摇钱树)
      */
-    fun switchPlantScene(plantScene: String, source: String = DEFAULT_SOURCE): String {
+    fun switchPlantScene(plantScene: String, source: String = ENTRY_SOURCE): String {
         return RequestManager.requestString(
             "com.alipay.antorchard.switchPlantScene",
             "[{\"plantScene\":\"$plantScene\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ORCHARD\",\"source\":\"$source\",\"version\":\"$VERSION\"}]"
@@ -100,8 +144,8 @@ object AntOrchardRpcCall {
     fun receiveTaskAward(
         sceneCode: String,
         taskType: String,
-        source: String = DEFAULT_SOURCE,
-        ignoreLimit: Boolean = true
+        source: String = ACTION_SOURCE,
+        ignoreLimit: Boolean = false
     ): String {
         return RequestManager.requestString(
             "com.alipay.antiep.receiveTaskAward",
@@ -124,7 +168,7 @@ object AntOrchardRpcCall {
             put("playTypeList", JSONArray().put("TOP_UP_COUPON").put("TASK_TRIGGER"))
             put("requestType", "RPC")
             put("sceneCode", "ORCHARD")
-            put("source", "H5")
+            put("source", ACTION_SOURCE)
             put("version", CHARITY_GAME_CENTER_VERSION)
         }
         return RequestManager.requestString(
@@ -142,7 +186,7 @@ object AntOrchardRpcCall {
         val requestData = JSONObject().apply {
             put("awardCountForReceive", awardCountForReceive)
             put("ignoreLimit", true)
-            put("requestType", "NORMAL")
+            put("requestType", "RPC")
             put("sceneCode", sceneCode)
             put("source", source)
             put("taskType", taskType)
@@ -154,7 +198,7 @@ object AntOrchardRpcCall {
         )
     }
 
-    fun orchardListTask(source: String = DEFAULT_SOURCE): String {
+    fun orchardListTask(source: String = ENTRY_SOURCE): String {
         return RequestManager.requestString(
             "com.alipay.antfarm.orchardListTask",
             "[{\"addWidget\":false,\"appMode\":\"normal\",\"enableSwitchSceneList\":[\"main\",\"yeb\"],\"enableTeamType\":[\"help\",\"team\"],\"hasYebActivityEntrance\":true,\"plantHiddenMMC\":\"false\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ORCHARD\",\"source\":\"$source\",\"version\":\"$VERSION\"}]"
@@ -164,7 +208,14 @@ object AntOrchardRpcCall {
     fun orchardSign(): String {
         return RequestManager.requestString(
             "com.alipay.antfarm.orchardSign",
-            "[{\"requestType\":\"NORMAL\",\"sceneCode\":\"ORCHARD\",\"signScene\":\"ANTFARM_ORCHARD_SIGN_V2\",\"source\":\"ch_appcenter__chsub_9patch\",\"version\":\"$VERSION\"}]"
+            "[{\"requestType\":\"NORMAL\",\"sceneCode\":\"ORCHARD\",\"signScene\":\"ANTFARM_ORCHARD_SIGN_V2\",\"source\":\"$ENTRY_SOURCE\",\"version\":\"$VERSION\"}]"
+        )
+    }
+
+    fun queryAnimalShowInfo(userId: String): String {
+        return RequestManager.requestString(
+            "com.alipay.antfarm.queryAnimalShowInfo",
+            "[{\"requestType\":\"NORMAL\",\"sceneCode\":\"ORCHARD\",\"source\":\"$ANIMAL_SHOW_SOURCE\",\"userId\":\"$userId\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -173,7 +224,7 @@ object AntOrchardRpcCall {
      */
     fun collectManurePot(
         manurePotNOs: String,
-        source: String = DEFAULT_SOURCE
+        source: String = ACTION_SOURCE
     ): String {
         return RequestManager.requestString(
             "com.alipay.antfarm.collectManurePot",
@@ -185,7 +236,7 @@ object AntOrchardRpcCall {
         userId: String,
         sceneCode: String,
         taskType: String,
-        source: String = DEFAULT_SOURCE
+        source: String = ENTRY_SOURCE
     ): String {
         return RequestManager.requestString(
             "com.alipay.antiep.finishTask",
@@ -196,7 +247,7 @@ object AntOrchardRpcCall {
     fun triggerTbTask(
         taskId: String,
         taskPlantType: String,
-        source: String = DEFAULT_SOURCE
+        source: String = ENTRY_SOURCE
     ): String {
         return RequestManager.requestString(
             "com.alipay.antfarm.triggerTbTask",
@@ -206,7 +257,7 @@ object AntOrchardRpcCall {
 
     fun orchardLazyIndex(
         currentPlantScene: String = "main",
-        source: String = DEFAULT_SOURCE
+        source: String = ENTRY_SOURCE
     ): String {
         return RequestManager.requestString(
             "com.alipay.antorchard.orchardLazyIndex",
@@ -235,7 +286,7 @@ object AntOrchardRpcCall {
                 "batchSmashCount": $count,
                 "requestType": "NORMAL",
                 "sceneCode": "ORCHARD",
-                "source": "ch_appcenter__chsub_9patch",
+                "source": "$ENTRY_SOURCE",
                 "version": "$VERSION"
             }
         ]
@@ -274,18 +325,19 @@ object AntOrchardRpcCall {
     fun orchardSyncIndex(
         wua: String,
         syncIndexTypes: String = "LIMITED_TIME_CHALLENGE",
-        balloonScene: String? = null
+        balloonScene: String? = null,
+        source: String = ACTION_SOURCE
     ): String {
         val requestData = JSONObject().apply {
+            put("appMode", "normal")
             put("requestType", "NORMAL")
             put("sceneCode", "ORCHARD")
-            put("source", "ch_appcenter__chsub_9patch")
+            put("source", source)
             put("syncIndexTypes", syncIndexTypes)
             put("useWua", true)
             put("version", VERSION)
             put("wua", wua)
             if (!balloonScene.isNullOrBlank()) {
-                put("appMode", "normal")
                 put("balloonScene", balloonScene)
             }
         }
@@ -299,10 +351,10 @@ object AntOrchardRpcCall {
     fun noticeGame(appId: String): String {
         val jsonArgs = """
           [{
-             "appId": "2021004165643274",
+             "appId": "$appId",
              "requestType": "NORMAL",
              "sceneCode": "ORCHARD",
-             "source": "ch_appcenter__chsub_9patch",
+             "source": "$ACTION_SOURCE",
              "version": "$VERSION"
          }]
     """.trimIndent()

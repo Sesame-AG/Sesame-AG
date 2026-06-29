@@ -152,16 +152,16 @@ internal suspend fun AntForest.runForestHomeFollowUpWorkflow(selfHomeObj: JSONOb
     collectEnergyBomb(selfHomeObj)
     tc.countDebug("收取炸弹卡能量")
 
+    if (combineAnimalPiece?.value == true) {
+        queryAnimalAndPiece()
+        tc.countDebug("合成动物碎片")
+    }
+
     if (canRunConsumeAnimalPropWorkflow()) {
         queryAndConsumeAnimal()
         tc.countDebug("森林巡护")
     } else {
         Log.forest("已经有动物伙伴在巡护森林~")
-    }
-
-    if (combineAnimalPiece?.value == true) {
-        queryAnimalAndPiece()
-        tc.countDebug("合成动物碎片")
     }
 
     if (receiveForestTaskAward?.value == true) {

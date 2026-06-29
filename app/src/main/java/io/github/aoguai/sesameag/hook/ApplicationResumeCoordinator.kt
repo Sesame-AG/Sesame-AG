@@ -3,6 +3,7 @@ package io.github.aoguai.sesameag.hook
 import io.github.aoguai.sesameag.hook.keepalive.PersistentReconcileMode
 import io.github.aoguai.sesameag.hook.keepalive.UnifiedScheduler
 import io.github.aoguai.sesameag.task.ModelTask.Companion.stopAllTask
+import io.github.aoguai.sesameag.util.DataStore
 import io.github.aoguai.sesameag.util.Log.record
 import io.github.aoguai.sesameag.util.Notify.updateRunningStatus
 
@@ -10,6 +11,7 @@ internal object ApplicationResumeCoordinator {
     private const val TAG = ApplicationHook.TAG
     private const val AUTH_LIKE_AUTO_RECOVER_GUARD_MS: Long = 1500L
     private const val MODULE_FOREGROUND_RESUME_GUARD_MS: Long = 15_000L
+    private const val TARGET_APP_FOREGROUND_KEY = "targetAppForeground"
 
     @Volatile
     private var hostAppWentBackground = false
@@ -18,11 +20,16 @@ internal object ApplicationResumeCoordinator {
     private var pendingModuleForegroundResume = false
 
     @Volatile
+    private var hostAppForeground = false
+
+    @Volatile
     private var lastReOpenAppLaunchAtMs: Long = 0L
 
     fun reset() {
         hostAppWentBackground = false
         pendingModuleForegroundResume = false
+        hostAppForeground = false
+        persistHostAppForeground(false)
     }
 
     fun clearBackgroundFlag() {
@@ -31,6 +38,14 @@ internal object ApplicationResumeCoordinator {
 
     fun markHostAppBackgrounded() {
         hostAppWentBackground = true
+        hostAppForeground = false
+        persistHostAppForeground(false)
+    }
+
+    fun markHostAppForegrounded() {
+        hostAppWentBackground = false
+        hostAppForeground = true
+        persistHostAppForeground(true)
     }
 
     fun consumeHostAppBackgrounded(): Boolean {
@@ -67,6 +82,12 @@ internal object ApplicationResumeCoordinator {
             pendingModuleForegroundResume = false
         }
         return moduleInitiatedResume
+    }
+
+    fun isHostAppForeground(): Boolean {
+        if (hostAppForeground) return true
+        return runCatching { DataStore.get(TARGET_APP_FOREGROUND_KEY, Boolean::class.javaObjectType) == true }
+            .getOrDefault(false)
     }
 
     fun tryRecoverOffline(resumeSource: String): Boolean {
@@ -144,5 +165,9 @@ internal object ApplicationResumeCoordinator {
             )
         )
         return true
+    }
+
+    private fun persistHostAppForeground(foreground: Boolean) {
+        runCatching { DataStore.put(TARGET_APP_FOREGROUND_KEY, foreground) }
     }
 }

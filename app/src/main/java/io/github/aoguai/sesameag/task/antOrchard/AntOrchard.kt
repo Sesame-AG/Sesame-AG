@@ -38,7 +38,8 @@ import java.util.Calendar
 class AntOrchard : ModelTask() {
     companion object {
         private val TAG = AntOrchard::class.java.simpleName
-        private const val ORCHARD_SOURCE = "ch_appcenter__chsub_9patch"
+        private const val ENTRY_SOURCE = "ch_appcenter__chsub_9patch"
+        private const val ACTION_SOURCE = "gonggexiguan"
         private const val YEB_SOURCE = "yaoqianshu_qiehuan"
         private const val XLIGHT_PAGE_FROM = "ch_url-https://render.alipay.com/p/yuyan/180020010001263018/game.html"
         private const val ORCHARD_TASK_BLACKLIST_MODULE = "芭芭农场"
@@ -242,16 +243,15 @@ class AntOrchard : ModelTask() {
             CoroutineUtils.sleepCompat(500)
         } catch (ignore: Throwable) {}
 
-        val sourceList = listOf(
-            "DNHZ_NC_zhimajingnangSF",
-            "widget_shoufei",
-            "ch_appcenter__chsub_9patch"
-        )
-
         do {
             try {
                 // 检查肥料余额
-                val orchardIndexData = JSONObject(AntOrchardRpcCall.orchardIndex())
+                val orchardIndexData = JSONObject(
+                    AntOrchardRpcCall.orchardIndex(
+                        source = getSceneSource(targetScene),
+                        wua = buildIndexWua(targetScene)
+                    )
+                )
                 if (orchardIndexData.optString("resultCode") != "100") break
 
                 val taobaoDataStr = orchardIndexData.optString("taobaoData")
@@ -285,7 +285,10 @@ class AntOrchard : ModelTask() {
                                 reason = "$sceneName 肥料不足",
                                 maxCount = 1
                             ) {
-                                AntOrchardRpcCall.orchardIndex()
+                                AntOrchardRpcCall.orchardIndex(
+                                    source = getSceneSource(targetScene),
+                                    wua = buildIndexWua(targetScene)
+                                )
                             }
                             if (replenishResult == ExchangeReplenishResult.EXCHANGED) {
                                 Log.orchard("$sceneName 肥料不足已触发会员积分补兑，重新查询库存")
@@ -319,10 +322,14 @@ class AntOrchard : ModelTask() {
                 }
 
                 val wua = SecurityBodyHelper.getSecurityBodyData(4).toString()
-                val requestSource = if (useBatchSpread) ORCHARD_SOURCE else sourceList.random()
 
                 // 执行施肥请求
-                val spreadResponse = AntOrchardRpcCall.orchardSpreadManure(wua, requestSource, useBatchSpread, targetScene)
+                val spreadResponse = AntOrchardRpcCall.orchardSpreadManure(
+                    wua,
+                    ACTION_SOURCE,
+                    useBatchSpread,
+                    targetScene
+                )
                 val spreadJson = JSONObject(spreadResponse)
                 val resultCode = spreadJson.optString("resultCode")
 
@@ -389,7 +396,7 @@ class AntOrchard : ModelTask() {
 
                 CoroutineUtils.sleepCompat(500)
                 // 检查施肥后礼盒
-                checkFertilizerBox(targetScene)
+                checkFertilizerBox()
                 if (spreadStageLeftTimesBefore in 1..actualWaterTimes) {
                     tryReceiveSpreadManureActivityAwardByQueryIndex()
                 }
@@ -438,17 +445,17 @@ class AntOrchard : ModelTask() {
     }
 
     // 辅助方法：施肥后检测肥料礼盒
-    private fun checkFertilizerBox(currentPlantScene: String) {
-        extraInfoGet(from = "water", scene = currentPlantScene)
+    private fun checkFertilizerBox() {
+        extraInfoGet(from = "water")
     }
 
     /**
      * 获取额外信息（包含每日肥料、施肥礼盒）
      * @param from "entry" 或 "water"
      */
-    internal fun extraInfoGet(from: String = "entry", scene: String = currentPlantScene) {
+    internal fun extraInfoGet(from: String = "entry") {
         try {
-            val source = if (from == "entry") ORCHARD_SOURCE else getSceneSource(scene)
+            val source = if (from == "entry") ENTRY_SOURCE else ACTION_SOURCE
             val response = AntOrchardRpcCall.extraInfoGet(from, source)
             val jo = JSONObject(response)
 
@@ -953,6 +960,21 @@ class AntOrchard : ModelTask() {
         return false
     }
 
+    private fun extractManurePotNos(potList: JSONArray?): LinkedHashSet<String> {
+        val potNos = LinkedHashSet<String>()
+        if (potList == null) {
+            return potNos
+        }
+        for (i in 0 until potList.length()) {
+            potList.optJSONObject(i)
+                ?.optString("manurePotNO")
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { potNos.add(it) }
+        }
+        return potNos
+    }
+
     private fun collectOrchardManurePotIfNeeded(
         item: TaskFlowItem,
         listTaskJson: JSONObject
@@ -984,52 +1006,31 @@ class AntOrchard : ModelTask() {
                 )
             }
 
-            val manure = manureFactory.optJSONObject("manure")
-            val potList = manure?.optJSONArray("manurePotList")
-            val candidateNos = LinkedHashSet<String>()
-            val fallbackNos = LinkedHashSet<String>()
-            val allPotNos = LinkedHashSet<String>()
-            var totalPotNum = 0.0
-            if (potList != null) {
-                for (i in 0 until potList.length()) {
-                    val pot = potList.optJSONObject(i) ?: continue
-                    val potNo = pot.optString("manurePotNO").trim()
-                    val potNum = pot.optDouble("manurePotNum", 0.0)
-                    totalPotNum += potNum.coerceAtLeast(0.0)
-                    if (potNo.isEmpty()) continue
-                    allPotNos.add(potNo)
-                    if (potNum > 0.0) {
-                        fallbackNos.add(potNo)
-                    }
-                    if (potNum > 1.0) {
-                        candidateNos.add(potNo)
-                    }
+            val collectTargets = LinkedHashSet<String>()
+            val currentUserId = userId ?: UserMap.currentUid
+            if (!currentUserId.isNullOrBlank()) {
+                val latestAnimalShow = JSONObject(AntOrchardRpcCall.queryAnimalShowInfo(currentUserId))
+                if (ResChecker.checkRes(TAG, latestAnimalShow)) {
+                    collectTargets.addAll(extractManurePotNos(latestAnimalShow.optJSONArray("manurePotList")))
                 }
-            }
-            val collectTargets: List<String> = when {
-                allPotNos.size >= 3 && candidateNos.size >= 3 -> candidateNos.toList()
-                allPotNos.size < 3 && totalPotNum > 3.0 && fallbackNos.isNotEmpty() -> fallbackNos.toList()
-                else -> emptyList()
             }
             if (collectTargets.isEmpty()) {
-                if (allPotNos.size >= 3) {
-                    Log.orchard("庄园鸡屎💩任务：已识别${allPotNos.size}个池子，但未满足至少3个池子都>1g，跳过收取"
-                    )
-                } else {
-                    Log.orchard("庄园鸡屎💩任务：未识别到完整三池结构，当前总量${"%.1f".format(totalPotNum)}g未达到>3g兜底门槛，跳过收取"
-                    )
-                }
+                val fallbackPotList = manureFactory.optJSONObject("manure")?.optJSONArray("manurePotList")
+                collectTargets.addAll(extractManurePotNos(fallbackPotList))
+            }
+            if (collectTargets.isEmpty()) {
                 return TaskFlowActionResult.failure(
-                    failureType = TaskRpcFailureType.BUSINESS_LIMIT,
-                    message = "肥料池未达到可收取门槛",
+                    failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                    message = "缺少可收取的 manurePotNO",
                     rpc = "AntOrchardRpcCall.collectManurePot",
-                    detail = orchardActionDetail(item, "collectManurePot") +
-                        " pots=${allPotNos.size} totalPotNum=$totalPotNum"
+                    raw = listTaskJson.toString(),
+                    detail = orchardActionDetail(item, "collectManurePot")
                 )
             }
 
-            val source = getSceneSource()
-            val collectResp = JSONObject(AntOrchardRpcCall.collectManurePot(collectTargets.joinToString(","), source))
+            val collectResp = JSONObject(
+                AntOrchardRpcCall.collectManurePot(collectTargets.joinToString(","), ACTION_SOURCE)
+            )
             if (ResChecker.checkRes(TAG, collectResp)) {
                 val collected = collectResp.optInt("collectManurePotNum", 0)
                 if (collected > 0) {
@@ -1160,7 +1161,7 @@ class AntOrchard : ModelTask() {
                 detail = "taskId=${groupId.ifBlank { taskId }} taskName=$title action=$action sceneCode=$sceneCode"
             )
         }
-        val responseText = AntOrchardRpcCall.finishTask(currentUserId, sceneCode, taskId, ORCHARD_SOURCE)
+        val responseText = AntOrchardRpcCall.finishTask(currentUserId, sceneCode, taskId, ENTRY_SOURCE)
         if (responseText.isBlank()) {
             return TaskFlowActionResult.failure(
                 failureType = TaskRpcFailureType.RETRYABLE_RPC,
@@ -1980,7 +1981,11 @@ class AntOrchard : ModelTask() {
     }
 
     private fun getSceneSource(scene: String = currentPlantScene): String {
-        return if (scene == "yeb") YEB_SOURCE else ORCHARD_SOURCE
+        return if (scene == "yeb") YEB_SOURCE else ENTRY_SOURCE
+    }
+
+    private fun buildIndexWua(scene: String = currentPlantScene): String {
+        return if (scene == "yeb") SecurityBodyHelper.getSecurityBodyData(4).toString() else ""
     }
 
     internal fun tryReceiveSpreadManureActivityAward(indexJson: JSONObject) {
@@ -2001,8 +2006,9 @@ class AntOrchard : ModelTask() {
                 return
             }
             val awardCount = stage.optInt("awardCount", 0)
-            val source = getSceneSource(indexJson.optString("currentPlantScene", currentPlantScene))
-            val awardResp = JSONObject(AntOrchardRpcCall.receiveTaskAward(sceneCode, taskType, source))
+            val awardResp = JSONObject(
+                AntOrchardRpcCall.receiveTaskAward(sceneCode, taskType, ACTION_SOURCE)
+            )
             if (ResChecker.checkRes(TAG, awardResp)) {
                 Log.orchard("丰收奖励🎁[领取成功]#${awardCount}g肥料")
             } else {
@@ -2015,8 +2021,14 @@ class AntOrchard : ModelTask() {
 
     internal fun tryReceiveSpreadManureActivityAwardByQueryIndex() {
         try {
-            val refreshed = JSONObject(AntOrchardRpcCall.orchardIndex())
-            if (refreshed.optString("resultCode") != "100") {
+            val refreshed = JSONObject(
+                AntOrchardRpcCall.orchardSyncIndex(
+                    wua = SecurityBodyHelper.getSecurityBodyData(4).toString(),
+                    syncIndexTypes = "QUERY_SPREAD_MANURE_ACTIVITY",
+                    source = ACTION_SOURCE
+                )
+            )
+            if (!ResChecker.checkRes(TAG, refreshed)) {
                 return
             }
             tryReceiveSpreadManureActivityAward(refreshed)
@@ -2082,7 +2094,7 @@ class AntOrchard : ModelTask() {
     }
 
     private fun claimTaskReward(taskId: String, taskPlantType: String): JSONObject? {
-        val sourceCandidates = linkedSetOf(getSceneSource(), ORCHARD_SOURCE, YEB_SOURCE)
+        val sourceCandidates = linkedSetOf(getSceneSource(), ENTRY_SOURCE, YEB_SOURCE)
         var lastResponse: JSONObject? = null
         for (source in sourceCandidates) {
             val response = JSONObject(AntOrchardRpcCall.triggerTbTask(taskId, taskPlantType, source))
@@ -2101,7 +2113,7 @@ class AntOrchard : ModelTask() {
                 return
             }
             val lazyIndexResp = JSONObject(
-                AntOrchardRpcCall.orchardLazyIndex(currentPlantScene.ifBlank { "main" }, ORCHARD_SOURCE)
+                AntOrchardRpcCall.orchardLazyIndex(currentPlantScene.ifBlank { "main" }, ENTRY_SOURCE)
             )
             if (!ResChecker.checkRes(TAG, lazyIndexResp)) {
                 Log.orchard("农场限时福利🎈查询失败: ${lazyIndexResp.toString()}")
@@ -2157,7 +2169,12 @@ class AntOrchard : ModelTask() {
             val wua = SecurityBodyHelper.getSecurityBodyData(4).toString()
             val syncBalloonScene = balloonScene.ifBlank { activityId }
             val syncResp = JSONObject(
-                AntOrchardRpcCall.orchardSyncIndex(wua, "QUERY_BALLOON_COOPER", syncBalloonScene)
+                AntOrchardRpcCall.orchardSyncIndex(
+                    wua = wua,
+                    syncIndexTypes = "QUERY_BALLOON_COOPER",
+                    balloonScene = syncBalloonScene,
+                    source = ACTION_SOURCE
+                )
             )
             if (!ResChecker.checkRes(TAG, syncResp)) {
                 Log.orchard("农场限时福利🎈状态同步失败: ${syncResp.toString()}")
@@ -2217,10 +2234,40 @@ class AntOrchard : ModelTask() {
         }
     }
 
+    private fun resolveLimitedChallengeGameAppId(child: JSONObject): String {
+        val taskDisplayConfig = child.optJSONObject("taskDisplayConfig")
+        val targetUrl = taskDisplayConfig?.optString("targetUrl").orEmpty()
+        if (targetUrl.isNotBlank()) {
+            UrlUtil.getParamValue(targetUrl, "appId")
+                ?.takeIf { it.isNotBlank() }
+                ?.let { return it }
+
+            val nestedUrl = UrlUtil.getFullNestedUrl(targetUrl, "url")
+                ?: UrlUtil.getParamValue(targetUrl, "url")
+            if (!nestedUrl.isNullOrBlank()) {
+                UrlUtil.extractParamFromUrl(nestedUrl, "appId")
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { return it }
+                UrlUtil.getParamValue(nestedUrl, "appId")
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { return it }
+            }
+        }
+        return listOf(
+            child.optString("appId"),
+            child.optString("contentId"),
+            taskDisplayConfig?.optString("appId").orEmpty(),
+            taskDisplayConfig?.optString("contentId").orEmpty()
+        ).firstOrNull { it.isNotBlank() }.orEmpty()
+    }
+
     internal fun limitedTimeChallenge() {
         try {
             val wua = SecurityBodyHelper.getSecurityBodyData(4).toString()
-            val response = AntOrchardRpcCall.orchardSyncIndex(wua)
+            val response = AntOrchardRpcCall.orchardSyncIndex(
+                wua = wua,
+                source = ACTION_SOURCE
+            )
             val root = JSONObject(response)
             if (!ResChecker.checkRes(TAG, root)) return
 
@@ -2270,13 +2317,24 @@ class AntOrchard : ModelTask() {
                         if (need > 0) {
                             repeat(need) {
                                 val w = SecurityBodyHelper.getSecurityBodyData(4).toString()
-                                val r = AntOrchardRpcCall.orchardSpreadManure(w, "ch_appcenter__chsub_9patch")
+                                val r = AntOrchardRpcCall.orchardSpreadManure(w, ACTION_SOURCE)
                                 if (JSONObject(r).optString("resultCode") != "100") return
                             }
                         }
                     }
                     "GAME_CENTER" -> {
-                        val r = AntOrchardRpcCall.noticeGame("2021004165643274")
+                        val appId = resolveLimitedChallengeGameAppId(child)
+                        if (appId.isBlank()) {
+                            Log.error(
+                                TAG,
+                                "农场限时福利[${childTaskId}] classification=UNSUPPORTED_NO_CLOSURE " +
+                                    "decision=SKIP_CURRENT_TASK action=noticeGame " +
+                                    "rpc=AntOrchardRpcCall.noticeGame msg=child payload 缺少稳定 appId，禁止使用历史硬编码兜底 " +
+                                    "sceneCode=$sceneCode groupId=$groupId raw=$child"
+                            )
+                            continue
+                        }
+                        val r = AntOrchardRpcCall.noticeGame(appId)
                         if (ResChecker.checkRes(TAG, JSONObject(r))) {
                             Log.orchard("游戏任务触发成功")
                         }

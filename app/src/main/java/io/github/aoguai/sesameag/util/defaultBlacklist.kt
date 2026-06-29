@@ -93,7 +93,8 @@ private val sesameAlchemyDefaultBlacklist = setOf(
     "hjwf_youxi_renwu_sanfang|去玩我的***世界", // 参数错误：promiseActivityExtCheck
     "hjwf_xiangjiangshikaipao_renwu|去玩向僵尸开炮", // 参数错误：promiseActivityExtCheck
     "hjwf_sanguobingheshidai_renwu|去玩三国冰河时代", // 参数错误：promiseActivityExtCheck
-    "hjwf_jihewangguo_renwu|去玩几何王国" // 参数错误：promiseActivityExtCheck
+    "hjwf_jihewangguo_renwu|去玩几何王国", // 参数错误：promiseActivityExtCheck
+    "hjwf_longjizhicheng_renwu|去玩龙迹之城" // 参数错误：promiseActivityExtCheck
 )
 
 private val orchardDefaultBlacklist = setOf(
@@ -398,7 +399,9 @@ private val sportsDefaultBlacklist = setOf(
     "AP16300608",
     "AP12300554",
     "AP13300501",
-    "AP16300571"
+    "AP16300571",
+    "AP11300601|逛好运卡翻红包", // 面板入口缺少稳定自动闭环
+    "AP10344931|逛好运卡翻红包" // 路线复活入口 completeTask 返回 CAMP_TRIGGER_ERROR
 )
 
 val DEFAULT_BLACKLIST: Map<String, Set<String>> = mapOf(

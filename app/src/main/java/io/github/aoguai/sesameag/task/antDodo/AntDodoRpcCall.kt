@@ -17,10 +17,13 @@ object AntDodoRpcCall {
     private const val METHOD_PROP_LIST = "alipay.antdodo.rpc.h5.propList"
     private const val METHOD_CONSUME_PROP = "alipay.antdodo.rpc.h5.consumeProp"
     private const val METHOD_QUERY_BOOK_INFO = "alipay.antdodo.rpc.h5.queryBookInfo"
+    private const val METHOD_QUERY_MY_COLLECTION = "alipay.antdodo.rpc.h5.queryMyCollection"
     private const val METHOD_SOCIAL = "alipay.antdodo.rpc.h5.social"
+    private const val METHOD_EXCHANGE = "alipay.antdodo.rpc.h5.exchange"
     private const val METHOD_QUERY_FRIEND = "alipay.antdodo.rpc.h5.queryFriend"
     private const val METHOD_QUERY_BOOK_LIST = "alipay.antdodo.rpc.h5.queryBookList"
     private const val METHOD_GENERATE_BOOK_MEDAL = "alipay.antdodo.rpc.h5.generateBookMedal"
+    private const val METHOD_REDECISION_TASK_OPEN_GREEN = "com.alipay.antieptask.reDecisionTaskopengreen"
 
     /**
      * 查询动物状态
@@ -29,7 +32,7 @@ object AntDodoRpcCall {
     fun queryAnimalStatus(): String {
         return RequestManager.requestString(
             METHOD_QUERY_ANIMAL_STATUS,
-            "[{\"source\":\"chInfo_ch_appcenter__chsub_9patch\"}]"
+            "[{\"source\":\"wuzhong_leyuan\",\"version\":\"20241203\"}]"
         )
     }
 
@@ -160,6 +163,22 @@ object AntDodoRpcCall {
     }
 
     /**
+     * 查询我的卡片收藏
+     *
+     * @param extendAnimalId 目标动物ID
+     * @param pageSize 每页数量
+     * @param pageStart 起始页
+     */
+    @JvmStatic
+    fun queryMyCollection(extendAnimalId: String, pageSize: Int, pageStart: Any? = 0): String {
+        val args = JSONObject()
+        args.put("extendAnimalId", extendAnimalId)
+        args.put("pageSize", pageSize)
+        args.put("pageStart", pageStart ?: 0)
+        return RequestManager.requestString(METHOD_QUERY_MY_COLLECTION, "[$args]")
+    }
+
+    /**
      * 送卡片给好友
      *
      * @param targetAnimalId 目标动物ID
@@ -172,6 +191,34 @@ object AntDodoRpcCall {
             "[{\"actionCode\":\"GIFT_TO_FRIEND\",\"source\":\"GIFT_TO_FRIEND_FROM_CC\",\"targetAnimalId\":\"$targetAnimalId\",\"targetUserId\":\"$targetUserId\",\"triggerTime\":\"${System.currentTimeMillis()}\"}]"
         )
         return response
+    }
+
+    /**
+     * 发送换卡提醒
+     *
+     * @param targetAnimalId 目标动物ID
+     * @param targetUserId 目标用户ID
+     */
+    @JvmStatic
+    fun socialExchangeMsg(targetAnimalId: String, targetUserId: String): String {
+        val args = JSONObject()
+        args.put("actionCode", "EXCHANGE_MSG")
+        args.put("targetAnimalId", targetAnimalId)
+        args.put("targetUserId", targetUserId)
+        return RequestManager.requestString(METHOD_SOCIAL, "[$args]")
+    }
+
+    /**
+     * 放弃换卡
+     *
+     * @param targetUserId 目标用户ID
+     */
+    @JvmStatic
+    fun socialGiveUpExchange(targetUserId: String): String {
+        val args = JSONObject()
+        args.put("actionCode", "GIVE_UP_EXCHANGE")
+        args.put("targetUserId", targetUserId)
+        return RequestManager.requestString(METHOD_SOCIAL, "[$args]")
     }
 
     /**
@@ -192,11 +239,29 @@ object AntDodoRpcCall {
      */
     @JvmStatic
     fun collect(targetUserId: String): String {
+        val args = JSONObject()
+        args.put("targetUserId", targetUserId)
         val response = RequestManager.requestString(
             METHOD_COLLECT,
-            "[{\"targetUserId\":$targetUserId}]"
+            "[$args]"
         )
         return response
+    }
+
+    /**
+     * 交换卡片
+     *
+     * @param animalId 我方筹码卡ID
+     * @param targetAnimalId 目标卡ID
+     * @param targetUserId 目标用户ID
+     */
+    @JvmStatic
+    fun exchange(animalId: String, targetAnimalId: String, targetUserId: String): String {
+        val args = JSONObject()
+        args.put("animalId", animalId)
+        args.put("targetAnimalId", targetAnimalId)
+        args.put("targetUserId", targetUserId)
+        return RequestManager.requestString(METHOD_EXCHANGE, "[$args]")
     }
 
     /**
@@ -220,6 +285,25 @@ object AntDodoRpcCall {
     fun generateBookMedal(bookId: String): String {
         val args = "[{\"bookId\":\"$bookId\"}]"
         return RequestManager.requestString(METHOD_GENERATE_BOOK_MEDAL, args)
+    }
+
+    /**
+     * 显化 reDecision 任务
+     *
+     * @param groupId 任务分组ID
+     * @param taskType 任务类型
+     */
+    @JvmStatic
+    fun reDecisionTaskOpenGreen(groupId: String, taskType: String): String {
+        val args = JSONObject()
+        args.put("extend", JSONObject().put("h5Version", "20241203").put("osType", "android"))
+        args.put("reDecisionGroupId", groupId)
+        args.put("reDecisionMode", "MANUAL")
+        args.put("reDecisionTaskType", taskType)
+        args.put("requestType", "rpc")
+        args.put("sceneCode", "ANTDODO_TASK")
+        args.put("source", "af-biodiversity")
+        return RequestManager.requestString(METHOD_REDECISION_TASK_OPEN_GREEN, "[$args]")
     }
 }
 

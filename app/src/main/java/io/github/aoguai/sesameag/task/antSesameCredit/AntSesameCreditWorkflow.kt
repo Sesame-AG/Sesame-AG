@@ -32,6 +32,8 @@ internal suspend fun AntSesameCredit.prepareSesameWorkflows(
         return AntSesameCreditWorkflowPlan(false, false)
     }
 
+    resetSesamePushModelTaskSnapshots()
+
     var claimSesame = false
     var claimProgress = false
 

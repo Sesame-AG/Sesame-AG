@@ -289,9 +289,6 @@ object StatusFlags {
     /** 福气鱼池：今日稳定任务已无可执行项 */
     const val FLAG_ANTFISHPOND_TASKS_DONE = "AntFishPond::tasksDone"
 
-    /** 福气鱼池：已达到兑换条件 */
-    const val FLAG_ANTFISHPOND_EXCHANGE_REACHED = "AntFishPond::exchangeReached"
-
     /** 福气鱼池：缺少 fishpondAngle riskToken */
     const val FLAG_ANTFISHPOND_RISK_TOKEN_MISSING = "AntFishPond::riskTokenMissing"
 

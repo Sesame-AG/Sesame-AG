@@ -26,6 +26,7 @@ object AntFishPondRpcCall {
     private const val METHOD_TRIGGER_SUBPLOTS = "com.alipay.antfishpond.triggerSubplotsActivity"
     private const val METHOD_LIST_TASK = "com.alipay.antfishpond.listTask"
     private const val METHOD_SIGN = "com.alipay.antfishpond.sign"
+    private const val METHOD_EXCHANGE_REWARD = "com.alipay.antfishpond.fishpondExchangeReward"
     private const val METHOD_AD_NOTICE = "com.alipay.antfishpond.fishpondAdNotice"
     private const val METHOD_ANGLE = "com.alipay.antfishpond.fishpondAngle"
     private const val METHOD_ROD_POSITIONING = "com.alipay.antfishpond.fishpondAngleRodPositioning"
@@ -100,6 +101,11 @@ object AntFishPondRpcCall {
                 .put("signKey", signKey)
         )
         return response
+    }
+
+    @JvmStatic
+    fun fishpondExchangeReward(): String {
+        return request(METHOD_EXCHANGE_REWARD, baseArgs())
     }
 
     @JvmStatic
