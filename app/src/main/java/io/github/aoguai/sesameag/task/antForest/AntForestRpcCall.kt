@@ -1829,19 +1829,18 @@ object AntForestRpcCall {
 
     @JvmStatic
     @Throws(JSONException::class)
-    fun listTaskopengreen(
-        sceneCode: String,
-        source: String,
-    ): String {
-        val requestData =
-            JSONObject().apply {
-                put("extend", JSONObject().put("appMode", "normal"))
-                put("requestType", "RPC")
-                put("sceneCode", sceneCode)
-                put("source", source)
-            }
+    fun listTaskopengreen(sceneCode: String?, source: String?, extend: JSONObject? = null): String {
+        val requestData = JSONObject()
+        if (extend != null) {
+            requestData.put("extend", extend)
+        }
+        requestData.put("requestType", "RPC")
+        requestData.put("sceneCode", sceneCode)
+        requestData.put("source", source ?: "IPicon")
+
+        val args = "[$requestData]"
         Log.forest("listTaskopengreen - 场景: $sceneCode, source: $source")
-        return RequestManager.requestString("com.alipay.antieptask.listTaskopengreen", "[$requestData]")
+        return RequestManager.requestString("com.alipay.antieptask.listTaskopengreen", args)
     }
 
     /**

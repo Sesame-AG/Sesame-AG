@@ -4678,6 +4678,9 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 collectTaskNodesRecursively(taskInfo, taskNodes)
             }
         }
+
+        appendTaskInfoList(taskResponse.optJSONArray("taskInfoList"))
+
         val forestTasksNew = taskResponse.optJSONArray("forestTasksNew")
         if (forestTasksNew != null) {
             for (i in 0 until forestTasksNew.length()) {
@@ -4692,7 +4695,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 appendTaskInfoList(taskGroup.optJSONArray("taskInfoList"))
             }
         }
-        appendTaskInfoList(taskResponse.optJSONArray("taskInfoList"))
         return taskNodes
     }
 
@@ -5001,6 +5003,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 when {
                     isForestSignAlreadyHandled(signResponse) -> {
                         Log.forest("森林签到已完成，跳过重复签到")
+                        Status.setFlagToday(StatusFlags.FLAG_ANTFOREST_SIGN_DONE)
                         handledCount++
                     }
 
@@ -5008,6 +5011,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                         val awardCount = signRecord.optInt("awardCount", 0)
                         val suffix = if (awardCount > 0) "# $awardCount" else ""
                         Log.forest("森林签到📆成功$suffix")
+                        Status.setFlagToday(StatusFlags.FLAG_ANTFOREST_SIGN_DONE)
                         handledCount++
                     }
 
@@ -5020,7 +5024,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         }
 
         if (handledCount > 0) {
-            return TaskFlowActionResult.success()
+            return TaskFlowActionResult.success(refreshAfterAction = true)
         }
         if (pendingCount == 0) {
             return TaskFlowActionResult.failure(
@@ -5476,10 +5480,12 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                         .put("sourceName", sourceName)
                         .put("payload", taskResponse)
                 )
-                if (sourceName == "popupTask") {
-                    appendSignInfo(taskResponse.optJSONObject("energySignVO"), uniqueSigns)
+                if (!Status.hasFlagToday(StatusFlags.FLAG_ANTFOREST_SIGN_DONE)) {
+                    if (sourceName == "popupTask") {
+                        appendSignInfo(taskResponse.optJSONObject("energySignVO"), uniqueSigns)
+                    }
+                    appendSignInfo(taskResponse.optJSONArray("forestSignVOList"), uniqueSigns)
                 }
-                appendSignInfo(taskResponse.optJSONArray("forestSignVOList"), uniqueSigns)
                 return collectForestTaskNodes(taskResponse).isNotEmpty()
             }
 
@@ -5836,6 +5842,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         }
 
         private fun hasPendingForestSign(signs: JSONArray): Boolean {
+            if (Status.hasFlagToday(StatusFlags.FLAG_ANTFOREST_SIGN_DONE)) return false
             for (signIndex in 0 until signs.length()) {
                 val forestSignVO = signs.optJSONObject(signIndex) ?: continue
                 val currentSignKey = forestSignVO.optString("currentSignKey")
@@ -5886,21 +5893,29 @@ class AntForest : ModelTask(), EnergyCollectCallback {
      */
     internal fun receiveTaskAward() {
         try {
-            val taskSources = listOf(
+            val isSigned = Status.hasFlagToday(StatusFlags.FLAG_ANTFOREST_SIGN_DONE)
+            val taskSources = mutableListOf(
                 "popupTask" to { AntForestRpcCall.popupTask() },
                 "home_leaves_task_list" to { AntForestRpcCall.queryLeafTaskList() },
                 "take_look_end_task_list" to { AntForestRpcCall.queryTakeLookEndTaskList() },
-                "home_task_list" to { AntForestRpcCall.queryTaskList() }
+                "open_green_home_task_list" to {
+                    val extend = JSONObject().apply {
+                        put("businessSource", "ANTFOREST-home_task_list")
+                        put("osType", "android")
+                        put("version", "20260109")
+                    }
+                    AntForestRpcCall.listTaskopengreen("ANTFOREST_VITALITY_TASK", "chInfo_ch_appcenter__chsub_9patch", extend)
+                }
             )
+            if (!isSigned) {
+                taskSources.add("home_task_list" to { AntForestRpcCall.queryTaskList() })
+            }
             val deferredForestRightsTasks = linkedMapOf<String, DeferredForestRightsTask>()
-            val fallbackTaskSources = listOf(
-                "open_green_home_task_list" to { AntForestRpcCall.queryOpenGreenHomeTaskList() }
-            )
+
             TaskFlowEngine(
                 ForestTaskFlowAdapter(
                     taskSources = taskSources,
-                    deferredForestRightsTasks = deferredForestRightsTasks,
-                    fallbackTaskSources = fallbackTaskSources
+                    deferredForestRightsTasks = deferredForestRightsTasks
                 ),
                 roundSleepMs = 1500L
             ).run()

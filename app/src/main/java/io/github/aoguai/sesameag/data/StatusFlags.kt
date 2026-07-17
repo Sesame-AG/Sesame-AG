@@ -61,6 +61,9 @@ object StatusFlags {
     /** 森林 PK：今日已判定无需处理（未加入/赛季未开启），用于避免重复请求触发风控 */
     const val FLAG_ANTFOREST_PK_SKIP_TODAY: String = "AntForest::pkSkipToday"
 
+    /** 森林：今日是否已签到 */
+    const val FLAG_ANTFOREST_SIGN_DONE: String = "AntForest::signed"
+
     /** 森林 1V1 能量挑战赛：今日已查询并处理待领奖励 */
     const val FLAG_ANTFOREST_ENERGY_PVP_CHALLENGE_DONE: String = "AntForest::energyPvpChallengeDone"
 
