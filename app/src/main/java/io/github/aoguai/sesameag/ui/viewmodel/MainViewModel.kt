@@ -173,7 +173,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 frameworkName = frameworkStatus.frameworkName,
                 frameworkVersion = frameworkStatus.frameworkVersion,
                 apiVersion = frameworkStatus.apiVersion,
-                reason = if (frameworkStatus.apiVersion < 101) {
+                reason = if (!frameworkStatus.hasRequiredApi) {
                     ModuleStatus.UnsupportedReason.API_TOO_LOW
                 } else {
                     ModuleStatus.UnsupportedReason.NON_LSPOSED

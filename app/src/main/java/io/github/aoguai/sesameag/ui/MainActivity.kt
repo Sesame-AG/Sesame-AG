@@ -788,7 +788,6 @@ class MainActivity : ComponentActivity() {
     ): PermissionStatus {
         if (!targetInstalled) return PermissionStatus.UNAVAILABLE
         val frameworkStatus = LsposedServiceManager.connectedFrameworkStatus() ?: return PermissionStatus.UNAVAILABLE
-        if (frameworkStatus.apiVersion < 101) return PermissionStatus.UNSUPPORTED
         if (!frameworkStatus.isSupportedLsposed) return PermissionStatus.UNSUPPORTED
         if (LsposedServiceManager.hasTargetScope(General.PACKAGE_NAME)) {
             markPermissionGranted(PermissionRequirement.LSPOSED_TARGET_SCOPE)

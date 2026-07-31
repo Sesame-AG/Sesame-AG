@@ -10,7 +10,7 @@
 
 为避免滥用，确保模块以学习研究为主的定位，目前仅对以下环境组合提供支持维护：
 
-- `LSPosed API 101+`
+- `LSPosed（libxposed API 102+；模块框架 min/target API 均为 102）`
 - `已 Root`
 - `Android 16+`
 
@@ -29,11 +29,11 @@
 
 - CI 环境：`ubuntu-latest`。
 - JDK：Oracle JDK `17.0.1` x64
-- Android SDK：`platform-tools`、`platforms;android-36`、`build-tools;36.0.0`。
-- Gradle： `9.4.0-milestone-3`。
-- Android Gradle Plugin：`9.0.1`。
+- Android SDK：`platform-tools`、`platforms;android-37`、`build-tools;37.0.0`。
+- Gradle： `9.5.1`。
+- Android Gradle Plugin：`9.2.1`。
 - Kotlin：`2.2.10`。
-- 编译配置：`compileSdk = 36`，`targetSdk = 36`，`minSdk = 29`，Java/Kotlin 目标版本均为 17。
+- 编译配置：`compileSdk = 37`，`targetSdk = 36`，`minSdk = 29`，Java/Kotlin 目标版本均为 17。
 
 Windows 本地 debug 构建命令：
 

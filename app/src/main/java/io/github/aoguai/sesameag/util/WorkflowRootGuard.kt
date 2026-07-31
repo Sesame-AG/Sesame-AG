@@ -8,7 +8,7 @@ import kotlinx.coroutines.sync.withLock
 /**
  * 统一工作流执行权限门禁。
  *
- * 兼容旧 API 命名：`hasRoot/hasGrantedRoot` 现在表示“当前进程已被 Hook 注入或实时 Root 可用”。
+ * `hasRoot/hasGrantedRoot` 表示“当前进程已由受支持的 libxposed 运行时注入或实时 Root 可用”。
  * 配置文件可以存在，但未通过此门禁时不允许进入运行态。
  */
 object WorkflowRootGuard {
@@ -26,22 +26,10 @@ object WorkflowRootGuard {
     @Volatile
     private var lastLoggedState: Boolean? = null
 
-    fun hasGrantedRoot(): Boolean {
-        if (resolveBlockedHookFramework() != null) {
-            return false
-        }
-        return resolveHookAccessSource() != null || lastGranted
-    }
+    fun hasGrantedRoot(): Boolean = resolveHookAccessSource() != null || lastGranted
 
     suspend fun hasRoot(forceRefresh: Boolean = false, reason: String? = null): Boolean {
         val now = System.currentTimeMillis()
-        resolveBlockedHookFramework()?.let { blockedFramework ->
-            lastCheckAtMs = now
-            lastGranted = false
-            logState(false, reason)
-            Log.record(TAG, "⛔ 当前进程识别为 ${blockedFramework.displayName} 内置打包/补丁注入，拒绝启动工作流")
-            return false
-        }
         resolveHookAccessSource()?.let { hookSource ->
             lastCheckAtMs = now
             lastGranted = true
@@ -56,13 +44,6 @@ object WorkflowRootGuard {
 
         return checkMutex.withLock {
             val lockedNow = System.currentTimeMillis()
-            resolveBlockedHookFramework()?.let { blockedFramework ->
-                lastCheckAtMs = lockedNow
-                lastGranted = false
-                logState(false, reason)
-                Log.record(TAG, "⛔ 当前进程识别为 ${blockedFramework.displayName} 内置打包/补丁注入，拒绝启动工作流")
-                return@withLock false
-            }
             resolveHookAccessSource()?.let { hookSource ->
                 lastCheckAtMs = lockedNow
                 lastGranted = true
@@ -94,32 +75,22 @@ object WorkflowRootGuard {
     }
 
     private suspend fun resolveRootAvailability(nowMs: Long): Boolean {
-        val classLoader = ApplicationHook.classLoader
-        if (classLoader != null) {
+        if (ApplicationHook.classLoader != null) {
             val frameworkInfo = try {
-                ApplicationHook.resolveCurrentFrameworkInfo(classLoader)
+                ApplicationHook.resolveCurrentFrameworkInfo()
             } catch (t: Throwable) {
                 Log.printStackTrace(TAG, "当前进程框架识别失败", t)
                 null
             }
             if (frameworkInfo != null) {
                 Log.record(TAG, "🧩 当前进程框架识别: ${frameworkInfo.displayName}")
-                when (frameworkInfo.category) {
-                    ModuleStatus.FrameworkCategory.LSPOSED,
-                    ModuleStatus.FrameworkCategory.LEGACY_XPOSED -> {
-                        Log.record(TAG, "✅ 检测到当前进程由 ${frameworkInfo.displayName} 注入，允许启动工作流")
-                        return true
-                    }
-
-                    ModuleStatus.FrameworkCategory.PATCH_EMBEDDED -> {
-                        Log.record(TAG, "⛔ 检测到 ${frameworkInfo.displayName} 内置打包/补丁注入，拒绝启动工作流")
-                        return false
-                    }
-
-                    ModuleStatus.FrameworkCategory.UNKNOWN -> {
-                        // Unknown 场景不直接放行，继续走 Root fallback。
-                    }
+                if (ApplicationHook.hasSupportedLibXposedRuntime() &&
+                    frameworkInfo.category == ModuleStatus.FrameworkCategory.LSPOSED
+                ) {
+                    Log.record(TAG, "✅ 检测到当前进程由 ${frameworkInfo.displayName} 注入，允许启动工作流")
+                    return true
                 }
+                Log.record(TAG, "⚠️ 当前进程框架不在 libxposed API 102 支持范围内，继续进行实时 Root 探测")
             }
         } else {
             Log.record(TAG, "⚠️ 当前进程 classLoader 尚未就绪，继续进行实时 Root 探测")
@@ -136,28 +107,20 @@ object WorkflowRootGuard {
     }
 
     private fun resolveHookAccessSource(): String? {
-        val classLoader = ApplicationHook.classLoader ?: return null
+        ApplicationHook.classLoader ?: return null
         val frameworkInfo = try {
-            ApplicationHook.resolveCurrentFrameworkInfo(classLoader)
+            ApplicationHook.resolveCurrentFrameworkInfo()
         } catch (_: Throwable) {
             return null
         }
-        return frameworkInfo.displayName.takeIf { isAllowedHookFramework(frameworkInfo.category) }
-    }
-
-    private fun resolveBlockedHookFramework(): ModuleStatus.FrameworkInfo? {
-        val classLoader = ApplicationHook.classLoader ?: return null
-        val frameworkInfo = try {
-            ApplicationHook.resolveCurrentFrameworkInfo(classLoader)
-        } catch (_: Throwable) {
-            return null
+        return frameworkInfo.displayName.takeIf {
+            ApplicationHook.hasSupportedLibXposedRuntime() &&
+                isAllowedHookFramework(frameworkInfo.category)
         }
-        return frameworkInfo.takeIf { it.category == ModuleStatus.FrameworkCategory.PATCH_EMBEDDED }
     }
 
     private fun isAllowedHookFramework(category: ModuleStatus.FrameworkCategory): Boolean {
-        return category == ModuleStatus.FrameworkCategory.LSPOSED ||
-            category == ModuleStatus.FrameworkCategory.LEGACY_XPOSED
+        return category == ModuleStatus.FrameworkCategory.LSPOSED
     }
 
     private fun logState(granted: Boolean, reason: String?) {

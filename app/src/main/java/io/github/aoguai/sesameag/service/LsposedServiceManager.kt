@@ -36,14 +36,13 @@ object LsposedServiceManager {
 
     fun connectedFrameworkStatus(): ConnectedFrameworkStatus? {
         val activeService = service ?: return null
-        val frameworkName = runCatching { activeService.frameworkName }.getOrDefault("Xposed")
+        val frameworkName = runCatching { activeService.frameworkName }.getOrDefault("Unknown")
         val frameworkVersion = runCatching { activeService.frameworkVersion }.getOrDefault("")
         val apiVersion = runCatching { activeService.apiVersion }.getOrDefault(0)
         return ConnectedFrameworkStatus(
             frameworkName = frameworkName,
             frameworkVersion = frameworkVersion,
             apiVersion = apiVersion,
-            category = ModuleStatus.classifyFrameworkName(frameworkName)
         )
     }
 
@@ -64,7 +63,7 @@ object LsposedServiceManager {
 
         val listener = object : XposedServiceHelper.OnServiceListener {
             override fun onServiceBind(boundService: XposedService) {
-                val frameworkName = runCatching { boundService.frameworkName }.getOrDefault("Xposed")
+                val frameworkName = runCatching { boundService.frameworkName }.getOrDefault("Unknown")
                 val frameworkVersion = runCatching { boundService.frameworkVersion }.getOrDefault("")
                 if (isModuleActivated) {
                     Log.record(TAG, "Another Xposed service tried to connect: $frameworkName. Ignoring.")
@@ -131,8 +130,13 @@ object LsposedServiceManager {
             onFinished(ScopeRequestResult(false, message = "LSPosed service is not connected"))
             return false
         }
-        if (frameworkStatus.apiVersion < 101) {
-            onFinished(ScopeRequestResult(false, message = "Unsupported libxposed API: ${frameworkStatus.apiVersion}"))
+        if (!frameworkStatus.hasRequiredApi) {
+            onFinished(
+                ScopeRequestResult(
+                    false,
+                    message = "Unsupported libxposed API: ${frameworkStatus.apiVersion}; requires ${ModuleStatus.MIN_SUPPORTED_LIBXPOSED_API}+"
+                )
+            )
             return false
         }
         if (!frameworkStatus.isSupportedLsposed) {
@@ -203,8 +207,10 @@ data class ConnectedFrameworkStatus(
     val frameworkName: String,
     val frameworkVersion: String,
     val apiVersion: Int,
-    val category: ModuleStatus.FrameworkCategory
 ) {
+    val hasRequiredApi: Boolean
+        get() = apiVersion >= ModuleStatus.MIN_SUPPORTED_LIBXPOSED_API
+
     val isSupportedLsposed: Boolean
         get() = ModuleStatus.isSupportedLsposedFramework(frameworkName, apiVersion)
 }

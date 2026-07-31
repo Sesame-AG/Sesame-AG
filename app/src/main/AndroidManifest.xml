@@ -36,10 +36,11 @@
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
 
-        <!-- 主 Activity (隐藏的，不负责显示图标) -->
+        <!-- 主 Activity 由 launcher alias 或 LSPosed Manager 的设置页入口打开。 -->
         <activity
             android:name="io.github.aoguai.sesameag.ui.MainActivity"
             android:exported="true">
+            <!-- 仅用于 Manager 发现模块设置页；不参与旧 Xposed Hook 入口。 -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="de.robv.android.xposed.category.MODULE_SETTINGS" />

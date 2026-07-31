@@ -148,8 +148,9 @@ body:
   - type: input
     id: framework_version
     attributes:
-      label: Xposed 框架与版本
-      placeholder: LSPosed 1.9.3
+      label: LSPosed 版本与 libxposed API
+      description: 当前模块仅支持 libxposed API 102+ 的 LSPosed。
+      placeholder: LSPosed 1.9.3 / libxposed API 102
     validations:
       required: true
 

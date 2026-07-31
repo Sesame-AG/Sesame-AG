@@ -91,11 +91,15 @@ import java.util.Calendar
 import kotlin.concurrent.Volatile
 
 class ApplicationHook {
-    var xposedInterface: XposedInterface? = null
+    private var xposedInterface: XposedInterface? = null
         set(value) {
             field = value
             updateFrameworkRuntimeInfo(value)
         }
+
+    internal fun attachLibXposedRuntime(runtime: XposedInterface) {
+        xposedInterface = runtime
+    }
 
     private class TaskLock : AutoCloseable {
         private val acquired: Boolean
@@ -139,12 +143,13 @@ class ApplicationHook {
         val activeLoader = loader ?: return
         classLoader = activeLoader
         finalProcessName = processName
-        val frameworkInfo = resolveCurrentFrameworkInfo(activeLoader)
+        val frameworkInfo = resolveCurrentFrameworkInfo()
         val framework = frameworkInfo.displayName
-        if (frameworkInfo.category == ModuleStatus.FrameworkCategory.PATCH_EMBEDDED) {
+        val frameworkApiVersion = getFrameworkRuntimeInfo()?.apiVersion ?: 0
+        if (!ModuleStatus.isSupportedLsposedFramework(framework, frameworkApiVersion)) {
             remotePreferences = null
-            ModuleStatusReporter.updateNow(framework = framework, packageName = packageName, reason = "embedded_patch_blocked")
-            record(TAG, "⛔ 检测到 $framework 内置打包/补丁注入，停止安装 Hook")
+            ModuleStatusReporter.updateNow(framework = framework, packageName = packageName, reason = "unsupported_libxposed_runtime")
+            record(TAG, "⛔ 检测到不受支持的 $framework 运行时 (API $frameworkApiVersion)，停止安装 Hook")
             return
         }
 
@@ -1659,11 +1664,13 @@ class ApplicationHook {
 
         private fun getFrameworkRuntimeInfo(): FrameworkRuntimeInfo? = frameworkRuntimeInfo
 
-        internal fun resolveCurrentFrameworkName(loader: ClassLoader? = classLoader): String =
-            resolveCurrentFrameworkInfo(loader).displayName
+        internal fun resolveCurrentFrameworkInfo(): ModuleStatus.FrameworkInfo =
+            ModuleStatus.resolveFrameworkInfo(frameworkRuntimeInfo?.name)
 
-        internal fun resolveCurrentFrameworkInfo(loader: ClassLoader? = classLoader): ModuleStatus.FrameworkInfo =
-            ModuleStatus.resolveFrameworkInfo(frameworkRuntimeInfo?.name, loader)
+        internal fun hasSupportedLibXposedRuntime(): Boolean {
+            val runtimeInfo = frameworkRuntimeInfo ?: return false
+            return ModuleStatus.isSupportedLsposedFramework(runtimeInfo.name, runtimeInfo.apiVersion ?: 0)
+        }
 
         private fun updateFrameworkRuntimeInfo(xposedInterface: XposedInterface?) {
             frameworkInterface = xposedInterface

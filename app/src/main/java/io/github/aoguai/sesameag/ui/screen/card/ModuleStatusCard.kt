@@ -90,7 +90,7 @@ fun ModuleStatusCard(
                             Text(
                                 text = when (status.reason) {
                                     MainViewModel.ModuleStatus.UnsupportedReason.API_TOO_LOW ->
-                                        "请改用支持 libxposed API 101+ 的LSPosed。"
+                                        "请改用支持 libxposed API 102+ 的 LSPosed。"
                                     MainViewModel.ModuleStatus.UnsupportedReason.NON_LSPOSED ->
                                         "当前模块仅支持LSPosed；内置打包或补丁式分发将被拦截。"
                                 },
@@ -132,7 +132,7 @@ fun ModuleStatusCard(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "当前模块仅支持LSPosed 且要求 libxposed API 101+；若管理器或框架仍停留在 API 100，模块不会生效。",
+                        text = "当前模块仅支持 LSPosed，且要求 libxposed API 102+；模块元数据的最低与目标框架 API 均为 102。",
                         style = MaterialTheme.typography.bodySmall
                     )
                     Spacer(modifier = Modifier.height(4.dp))
@@ -142,7 +142,7 @@ fun ModuleStatusCard(
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "LSPatch、NPatch 等内置打包/补丁式分发不在支持维护范围内，运行时会被直接拦截。",
+                        text = "非 LSPosed 的框架或内置打包/补丁式分发不在支持维护范围内，运行时会停止安装 Hook。",
                         style = MaterialTheme.typography.titleSmall
                     )
                 }

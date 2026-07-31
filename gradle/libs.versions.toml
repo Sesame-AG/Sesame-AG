@@ -2,7 +2,7 @@
 activity-compose = "1.12.1"
 
 android = "4.1.1.4"
-android-plugin = "9.0.1"
+android-plugin = "9.2.1"
 cmdAndroid = "0.8.2"
 constraintlayout = "2.2.1"
 
@@ -25,8 +25,8 @@ lombok = "1.18.42"
 okhttp = "5.3.2"
 jackson = "2.20.1"
 jackson-annotations = "2.20"
-xposed-api = "101.0.1"
-xposed-service = "101.0.0"
+xposed-api = "102.0.0"
+xposed-service = "102.0.0"
 
 #noinspection GradleDependency
 jackson-compatible = "2.13.5"

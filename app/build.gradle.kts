@@ -14,7 +14,8 @@ var isCIBuild: Boolean = System.getenv("CI").toBoolean()
 
 android {
     namespace = "io.github.aoguai.sesameag"
-    compileSdk = 36
+    compileSdk = 37
+    buildToolsVersion = "37.0.0"
     packaging {
         jniLibs {
             useLegacyPackaging = true
@@ -143,8 +144,7 @@ kotlin {
 }
 
 composeCompiler {
-    // AGP 9.0 uses built-in Kotlin 2.2.10. Keep release builds away from
-    // Compose stack-trace/tooling metadata that triggers compose mapping generation.
+    // Keep release builds away from Compose stack-trace/tooling metadata that triggers mapping generation.
     generateFunctionKeyMetaClasses.set(false)
     includeSourceInformation.set(false)
     includeTraceMarkers.set(false)
@@ -211,7 +211,7 @@ dependencies {
     implementation(libs.webkit) // WebView 组件
 
     // 仅编译时依赖 - Xposed 相关
-    compileOnly(libs.libxposed.api) // Xposed API 101 https://github.com/libxposed/api
+    compileOnly(libs.libxposed.api) // Xposed API 102 https://github.com/libxposed/api
     implementation(libs.libxposed.service) // https://github.com/libxposed/service
 
     // 代码生成和工具库
