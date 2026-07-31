@@ -108,6 +108,8 @@ private val sesameAlchemyDefaultBlacklist =
 private val orchardDefaultBlacklist =
     setOf(
         // 芭芭农场
+        "ORCHARD_NORMAL_ZADAN10_3000", // finishTask 返回 400000040，不支持rpc调用
+        "ANTFARM_ORCHARD_NORMAL_GONGGEFANGWEN", // finishTask 返回 400000040，不支持rpc调用
         "ORCHARD_NORMAL_KUAISHOU_MAX", // 逛一逛快手
         "ORCHARD_NORMAL_DIAOYU1", // 钓鱼1次
         "ZHUFANG3IN1", // 添加农场小组件并访问
@@ -178,6 +180,8 @@ private val oceanDefaultBlacklist =
     setOf(
         // 神奇海洋
         "玩一玩生存33天",
+        "LHS_QDRW_HAIYANG", // finishTask 返回 400000040，不支持rpc调用
+        "YXZY_QDRW_HAIYANG", // finishTask 返回 400000040，不支持rpc调用
         "SYH_XCHY_shichang202607", // 2026-07-23 finishTask 返回 400000040，无稳定完成RPC闭环
         "SYH_XCMY_shichang202607", // 2026-07-23 aiFishFinishTask 返回 400000040，无稳定完成RPC闭环
         "SYH_XCMY_zhuanhua202607", // 2026-07-23 aiFishFinishTask 返回 400000040，无稳定完成RPC闭环
@@ -256,6 +260,8 @@ private val forestDefaultBlacklist =
         "YUSHU_202511", // 单种榆树，年年有榆
         "KTKZ_YS202511", // 一起组团种榆树
         "CNXDY_TASK_QUDONG", // 玩下蛋鸭击败20只怪：不支持rpc调用
+        "FOREST_NORMAL_DRAW_YYDWLXQ_ZH", // finishTaskopengreen 返回 400000040
+        "FOREST_ACTIVITY_DRAW_ZHXF_ZHWUFU", // finishTaskopengreen 返回 400000040
         "FOREST_NORMAL_DRAW_SHARE", // 森林抽抽乐分享任务
         "FOREST_ACTIVITY_DRAW_SHARE", // 森林抽抽乐活动分享任务
         "FOREST_ACTIVITY_DRAW_SGBHSD", // 森林抽抽乐游戏任务

@@ -1705,14 +1705,8 @@ class AntSports : ModelTask() {
             }
         }
 
-        override fun isBlacklisted(item: TaskFlowItem): Boolean {
-            item.raw?.let { releaseSupportedSportsPanelTaskBlacklist(it, item.title, item.status) }
-            return super<TaskFlowAdapter>.isBlacklisted(item)
-        }
-
         override fun shouldSkip(item: TaskFlowItem): Boolean {
             val taskDetail = item.raw ?: return false
-            releaseSupportedSportsPanelTaskBlacklist(taskDetail, item.title, item.status)
             val unsupportedReason = resolveSportsPanelUnsupportedReason(taskDetail, item.status) ?: return false
             val key = item.id.ifBlank { item.title }
             if (unsupportedLoggedKeys.add("${item.status}:$key:$unsupportedReason")) {
@@ -2193,28 +2187,6 @@ class AntSports : ModelTask() {
         return null
     }
 
-    private fun releaseSupportedSportsPanelTaskBlacklist(
-        taskDetail: JSONObject,
-        taskName: String,
-        status: String
-    ) {
-        if (status != "WAIT_COMPLETE" && status != "WAIT_RECEIVE") {
-            return
-        }
-        if (resolveSportsPanelUnsupportedReason(taskDetail, status) != null) {
-            return
-        }
-        val taskId = taskDetail.optString("taskId", "").trim()
-        if (taskId.isBlank()) {
-            return
-        }
-        val normalizedTaskName = taskName.ifBlank { taskDetail.optString("taskName", "").trim() }
-        if (normalizedTaskName.isNotBlank()) {
-            TaskBlacklist.removeFromBlacklist(SPORTS_TASK_BLACKLIST_MODULE, taskId, normalizedTaskName)
-        }
-        TaskBlacklist.removeFromBlacklist(SPORTS_TASK_BLACKLIST_MODULE, taskId)
-    }
-
     /**
      * @brief 领取单个任务奖励
      *
@@ -2302,7 +2274,6 @@ class AntSports : ModelTask() {
                 return TaskFlowActionResult.success()
             }
 
-            releaseSupportedSportsPanelTaskBlacklist(taskDetail, taskName, "WAIT_COMPLETE")
             val unsupportedReason = resolveSportsPanelUnsupportedReason(taskDetail, "WAIT_COMPLETE")
             if (unsupportedReason != null) {
                 blacklistClassifiedSportsTask(taskId, taskName, "UNSUPPORTED_NO_CLOSURE")
@@ -2994,16 +2965,6 @@ class AntSports : ModelTask() {
         }
     }
 
-    private fun releaseSupportedSportsHomeBubbleBlacklist(taskId: String, taskName: String) {
-        if (taskId.isBlank()) {
-            return
-        }
-        if (taskName.isNotBlank()) {
-            TaskBlacklist.removeFromBlacklist(SPORTS_TASK_BLACKLIST_MODULE, taskId, taskName)
-        }
-        TaskBlacklist.removeFromBlacklist(SPORTS_TASK_BLACKLIST_MODULE, taskId)
-    }
-
     private fun receiveSportsHomeRewardCandidates(
         scanResult: SportsHomeRewardScanResult,
         handledRecordIds: MutableSet<String>
@@ -3276,9 +3237,6 @@ class AntSports : ModelTask() {
 
                     val taskStatus = task.optString("taskStatus", "")
                     val closure = resolveSportsHomeBubbleClosure(bubble, task, taskStatus)
-                    if (closure == SportsHomeBubbleClosure.SUPPORTED && taskStatus == "WAIT_COMPLETE") {
-                        releaseSupportedSportsHomeBubbleBlacklist(taskId, taskName)
-                    }
                     val isBlacklisted =
                         TaskBlacklist.isTaskInBlacklist(SPORTS_TASK_BLACKLIST_MODULE, taskId) ||
                             TaskBlacklist.isTaskInBlacklist(SPORTS_TASK_BLACKLIST_MODULE, taskName)

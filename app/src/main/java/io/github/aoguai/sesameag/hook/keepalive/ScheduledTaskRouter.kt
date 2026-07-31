@@ -54,12 +54,20 @@ object ScheduledTaskRouter {
                 return true
             }
             val toleranceMs = schedule.toleranceMs.coerceAtLeast(0L)
+            val targetProcess = isTargetProcess(appContext)
             if (now - schedule.triggerAtMs > toleranceMs) {
+                if (targetProcess && schedule.kind == PersistentScheduleKind.MODULE_CHILD) {
+                    val payload = payloadOf(schedule)
+                    if (payload.optString("child_kind") == EnergyWaitingManager.PERSISTENT_CHILD_KIND) {
+                        payload.optString("task_id").trim().takeIf { it.isNotBlank() }?.let { taskId ->
+                            EnergyWaitingManager.consumeExpiredPersistentWaitingTask(taskId, source)
+                        }
+                    }
+                }
                 PersistentScheduleRegistry.markExpired(appContext, schedule.id, now)
                 Log.record(TAG, "持久任务[${schedule.name}]超过触发窗口，已过期 source=$source")
                 return true
             }
-            val targetProcess = isTargetProcess(appContext)
             // 只有目标进程拥有后续执行队列；模块进程只负责转发，避免目标广播读到 QUEUED 后被拒绝。
             if (targetProcess && !PersistentScheduleRegistry.markQueued(appContext, schedule.id, now)) {
                 Log.record(TAG, "持久任务排队状态已变化，跳过重复路由[${schedule.name}] source=$source")
@@ -272,6 +280,10 @@ object ScheduledTaskRouter {
                         RouteResult.HANDLED
                     }
 
+                    EnergyWaitingManager.PersistentTriggerResult.CONSUMED -> {
+                        RouteResult.CONSUMED
+                    }
+
                     EnergyWaitingManager.PersistentTriggerResult.DEFERRED -> {
                         RouteResult.DEFERRED
                     }
@@ -388,7 +400,8 @@ object ScheduledTaskRouter {
 
     private fun routeResult(result: EnergyWaitingManager.PersistentTriggerResult): RouteResult =
         when (result) {
-            EnergyWaitingManager.PersistentTriggerResult.HANDLED -> RouteResult.CONSUMED
+            EnergyWaitingManager.PersistentTriggerResult.HANDLED,
+            EnergyWaitingManager.PersistentTriggerResult.CONSUMED -> RouteResult.CONSUMED
             EnergyWaitingManager.PersistentTriggerResult.DEFERRED -> RouteResult.DEFERRED
             EnergyWaitingManager.PersistentTriggerResult.FAILED -> RouteResult.FAILED
         }

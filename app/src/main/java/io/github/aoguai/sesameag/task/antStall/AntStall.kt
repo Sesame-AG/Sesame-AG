@@ -1384,7 +1384,6 @@ class AntStall : ModelTask() {
                 ),
             )
         }
-        items.filter { it.type == STALL_ELEME_VISIT_TASK_TYPE }.forEach(::releaseStallTaskBlacklist)
         return items
     }
 
@@ -1715,13 +1714,11 @@ class AntStall : ModelTask() {
             } ?: return null
         return when {
             isStallTerminalStatus(refreshedItem.status) -> {
-                releaseStallTaskBlacklist(refreshedItem)
                 Log.stall("新村浏览任务⚠️[${item.title}] XLight未推进事件，但刷新后已处于终态")
                 TaskFlowActionResult.success()
             }
 
             isStallRewardReadyStatus(refreshedItem.status) -> {
-                releaseStallTaskBlacklist(refreshedItem)
                 Log.stall("新村浏览任务⚠️[${item.title}] XLight未推进事件，但刷新后奖励已可领取")
                 TaskFlowActionResult.success(refreshAfterAction = true)
             }
@@ -1729,16 +1726,6 @@ class AntStall : ModelTask() {
             else -> {
                 null
             }
-        }
-    }
-
-    private fun releaseStallTaskBlacklist(item: TaskFlowItem) {
-        if (item.id.isNotBlank()) {
-            TaskBlacklist.removeFromBlacklist(STALL_TASK_BLACKLIST_MODULE, item.id, item.title)
-            TaskBlacklist.removeFromBlacklist(STALL_TASK_BLACKLIST_MODULE, item.id)
-        }
-        if (item.title.isNotBlank()) {
-            TaskBlacklist.removeFromBlacklist(STALL_TASK_BLACKLIST_MODULE, item.title)
         }
     }
 

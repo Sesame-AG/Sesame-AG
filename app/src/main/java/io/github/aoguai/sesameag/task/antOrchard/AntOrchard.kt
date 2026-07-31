@@ -50,13 +50,6 @@ class AntOrchard : ModelTask() {
         private const val TAOBAO_LIMIT_BALLOON_TASK_ID = "TAOBAO_LIMIT_BALLOON"
         private const val TAOBAO_LIMIT_BALLOON_TITLE = "农场限时福利"
         private const val RECEIVE_SPREAD_MANURE_ACTIVITY_AWARD_ACTION = "RECEIVE_SPREAD_MANURE_ACTIVITY_AWARD"
-        private val STALE_ORCHARD_BLACKLIST_KEYS =
-            setOf(
-                "ORCHARD_NORMAL_ZADAN10_3000",
-                "ORCHARD_NCLY_GAME_IAA",
-                "ANTFARM_ORCHARD_NORMAL_GONGGEFANGWEN",
-                TAOBAO_LIMIT_BALLOON_TASK_ID,
-            )
         private val ORCHARD_BUSINESS_LIMIT_CODES =
             setOf(
                 "CAMP_TRIGGER_ERROR",
@@ -613,7 +606,6 @@ class AntOrchard : ModelTask() {
                         else -> null
                     }
 
-                releaseKnownStaleOrchardTaskBlacklist(task)
                 items.add(
                     TaskFlowItem(
                         id = groupId.ifBlank { taskId.ifBlank { title } },
@@ -1586,16 +1578,6 @@ class AntOrchard : ModelTask() {
 
     private fun resolveTaobaoVisitSource(task: JSONObject): String? = resolveTaskActionSource(task)
 
-    private fun releaseKnownStaleOrchardTaskBlacklist(task: JSONObject) {
-        val title = resolveOrchardTaskTitle(task)
-        linkedSetOf(task.optString("groupId").trim(), task.optString("taskId").trim())
-            .filter { it in STALE_ORCHARD_BLACKLIST_KEYS }
-            .forEach { key ->
-                TaskBlacklist.removeFromBlacklist(ORCHARD_TASK_BLACKLIST_MODULE, key, title)
-                TaskBlacklist.removeFromBlacklist(ORCHARD_TASK_BLACKLIST_MODULE, key)
-            }
-    }
-
     private fun isSupportedTaobaoVisitTask(task: JSONObject): Boolean =
         isTaobaoVisitTask(task) &&
             task.optString("groupId") == TAOBAO_VISIT_TASK_GROUP_ID &&
@@ -2305,12 +2287,6 @@ class AntOrchard : ModelTask() {
 
     internal fun syncTaobaoLimitBalloon() {
         try {
-            TaskBlacklist.removeFromBlacklist(
-                ORCHARD_TASK_BLACKLIST_MODULE,
-                TAOBAO_LIMIT_BALLOON_TASK_ID,
-                TAOBAO_LIMIT_BALLOON_TITLE,
-            )
-            TaskBlacklist.removeFromBlacklist(ORCHARD_TASK_BLACKLIST_MODULE, TAOBAO_LIMIT_BALLOON_TASK_ID)
             val lazyIndexResp =
                 JSONObject(
                     AntOrchardRpcCall.orchardLazyIndex(currentPlantScene.ifBlank { "main" }, ENTRY_SOURCE),

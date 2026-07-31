@@ -9157,13 +9157,24 @@ class AntForest : ModelTask(), EnergyCollectCallback {
      */
     @SuppressLint("SimpleDateFormat")
     private fun collectEnergyForWaiting(
-        userId: String,
+        task: EnergyWaitingManager.WaitingTask,
         userHomeObj: JSONObject,
-        fromTag: String?,
-        userName: String?
+        userName: String?,
     ): CollectResult {
         try {
-            Log.forest("蹲点收取开始：用户[${userName}] userId[${userId}] fromTag[${fromTag}]")
+            val userId = task.userId
+            val fromTag = task.fromTag
+            val targetBubbleId = task.bubbleId
+            Log.forest("蹲点收取开始：用户[${userName}] userId[${userId}] targetBubbleId[$targetBubbleId] fromTag[${fromTag}]")
+            if (EnergyWaitingManager.isBubbleInCooldown(userId, targetBubbleId)) {
+                return CollectResult(
+                    success = false,
+                    userName = userName,
+                    message = "目标能量球仍在冷却期",
+                    waitingOutcome = WaitingCollectOutcome.TARGET_UNAVAILABLE,
+                )
+            }
+
             // 获取服务器时间
             val serverTime = userHomeObj.optLong("now", System.currentTimeMillis())
             // 判断是否是自己的账号
@@ -9224,7 +9235,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 success = false,
                 userName = userName,
                 message = "无法查询用户能量信息",
-                waitingOutcome = WaitingCollectOutcome.HARD_FAIL
+                waitingOutcome = WaitingCollectOutcome.HOME_UNAVAILABLE,
             )
 
             // 提取可收取的能量球ID
@@ -9239,33 +9250,34 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 logSummary = false
             )
 
-            if (availableBubbles.isEmpty()) {
+            if (targetBubbleId !in availableBubbles) {
                 return CollectResult(
                     success = false,
                     userName = userName,
-                    message = "用户无可收取的能量球",
-                    waitingOutcome = WaitingCollectOutcome.HARD_FAIL
+                    message = "目标能量球当前不可收",
+                    waitingOutcome = WaitingCollectOutcome.TARGET_UNAVAILABLE,
                 )
             }
 
-            Log.forest("蹲点收取找到${availableBubbles.size}个可收取能量球: $availableBubbles")
+            val targetBubbleIds = mutableListOf(targetBubbleId)
+            Log.forest("蹲点收取确认目标能量球[$targetBubbleId]可收；同页其他${availableBubbles.size - 1}个气泡不随本任务提交")
 
             // 记录收取前的总能量
             val beforeTotal = totalCollected
 
-            // 🚀 启用快速收取通道：跳过道具检查，加速蹲点收取
+            // 蹲点任务只允许提交自身目标，不能携带同主页的其他气泡。
             val collectVivaResult = collectVivaEnergy(
                 userId,
                 queryResult,
-                availableBubbles,
+                targetBubbleIds,
                 fromTag,
-                skipPropCheck = true
+                skipPropCheck = true,
             )
             val failedBubbleIds = collectVivaResult.failedBubbleIds
 
             // 计算收取的能量数量
             val collectedEnergy = totalCollected - beforeTotal
-            val requestedBubbleIds = availableBubbles.toSet()
+            val requestedBubbleIds = targetBubbleIds.toSet()
             val allRequestedFailed = failedBubbleIds.isNotEmpty() && failedBubbleIds.containsAll(requestedBubbleIds)
 
             return if (collectedEnergy > 0) {
@@ -9274,7 +9286,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     userName = userName,
                     energyCount = collectedEnergy,
                     totalCollected = totalCollected,
-                    message = "收取成功，共收取${availableBubbles.size}个能量球，${collectedEnergy}g能量",
+                    message = "收取目标能量球[$targetBubbleId]成功，${collectedEnergy}g能量",
                     failedBubbleIds = failedBubbleIds,
                     waitingOutcome = WaitingCollectOutcome.SUCCESS
                 )
@@ -9515,7 +9527,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     val isSelf = task.userId == UserMap.currentUid
                     Log.forest("蹲点收取：用户[${realUserName}] userId=${task.userId} currentUid=${UserMap.currentUid} isSelf=${isSelf}")
                     // 直接执行能量收取，让原有的collectEnergy方法处理保护罩和炸弹检查
-                    val result = collectEnergyForWaiting(task.userId, friendHomeObj, task.fromTag, realUserName)
+                    val result = collectEnergyForWaiting(task, friendHomeObj, realUserName)
                     if (result.success && result.energyCount > 0) {
                         runCatching {
                             updateSelfHomePage(collectRobMultiplierEnergy = true)
@@ -9544,7 +9556,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                         success = false,
                         userName = task.userName,
                         message = "无法获取用户主页信息",
-                        waitingOutcome = WaitingCollectOutcome.HARD_FAIL
+                        waitingOutcome = WaitingCollectOutcome.HOME_UNAVAILABLE
                     )
                 }
             }

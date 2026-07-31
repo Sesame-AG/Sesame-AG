@@ -72,6 +72,8 @@ interface EnergyCollectCallback {
 enum class WaitingCollectOutcome {
     SUCCESS,
     SOFT_EXPIRED,
+    TARGET_UNAVAILABLE,
+    HOME_UNAVAILABLE,
     HARD_FAIL,
 }
 
@@ -100,57 +102,19 @@ class SmartRetryStrategy {
     /**
      * 获取重试延迟时间
      */
-    fun getRetryDelay(
-        retryCount: Int,
-        lastError: String?,
-    ): Long {
+    fun getRetryDelay(retryCount: Int): Long {
         val baseDelay = retryDelays.getOrElse(retryCount) { 180000L }
-
-        // 根据错误类型调整延迟
-        val multiplier =
-            when {
-                lastError?.contains("网络") == true -> 2.0
-
-                // 网络错误：延长等待
-                lastError?.contains("频繁") == true -> 3.0
-
-                // 频繁请求：大幅延长
-                lastError?.contains("保护") == true -> 1.0
-
-                // 保护状态：正常等待
-                else -> 1.0
-            }
-
-        // 添加随机抖动，避免同时重试
-        val jitter = Random.nextLong(-2000L, 2000L)
-        return (baseDelay * multiplier).toLong() + jitter
+        // 添加随机抖动，避免同时重试；重试规则不再解析异常或日志文案。
+        return baseDelay + Random.nextLong(-2000L, 2000L)
     }
 
     /**
-     * 判断是否应该重试
+     * 保留未知临时异常的有限重试，不依赖字符串猜测错误类别。
      */
     fun shouldRetry(
         retryCount: Int,
-        error: String?,
         timeToTarget: Long,
-    ): Boolean {
-        if (retryCount >= 3) return false // 最多重试3次
-        if (timeToTarget < 10000L) return false // 剩余时间不足10秒不重试
-
-        // 根据错误类型决定是否重试
-        return when {
-            error?.contains("网络") == true -> true
-
-            // 网络错误可重试
-            error?.contains("临时") == true -> true
-
-            // 临时错误可重试
-            error?.contains("保护") == true -> false
-
-            // 保护状态不重试，等保护结束
-            else -> retryCount < 2 // 其他错误最多重试2次
-        }
-    }
+    ): Boolean = retryCount < 2 && timeToTarget >= 10000L
 }
 
 /**
@@ -168,13 +132,15 @@ class SmartRetryStrategy {
 object EnergyWaitingManager {
     private const val TAG = "EnergyWaitingManager"
     private const val FOREST_WAITING_DEDUPE_PREFIX = "forest_waiting_"
-    private const val FOREST_WAITING_TOLERANCE_MS = 60 * 60 * 1000L
+    internal const val WAITING_EXECUTION_WINDOW_MS = 2 * 60 * 1000L
+    private const val FOREST_WAITING_TOLERANCE_MS = WAITING_EXECUTION_WINDOW_MS
     private const val MAX_PERSISTENT_WAITING_ALARMS = 16
     const val WAITING_PAUSED_COLLECT_DISABLED = "收集能量开关关闭，暂停蹲点收取"
     const val PERSISTENT_CHILD_KIND = "forest_energy_waiting"
 
     enum class PersistentTriggerResult {
         HANDLED,
+        CONSUMED,
         DEFERRED,
         FAILED,
     }
@@ -262,17 +228,24 @@ object EnergyWaitingManager {
     private const val LONG_WAIT_SCHEDULE_THRESHOLD_MS = 2 * 60 * 1000L
 
     // 精确时机计算 - 能量成熟或保护结束后立即收取
-    private fun calculatePreciseCollectTime(task: WaitingTask): Long {
+    internal fun calculatePreciseCollectTime(task: WaitingTask): Long {
         // 自己的账号：不考虑保护罩，直接在能量成熟时收取
         if (task.isSelf()) {
             return task.produceTime
         }
 
         // 好友账号：考虑保护罩
-        val protectionEndTime = task.getProtectionEndTime()
-
-        return maxOf(task.produceTime, protectionEndTime)
+        return maxOf(task.produceTime, task.getProtectionEndTime())
     }
+
+    /**
+     * 蹲点只能在目标时点后的短窗口内执行。所有恢复、触发和执行入口共用此语义，
+     * 避免进程恢复后把已失效的历史任务重新发往服务端。
+     */
+    internal fun isWithinWaitingExecutionWindow(
+        task: WaitingTask,
+        now: Long = System.currentTimeMillis(),
+    ): Boolean = now <= calculatePreciseCollectTime(task) + WAITING_EXECUTION_WINDOW_MS
 
     // 获取清理任务间隔 - 固定间隔清理过期任务
     private fun getCleanupInterval(): Long {
@@ -500,6 +473,66 @@ object EnergyWaitingManager {
         return removed
     }
 
+    /**
+     * 在同一批次内收敛迟到任务，避免逐项保存和重新注册计划。
+     */
+    private fun discardExpiredWaitingTasks(
+        tasks: Collection<WaitingTask>,
+        reason: String,
+    ) {
+        val removedTasks = tasks.distinctBy { it.taskId }.filter { task -> waitingTasks.remove(task.taskId, task) }
+        if (removedTasks.isEmpty()) {
+            return
+        }
+        removedTasks.forEach { task ->
+            waitingJobs.remove(task.taskId)?.cancel()
+            cancelPersistentWaitingSchedule(task.taskId)
+        }
+        syncPersistentWaitingSchedules()
+        EnergyWaitingPersistence.saveTasks(waitingTasks)
+        Log.forest("🧹 丢弃${removedTasks.size}个超过两分钟执行窗口的森林蹲点任务，原因：$reason")
+    }
+
+    private fun discardExpiredWaitingTask(
+        task: WaitingTask,
+        reason: String,
+    ) = discardExpiredWaitingTasks(listOf(task), reason)
+
+    private fun consumePersistentWaitingTask(
+        taskId: String,
+        reason: String,
+    ) {
+        waitingJobs.remove(taskId)?.cancel()
+        waitingTasks.remove(taskId)
+        cancelPersistentWaitingSchedule(taskId)
+        syncPersistentWaitingSchedules()
+        EnergyWaitingPersistence.saveTasks(waitingTasks)
+        Log.forest("🧹 消费森林蹲点持久任务[$taskId]，原因：$reason")
+    }
+
+    /**
+     * 系统路由已判定计划超过容差时调用。它只收敛本地状态，绝不查询主页或发送收取请求。
+     */
+    fun consumeExpiredPersistentWaitingTask(
+        taskId: String,
+        source: String,
+    ) {
+        if (taskId.isBlank()) {
+            return
+        }
+        val task = waitingTasks[taskId]
+        if (task != null && isWithinWaitingExecutionWindow(task)) {
+            // 同一 bubble 已被新任务重排时，不能让旧闹钟清除仍有效的新任务。
+            Log.forest("森林蹲点持久任务[$taskId]的旧闹钟已过期，保留当前窗口内任务 source=$source")
+            return
+        }
+        if (task != null) {
+            discardExpiredWaitingTask(task, "系统计划超过容差 source=$source")
+        } else {
+            consumePersistentWaitingTask(taskId, "系统计划超过容差且内存任务不存在 source=$source")
+        }
+    }
+
     fun triggerPersistentWaitingTask(
         taskId: String,
         payloadJson: String,
@@ -508,9 +541,22 @@ object EnergyWaitingManager {
         if (taskId.isBlank()) return PersistentTriggerResult.FAILED
         val task = waitingTasks[taskId]
         if (task == null) {
-            Log.forest("森林蹲点持久任务到期但内存任务不存在[$taskId]，尝试恢复")
-            restorePersistedTaskById(taskId, payloadJson, source)
-            return PersistentTriggerResult.DEFERRED
+            val persistedTask = restoreTaskFromPayload(payloadJson)
+            if (persistedTask == null) {
+                consumePersistentWaitingTask(taskId, "payload 无效或会话不匹配 source=$source")
+                return PersistentTriggerResult.CONSUMED
+            }
+            if (!isWithinWaitingExecutionWindow(persistedTask)) {
+                consumePersistentWaitingTask(taskId, "恢复时已超过两分钟执行窗口 source=$source")
+                return PersistentTriggerResult.CONSUMED
+            }
+            Log.forest("森林蹲点持久任务[$taskId]由恢复队列接管 source=$source")
+            restorePersistedTaskById(persistedTask, source)
+            return PersistentTriggerResult.CONSUMED
+        }
+        if (!isWithinWaitingExecutionWindow(task)) {
+            discardExpiredWaitingTask(task, "持久任务触发已超过两分钟执行窗口 source=$source")
+            return PersistentTriggerResult.CONSUMED
         }
         if (!isReadyForWaitingExecution()) {
             Log.forest("森林蹲点持久任务[$taskId]等待回调/账号就绪 source=$source")
@@ -518,7 +564,8 @@ object EnergyWaitingManager {
         }
         if (!isWaitingCollectionAllowed()) {
             logWaitingCollectionPaused("persistent:$source", task)
-            return PersistentTriggerResult.DEFERRED
+            // 收集开关关闭不是路由初始化问题；保留内存任务，但不反复重排同一已到期计划。
+            return PersistentTriggerResult.CONSUMED
         }
         startPreciseWaitingCoroutine(task)
         Log.forest("森林蹲点持久任务触发[$taskId] source=$source")
@@ -526,20 +573,14 @@ object EnergyWaitingManager {
     }
 
     private fun restorePersistedTaskById(
-        taskId: String,
-        payloadJson: String,
+        task: WaitingTask,
         source: String,
     ) {
         managerScope.launch {
             taskMutex.withLock {
-                if (waitingTasks.containsKey(taskId)) return@withLock
-                val task =
-                    EnergyWaitingPersistence.loadTasks().firstOrNull { it.taskId == taskId }
-                        ?: restoreTaskFromPayload(payloadJson)
-                        ?: restoreTaskFromPersistentSchedule(taskId)
-                if (task == null) {
-                    cancelPersistentWaitingSchedule(taskId)
-                    Log.forest("森林蹲点持久任务[$taskId]未找到持久化记录，已取消系统闹钟")
+                if (waitingTasks.containsKey(task.taskId)) return@withLock
+                if (!isWithinWaitingExecutionWindow(task)) {
+                    consumePersistentWaitingTask(task.taskId, "恢复队列执行时已超过两分钟窗口 source=$source")
                     return@withLock
                 }
                 waitingTasks[task.taskId] = task
@@ -547,31 +588,18 @@ object EnergyWaitingManager {
                 if (isReadyForWaitingExecution()) {
                     if (isWaitingCollectionAllowed()) {
                         startPreciseWaitingCoroutine(task)
-                        Log.forest("森林蹲点持久任务[$taskId]已从持久化恢复并触发 source=$source")
+                        Log.forest("森林蹲点持久任务[${task.taskId}]已从持久化恢复并触发 source=$source")
                     } else {
                         logWaitingCollectionPaused("restore:$source", task)
                     }
                 } else {
-                    Log.forest("森林蹲点持久任务[$taskId]已恢复，等待回调/账号就绪 source=$source")
+                    Log.forest("森林蹲点持久任务[${task.taskId}]已恢复，等待回调/账号就绪 source=$source")
                 }
             }
         }
     }
 
     private fun restoreTaskFromPayload(payloadJson: String): WaitingTask? = parseWaitingTaskPayload(payloadJson)
-
-    private fun restoreTaskFromPersistentSchedule(taskId: String): WaitingTask? {
-        return try {
-            val schedule =
-                PersistentScheduleRegistry.list().firstOrNull {
-                    it.dedupeKey == forestWaitingDedupeKey(taskId)
-                } ?: return null
-            parseWaitingTaskPayload(schedule.payloadJson)
-        } catch (t: Throwable) {
-            Log.printStackTrace(TAG, "从持久调度恢复森林蹲点任务失败[$taskId]", t)
-            null
-        }
-    }
 
     private fun parseWaitingTaskPayload(payloadJson: String): WaitingTask? {
         return try {
@@ -777,6 +805,10 @@ object EnergyWaitingManager {
             Log.forest("森林蹲点任务[${task.taskId}]会话无效，跳过启动[user=$ownerUserId][session=$sessionEpoch]")
             return
         }
+        if (!isWithinWaitingExecutionWindow(task)) {
+            discardExpiredWaitingTask(task, "启动前已超过两分钟执行窗口")
+            return
+        }
         if (!isWaitingCollectionAllowed()) {
             logWaitingCollectionPaused("start", task)
             return
@@ -980,13 +1012,13 @@ object EnergyWaitingManager {
                     val currentTime = System.currentTimeMillis()
                     val timeToTarget = calculatePreciseCollectTime(task) - currentTime
 
-                    if (smartRetryStrategy.shouldRetry(task.retryCount, e.message, timeToTarget)) {
+                    if (smartRetryStrategy.shouldRetry(task.retryCount, timeToTarget)) {
                         val retryTask = task.withRetry()
                         waitingTasks[task.taskId] = retryTask
                         syncPersistentWaitingSchedules()
 
                         // 重试延迟
-                        val retryDelay = smartRetryStrategy.getRetryDelay(task.retryCount, e.message)
+                        val retryDelay = smartRetryStrategy.getRetryDelay(task.retryCount)
                         Log.forest("精确蹲点任务[${task.taskId}]将在${retryDelay / 1000}秒后重试")
                         scheduleWaitingRetry(retryTask, retryDelay)
                     } else {
@@ -1067,6 +1099,14 @@ object EnergyWaitingManager {
                 // 检查任务是否仍然有效
                 if (!waitingTasks.containsKey(task.taskId)) {
                     Log.forest("精确蹲点任务[${task.taskId}]已被移除，跳过执行")
+                    return@withLock
+                }
+                if (!isWithinWaitingExecutionWindow(task)) {
+                    discardExpiredWaitingTask(task, "执行前已超过两分钟执行窗口")
+                    return@withLock
+                }
+                if (isBubbleInCooldown(task.userId, task.bubbleId)) {
+                    discardExpiredWaitingTask(task, "目标气泡仍在冷却墓碑内")
                     return@withLock
                 }
                 if (!isWaitingCollectionAllowed()) {
@@ -1170,6 +1210,11 @@ object EnergyWaitingManager {
                     }
                 }
 
+                if (!isWithinWaitingExecutionWindow(task)) {
+                    discardExpiredWaitingTask(task, "收取前最终检查超过两分钟执行窗口")
+                    return@withLock
+                }
+
                 // 执行收取
                 val startTime = System.currentTimeMillis()
                 val result = collectEnergyFromWaiting(task)
@@ -1216,8 +1261,21 @@ object EnergyWaitingManager {
                         Log.forest("❌ 蹲点收取[${task.getUserTypeTag()}${task.userName}]失败：${result.message}")
                     }
 
-                    // 根据失败原因决定是否重试
+                    // 按结构化结果处理，不能依赖日志文案决定是否继续请求。
                     when {
+                        result.waitingOutcome == WaitingCollectOutcome.TARGET_UNAVAILABLE -> {
+                            markBubbleNoProgressCooldown(task.userId, task.bubbleId, "目标气泡已不可收")
+                            Log.forest("  → 目标气泡已不可收，移除当前蹲点")
+                            removeWaitingTask(task.taskId)
+                            EnergyWaitingPersistence.saveTasks(waitingTasks)
+                        }
+
+                        result.waitingOutcome == WaitingCollectOutcome.HOME_UNAVAILABLE -> {
+                            Log.forest("  → 目标主页不可用，移除当前蹲点")
+                            removeWaitingTask(task.taskId)
+                            EnergyWaitingPersistence.saveTasks(waitingTasks)
+                        }
+
                         result.allRequestedBubblesFailed &&
                             result.waitingOutcome == WaitingCollectOutcome.SOFT_EXPIRED -> {
                             markBubbleNoProgressCooldowns(
@@ -1250,43 +1308,17 @@ object EnergyWaitingManager {
                         result.hasShield || result.hasBomb -> {
                             Log.forest("  → 检测到保护罩/炸弹卡")
                             removeWaitingTask(task.taskId)
-                            EnergyWaitingPersistence.saveTasks(waitingTasks) // 保存更新
-                        }
-
-                        result.message.contains("用户无可收取的能量球") -> {
-                            markBubbleNoProgressCooldown(task.userId, task.bubbleId, "主页复核仍无可收取能量球")
-                            Log.forest("  → 能量球已不存在，移除任务")
-                            removeWaitingTask(task.taskId)
-                            EnergyWaitingPersistence.saveTasks(waitingTasks) // 保存更新
-                        }
-
-                        result.message.contains("无法查询用户能量信息") -> {
-                            Log.forest("  → 用户能量信息查询失败，移除任务")
-                            removeWaitingTask(task.taskId)
-                            EnergyWaitingPersistence.saveTasks(waitingTasks) // 保存更新
+                            EnergyWaitingPersistence.saveTasks(waitingTasks)
                         }
 
                         else -> {
-                            // 可重试的错误，主动触发重试
+                            // 保留真实未知异常的有限重试，但不再解析日志文案调整行为。
                             if (task.retryCount < task.maxRetries) {
                                 val retryTask = task.withRetry()
                                 waitingTasks[task.taskId] = retryTask
                                 syncPersistentWaitingSchedules()
-
-                                // 根据错误类型决定重试延迟
-                                val retryDelay =
-                                    when {
-                                        result.message.contains("网络") -> 5000L
-
-                                        // 5秒
-                                        result.message.contains("频繁") -> 10000L
-
-                                        // 10秒
-                                        else -> 5000L // 默认5秒
-                                    }
-
+                                val retryDelay = 5000L
                                 Log.forest("  → ${retryDelay / 1000}秒后重试(${retryTask.retryCount}/${task.maxRetries})")
-
                                 scheduleWaitingRetry(retryTask, retryDelay)
                             } else {
                                 Log.forest("  → 已达最大重试次数")
@@ -1337,7 +1369,7 @@ object EnergyWaitingManager {
 
     // 类成员变量区域
     private var lastCleanTime: Long = 0 // 记录上次清理的时间
-    private const val CLEAN_COOLDOWN = 30 * 60 * 1000L // 冷却时间：30分钟 (如果你想要30秒，改成 30 * 1000L)
+    private const val CLEAN_COOLDOWN = BASE_CHECK_INTERVAL_MS // 30秒清理一次已超过执行窗口的本地状态
 
     /**
      * 清理过期任务
@@ -1361,84 +1393,32 @@ object EnergyWaitingManager {
             taskMutex.withLock {
                 val now = System.currentTimeMillis()
 
-                // 1. 找出已经成熟超过2分钟但未执行的任务（僵尸任务检测）
-                // 逻辑：保护期结束时间 或 产出时间 已经过去很久了，但任务还在列表中
-                val matureTasks =
-                    waitingTasks.filter { (_, task) ->
-                        val protectionEndTime = task.getProtectionEndTime()
-                        // 取保护结束时间和产出时间中较大的一个作为“应该收取的时间”
-                        val collectTime = maxOf(task.produceTime, protectionEndTime)
-                        now > collectTime + 2 * 60 * 1000L // 晚了2分钟以上
-                    }
-
-                // 重新触发已成熟任务（尝试唤醒僵尸任务）
-                if (matureTasks.isNotEmpty()) {
-                    val taskNames =
-                        matureTasks.values
-                            .take(3)
-                            .joinToString(",") { "${it.userName}/球[${it.bubbleId}]/任务[${it.taskId}]" }
-                    val moreText = if (matureTasks.size > 3) "等${matureTasks.size}个" else ""
-                    if (isWaitingCollectionAllowed()) {
-                        Log.forest("🔄 重新触发蹲点：[${taskNames}$moreText]已成熟但未执行")
-                        matureTasks.forEach { (_, task) ->
-                            // 重新启动倒计时协程
-                            startPreciseWaitingCoroutine(task)
-                        }
-                    } else {
-                        Log.forest("森林蹲点暂停：[${taskNames}$moreText]已成熟但收集能量未开启，保留任务等待下次收能量链路")
-                    }
-                }
-
-                // 2. 找出真正过期的任务（成熟超过1小时）
-                // 逻辑：这种任务通常已经失效或无法收取，需要从内存中移除
                 val expiredTasks =
-                    waitingTasks.filter { (_, task) ->
-                        val collectTime = maxOf(task.produceTime, task.getProtectionEndTime())
-                        now > collectTime + 60 * 60 * 1000L // 超过应收取时间1小时
+                    waitingTasks.values.filter { task ->
+                        !isWithinWaitingExecutionWindow(task, now)
                     }
 
                 if (expiredTasks.isNotEmpty()) {
-                    val taskNames =
-                        expiredTasks.values
-                            .map { it.userName }
-                            .take(3)
-                            .joinToString(",")
+                    val taskNames = expiredTasks.take(3).joinToString(",") { it.userName }
                     val moreText = if (expiredTasks.size > 3) "等${expiredTasks.size}个" else ""
+                    Log.forest("🧹 清理超过两分钟执行窗口的蹲点：[${taskNames}$moreText]")
+                    discardExpiredWaitingTasks(expiredTasks, "周期清理")
+                } else if (enableRevalidation) {
+                    Log.forest("定期清理检查：无过期任务")
+                }
 
-                    Log.forest("🧹 清理过期蹲点：[${taskNames}$moreText]")
-
-                    // 执行移除
-                    expiredTasks.forEach { (taskId, _) ->
-                        removeWaitingTask(taskId)
-                    }
-
-                    // 持久化保存更改
-                    EnergyWaitingPersistence.saveTasks(waitingTasks)
-                    syncPersistentWaitingSchedules()
-                } else {
-                    syncPersistentWaitingSchedules()
-                    // 仅在手动调试或强制模式下打印此日志，避免刷屏
-                    if (enableRevalidation) {
-                        Log.forest("定期清理检查：无过期任务")
+                // 手动触发全面验证（仅在手动启用时执行）。过期任务已在远端查询前移除。
+                if (enableRevalidation && waitingTasks.isNotEmpty()) {
+                    if (isWaitingCollectionAllowed()) {
+                        Log.forest("🔍 手动全面验证：开始检查所有蹲点任务保护罩状态...")
+                        revalidateAllWaitingTasks()
+                    } else {
+                        Log.forest("森林蹲点复核暂停：收集能量未开启，跳过好友主页验证")
                     }
                 }
 
-                // 3. 手动触发全面验证（仅在手动启用时执行）
-                if (enableRevalidation) {
-                    if (waitingTasks.isNotEmpty()) {
-                        if (isWaitingCollectionAllowed()) {
-                            Log.forest("🔍 手动全面验证：开始检查所有蹲点任务保护罩状态...")
-                            revalidateAllWaitingTasks()
-                        } else {
-                            Log.forest("森林蹲点复核暂停：收集能量未开启，跳过好友主页验证")
-                        }
-                    }
-                }
-
-                // 日志摘要
                 if (waitingTasks.isNotEmpty()) {
-                    // 如果是定时任务且没有做任何操作，可以考虑降低日志级别或不打印
-                    if (matureTasks.isNotEmpty() || expiredTasks.isNotEmpty() || enableRevalidation) {
+                    if (expiredTasks.isNotEmpty() || enableRevalidation) {
                         Log.forest("清理维护完成，当前活跃蹲点${waitingTasks.size}个")
                     }
                 } else {
@@ -1493,10 +1473,14 @@ object EnergyWaitingManager {
         managerScope.launch {
             taskMutex.withLock {
                 val now = System.currentTimeMillis()
+                val expiredTasks = waitingTasks.values.filter { task -> !isWithinWaitingExecutionWindow(task, now) }
+                discardExpiredWaitingTasks(expiredTasks, "到期任务触发 source=$source")
                 waitingTasks.values
-                    .filter { calculatePreciseCollectTime(it) <= now }
+                    .filter { task ->
+                        calculatePreciseCollectTime(task) <= now && isWithinWaitingExecutionWindow(task, now)
+                    }
                     .forEach { task ->
-                        Log.forest("触发已到期森林蹲点任务[${task.taskId}] source=$source")
+                        Log.forest("触发窗口内的森林蹲点任务[${task.taskId}] source=$source")
                         startPreciseWaitingCoroutine(task)
                     }
             }
@@ -1737,6 +1721,8 @@ object EnergyWaitingManager {
                 val loadedTasks = EnergyWaitingPersistence.loadTasks()
 
                 if (loadedTasks.isEmpty()) {
+                    // loadTasks 已将迟到/失效记录从存储剔除；同步移除其残留系统计划。
+                    syncPersistentWaitingSchedules()
                     Log.forest("持久化存储中无任务需要恢复[user=$ownerUserId][session=$sessionEpoch][$reason]")
                     return@launch
                 }
@@ -1756,6 +1742,10 @@ object EnergyWaitingManager {
                         taskMutex.withLock {
                             try {
                                 if (!isRunSessionCurrent(ownerUserId, sessionEpoch)) {
+                                    return@withLock false
+                                }
+                                if (!isWithinWaitingExecutionWindow(task)) {
+                                    Log.forest("任务[${task.taskId}]恢复前已超过两分钟执行窗口，跳过")
                                     return@withLock false
                                 }
                                 if (isBubbleInCooldown(task.userId, task.bubbleId)) {
@@ -1788,10 +1778,10 @@ object EnergyWaitingManager {
 
                 if (restoredCount > 0) {
                     Log.forest("✅ 成功恢复${restoredCount}个蹲点任务，避免重新遍历好友")
-                    // 保存更新后的任务列表
-                    EnergyWaitingPersistence.saveTasks(waitingTasks)
-                    syncPersistentWaitingSchedules()
                 }
+                // 无论是否成功恢复都同步过滤后的结果，防止被远端复核拒绝的幽灵任务下次再出现。
+                EnergyWaitingPersistence.saveTasks(waitingTasks)
+                syncPersistentWaitingSchedules()
             } catch (e: Exception) {
                 Log.error(TAG, "恢复蹲点任务失败: ${e.message}")
                 Log.printStackTrace(TAG, e)

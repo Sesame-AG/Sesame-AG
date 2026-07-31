@@ -35,7 +35,6 @@ import io.github.aoguai.sesameag.task.exchange.ExchangeSafetyRules
 import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.ResChecker
-import io.github.aoguai.sesameag.util.TaskBlacklist
 import io.github.aoguai.sesameag.util.maps.IdMapManager
 import io.github.aoguai.sesameag.util.maps.MyBankWelfareBenefitMap
 import io.github.aoguai.sesameag.util.maps.UserMap
@@ -829,7 +828,6 @@ class MyBankWelfare : ModelTask() {
                     .ifBlank { taskDetail.optString("taskTitle").trim() }
                     .ifBlank { taskDetail.optString("title").trim() }
                     .ifBlank { taskId }
-                releaseTerminalTaskBlacklistIfNeeded(taskId, title, taskDetail.optString("taskProcessStatus"))
                 val current = when {
                     taskDetail.has("periodCurrentCompleteNum") -> taskDetail.optInt("periodCurrentCompleteNum")
                     taskDetail.has("taskCompleteTimes") -> taskDetail.optInt("taskCompleteTimes")
@@ -981,20 +979,6 @@ class MyBankWelfare : ModelTask() {
                 TaskFlowAction.SEND,
                 TaskFlowAction.COMPLETE -> sentTaskKeys.add(taskKey)
                 TaskFlowAction.RECEIVE -> Unit
-            }
-        }
-
-        private fun releaseTerminalTaskBlacklistIfNeeded(taskId: String, title: String, status: String) {
-            val normalizedStatus = status.trim().uppercase(Locale.ROOT)
-            if (normalizedStatus !in setOf("RECEIVE_SUCCESS", "HAS_RECEIVED", "RECEIVED", "DONE", "COMPLETED")) {
-                return
-            }
-            if (taskId.isNotBlank()) {
-                TaskBlacklist.removeFromBlacklist(moduleName, taskId, title)
-                TaskBlacklist.removeFromBlacklist(moduleName, taskId)
-            }
-            if (title.isNotBlank()) {
-                TaskBlacklist.removeFromBlacklist(moduleName, title)
             }
         }
 

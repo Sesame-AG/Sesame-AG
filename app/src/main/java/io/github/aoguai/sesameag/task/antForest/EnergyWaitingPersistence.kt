@@ -192,21 +192,25 @@ object EnergyWaitingPersistence {
                     return@forEach
                 }
 
-                // 检查2：能量是否已经过期超过1小时
-                if (currentTime > persistData.produceTime + 60 * 60 * 1000L) {
+                val task = persistData.toWaitingTask()
+                if (!EnergyWaitingManager.isWithinWaitingExecutionWindow(task, currentTime)) {
                     expiredCount++
-                    Log.forest("  跳过[${persistData.userName}]：能量已过期超过1小时")
+                    Log.forest("  跳过[${persistData.userName}]：已超过两分钟执行窗口")
                     return@forEach
                 }
 
                 // 任务有效，添加到列表
-                validTasks.add(persistData.toWaitingTask())
+                validTasks.add(task)
             }
 
             Log.forest(
                 "📥 从持久化存储恢复${validTasks.size}个有效任务（跳过${expiredCount}个过期，${tooOldCount}个过旧，${staleSessionCount}个过期会话）"
             )
             lastPersistedTaskCount.set(validTasks.size)
+            if (validTasks.size != persistDataList.size) {
+                // 过滤结果必须落盘，避免下一次会话再次恢复同一批幽灵任务。
+                saveTasks(validTasks.associateBy { it.taskId })
+            }
 
             validTasks
         } catch (e: Exception) {
@@ -287,6 +291,12 @@ object EnergyWaitingPersistence {
 
         tasks.forEach { task ->
             try {
+                if (!EnergyWaitingManager.isWithinWaitingExecutionWindow(task)) {
+                    Log.forest("  跳过[${task.getUserTypeTag()}${task.userName}]球[${task.bubbleId}]：已超过两分钟执行窗口")
+                    skippedCount++
+                    return@forEach
+                }
+
                 // 自己的账号：无论是否有保护罩都要恢复（到时间后直接收取）
                 if (task.isSelf()) {
                     val success = addTaskCallback(task)
