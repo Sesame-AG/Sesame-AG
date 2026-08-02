@@ -629,39 +629,27 @@ class AntOcean : ModelTask() {
 
     private fun isHelpFriendCleanTask(
         taskType: String,
-        taskTitle: String,
     ): Boolean {
         val normalizedTaskType = taskType.uppercase()
         return normalizedTaskType.contains("HELP_CLEAN") ||
             normalizedTaskType.contains("FRIENDRUBBISHCLEAN") ||
             normalizedTaskType.contains("FRIEND_RUBBISH_CLEAN") ||
-            normalizedTaskType.contains("CLEAN_FRIEND") ||
-            taskTitle.contains("帮好友清理") ||
-            taskTitle.contains("帮助好友清理") ||
-            taskTitle.contains("好友清理") ||
-            (taskTitle.contains("好友") && taskTitle.contains("清理") && taskTitle.contains("垃圾"))
+            normalizedTaskType.contains("CLEAN_FRIEND")
     }
 
     private fun isConsecutiveVisitTask(
         taskType: String,
-        taskTitle: String,
-    ): Boolean =
-        taskType == "VISISIT_3DAYS_CONSECUTIVE" ||
-            (
-                (taskTitle.contains("连续3天") || taskTitle.contains("连续三天")) &&
-                    taskTitle.contains("来海洋")
-            )
+    ): Boolean = taskType == "VISISIT_3DAYS_CONSECUTIVE"
+
+    private fun isOceanQuestionTask(taskType: String): Boolean = taskType == "ANTOCEAN_DATI_PINTU_722_new"
 
     private fun isOceanActionTask(
         taskType: String,
-        taskTitle: String,
     ): Boolean =
-        !isHelpFriendCleanTask(taskType, taskTitle) &&
+        !isHelpFriendCleanTask(taskType) &&
             (
                 isSelfCleanTask(taskType) ||
-                    taskType.startsWith("CLEAN_") ||
-                    taskTitle.contains("清理好友") ||
-                    taskTitle.contains("清理海域")
+                    taskType.startsWith("CLEAN_")
             )
 
     private fun markOceanTasksDoneInvalidated() {
@@ -2001,7 +1989,7 @@ class AntOcean : ModelTask() {
         try {
             val adapter = OceanTaskFlowAdapter()
             val result = TaskFlowEngine(adapter, roundSleepMs = 500L).run()
-            if (result.completed && !result.interrupted && adapter.canMarkTasksDone()) {
+            if (!result.stopped && !result.interrupted && adapter.canMarkTasksDoneForToday()) {
                 Status.setFlagToday(StatusFlags.FLAG_ANTOCEAN_TASKS_DONE)
                 oceanTasksDoneInvalidatedThisRun = false
                 Log.ocean("海洋任务🌊今日已确认完成")
@@ -2114,11 +2102,11 @@ class AntOcean : ModelTask() {
                     TaskFlowPhase.TERMINAL
                 }
 
-                item.status == TaskStatus.TODO.name && isConsecutiveVisitTask(item.type, item.title) -> {
+                item.status == TaskStatus.TODO.name && isConsecutiveVisitTask(item.type) -> {
                     mapConsecutiveVisitPhase(item)
                 }
 
-                item.status == TaskStatus.TODO.name && isHelpFriendCleanTask(item.type, item.title) -> {
+                item.status == TaskStatus.TODO.name && isHelpFriendCleanTask(item.type) -> {
                     TaskFlowPhase.READY_TO_COMPLETE
                 }
 
@@ -2126,7 +2114,7 @@ class AntOcean : ModelTask() {
                     TaskFlowPhase.READY_TO_COMPLETE
                 }
 
-                item.status == TaskStatus.TODO.name && isOceanActionTask(item.type, item.title) -> {
+                item.status == TaskStatus.TODO.name && isOceanActionTask(item.type) -> {
                     TaskFlowPhase.BUSINESS_ACTION
                 }
 
@@ -2141,7 +2129,7 @@ class AntOcean : ModelTask() {
 
         override fun shouldSkipByTodayState(item: TaskFlowItem): Boolean {
             if (Status.hasFlagToday(StatusFlags.FLAG_ANTOCEAN_HELP_CLEAN_ALL_FRIEND_LIMIT) &&
-                isHelpFriendCleanTask(item.type, item.title) &&
+                isHelpFriendCleanTask(item.type) &&
                 !isRewardReadyStatus(item.status) &&
                 !isRewardReceivedStatus(item.status) &&
                 item.status != TaskStatus.TODO.name
@@ -2212,11 +2200,11 @@ class AntOcean : ModelTask() {
         }
 
         override fun complete(item: TaskFlowItem): TaskFlowActionResult {
-            if (isHelpFriendCleanTask(item.type, item.title)) {
+            if (isHelpFriendCleanTask(item.type)) {
                 return completeHelpFriendCleanTask(item)
             }
 
-            if (isConsecutiveVisitTask(item.type, item.title)) {
+            if (isConsecutiveVisitTask(item.type)) {
                 mapConsecutiveVisitPhase(item)
                 return TaskFlowActionResult.success(progressChanged = false)
             }
@@ -2236,7 +2224,7 @@ class AntOcean : ModelTask() {
                 }
             }
 
-            if (item.title.contains("答题")) {
+            if (isOceanQuestionTask(item.type)) {
                 return if (answerQuestion()) {
                     TaskFlowActionResult.success()
                 } else {
@@ -2292,7 +2280,7 @@ class AntOcean : ModelTask() {
             Log.error(TAG, message)
         }
 
-        fun canMarkTasksDone(): Boolean {
+        fun canMarkTasksDoneForToday(): Boolean {
             if (!querySucceeded || unknownPhaseSeen || unknownFailureSeen) {
                 return false
             }
@@ -2304,11 +2292,36 @@ class AntOcean : ModelTask() {
                 if (phase == TaskFlowPhase.UNKNOWN) {
                     return false
                 }
-                if (phase != TaskFlowPhase.TERMINAL) {
-                    return false
+                if (phase == TaskFlowPhase.TERMINAL) {
+                    continue
                 }
+                if (isConsecutiveVisitTaskWaitingForLaterDay(item, phase)) {
+                    continue
+                }
+                if (Status.hasFlagToday(StatusFlags.FLAG_ANTOCEAN_HELP_CLEAN_ALL_FRIEND_LIMIT) &&
+                    isHelpFriendCleanTask(item.type) &&
+                    phase != TaskFlowPhase.REWARD_READY
+                ) {
+                    continue
+                }
+                if (phase != TaskFlowPhase.REWARD_READY && isBlacklisted(item)) {
+                    continue
+                }
+                return false
             }
             return true
+        }
+
+        private fun isConsecutiveVisitTaskWaitingForLaterDay(
+            item: TaskFlowItem,
+            phase: TaskFlowPhase,
+        ): Boolean {
+            val limit = item.limit ?: return false
+            val current = item.current ?: return false
+            return phase == TaskFlowPhase.BUSINESS_ACTION &&
+                item.status == TaskStatus.TODO.name &&
+                isConsecutiveVisitTask(item.type) &&
+                current < limit
         }
     }
 
@@ -2327,8 +2340,8 @@ class AntOcean : ModelTask() {
 
     private fun shouldBypassOceanBlacklist(item: TaskFlowItem): Boolean =
         isRewardReceivedStatus(item.status) ||
-            isHelpFriendCleanTask(item.type, item.title) ||
-            isConsecutiveVisitTask(item.type, item.title)
+            isHelpFriendCleanTask(item.type) ||
+            isConsecutiveVisitTask(item.type)
 
     private fun completeHelpFriendCleanTask(item: TaskFlowItem): TaskFlowActionResult {
         if (cleanOcean?.value != true) {

@@ -40,6 +40,7 @@ class AntFishPond : ModelTask() {
     private val handledTaskAwards = LinkedHashSet<String>()
     private val handledVisitFinishes = LinkedHashSet<String>()
     private var lastLoggedFishProgress: FishProgressSnapshot? = null
+    private var rewardExchangeStoppedForCurrentRun = false
 
     override fun getName(): String = "福气鱼池"
 
@@ -76,6 +77,7 @@ class AntFishPond : ModelTask() {
             handledTaskAwards.clear()
             handledVisitFinishes.clear()
             lastLoggedFishProgress = null
+            rewardExchangeStoppedForCurrentRun = false
 
             val indexJson = queryIndex(logProgress = true)
             if (indexJson != null && exchangeRewardAndReloadIndex(indexJson, "首页") == null) {
@@ -396,7 +398,11 @@ class AntFishPond : ModelTask() {
             for (i in 0 until taskList.length()) {
                 val task = taskList.optJSONObject(i) ?: continue
                 val taskId = task.optString("taskId").trim()
-                val title = taskTitle(task).trim().ifBlank { taskId.ifBlank { "未知任务" } }
+                if (taskId.isBlank()) {
+                    Log.error(TAG, "${flowName}任务缺少taskId，保留后续人工核查：$task")
+                    continue
+                }
+                val title = taskTitle(task).trim().ifBlank { "未知任务" }
                 val taskRequire = task.optInt("taskRequire", 0)
                 val taskProgress = task.optInt("taskProgress", 0)
                 val rightsTimesLimit = task.optInt("rightsTimesLimit", 0)
@@ -416,13 +422,13 @@ class AntFishPond : ModelTask() {
 
                 items.add(
                     TaskFlowItem(
-                        id = taskId.ifBlank { title },
+                        id = taskId,
                         title = title,
                         status = task.optString("taskStatus").trim(),
                         type = taskId,
                         sceneCode = task.optString("sceneCode", TASK_SCENE).trim().ifBlank { TASK_SCENE },
                         actionType = task.optString("actionType").trim(),
-                        blacklistKeys = listOf(taskId, title).filter { it.isNotBlank() },
+                        blacklistKeys = listOf(taskId),
                         raw = task,
                         progress = buildFishPondTaskProgress(task),
                         current = current,
@@ -456,11 +462,7 @@ class AntFishPond : ModelTask() {
                 "WAIT_RECEIVE",
                 "TO_RECEIVE",
                 -> {
-                    if (item.actionType == ACTION_GO_FISH && item.type == TASK_GO_FISH) {
-                        TaskFlowPhase.REWARD_READY
-                    } else {
-                        TaskFlowPhase.UNSUPPORTED
-                    }
+                    TaskFlowPhase.REWARD_READY
                 }
 
                 STATUS_TODO,
@@ -530,15 +532,6 @@ class AntFishPond : ModelTask() {
         }
 
         override fun receive(item: TaskFlowItem): TaskFlowActionResult {
-            if (item.actionType != ACTION_GO_FISH || item.type != TASK_GO_FISH) {
-                return TaskFlowActionResult.failure(
-                    failureType = TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE,
-                    code = "UNSUPPORTED_ACTION",
-                    message = "仅支持GOFISH任务领奖",
-                    rpc = "FishPondTaskFlowAdapter.receive",
-                    detail = fishPondTaskActionDetail(item, "receive"),
-                )
-            }
             return claimTaskAward(item)
         }
 
@@ -821,6 +814,10 @@ class AntFishPond : ModelTask() {
 
         var indexJson = queryIndex(logProgress = true) ?: return false
         indexJson = exchangeRewardAndReloadIndex(indexJson, "自动钓鱼首页") ?: return null
+        if (isFishRoundTargetReached(indexJson)) {
+            Log.fishpond("当前鱼池轮次已达目标，跳过自动钓鱼")
+            return false
+        }
 
         var rodCount = extractRodCount(indexJson)
         if (rodCount <= 0) {
@@ -845,6 +842,10 @@ class AntFishPond : ModelTask() {
                 break
             }
             indexJson = exchangeRewardAndReloadIndex(indexJson, "自动钓鱼首页") ?: return null
+            if (isFishRoundTargetReached(indexJson)) {
+                Log.fishpond("当前鱼池轮次已达目标，停止自动钓鱼")
+                break
+            }
             rodCount = extractRodCount(indexJson)
             if (rodCount <= 0) {
                 break
@@ -859,9 +860,6 @@ class AntFishPond : ModelTask() {
             val angleExchangeSource = angleJson
             if (!isRpcSuccess(angleJson)) {
                 Log.fishpond("钓鱼失败：${formatFailure(angleJson)}")
-                if (isRiskFailure(angleJson)) {
-                    Status.setFlagToday(StatusFlags.FLAG_ANTFISHPOND_RISK_TOKEN_MISSING)
-                }
                 break
             }
 
@@ -972,6 +970,21 @@ class AntFishPond : ModelTask() {
         Log.fishpond("鱼池进度：当前${current}斤 / 目标${target}斤，还差${diff}斤，钓竿${rodCount}根")
     }
 
+    private fun isFishRoundTargetReached(jo: JSONObject): Boolean {
+        val fishAsset =
+            payloadOf(jo)
+                .optJSONObject("roundInfo")
+                ?.optJSONObject("fishAssetInfo")
+                ?: return false
+        val remainingWeight = fishAsset.optString("diffFishWeight").toDoubleOrNull()
+        if (remainingWeight != null) {
+            return remainingWeight <= 0
+        }
+        val currentWeight = fishAsset.optString("currentFishWeight").toDoubleOrNull()
+        val targetWeight = fishAsset.optString("targetFishWeight").toDoubleOrNull()
+        return currentWeight != null && targetWeight != null && currentWeight >= targetWeight
+    }
+
     private fun canExchange(jo: JSONObject): Boolean {
         val payload = payloadOf(jo)
         return payload.optBoolean("canExchange", false) ||
@@ -984,7 +997,7 @@ class AntFishPond : ModelTask() {
         jo: JSONObject,
         sourceLabel: String,
     ): JSONObject? {
-        if (!canExchange(jo)) {
+        if (rewardExchangeStoppedForCurrentRun || !canExchange(jo)) {
             return jo
         }
         val response = AntFishPondRpcCall.fishpondExchangeReward()
@@ -992,6 +1005,11 @@ class AntFishPond : ModelTask() {
         if (exchange == null) {
             Log.fishpond("鱼池红包兑换失败：返回空或无法解析，停止当前链路 source=$sourceLabel")
             return null
+        }
+        if (exchange.optBoolean("success", true) == false && exchange.optString("resultCode") == "C15") {
+            rewardExchangeStoppedForCurrentRun = true
+            Log.fishpond("鱼池红包兑换被服务端拒绝，本轮停止兑换并保留后续流程：${formatFailure(exchange)} source=$sourceLabel")
+            return queryIndex(logProgress = true) ?: jo
         }
         val failureType = classifyFishPondTaskFailure(exchange)
         when {
@@ -1236,19 +1254,10 @@ class AntFishPond : ModelTask() {
 
     private fun isRpcSuccess(jo: JSONObject): Boolean {
         val resultCode = jo.optString("resultCode")
-        val memo = jo.optString("memo")
-        val resultDesc = jo.optString("resultDesc")
-        if (jo.optBoolean("success") ||
+        return jo.optBoolean("success") ||
             jo.optBoolean("isSuccess") ||
             resultCode == "100" ||
-            resultCode.equals("SUCCESS", ignoreCase = true) ||
-            memo.equals("SUCCESS", ignoreCase = true) ||
-            memo == "成功" ||
-            resultDesc == "成功"
-        ) {
-            return true
-        }
-        return ResChecker.checkRes(TAG, jo)
+            resultCode.equals("SUCCESS", ignoreCase = true)
     }
 
     private fun formatFailure(jo: JSONObject): String {
@@ -1259,47 +1268,24 @@ class AntFishPond : ModelTask() {
 
     private fun classifyFishPondTaskFailure(response: JSONObject): TaskRpcFailureType {
         val code = extractFishPondTaskFailureCode(response)
-        val message = extractFishPondTaskFailureMessage(response)
         return when {
-            code in FISHPOND_TERMINAL_TASK_CODES ||
-                containsAny(message, "已领取", "已经领取", "重复领取", "重复领奖", "重复完成", "已完成", "任务已完结", "任务已结束") -> {
+            code in FISHPOND_TERMINAL_TASK_CODES -> {
                 TaskRpcFailureType.TERMINAL_DONE
             }
 
-            code in FISHPOND_BUSINESS_LIMIT_CODES ||
-                code.contains("LIMIT", ignoreCase = true) ||
-                containsAny(
-                    message,
-                    "上限",
-                    "限制",
-                    "受限",
-                    "不可领取",
-                    "资格不足",
-                    "次数超过限制",
-                    "超过上限",
-                    "兑完",
-                    "奖品已发完",
-                    "名额",
-                    "钓竿不足",
-                    "鱼竿不足",
-                    "风控",
-                    "风险",
-                ) -> {
+            code in FISHPOND_BUSINESS_LIMIT_CODES -> {
                 TaskRpcFailureType.BUSINESS_LIMIT
             }
 
-            code == "400000040" ||
-                containsAny(message, "不支持rpc调用", "不支持RPC完成") -> {
+            code == "400000040" -> {
                 TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE
             }
 
-            code in FISHPOND_NON_RETRYABLE_INVALID_CODES ||
-                containsAny(message, "参数错误", "任务ID非法", "模板不存在", "生活记录模板不存在") -> {
+            code in FISHPOND_NON_RETRYABLE_INVALID_CODES -> {
                 TaskRpcFailureType.NON_RETRYABLE_INVALID
             }
 
             code in FISHPOND_RETRYABLE_TASK_CODES ||
-                containsAny(message, "系统出错", "系统繁忙", "稍后", "繁忙", "频繁", "重试", "需要验证", "访问被拒绝") ||
                 isFishPondFailureMarkedRetryable(response) -> {
                 TaskRpcFailureType.RETRYABLE_RPC
             }
@@ -1342,19 +1328,6 @@ class AntFishPond : ModelTask() {
         listOf("retryable", "retriable", "canRetry").any { key ->
             response.has(key) && response.optBoolean(key, false)
         }
-
-    private fun containsAny(
-        text: String,
-        vararg fragments: String,
-    ): Boolean = fragments.any { text.contains(it, ignoreCase = true) }
-
-    private fun isRiskFailure(jo: JSONObject): Boolean {
-        val text = formatFailure(jo)
-        return text.contains("risk", ignoreCase = true) ||
-            text.contains("captcha", ignoreCase = true) ||
-            text.contains("验证") ||
-            text.contains("风控")
-    }
 
     companion object {
         private val TAG = AntFishPond::class.java.simpleName
