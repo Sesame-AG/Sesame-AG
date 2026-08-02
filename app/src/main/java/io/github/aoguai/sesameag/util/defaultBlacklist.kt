@@ -72,6 +72,23 @@ private val sesameCreditDefaultBlacklist =
         "AP19361153|去借呗借一笔", // 成长锦囊新任务中心 NORMAL_TASK，借贷业务
         "AP11287911|充话费最高立减1元", // 成长锦囊新任务中心 NORMAL_TASK，真实充值
         "zml_mybx_xiadan_erfang|上蚂蚁保购入保险", // 参数错误：promiseActivityExtCheck
+        "zml_check_in_subscribe_task", // joinActivity 返回 PROMISE_TEMPLATE_NOT_EXIST
+        "zml_set_home_task", // joinActivity 返回 PROMISE_TEMPLATE_NOT_EXIST
+        "zml_zmzl_xdrw_erfang", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实租赁下单
+        "zml_tbbbnc_shifei_sanfang", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实淘宝行为
+        "zml_zfbyouxi_erfang", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实游戏行为
+        "zmxy_zml_wannengxiaozujian", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实桌面组件行为
+        "zml_cainiao_guojiang_sanfang", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实菜鸟行为
+        "zml_tbdoudizhu_renwu_sanfang", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实游戏行为
+        "zml_qingyunjuezhifumo_renwu", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实游戏行为
+        // 芝麻树 RENT 游戏
+        "AP19359169",
+        "AP10359017",
+        "AP11359168",
+        "AP12359059",
+        "AP16358996",
+        "AP11358913",
+        "AP12359016",
     )
 
 private val sesameAlchemyDefaultBlacklist =
@@ -90,6 +107,7 @@ private val sesameAlchemyDefaultBlacklist =
         "坚持去玩休闲小游戏", // 参数错误：ILLEGAL_ARGUMENT
         "租游戏账号得芝麻粒", // 参数错误：ILLEGAL_ARGUMENT
         "去玩浪漫餐厅", // 参数错误：promiseActivityExtCheck
+        "hjwf_langmancanting_renwu|去玩浪漫餐厅", // 参数错误：promiseActivityExtCheck / ILLEGAL_ARGUMENT
         "去玩疯狂水世界", // 参数错误：promiseActivityExtCheck
         "去玩时光杂货店", // 参数错误：promiseActivityExtCheck
         "去玩斗破苍穹", // 参数错误：promiseActivityExtCheck
@@ -103,6 +121,12 @@ private val sesameAlchemyDefaultBlacklist =
         "hjwf_linghuashi_renwu|去玩灵画师", // 参数错误：promiseActivityExtCheck / ILLEGAL_ARGUMENT
         "hjwf_zh_7dacu_leyuan", // promiseActivityExtCheck 返回 ILLEGAL_ARGUMENT，无稳定游戏完成闭环
         "hjwf_longjizhicheng_renwu|去玩龙迹之城", // 参数错误：promiseActivityExtCheck
+        "alchemy_check_in_subscribe_task", // joinActivity 返回 PROMISE_TEMPLATE_NOT_EXIST
+        "hjwf_tbqd_qiandao_sanfang", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实淘宝行为
+        "hjwf_tbbbnc_shifei_sanfang", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实淘宝行为
+        "hjwf_tbxiaoxiaole_renwu_sanfang", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实游戏行为
+        "hjwf_fengkuangshuishijie_renwu", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实游戏行为
+        "hjwf_wanxiaoyouxi30s_renwu", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实游戏行为
     )
 
 private val orchardDefaultBlacklist =
@@ -189,6 +213,7 @@ private val oceanDefaultBlacklist =
         "AIFISH_ZHUANHUA_XJSKP|玩一玩向僵尸开炮", // finishTask 返回 400000040，不支持rpc调用
         "AIFISH_ZHUANHUA_BWXRK", // finishTask 返回 400000040，不支持rpc调用，缺少稳定完成闭环
         "AIFISH_ZHUANHUA_SGBHSD_new", // finishTask 返回 400000040，不支持rpc调用，缺少稳定完成闭环
+        "AIFISH_ZHUANHUA_CNXDY", // 无稳定完成 RPC 闭环
         "DAOLIU_SCSST_GAME_NEW",
         "LMCT_QDRW_HAIYANG", // finishTask 返回 400000040，不支持rpc调用
         "CNXDY_QDRW_HAIYANG|随机任务：玩一玩超能下蛋鸭", // finishTask 返回 400000040，不支持rpc调用
@@ -270,7 +295,6 @@ private val forestDefaultBlacklist =
         "FOREST_ACTIVITY_DRAW_LJZC_ZHWUFU", // 玩游戏得2次机会：finishTaskopengreen 返回 400000040
         "WDHYSJ_QDRW_NORMAL", // 【限时】玩游戏得2次机会：finishTaskopengreen 返回 400000040
         "MHXCZ_RYCZ_HDCCL|玩梦幻消除战充值任意金额", // 森林抽抽乐充值任务，缺少稳定完成RPC闭环
-        "FOREST_ACTIVITY_DRAW_TBQD|去淘宝签到领红包", // 森林抽抽乐淘宝外跳任务，缺少稳定完成RPC闭环
         "RYCZ", // 森林抽抽乐充值类任务前缀，缺少稳定完成RPC闭环
         "SYH_51HLZ_zhuanhua202604", // 【抢金条】完成游戏任务：不支持rpc调用
         "SYH_51HLZ_shichang202604", // 玩任意游戏30s：不支持rpc调用
@@ -284,8 +308,7 @@ private val forestDefaultBlacklist =
         "GYG_AQapp_202511|去蚂蚁阿福揭秘真相", // 不支持rpc调用，缺少稳定完成RPC闭环
         "BWXRK_TASK_QUDONG|保卫向日葵通过1关", // 不支持rpc调用，缺少稳定完成RPC闭环
         "GYG_TAOBAOzhibo_202606|去淘宝花花乐领红包", // 不支持rpc调用，缺少稳定完成RPC闭环
-        "GYG_taobaoqiandao_202603|去淘宝签到领红包", // 不支持rpc调用，缺少稳定完成RPC闭环
-        "淘宝签到", // 淘宝外跳签到任务缺少稳定完成RPC闭环
+        "GYG_taobaoqiandao_202603", // TODO 完成闭环未证实；不附带标题以免误挡已验证的 TBQD
         "FOREST_ACTIVITY_DRAW_SQYT_1|去神奇鱼塘投喂动物", // 抽抽乐外部鱼塘任务，缺少稳定完成RPC闭环
         "去神奇鱼塘投喂动物", // 抽抽乐标题兜底，缺少稳定完成RPC闭环
         "玩游戏得", // 森林抽抽乐游戏类任务暂无稳定RPC闭环
@@ -429,6 +452,7 @@ private val insuredDefaultBlacklist =
 private val youthPrivilegeDefaultBlacklist =
     setOf(
         "AP17294013",   // “添加到首页”
+        "AP10295780", // taskComplete 返回 TASK_OPERATE_ERROR，retryable=false
     )
 
 private val sportsDefaultBlacklist =
