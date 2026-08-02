@@ -2,7 +2,6 @@
 
 package io.github.aoguai.sesameag.task.antFarm
 
-import android.net.Uri
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.databind.DeserializationFeature
@@ -87,7 +86,6 @@ import io.github.aoguai.sesameag.util.friend.FriendRepository
 import io.github.aoguai.sesameag.util.maps.IdMapManager
 import io.github.aoguai.sesameag.util.maps.ParadiseCoinBenefitIdMap
 import io.github.aoguai.sesameag.util.maps.UserMap
-import io.github.aoguai.sesameag.util.maps.VipDataIdMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import org.json.JSONArray
@@ -3538,11 +3536,6 @@ class AntFarm : ModelTask() {
         val taskType: String,
         val tracerTaskType: String,
         val tracerSceneCode: String,
-        val tracerGroupId: String,
-        val targetTaskType: String,
-        val targetSceneCode: String,
-        val targetSource: String,
-        val targetUrl: String,
         val innerAction: String,
         val categorizationThirdLevel: String,
         val categorizationGameId: String
@@ -3562,11 +3555,8 @@ class AntFarm : ModelTask() {
             meta.taskType == "COOK" -> FarmTaskClosureRoute.OwnerBusiness("小鸡厨房")
             meta.taskType == "SLEEP" -> FarmTaskClosureRoute.OwnerBusiness("小鸡睡觉")
             meta.taskType == "HIRE_LOW_ACTIVITY" -> FarmTaskClosureRoute.OwnerBusiness("雇佣小鸡")
-            meta.taskType in setOf("chouchoule_xiaritianpin", "IPchouchoule_26wanjuzongdongyuan5") ||
-                (
-                    meta.targetUrl.contains("prizeMachine.html", ignoreCase = true) &&
-                        meta.targetSource in setOf("siliaorenwu", "ip_ccl")
-                    ) -> FarmTaskClosureRoute.OwnerBusiness("抽抽乐")
+            meta.tracerSceneCode in setOf("ANTFARM_DAILY_DRAW_TASK", "ANTFARM_IP_DRAW_TASK") ->
+                FarmTaskClosureRoute.OwnerBusiness("抽抽乐")
 
             meta.taskType in setOf("XJLY_xxljy", "XJLYKBX1_sl90") ||
                 meta.categorizationGameId == "2021005181698249" ||
@@ -3576,14 +3566,9 @@ class AntFarm : ModelTask() {
                     ) -> FarmTaskClosureRoute.OwnerBusiness("小鸡乐园开宝箱")
 
             meta.taskType == "SHANGYEHUA_90_1" &&
-                (
-                    meta.targetTaskType == "SHANGYEHUA_90_1" ||
-                        meta.tracerTaskType == "SHANGYEHUA_90_1"
-                    ) &&
-                (
-                    meta.targetSceneCode == "ANTFARM_FOOD_TASK" ||
-                        meta.tracerSceneCode == "ANTFARM_FOOD_TASK"
-                    ) -> FarmTaskClosureRoute.DirectFinishTask("ANTFARM_FOOD_TASK")
+                meta.tracerTaskType == "SHANGYEHUA_90_1" &&
+                meta.tracerSceneCode == "ANTFARM_FOOD_TASK" ->
+                FarmTaskClosureRoute.DirectFinishTask("ANTFARM_FOOD_TASK")
 
             else -> FarmTaskClosureRoute.LegacyDoFarmTask
         }
@@ -3600,23 +3585,15 @@ class AntFarm : ModelTask() {
         val tracerFields = parseFarmTaskTracer(
             task.optJSONObject("deliveryControlItem")?.optString("iepTaskTracer").orEmpty()
         )
-        val targetUrl = task.optString("targetUrl").trim()
-        val targetTaskType = readFarmTaskUrlParam(targetUrl, "iepTaskType")
         val tracerTaskType = tracerFields["taskType"].orEmpty()
         val resolvedTaskType = taskId
             .ifBlank { bizKey }
             .ifBlank { tracerTaskType }
-            .ifBlank { targetTaskType }
 
         return FarmTaskRouteMeta(
             taskType = resolvedTaskType,
             tracerTaskType = tracerTaskType,
             tracerSceneCode = tracerFields["sceneCode"].orEmpty(),
-            tracerGroupId = tracerFields["groupId"].orEmpty(),
-            targetTaskType = targetTaskType,
-            targetSceneCode = readFarmTaskUrlParam(targetUrl, "iepTaskSceneCode"),
-            targetSource = readFarmTaskUrlParam(targetUrl, "source"),
-            targetUrl = targetUrl,
             innerAction = task.optString("innerAction").trim(),
             categorizationThirdLevel = task.optString("categorizationThirdLevel").trim(),
             categorizationGameId = task.optJSONObject("categorizationParamModel")
@@ -3639,26 +3616,6 @@ class AntFarm : ModelTask() {
             fields[segment.substring(0, separatorIndex)] = segment.substring(separatorIndex + 1)
         }
         return fields
-    }
-
-    private fun readFarmTaskUrlParam(targetUrl: String, key: String): String {
-        if (targetUrl.isBlank()) {
-            return ""
-        }
-        val outerUri = runCatching { Uri.parse(targetUrl) }.getOrNull() ?: return ""
-        outerUri.getQueryParameter(key)
-            ?.trim()
-            ?.takeIf { it.isNotBlank() }
-            ?.let { return it }
-
-        val nestedUrl = outerUri.getQueryParameter("url")
-            .orEmpty()
-            .ifBlank { outerUri.getQueryParameter("page").orEmpty() }
-        if (nestedUrl.isBlank()) {
-            return ""
-        }
-        return runCatching { Uri.parse(nestedUrl).getQueryParameter(key).orEmpty().trim() }
-            .getOrDefault("")
     }
 
     private fun buildFarmTaskFinishOutBizNo(taskType: String, index: Int = 0): String {
@@ -3754,7 +3711,7 @@ class AntFarm : ModelTask() {
                         type = bizKey,
                         sceneCode = task.optString("sceneCode"),
                         actionType = task.optString("actionType"),
-                        blacklistKeys = listOf(bizKey, taskId, title).filter { it.isNotBlank() },
+                        blacklistKeys = listOf(bizKey, taskId).filter { it.isNotBlank() },
                         raw = task,
                         progress = "rights=$rightsTimes/$rightsTimesLimit award=${task.optInt("awardCount", 0)}",
                         current = rightsTimes,
@@ -4057,8 +4014,10 @@ class AntFarm : ModelTask() {
                 val rightsTimes = task.optInt("rightsTimes", 0)
                 val accumulatedAward = getMultiStageAccumulatedAward(task)
                 val hasAward = status == TaskStatus.FINISHED.name || accumulatedAward > 0
-                val isBlacklisted = TaskBlacklist.isTaskInBlacklist(farmTaskBlacklistModule, title) ||
-                    TaskBlacklist.isTaskInBlacklist(farmTaskBlacklistModule, bizKey)
+                val stableTaskId = bizKey.ifBlank { taskId }
+                val isBlacklisted =
+                    stableTaskId.isNotBlank() &&
+                        TaskBlacklist.isTaskInBlacklist(farmTaskBlacklistModule, stableTaskId)
                 val limitReached = Status.hasFlagToday(StatusFlags.FLAG_FARM_TASK_LIMIT_PREFIX + bizKey)
 
                 if ((isBlacklisted || limitReached) && !hasAward) {
@@ -4085,7 +4044,7 @@ class AntFarm : ModelTask() {
                         title = title,
                         status = status,
                         type = bizKey,
-                        blacklistKeys = listOf(bizKey, taskId, title).filter { it.isNotBlank() },
+                        blacklistKeys = listOf(bizKey, taskId).filter { it.isNotBlank() },
                         raw = task,
                         progress = "rights=$rightsTimes/$limit award=$accumulatedAward",
                         current = rightsTimes,
@@ -4365,15 +4324,7 @@ class AntFarm : ModelTask() {
 
     private fun isFarmTaskQuotaReachedResponse(jo: JSONObject): Boolean {
         val resultCode = jo.optString("resultCode").ifBlank { jo.optString("code") }
-        if (resultCode == "309") return true
-
-        val message = jo.optString("memo")
-            .ifBlank { jo.optString("resultDesc") }
-            .ifBlank { jo.optString("desc") }
-        return message.contains("任务数达到当日上限") ||
-            message.contains("权益获取次数超过上限") ||
-            message.contains("当日达到上限") ||
-            message.contains("当日上限")
+        return resultCode == "309"
     }
 
     internal fun extractFarmRpcErrorCode(jo: JSONObject): String {
@@ -4398,65 +4349,20 @@ class AntFarm : ModelTask() {
 
     internal fun classifyFarmRpcFailure(jo: JSONObject): TaskRpcFailureType {
         val code = extractFarmRpcErrorCode(jo)
-        val message = extractFarmRpcMessage(jo)
         return when {
-            containsAny(
-                message,
-                "已领取",
-                "已经领取",
-                "重复领取",
-                "重复领奖",
-                "重复完成",
-                "已完成",
-                "任务已完结",
-                "任务已结束",
-                "不要着急",
-                "还没吃完",
-                "正在吃",
-                "正在睡觉",
-                "小鸡睡觉"
-            ) ->
-                TaskRpcFailureType.TERMINAL_DONE
-
             code == "331" ||
                 code == "1009" ||
                 isFarmTaskQuotaReachedResponse(jo) ||
-                code == "CAMP_TRIGGER_ERROR" ||
-                code.contains("LIMIT", ignoreCase = true) ||
-                code.contains("RISK", ignoreCase = true) ||
-                code.contains("CAPTCHA", ignoreCase = true) ||
-                code.contains("VERIFY", ignoreCase = true) ||
-                containsAny(
-                    message,
-                    "上限",
-                    "限制",
-                    "受限",
-                    "不可领取",
-                    "资格不足",
-                    "饲料槽已满",
-                    "兑完",
-                    "风控",
-                    "风险",
-                    "captcha",
-                    "验证码",
-                    "需要验证",
-                    "访问异常",
-                    "访问被拒绝",
-                    "安全验证",
-                    "校验失败"
-                ) ->
+                code == "CAMP_TRIGGER_ERROR" ->
                 TaskRpcFailureType.BUSINESS_LIMIT
 
-            code == "400000040" ||
-                containsAny(message, "不支持rpc调用", "不支持RPC完成") ->
+            code == "400000040" ->
                 TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE
 
-            code in setOf("20020012", "TASK_ID_INVALID", "ILLEGAL_ARGUMENT", "PROMISE_TEMPLATE_NOT_EXIST") ||
-                containsAny(message, "参数错误", "任务ID非法", "模板不存在") ->
+            code in setOf("20020012", "TASK_ID_INVALID", "ILLEGAL_ARGUMENT", "PROMISE_TEMPLATE_NOT_EXIST") ->
                 TaskRpcFailureType.NON_RETRYABLE_INVALID
 
             code in setOf("3000", "REMOTE_INVOKE_EXCEPTION", "OP_REPEAT_CHECK") ||
-                containsAny(message, "系统出错", "系统繁忙", "稍后", "繁忙", "频繁", "重试") ||
                 isFarmMarkedRetryable(jo) ->
                 TaskRpcFailureType.RETRYABLE_RPC
 
@@ -4487,10 +4393,6 @@ class AntFarm : ModelTask() {
         return listOf("retryable", "retriable", "canRetry").any { key ->
             jo.has(key) && jo.optBoolean(key, false)
         }
-    }
-
-    private fun containsAny(text: String, vararg keywords: String): Boolean {
-        return keywords.any { keyword -> text.contains(keyword, ignoreCase = true) }
     }
 
     private fun buildFarmTaskFailureResult(
@@ -4554,13 +4456,13 @@ class AntFarm : ModelTask() {
                 }
                 TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE -> {
                     if (blacklistOnTerminalFailure) {
-                        blacklistClassifiedFarmTask(bizKey, title, resultCode)
+                        blacklistClassifiedFarmTask(bizKey, resultCode)
                         Log.error(TAG, "庄园任务[$title] classification=UNSUPPORTED_NO_CLOSURE decision=BLACKLIST reason=未抓到稳定完成RPC $detail")
                     }
                 }
                 TaskRpcFailureType.NON_RETRYABLE_INVALID -> {
                     if (blacklistOnTerminalFailure) {
-                        blacklistClassifiedFarmTask(bizKey, title, resultCode)
+                        blacklistClassifiedFarmTask(bizKey, resultCode)
                         Log.error(TAG, "庄园任务[$title] classification=NON_RETRYABLE_INVALID decision=BLACKLIST $detail")
                     }
                 }
@@ -4575,11 +4477,16 @@ class AntFarm : ModelTask() {
         }
     }
 
-    private fun blacklistClassifiedFarmTask(taskId: String, title: String, errorCode: String) {
-        if (errorCode.isNotBlank()) {
-            TaskBlacklist.autoAddToBlacklist(farmTaskBlacklistModule, taskId, title, errorCode)
+    private fun blacklistClassifiedFarmTask(taskId: String, errorCode: String) {
+        val stableTaskId = taskId.trim()
+        if (stableTaskId.isBlank()) {
+            Log.error(TAG, "庄园任务缺少稳定任务标识，保留后续人工核查，未写入自动跳过列表")
+            return
         }
-        TaskBlacklist.addToBlacklist(farmTaskBlacklistModule, taskId, title)
+        if (errorCode.isNotBlank()) {
+            TaskBlacklist.autoAddToBlacklist(farmTaskBlacklistModule, stableTaskId, errorCode = errorCode)
+        }
+        TaskBlacklist.addToBlacklist(farmTaskBlacklistModule, stableTaskId)
     }
 
     /**
@@ -4619,10 +4526,103 @@ class AntFarm : ModelTask() {
         return foodSpace >= requiredSpace
     }
 
+    private fun confirmFarmTaskAwardProgress(
+        before: JSONObject,
+        taskId: String,
+    ): Boolean {
+        val response = AntFarmRpcCall.listFarmTask()
+        if (response.isEmpty()) {
+            Log.farm("庄园任务奖励[$taskId]领取后刷新为空")
+            return false
+        }
+        val refreshed = JSONObject(response)
+        if (!ResChecker.checkRes(TAG, "庄园任务奖励领取后刷新失败:", refreshed)) {
+            return false
+        }
+        val after =
+            refreshed
+                .optJSONArray("farmTaskList")
+                ?.let { tasks ->
+                    (0..<tasks.length())
+                        .asSequence()
+                        .mapNotNull { index -> tasks.optJSONObject(index) }
+                        .firstOrNull { it.optString("taskId") == taskId }
+                }
+                ?: return false
+        if (after.optString("taskStatus") == TaskStatus.RECEIVED.name) {
+            return true
+        }
+        val beforeStageAwardCount = before.optionalInt("alreadyReceiveStageAwardCount")
+        val afterStageAwardCount = after.optionalInt("alreadyReceiveStageAwardCount")
+        return beforeStageAwardCount != null &&
+            afterStageAwardCount != null &&
+            afterStageAwardCount > beforeStageAwardCount
+    }
+
+    private fun JSONObject.optionalInt(key: String): Int? =
+        optInt(key).takeIf { has(key) && !isNull(key) }
+
+    private fun receiveCuisineAwards(
+        cuisineTasks: List<JSONObject>,
+        noProgressTaskIds: MutableSet<String>,
+    ): Boolean {
+        var progressed = false
+        for (task in cuisineTasks) {
+            val taskId = task.optString("taskId").trim()
+            if (taskId.isBlank() || taskId in noProgressTaskIds) {
+                continue
+            }
+            val taskTitle = task.optString("title", "未知任务")
+            val response = JSONObject(AntFarmRpcCall.receiveFarmTaskAward(taskId, "CUISINE"))
+            if (!ResChecker.checkRes(TAG, "领取庄园美食奖励失败:", response)) {
+                val errorCode = extractFarmRpcErrorCode(response)
+                val failureType = classifyFarmRpcFailure(response)
+                val detail = "module=$farmTaskBlacklistModule taskId=$taskId taskName=$taskTitle " +
+                    "action=receiveAward rpc=AntFarmRpcCall.receiveFarmTaskAward " +
+                    "code=${errorCode.ifBlank { "UNKNOWN" }} msg=${extractFarmRpcMessage(response)} raw=$response"
+                when (failureType) {
+                    TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE -> {
+                        blacklistClassifiedFarmTask(taskId, errorCode)
+                        Log.error(TAG, "庄园美食奖励[$taskTitle] classification=UNSUPPORTED_NO_CLOSURE decision=BLACKLIST $detail")
+                    }
+
+                    TaskRpcFailureType.NON_RETRYABLE_INVALID -> {
+                        blacklistClassifiedFarmTask(taskId, errorCode)
+                        Log.error(TAG, "庄园美食奖励[$taskTitle] classification=NON_RETRYABLE_INVALID decision=BLACKLIST $detail")
+                    }
+
+                    TaskRpcFailureType.BUSINESS_LIMIT ->
+                        Log.farm("庄园美食奖励[$taskTitle] classification=BUSINESS_LIMIT decision=STOP_CURRENT $detail")
+
+                    TaskRpcFailureType.RETRYABLE_RPC ->
+                        Log.error(TAG, "庄园美食奖励[$taskTitle] classification=RETRYABLE_RPC decision=RETRY_LATER $detail")
+
+                    TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                    TaskRpcFailureType.TERMINAL_DONE,
+                    ->
+                        Log.error(TAG, "庄园美食奖励[$taskTitle] classification=$failureType decision=LOG_ONLY $detail")
+                }
+                noProgressTaskIds.add(taskId)
+                continue
+            }
+            GlobalThreadPools.sleepCompat(300L)
+            if (confirmFarmTaskAwardProgress(task, taskId)) {
+                Log.farm("收取庄园美食奖励[$taskTitle]已确认")
+                progressed = true
+            } else {
+                Log.error(TAG, "庄园美食奖励[$taskTitle] ACK 后状态未确认，当前轮不再重复领取")
+                noProgressTaskIds.add(taskId)
+            }
+        }
+        return progressed
+    }
+
     internal suspend fun receiveFarmAwards() {
         try {
             var doubleCheck: Boolean
             var isFeedFull = false // 添加饲料槽已满的标志
+            val noProgressCuisineTaskIds = mutableSetOf<String>()
+            val noProgressFoodAwardTaskIds = mutableSetOf<String>()
             do {
                 doubleCheck = false
                 val response = AntFarmRpcCall.listFarmTask()
@@ -4633,7 +4633,6 @@ class AntFarm : ModelTask() {
                 }
                 val jo = JSONObject(response)
                 if (ResChecker.checkRes(TAG, "查询庄园任务失败:", jo)) {
-                    prepareFarmAwardCapacity()
                     val farmTaskList = jo.getJSONArray("farmTaskList")
                     val signList = jo.getJSONObject("signList")
                     val needFarmGame = recordFarmGame!!.value == true && !Status.hasFlagToday(StatusFlags.FLAG_FARM_GAME_FINISHED)
@@ -4671,16 +4670,35 @@ class AntFarm : ModelTask() {
                         }
                     }
 
+                    val cuisineTasks = mutableListOf<JSONObject>()
                     val unreceivedTasks = mutableListOf<JSONObject>()
                     for (i in 0..<farmTaskList.length()) {
-                        // 如果饲料槽已满，跳过后续任务的领取
                         val task = farmTaskList.getJSONObject(i)
-                        val taskStatus = task.getString("taskStatus")
-                        if (TaskStatus.FINISHED.name == taskStatus) {
-                            if ("ALLPURPOSE" == task.optString("awardType")) {
-                                unreceivedTasks.add(task)
+                        if (TaskStatus.FINISHED.name != task.optString("taskStatus")) {
+                            continue
+                        }
+                        when (task.optString("awardType")) {
+                            "ALLPURPOSE" -> {
+                                val taskId = task.optString("taskId").trim()
+                                if (taskId.isBlank()) {
+                                    Log.error(TAG, "庄园饲料奖励缺少taskId，保留后续人工核查：$task")
+                                } else if (taskId !in noProgressFoodAwardTaskIds) {
+                                    unreceivedTasks.add(task)
+                                }
+                            }
+                            "CUISINE" -> cuisineTasks.add(task)
+                            else -> {
+                                Log.farm("庄园任务奖励[${task.optString("title", "未知任务")}]awardType未验证，保留后续领取")
                             }
                         }
+                    }
+
+                    if (receiveCuisineAwards(cuisineTasks, noProgressCuisineTaskIds)) {
+                        doubleCheck = true
+                    }
+
+                    if (unreceivedTasks.isNotEmpty()) {
+                        prepareFarmAwardCapacity()
                     }
 
                     // 领取前先同步一次食槽状态，避免边界误差
@@ -4699,6 +4717,7 @@ class AntFarm : ModelTask() {
                         val awardCount = task.optInt("awardCount", 0)
                         val taskTitle = task.optString("title", "未知任务")
                         val taskId = task.optString("taskId")
+                        val awardType = task.optString("awardType")
 
                         val isNight = TimeUtil.isNowAfterOrCompareTimeStr("2000")
                         val foodStockLeft = foodStockLimit - foodStock
@@ -4751,8 +4770,15 @@ class AntFarm : ModelTask() {
                         }
 
 
-                        val receiveTaskAwardjo = JSONObject(AntFarmRpcCall.receiveFarmTaskAward(taskId))
+                        val receiveTaskAwardjo = JSONObject(AntFarmRpcCall.receiveFarmTaskAward(taskId, awardType))
                         if (ResChecker.checkRes(TAG, "领取庄园任务奖励失败:", receiveTaskAwardjo)) {
+                            GlobalThreadPools.sleepCompat(300L)
+                            if (!confirmFarmTaskAwardProgress(task, taskId)) {
+                                Log.error(TAG, "庄园饲料奖励[$taskTitle] ACK 后状态未确认，当前轮不再重复领取")
+                                noProgressFoodAwardTaskIds.add(taskId)
+                                unreceiveTaskAward++
+                                continue
+                            }
                             add2FoodStock(awardCount)
                             Log.farm("收取庄园任务奖励[$taskTitle]🍪${awardCount}g (剩余容量: ${foodStockLimit - foodStock}g)")
                             val nextFoodStockLeft = foodStockLimit - foodStock
@@ -4790,13 +4816,13 @@ class AntFarm : ModelTask() {
                                     break@awardLoop
                                 }
                                 TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE -> {
-                                    blacklistClassifiedFarmTask(taskId, taskTitle, resultCode)
+                                    blacklistClassifiedFarmTask(taskId, resultCode)
                                     Log.error(TAG, "庄园任务[$taskTitle] classification=UNSUPPORTED_NO_CLOSURE decision=BLACKLIST reason=未抓到稳定领奖闭环 $detail")
                                     unreceiveTaskAward += (unreceivedTasks.size - i)
                                     break@awardLoop
                                 }
                                 TaskRpcFailureType.NON_RETRYABLE_INVALID -> {
-                                    blacklistClassifiedFarmTask(taskId, taskTitle, resultCode)
+                                    blacklistClassifiedFarmTask(taskId, resultCode)
                                     Log.error(TAG, "庄园任务[$taskTitle] classification=NON_RETRYABLE_INVALID decision=BLACKLIST $detail")
                                     unreceiveTaskAward += (unreceivedTasks.size - i)
                                     break@awardLoop
@@ -5549,7 +5575,7 @@ class AntFarm : ModelTask() {
                                     Log.farm("帮喂好友🥣[" + user + "]的小鸡[180g]#剩余" + foodStock + "g")
                                     Status.feedFriendToday(userId)
                                 } else {
-                                    if ("391" == resultCode || memo.contains("今日帮喂次数已达上限")) {
+                                    if ("391" == resultCode) {
                                         Status.setFlagToday(StatusFlags.FLAG_FARM_FEED_FRIEND_LIMIT)
                                         Log.farm("😞喂[$user]的鸡失败：今日帮喂次数已达上限，已记录为当日限制")
                                         return
@@ -8480,7 +8506,7 @@ class AntFarm : ModelTask() {
                         }
                         Log.farm("庄园家庭🏠帮喂好友🥣[" + UserMap.getMaskName(userId) + "]的小鸡[" + feedFood + "g]#剩余" + foodStock + "g")
                     } else {
-                        if ("391" == resultCode || memo.contains("今日帮喂次数已达上限")) {
+                        if ("391" == resultCode) {
                             Status.setFlagToday(StatusFlags.FLAG_FARM_FEED_FRIEND_LIMIT)
                             Log.farm("庄园家庭🏠帮喂好友🥣今日次数已达上限，已记录为当日限制")
                             return
@@ -8568,26 +8594,6 @@ class AntFarm : ModelTask() {
 
         @JvmField
         var foodStockLimit: Int = 0
-
-        // 抽抽乐 / 广告任务使用的 referToken（从 VipDataIdMap 读取并缓存）
-        private var antFarmReferToken: String? = null
-
-        /**
-         * 加载农场抽抽乐广告 referToken
-         *
-         * AntFarmReferToken：
-         *  - 如果本地已有缓存，直接返回
-         *  - 否则从 VipDataIdMap 加载当前账号下保存的 AntFarmReferToken
-         */
-        @JvmStatic
-        fun loadAntFarmReferToken(): String? {
-            if (!antFarmReferToken.isNullOrEmpty()) return antFarmReferToken
-            val uid = UserMap.currentUid
-            val vipData = IdMapManager.getInstance(VipDataIdMap::class.java)
-            vipData.load(uid)
-            antFarmReferToken = vipData.get("AntFarmReferToken")
-            return antFarmReferToken
-        }
 
         init {
             objectMapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)

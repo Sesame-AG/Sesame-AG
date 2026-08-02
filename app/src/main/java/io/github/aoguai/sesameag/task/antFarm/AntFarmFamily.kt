@@ -26,6 +26,11 @@ data object AntFarmFamily {
     private const val TAG = "AntFarmFamily"
     private const val DAILY_DONATE_TASK_ID = "DAILY_DONATE"
 
+    private data class DecorationExchangeConfirmation(
+        val confirmed: Boolean,
+        val balanceCent: Int?,
+    )
+
     /**
      * 家庭ID
      */
@@ -151,6 +156,20 @@ data object AntFarmFamily {
             Log.printStackTrace(TAG, "queryFamilyTreadMillState err:", t)
             null
         }
+
+    private fun findCurrentFamilyMemberState(
+        treadMillJo: JSONObject?,
+        currentUid: String,
+    ): JSONObject? =
+        treadMillJo
+            ?.optJSONArray("familyMemberInfoList")
+            ?.let { memberList ->
+                (0 until memberList.length())
+                    .mapNotNull { memberList.optJSONObject(it) }
+                    .firstOrNull {
+                        it.optBoolean("currentUser", false) || it.optString("userId") == currentUid
+                    }
+            }
 
     private fun JSONObject.optIntOrNull(key: String): Int? {
         if (!has(key) || isNull(key)) {
@@ -615,7 +634,7 @@ data object AntFarmFamily {
                     val code = jo.optString("resultCode")
                     val memo = jo.optString("memo")
 
-                    if (code == "391" || memo.contains("今日帮喂次数已达上限")) {
+                    if (code == "391") {
                         // 记录该用户今日不能再喂
                         Status.setFlagToday(flagKey)
                         Status.setFlagToday(StatusFlags.FLAG_FARM_FEED_FRIEND_LIMIT)
@@ -829,17 +848,8 @@ data object AntFarmFamily {
                 return
             }
 
-            val treadMillJo = queryFamilyTreadMillState()
             val currentMemberState =
-                treadMillJo
-                    ?.optJSONArray("familyMemberInfoList")
-                    ?.let { memberList ->
-                        (0 until memberList.length())
-                            .mapNotNull { memberList.optJSONObject(it) }
-                            .firstOrNull {
-                                it.optBoolean("currentUser", false) || it.optString("userId") == currentUid
-                            }
-                    }
+                findCurrentFamilyMemberState(queryFamilyTreadMillState(), currentUid)
             if (currentMemberState?.optBoolean("alreadyDonate", false) == true) {
                 Status.exchangeToday(currentUid)
                 Log.farm("家庭任务🏠捐步做公益#家庭页显示今日已捐步，跳过")
@@ -877,19 +887,18 @@ data object AntFarmFamily {
             val donateHomeResponse = AntSportsRpcCall.donateWalkHome(produceQuantity)
             val donateHomeJo = JSONObject(donateHomeResponse)
             if (!donateHomeJo.optBoolean("isSuccess", false)) {
-                if (donateHomeResponse.contains("已捐步")) {
-                    Status.exchangeToday(currentUid)
-                    Log.farm("家庭任务🏠捐步做公益#今日已捐步，跳过")
-                } else {
-                    Log.farm("家庭任务🏠捐步做公益失败: ${donateHomeJo.optString("resultDesc", donateHomeResponse)}")
-                }
+                Log.farm("家庭任务🏠捐步做公益失败: ${donateHomeJo.optString("resultDesc", donateHomeResponse)}")
                 return
             }
 
-            val walkDonateHomeModel = donateHomeJo.optJSONObject("walkDonateHomeModel") ?: return
+            val walkDonateHomeModel =
+                donateHomeJo.optJSONObject("walkDonateHomeModel") ?: run {
+                    Log.farm("家庭任务🏠捐步做公益#donateWalkHome 返回缺少 walkDonateHomeModel，未确认")
+                    return
+                }
             val walkUserInfoModel = walkDonateHomeModel.optJSONObject("walkUserInfoModel")
             if (walkUserInfoModel == null || !walkUserInfoModel.has("exchangeFlag")) {
-                Status.exchangeToday(currentUid)
+                Log.farm("家庭任务🏠捐步做公益#donateWalkHome 返回缺少 exchangeFlag，未确认")
                 return
             }
 
@@ -910,15 +919,15 @@ data object AntFarmFamily {
                 val donateExchangeResultModel = exchangeJo.optJSONObject("donateExchangeResultModel")
                 val userCount = donateExchangeResultModel?.optInt("userCount", produceQuantity) ?: produceQuantity
                 val amount = donateExchangeResultModel?.optJSONObject("userAmount")?.optDouble("amount", 0.0) ?: 0.0
-                Log.farm("家庭任务🏠捐步做公益🚶[${userCount}步]#兑换${amount}元公益金")
-                Status.exchangeToday(currentUid)
-                syncFamilyStatusIntimacy(groupId)
-                return
-            }
-
-            if (exchangeResponse.contains("已捐步") || exchangeJo.optString("resultDesc").contains("已捐步")) {
-                Status.exchangeToday(currentUid)
-                Log.farm("家庭任务🏠捐步做公益#今日已捐步")
+                Log.farm("家庭任务🏠捐步做公益🚶[${userCount}步]#兑换已提交${amount}元公益金")
+                val updatedMemberState =
+                    findCurrentFamilyMemberState(queryFamilyTreadMillState(), currentUid)
+                if (updatedMemberState?.optBoolean("alreadyDonate", false) == true) {
+                    Status.exchangeToday(currentUid)
+                    syncFamilyStatusIntimacy(groupId)
+                } else {
+                    Log.farm("家庭任务🏠捐步做公益#兑换已提交但家庭状态未确认")
+                }
                 return
             }
 
@@ -1302,6 +1311,11 @@ data object AntFarmFamily {
 
             val activityId = familyJo.optString("decorationCoinActivityId", "20250808")
             Log.farm("[家庭装扮] 当前活动 ID: $activityId")
+            val todayFlag = StatusFlags.FLAG_FARM_FAMILY_DECORATION_CHECK_DONE_PREFIX + activityId
+            if (Status.hasFlagToday(todayFlag)) {
+                Log.farm("[家庭装扮] 今日已完成活动检查，跳过 activityId=$activityId")
+                return
+            }
 
             // 分类列表
             val labelTypes =
@@ -1334,8 +1348,10 @@ data object AntFarmFamily {
 
             var currentBalance = 0
             val purchasedDecorationKeys = LinkedHashSet<String>()
+            var scanCompleted = true
+            var purchasedCount = 0
 
-            for (label in labelTypes) {
+            labelLoop@ for (label in labelTypes) {
                 var startIndex = 0
                 var hasMore = true
                 Log.farm("[家庭装扮] 正在检查分类: ${if (label.isEmpty()) "新品" else label}")
@@ -1343,11 +1359,20 @@ data object AntFarmFamily {
                 while (hasMore) {
                     val itemListRes = AntFarmRpcCall.getFitmentItemList(activityId, 10, label, startIndex)
                     val itemJo = JSONObject(itemListRes)
-                    if (!ResChecker.checkRes(TAG, itemJo)) break
+                    if (!ResChecker.checkRes(TAG, itemJo)) {
+                        scanCompleted = false
+                        break@labelLoop
+                    }
 
                     // 解析实时装修金余额
                     val accountInfo = itemJo.optJSONObject("mallAccountInfoVO")
-                    currentBalance = accountInfo?.optJSONObject("holdingCount")?.optInt("cent") ?: 0
+                    val holdingCount = accountInfo?.optJSONObject("holdingCount")
+                    if (holdingCount == null || !holdingCount.has("cent")) {
+                        scanCompleted = false
+                        Log.error(TAG, "[家庭装扮] 缺少装修金余额字段，今日不落完成标识")
+                        break@labelLoop
+                    }
+                    currentBalance = holdingCount.optInt("cent")
 
                     val items = itemJo.optJSONArray("itemInfoVOList")
                     if (items == null || items.length() == 0) break
@@ -1355,13 +1380,20 @@ data object AntFarmFamily {
                     for (j in 0 until items.length()) {
                         val item = items.getJSONObject(j)
                         val spuId = item.getString("spuId")
-                        val spuName = item.getString("spuName")
-                        val price = item.optJSONObject("minPrice")?.optInt("cent") ?: 9999999
+                        val spuName = item.optString("spuName", spuId)
 
                         val itemStatusList = item.optJSONArray("itemStatusList")
                         val canBuy = itemStatusList == null || itemStatusList.length() == 0
+                        val minPrice = item.optJSONObject("minPrice")
+                        val price = minPrice?.takeIf { it.has("cent") }?.optInt("cent")
 
-                        if (canBuy && currentBalance >= price) {
+                        if (canBuy && price == null) {
+                            scanCompleted = false
+                            Log.error(TAG, "[家庭装扮] 未拥有家具[$spuName]缺少价格字段，今日不落完成标识")
+                            break@labelLoop
+                        }
+
+                        if (canBuy && price != null && currentBalance >= price) {
                             val skuList = item.optJSONArray("skuModelList")
                             if (skuList != null && skuList.length() > 0) {
                                 val skuId = skuList.getJSONObject(0).getString("skuId")
@@ -1376,11 +1408,29 @@ data object AntFarmFamily {
                                 val exchangeJo = JSONObject(exchangeRes)
 
                                 if (ResChecker.checkRes(TAG, exchangeJo)) {
+                                    val confirmation = confirmFamilyDecorationExchange(
+                                        activityId = activityId,
+                                        label = label,
+                                        startIndex = startIndex,
+                                        spuId = spuId,
+                                        balanceBefore = currentBalance,
+                                        price = price,
+                                    )
+                                    if (!confirmation.confirmed) {
+                                        scanCompleted = false
+                                        Log.error(TAG, "家庭装扮[$spuName]购买成功但服务端回查未确认，今日不落完成标识")
+                                        break@labelLoop
+                                    }
                                     Log.farm("家庭装扮💸#成功购买[$spuName]#消耗[${price / 100}装修金]")
                                     purchasedDecorationKeys.add(exchangeKey)
-                                    currentBalance -= price
+                                    purchasedCount++
+                                    currentBalance = confirmation.balanceCent ?: (currentBalance - price)
                                 }
                                 GlobalThreadPools.sleepCompat(2000)
+                            } else {
+                                scanCompleted = false
+                                Log.error(TAG, "[家庭装扮] 未拥有家具[$spuName]缺少skuId，今日不落完成标识")
+                                break@labelLoop
                             }
                         }
                     }
@@ -1393,16 +1443,52 @@ data object AntFarmFamily {
                         hasMore = false
                     }
                 }
+            }
+            if (scanCompleted) {
+                Status.setFlagToday(todayFlag)
+            }
+            Log.farm("[家庭装扮] 全量检查任务执行完毕")
+            if (scanCompleted) {
+                Log.farm("[家庭装扮] 今日检查已确认完成，购买${purchasedCount}件，剩余装修金${currentBalance / 100}")
+            }
+        } catch (t: Throwable) {
+            Log.printStackTrace(TAG, "autoExchangeFamilyDecoration 失败", t)
+        }
+    }
 
-                // 当处理完 seat3 分类后，如果装修金 < 49，终止后续更贵的分类的遍历
-                if (currentBalance < 4900 && label == "seat3") {
-                    Log.farm("[家庭装扮] 装修金不足 49 且已完成 seat3 遍历，终止任务")
+    private fun confirmFamilyDecorationExchange(
+        activityId: String,
+        label: String,
+        startIndex: Int,
+        spuId: String,
+        balanceBefore: Int,
+        price: Int,
+    ): DecorationExchangeConfirmation {
+        return try {
+            GlobalThreadPools.sleepCompat(500)
+            val response = JSONObject(AntFarmRpcCall.getFitmentItemList(activityId, 10, label, startIndex))
+            if (!ResChecker.checkRes(TAG, response)) {
+                return DecorationExchangeConfirmation(false, null)
+            }
+            val balance = response.optJSONObject("mallAccountInfoVO")
+                ?.optJSONObject("holdingCount")
+                ?.optInt("cent")
+            val itemList = response.optJSONArray("itemInfoVOList")
+            var statusConfirmed = false
+            if (itemList != null) {
+                for (index in 0 until itemList.length()) {
+                    val item = itemList.optJSONObject(index) ?: continue
+                    if (item.optString("spuId") != spuId) continue
+                    val itemStatusList = item.optJSONArray("itemStatusList")
+                    statusConfirmed = itemStatusList != null && itemStatusList.length() > 0
                     break
                 }
             }
-            Log.farm("[家庭装扮] 全量检查任务执行完毕")
+            val balanceConfirmed = price > 0 && balance != null && balance <= balanceBefore - price
+            DecorationExchangeConfirmation(statusConfirmed || balanceConfirmed, balance)
         } catch (t: Throwable) {
-            Log.printStackTrace(TAG, "autoExchangeFamilyDecoration 失败", t)
+            Log.printStackTrace(TAG, "confirmFamilyDecorationExchange 失败", t)
+            DecorationExchangeConfirmation(false, null)
         }
     }
 

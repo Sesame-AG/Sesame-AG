@@ -1013,64 +1013,15 @@ object AntFarmRpcCall {
         return requestString("com.alipay.antfarm.drawMachine", data)
     }
 
-    /**
-     * 广告插件接口 - 获取广告任务
-     */
     @JvmStatic
-    @Throws(JSONException::class)
-    fun xlightPlugin(
-        referToken: String,
-        spaceCode: String,
-    ): String {
-        val positionRequest = JSONObject()
-        val referInfo = JSONObject()
-        referInfo.put("referToken", referToken)
-        positionRequest.put("referInfo", referInfo)
-        positionRequest.put("spaceCode", spaceCode)
-
-        val sdkPageInfo = JSONObject()
-        sdkPageInfo.put("adComponentType", "GUESS_PRICE")
-        sdkPageInfo.put("adComponentVersion", "4.28.66")
-        sdkPageInfo.put("networkType", "WIFI")
-        sdkPageInfo.put("pageFrom", "ch_url-https://render.alipay.com/p/yuyan/180020380000000182/prizeMachine.html")
-        sdkPageInfo.put("pageNo", 1)
-        sdkPageInfo.put("pageUrl", "https://render.alipay.com/p/yuyan/180020010001256918/antfarm-landing.html?caprMode=sync")
-        sdkPageInfo.put("session", "u_0c09f_b010f")
-        sdkPageInfo.put("unionAppId", "2060090000304921")
-        sdkPageInfo.put("xlightRuntimeSDKversion", "4.28.66")
-        sdkPageInfo.put("xlightSDKType", "h5")
-        sdkPageInfo.put("xlightSDKVersion", "4.28.66")
-
-        val args = JSONObject()
-        args.put("positionRequest", positionRequest)
-        args.put("sdkPageInfo", sdkPageInfo)
-
-        return requestString("com.alipay.adexchange.ad.facade.xlightPlugin", "[$args]")
-    }
-
-    /**
-     * 完成广告任务
-     */
-    @JvmStatic
-    @Throws(JSONException::class)
-    fun finishAdTask(
-        playBizId: String,
-        playEventInfo: JSONObject,
-        iepTaskType: String,
-        iepTaskSceneCode: String,
-    ): String {
-        val extendInfo = JSONObject()
-        extendInfo.put("iepTaskSceneCode", iepTaskSceneCode)
-        extendInfo.put("iepTaskType", iepTaskType)
-        extendInfo.put("playEndingStatus", "success")
-
-        val args = JSONObject()
-        args.put("extendInfo", extendInfo)
-        args.put("playBizId", playBizId)
-        args.put("playEventInfo", playEventInfo)
-        args.put("source", "adx")
-
-        return requestString("com.alipay.adtask.biz.mobilegw.service.interaction.finish", "[$args]")
+    fun adTaskApplayerQuery(renderConfigKey: String): String {
+        val args = JSONObject().apply {
+            put("spaceCode", renderConfigKey)
+        }
+        return requestString(
+            "com.alipay.adtask.biz.mobilegw.service.applayer.query",
+            JSONArray().put(args).toString(),
+        )
     }
 
     @JvmStatic
