@@ -11,7 +11,7 @@ import org.json.JSONObject
  * queryTaskModel 的服务端下发结果提供，不能由本地文案推断。
  */
 object YouthPrivilegeRpcCall {
-    const val CH_INFO = "ch_appcenter__chsub_recentUSE"
+    const val CH_INFO = "ch_appcollect__chsub_my-recentlyUsed"
 
     private const val RPC_PREFIX = "com.alipay.mobileopl.youthprivilege.rpc.mgw."
 

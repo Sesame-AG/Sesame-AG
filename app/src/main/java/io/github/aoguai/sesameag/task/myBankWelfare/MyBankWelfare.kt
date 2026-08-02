@@ -731,10 +731,10 @@ class MyBankWelfare : ModelTask() {
             val canRetry = result?.optBoolean("canRetry", false) == true
             if (signNotAdmit && !canRetry) {
                 Log.mybank("${BUSINESS_NAME}📅今日签到已处理")
+                setFlagToday(StatusFlags.FLAG_MYBANK_WELFARE_SIGN_DONE)
             } else {
                 Log.mybank("${BUSINESS_NAME}📅签到咨询成功")
             }
-            setFlagToday(StatusFlags.FLAG_MYBANK_WELFARE_SIGN_DONE)
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "handleSign err:", t)
         }
@@ -796,6 +796,9 @@ class MyBankWelfare : ModelTask() {
 
         private val signedUpTaskKeys = LinkedHashSet<String>()
         private val sentTaskKeys = LinkedHashSet<String>()
+
+        override fun isFlowHandledToday(): Boolean =
+            hasFlagToday(StatusFlags.FLAG_MYBANK_WELFARE_TASKS_DONE)
 
         override fun query(): JSONObject {
             val response = MyBankWelfareRpcCall.taskQuery(TASK_CENTER_ID)
@@ -926,6 +929,7 @@ class MyBankWelfare : ModelTask() {
         }
 
         override fun onAllTasksDone(snapshot: TaskFlowSnapshot) {
+            setFlagToday(StatusFlags.FLAG_MYBANK_WELFARE_TASKS_DONE)
             logInfo("$flowName[任务列表已处理完成：${snapshot.completedTasks}/${snapshot.totalTasks}]")
         }
 

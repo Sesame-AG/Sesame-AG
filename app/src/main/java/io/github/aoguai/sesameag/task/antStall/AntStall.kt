@@ -540,11 +540,13 @@ class AntStall : ModelTask() {
                     Status.hasFlagToday(StatusFlags.FLAG_ANTSTALL_TASKS_DONE) &&
                         !stallTasksDoneInvalidatedThisRun
                 if (!taskHandledToday) {
-                    taskList(allowMarkDone = false)
+                    val firstTaskRefreshMarkedDone = taskList(allowMarkDone = true)
                     tc.countDebug("自动任务第一次")
-                    GlobalThreadPools.sleepCompat(500)
-                    taskList(allowMarkDone = false)
-                    tc.countDebug("自动任务第二次")
+                    if (!firstTaskRefreshMarkedDone) {
+                        GlobalThreadPools.sleepCompat(500)
+                        taskList(allowMarkDone = true)
+                        tc.countDebug("自动任务第二次")
+                    }
                 }
             }
 
@@ -1316,17 +1318,19 @@ class AntStall : ModelTask() {
     private fun taskList(
         skipIfHandledToday: Boolean = true,
         allowMarkDone: Boolean = true,
-    ) {
+    ): Boolean {
         try {
             val adapter = StallTaskFlowAdapter(skipIfHandledToday)
             val result = TaskFlowEngine(adapter, roundSleepMs = 500L).run()
             if (allowMarkDone && !result.stopped && adapter.canMarkTasksDone()) {
                 Status.setFlagToday(StatusFlags.FLAG_ANTSTALL_TASKS_DONE)
                 stallTasksDoneInvalidatedThisRun = false
+                return true
             }
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "taskList err:", t)
         }
+        return false
     }
 
     private fun buildStallTaskItems(response: JSONObject): List<TaskFlowItem> {

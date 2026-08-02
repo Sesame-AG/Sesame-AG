@@ -247,7 +247,7 @@ interface TaskFlowAdapter {
     ): String {
         val progressKey = item.current?.toString() ?: item.progress.ifBlank { "NO_PROGRESS" }
         val typeKey = item.actionType.ifBlank { item.type.ifBlank { "NO_TYPE" } }
-        return "${action.logName}:${item.id.ifBlank { item.title }}:$progressKey:$typeKey"
+        return "${action.logName}:${item.id}:$progressKey:$typeKey"
     }
 
     fun isBlacklisted(item: TaskFlowItem): Boolean = item.blacklistKeys.any { TaskBlacklist.isTaskInBlacklist(moduleName, it) }
@@ -256,12 +256,12 @@ interface TaskFlowAdapter {
         item: TaskFlowItem,
         result: TaskFlowActionResult,
     ) {
-        val taskId = item.id.ifBlank { item.title }
+        val taskId = item.id.trim()
         if (taskId.isBlank()) return
         if (result.code.isNotBlank()) {
-            TaskBlacklist.autoAddToBlacklist(moduleName, taskId, item.title, result.code)
+            TaskBlacklist.autoAddToBlacklist(moduleName, taskId, errorCode = result.code)
         }
-        TaskBlacklist.addToBlacklist(moduleName, taskId, item.title)
+        TaskBlacklist.addToBlacklist(moduleName, taskId)
     }
 
     fun afterSuccess(

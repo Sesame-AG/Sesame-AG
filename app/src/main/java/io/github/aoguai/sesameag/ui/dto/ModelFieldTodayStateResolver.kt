@@ -30,6 +30,7 @@ object ModelFieldTodayStateResolver {
     private data class OptionFlagState(
         val flag: String,
         val reason: String,
+        val flagPrefix: String = "",
     )
 
     /**
@@ -50,6 +51,11 @@ object ModelFieldTodayStateResolver {
             "shareToFriends" to OptionFlagState(StatusFlags.FLAG_FARM_FAMILY_SHARE_TO_FRIENDS, "今日家庭分享已处理"),
             "inviteFriendVisitFamily" to OptionFlagState(StatusFlags.FLAG_FARM_INVITE_FRIEND_VISIT_FAMILY, "今日好友串门邀请已处理"),
             "batchInviteP2P" to OptionFlagState(StatusFlags.FLAG_FARM_FAMILY_BATCH_INVITE_P2P, "今日串门送扭蛋已处理"),
+            "ExchangeFamilyDecoration" to OptionFlagState(
+                flag = "",
+                reason = "今日兑换装修物品已处理",
+                flagPrefix = StatusFlags.FLAG_FARM_FAMILY_DECORATION_CHECK_DONE_PREFIX,
+            ),
         )
 
     @JvmStatic
@@ -79,6 +85,10 @@ object ModelFieldTodayStateResolver {
 
             "YouthPrivilege.youthPrivilegeCheckIn" -> {
                 flag(StatusFlags.FLAG_YOUTH_PRIVILEGE_CHECK_IN_DONE, "今日青春特权签到已处理")
+            }
+
+            "YouthPrivilege.youthPrivilegeTasks" -> {
+                flag(StatusFlags.FLAG_YOUTH_PRIVILEGE_TASKS_DONE, "今日青春特权任务已处理")
             }
 
             "AntForest.ecoLife",
@@ -160,6 +170,10 @@ object ModelFieldTodayStateResolver {
                     StatusFlags.FLAG_MYBANK_WELFARE_EXCHANGE_REFRESH_DONE,
                     "今日网商银行福利金兑换已处理",
                 )
+            }
+
+            "MyBankWelfare.myBankWelfareTask" -> {
+                flag(StatusFlags.FLAG_MYBANK_WELFARE_TASKS_DONE, "今日网商银行福利金任务中心已处理")
             }
 
             "AntMember.enableGameCenter" -> {
@@ -629,7 +643,7 @@ object ModelFieldTodayStateResolver {
             return ModelFieldTodayState()
         }
 
-        return if (matchedStates.all { Status.hasFlagToday(it.flag) }) {
+        return if (matchedStates.all { optionStateSatisfied(it) }) {
             val reason =
                 if (matchedStates.size == 1) {
                     matchedStates.first().reason
@@ -641,6 +655,13 @@ object ModelFieldTodayStateResolver {
             ModelFieldTodayState()
         }
     }
+
+    private fun optionStateSatisfied(state: OptionFlagState): Boolean =
+        when {
+            state.flag.isNotBlank() && Status.hasFlagToday(state.flag) -> true
+            state.flagPrefix.isNotBlank() && hasFlagTodayWithPrefix(state.flagPrefix) -> true
+            else -> false
+        }
 
     private fun selectedSetFlagState(
         modelField: ModelField<*>?,

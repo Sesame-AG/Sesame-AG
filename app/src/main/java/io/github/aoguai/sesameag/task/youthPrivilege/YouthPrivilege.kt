@@ -310,6 +310,9 @@ class YouthPrivilege : ModelTask() {
                 else -> TaskFlowPhase.UNKNOWN
             }
 
+        override fun isFlowHandledToday(): Boolean =
+            Status.hasFlagToday(StatusFlags.FLAG_YOUTH_PRIVILEGE_TASKS_DONE)
+
         override fun afterSuccess(
             item: TaskFlowItem,
             action: TaskFlowAction,
@@ -352,11 +355,18 @@ class YouthPrivilege : ModelTask() {
                 // 动作成功仅说明服务端接受请求，TaskFlow 必须进行一次状态回查后才能判定进展。
                 return TaskFlowActionResult.success(refreshAfterAction = true, progressChanged = false)
             }
+            val hasRetryable = response.has("retryable") && !response.isNull("retryable")
             val failureType =
-                if (response.optBoolean("retryable")) {
-                    TaskRpcFailureType.RETRYABLE_RPC
-                } else {
-                    TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW
+                when {
+                    hasRetryable && response.optBoolean("retryable") -> TaskRpcFailureType.RETRYABLE_RPC
+                    response.optBoolean("success", true) == false &&
+                        response.optString("resultCode") == "TASK_OPERATE_ERROR" &&
+                        hasRetryable &&
+                        !response.optBoolean("retryable") -> {
+                        TaskRpcFailureType.NON_RETRYABLE_INVALID
+                    }
+
+                    else -> TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW
                 }
             return TaskFlowActionResult.failure(
                 failureType = failureType,
@@ -369,6 +379,7 @@ class YouthPrivilege : ModelTask() {
         }
 
         override fun onAllTasksDone(snapshot: TaskFlowSnapshot) {
+            Status.setFlagToday(StatusFlags.FLAG_YOUTH_PRIVILEGE_TASKS_DONE)
             Log.youthPrivilege("青春特权任务服务端已无待处理项#${snapshot.totalTasks}")
         }
 
