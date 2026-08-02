@@ -218,6 +218,7 @@ class AntMember : ModelTask() {
     private data class MemberFloatingBallTaskRef(
         val bizNo: String,
         val taskType: String,
+        val adTaskType: String,
         val taskStatus: String,
         val endDt: Long,
         val executeTimeSeconds: Long
@@ -2362,9 +2363,11 @@ class AntMember : ModelTask() {
         if (bizNo.isBlank() || taskType.isBlank()) {
             return null
         }
+        val adTaskType = resolveMemberFloatingBallAdTaskType(jsonObject, activeTaskInfo)
         return MemberFloatingBallTaskRef(
             bizNo = bizNo,
             taskType = taskType,
+            adTaskType = adTaskType,
             taskStatus = activeTaskInfo.optString("taskStatus"),
             endDt = activeTaskInfo.optLong("endDt", 0L),
             executeTimeSeconds = activeTaskInfo.optLong("executeTime", 0L)
@@ -2377,7 +2380,7 @@ class AntMember : ModelTask() {
                 Log.member("会员任务[浮球]#$memberFloatingBallAdTaskTitle 已在黑名单，跳过后续广告任务")
                 return@run true
             }
-            val adTaskResponse = AntMemberRpcCall.querySignFloatingBallAdTask(taskRef.bizNo)
+            val adTaskResponse = AntMemberRpcCall.querySignFloatingBallAdTask(taskRef.bizNo, taskRef.adTaskType)
             val adTaskObject = JSONObject(adTaskResponse)
             if (!ResChecker.checkRes(TAG, adTaskObject)) {
                 Log.error(
@@ -2404,6 +2407,31 @@ class AntMember : ModelTask() {
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "tryProcessMemberFloatingBallAdTask err:", t)
             return@run false
+        }
+    }
+
+    private fun resolveMemberFloatingBallAdTaskType(
+        jsonObject: JSONObject,
+        activeTaskInfo: JSONObject
+    ): String {
+        val explicitAdTaskType = sequenceOf(
+            activeTaskInfo.optString("adType"),
+            activeTaskInfo.optString("adTaskType"),
+            jsonObject.optString("adType"),
+            jsonObject.optString("adTaskType")
+        ).firstOrNull { it.isNotBlank() }
+        if (!explicitAdTaskType.isNullOrBlank()) {
+            return explicitAdTaskType
+        }
+        val playType = jsonObject.optString("playType")
+        return when (playType.lowercase(Locale.ROOT)) {
+            "treasure" -> "AD_MIXED_TASK"
+            "video" -> "AD_VIDEO_TASK"
+            else -> if (jsonObject.optBoolean("openGuessPrice", false)) {
+                "AD_MIXED_TASK"
+            } else {
+                "AD_VIDEO_TASK"
+            }
         }
     }
 
@@ -3081,6 +3109,9 @@ class AntMember : ModelTask() {
         return overallResult
     }
 
+    private fun insuredTaskCenterDoneFlag(config: InsuredTaskCenterConfig): String =
+        StatusFlags.FLAG_ANTMEMBER_INSURED_TASK_CENTER_DONE_PREFIX + config.taskCenterId + "::" + config.sceneCode
+
     private inner class InsuredTaskCenterFlowAdapter(
         private val config: InsuredTaskCenterConfig,
         private val entrance: String
@@ -3102,6 +3133,9 @@ class AntMember : ModelTask() {
         private val signedUpTaskKeys = LinkedHashSet<String>()
         private val completedTaskKeys = LinkedHashSet<String>()
         private val loggedSkipTaskKeys = LinkedHashSet<String>()
+
+        override fun isFlowHandledToday(): Boolean =
+            hasFlagToday(insuredTaskCenterDoneFlag(config))
 
         override fun query(): JSONObject {
             return try {
@@ -3276,6 +3310,9 @@ class AntMember : ModelTask() {
         }
 
         override fun onAllTasksDone(snapshot: TaskFlowSnapshot) {
+            if (!queryFailed && !hasBlockingFailure && !hasRetryableFailure && !hasPendingManualTask) {
+                setFlagToday(insuredTaskCenterDoneFlag(config))
+            }
             logInfo("$flowName[任务列表已处理完成：${snapshot.completedTasks}/${snapshot.totalTasks}]")
         }
 
@@ -4479,11 +4516,7 @@ class AntMember : ModelTask() {
     }
 
     private fun isGoldTicketEggSignTask(task: JSONObject): Boolean {
-        val taskId = task.optString("taskId")
-        if (taskId == "AP11249033") {
-            return true
-        }
-        return task.optString("title").contains("蛋定生财")
+        return task.optString("taskId") == "AP11249033"
     }
 
     private fun isGoldTicketKnownWelfareAutoTask(task: JSONObject): Boolean {
@@ -5616,7 +5649,7 @@ class AntMember : ModelTask() {
                 "COMPLETE",
                 "SUCCESS",
                 "RECEIVED"
-            ) || snapshot.buttonText.contains("领取")
+            )
         }
 
         private fun buildGameCenterPlatformRecheckDetail(
@@ -5865,8 +5898,7 @@ class AntMember : ModelTask() {
                 return TaskFlowPhase.TERMINAL
             }
             val status = item.status.uppercase(Locale.ROOT)
-            val buttonText = item.raw?.optString("buttonText").orEmpty()
-            if (status in setOf("COMPLETED", "COMPLETE", "FINISHED") || buttonText.contains("领取")) {
+            if (status in setOf("COMPLETED", "COMPLETE", "FINISHED")) {
                 return TaskFlowPhase.REWARD_READY
             }
             if (!isGameCenterP2eAutoTask(item)) {
@@ -6207,8 +6239,7 @@ class AntMember : ModelTask() {
 
         private fun isGameCenterP2eRewardTask(task: JSONObject): Boolean {
             val status = task.optString("taskStatus").uppercase(Locale.ROOT)
-            val buttonText = task.optString("buttonText")
-            return status in setOf("COMPLETED", "COMPLETE", "FINISHED") || buttonText.contains("领取")
+            return status in setOf("COMPLETED", "COMPLETE", "FINISHED")
         }
 
         private fun reportGameCenterP2eExposedTasks(taskList: JSONArray) {
@@ -8989,7 +9020,7 @@ class AntMember : ModelTask() {
                     }
                     return TaskFlowActionResult.success()
                 }
-                return TaskFlowActionResult.success(progressChanged = false)
+                return TaskFlowActionResult.success(refreshAfterAction = true, progressChanged = false)
             }
 
             private fun queryMerchantTaskByCode(
