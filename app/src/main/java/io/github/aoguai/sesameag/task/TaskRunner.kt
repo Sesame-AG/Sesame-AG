@@ -56,8 +56,6 @@ class CoroutineTaskRunner(allModels: List<Model>) {
         private const val DEFAULT_TASK_TIMEOUT = 10 * 60 * 1000L // 10分钟
 
         private const val DEFAULT_MAX_CONCURRENCY = 1
-
-        private val TIMEOUT_WHITELIST = setOf("蚂蚁森林", "蚂蚁庄园", "运动")
     }
 
     private val taskList: List<ModelTask> = allModels.filterIsInstance<ModelTask>()
@@ -362,7 +360,7 @@ class CoroutineTaskRunner(allModels: List<Model>) {
             return
         }
 
-        val isWhitelist = isLongRunningTask(task, taskName)
+        val isLongRunning = isLongRunningTask(task)
         val timeout = (BaseModel.taskTimeout.value ?: DEFAULT_TASK_TIMEOUT).toLong()
         var acquiredConcurrencySlot = false
         var acquiredLongRunningSlot = false
@@ -380,7 +378,7 @@ class CoroutineTaskRunner(allModels: List<Model>) {
         }
 
         try {
-            if (isWhitelist) {
+            if (isLongRunning) {
                 longRunningTaskLimiter.acquire()
                 acquiredLongRunningSlot = true
             }
@@ -406,7 +404,7 @@ class CoroutineTaskRunner(allModels: List<Model>) {
             task.addRunCents()
 
             val job = task.startTask(force = false, rounds = 1)
-            if (isWhitelist) {
+            if (isLongRunning) {
                 val longRunningJob = LongRunningJob(taskId, startTime, task, job) { releaseTaskSlots() }
                 longRunningJobs.add(longRunningJob)
                 trackedLongRunningJob = true
@@ -461,7 +459,7 @@ class CoroutineTaskRunner(allModels: List<Model>) {
         while (true) {
             val longRunningJob = longRunningJobs.peek() ?: break
             if (!isRunSessionCurrent()) {
-                Log.record(TAG, "⏸ 会话已切换，中断白名单长任务: ${longRunningJob.taskId}")
+                Log.record(TAG, "⏸ 会话已切换，中断长任务: ${longRunningJob.taskId}")
                 longRunningJob.task.stopTask()
                 longRunningJob.job.cancel()
                 longRunningJob.releaseResourcesOnce()
@@ -470,7 +468,7 @@ class CoroutineTaskRunner(allModels: List<Model>) {
                 continue
             }
             if (ApplicationHookConstants.isOffline()) {
-                Log.record(TAG, "⏸ 离线模式中断白名单长任务: ${longRunningJob.taskId}")
+                Log.record(TAG, "⏸ 离线模式中断长任务: ${longRunningJob.taskId}")
                 longRunningJob.task.stopTask()
                 longRunningJob.job.cancel()
                 longRunningJob.releaseResourcesOnce()
@@ -480,7 +478,7 @@ class CoroutineTaskRunner(allModels: List<Model>) {
             }
             if (!loggedWait) {
                 loggedWait = true
-                Log.record(TAG, "⏳ 等待白名单长任务完成后再调度下次执行")
+                Log.record(TAG, "⏳ 等待长任务完成后再调度下次执行")
             }
             longRunningJob.job.join()
             longRunningJob.releaseResourcesOnce()
@@ -500,11 +498,10 @@ class CoroutineTaskRunner(allModels: List<Model>) {
         }
     }
 
-    private fun isLongRunningTask(task: ModelTask, taskName: String): Boolean {
+    private fun isLongRunningTask(task: ModelTask): Boolean {
         return task is AntForest ||
             task is AntFarm ||
-            task is AntSports ||
-            TIMEOUT_WHITELIST.contains(taskName)
+            task is AntSports
     }
 
     private fun scheduleNext() {

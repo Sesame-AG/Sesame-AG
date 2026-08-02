@@ -508,6 +508,7 @@ object ScheduledTaskRouter {
     }
 
     fun confirmTargetLaunch(scheduleId: String) {
+        SystemWakeScheduler.cancelLaunchConfirmationTimeout(scheduleId)
         val schedule = PersistentScheduleRegistry.get(scheduleId) ?: return
         PersistentScheduleRegistry.confirmTargetLaunch(scheduleId)
         clearLaunchFailures(schedule)

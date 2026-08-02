@@ -22,6 +22,16 @@ object SystemWakeScheduler {
     internal const val EXTRA_PERSISTENT_ALARM_LAUNCH = "persistent_alarm_launch"
     internal const val EXTRA_PLANNED_BATCH = "persistent_planned_batch"
     private const val PLANNER_REQUEST_CODE = 0x53534147
+    private const val LAUNCH_CONFIRMATION_TIMEOUT_MS = 30_000L
+    private val launchConfirmationLock = Any()
+    private val launchConfirmationWatchdogs = mutableMapOf<String, LaunchConfirmationWatchdog>()
+    private var plannerLaunchScheduleId: String? = null
+
+    private data class LaunchConfirmationWatchdog(
+        val absoluteDeadlineMs: Long,
+        val triggerAtMs: Long,
+        val updatedAtMs: Long,
+    )
 
     private data class AlarmPlan(
         val primary: PersistentSchedule,
@@ -92,9 +102,7 @@ object SystemWakeScheduler {
             } else {
                 scheduleFlexible(alarmManager, plan.triggerAtMs, plan.primary.toleranceMs, pendingIntent)
             }
-            if (shouldLaunchTarget(plan.primary)) {
-                scheduleLaunchConfirmationTimeout(alarmContext, plan.primary, plan.triggerAtMs)
-            }
+            updatePlannerLaunchConfirmationTimeout(alarmContext, plan.primary, plan.triggerAtMs)
             if (!silent) {
                 Log.runtime(
                     TAG,
@@ -218,6 +226,7 @@ object SystemWakeScheduler {
         context: Context,
         silent: Boolean,
     ) {
+        clearPlannerLaunchConfirmationTimeout()
         val marker = PersistentSchedule(id = "persistent-alarm-plan")
         resolveAlarmContexts(context).forEach { alarmContext ->
             val alarmManager = alarmContext.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return@forEach
@@ -410,18 +419,116 @@ object SystemWakeScheduler {
         schedule: PersistentSchedule,
         triggerAtMs: Long = schedule.triggerAtMs,
     ) {
-        val delayMs = (triggerAtMs - System.currentTimeMillis()).coerceAtLeast(0L) + 30_000L
-        UnifiedScheduler.scheduleLongDelay(delayMs, "persistent_launch_timeout:${schedule.id}") {
+        synchronized(launchConfirmationLock) {
+            scheduleLaunchConfirmationTimeoutLocked(context, schedule, triggerAtMs)
+        }
+    }
+
+    internal fun cancelLaunchConfirmationTimeout(scheduleId: String) {
+        if (scheduleId.isBlank()) return
+        synchronized(launchConfirmationLock) {
+            cancelLaunchConfirmationTimeoutLocked(scheduleId)
+            if (plannerLaunchScheduleId == scheduleId) {
+                plannerLaunchScheduleId = null
+            }
+        }
+    }
+
+    private fun updatePlannerLaunchConfirmationTimeout(
+        context: Context,
+        schedule: PersistentSchedule,
+        triggerAtMs: Long,
+    ) {
+        synchronized(launchConfirmationLock) {
+            val nextScheduleId = schedule.id.takeIf { shouldLaunchTarget(schedule) }
+            val previousScheduleId = plannerLaunchScheduleId
+            if (previousScheduleId != null && previousScheduleId != nextScheduleId) {
+                cancelLaunchConfirmationTimeoutLocked(previousScheduleId)
+            }
+            plannerLaunchScheduleId = nextScheduleId
+            if (nextScheduleId != null) {
+                scheduleLaunchConfirmationTimeoutLocked(context, schedule, triggerAtMs)
+            }
+        }
+    }
+
+    private fun clearPlannerLaunchConfirmationTimeout() {
+        synchronized(launchConfirmationLock) {
+            plannerLaunchScheduleId?.let(::cancelLaunchConfirmationTimeoutLocked)
+            plannerLaunchScheduleId = null
+        }
+    }
+
+    private fun scheduleLaunchConfirmationTimeoutLocked(
+        context: Context,
+        schedule: PersistentSchedule,
+        triggerAtMs: Long,
+    ) {
+        val absoluteDeadlineMs = triggerAtMs + LAUNCH_CONFIRMATION_TIMEOUT_MS
+        val existingWatchdog = launchConfirmationWatchdogs[schedule.id]
+        if (existingWatchdog != null) {
+            if (
+                existingWatchdog.absoluteDeadlineMs == absoluteDeadlineMs &&
+                existingWatchdog.triggerAtMs == schedule.triggerAtMs &&
+                existingWatchdog.updatedAtMs == schedule.updatedAtMs
+            ) {
+                return
+            }
+            // 同一计划已发生改期或状态更新，旧 watchdog 的状态快照不能再驱动延期。
+            cancelLaunchConfirmationTimeoutLocked(schedule.id)
+        }
+        val watchdog =
+            LaunchConfirmationWatchdog(
+                absoluteDeadlineMs = absoluteDeadlineMs,
+                triggerAtMs = schedule.triggerAtMs,
+                updatedAtMs = schedule.updatedAtMs,
+            )
+        launchConfirmationWatchdogs[schedule.id] = watchdog
+        val delayMs = (absoluteDeadlineMs - System.currentTimeMillis()).coerceAtLeast(0L)
+        val scheduledTaskId = UnifiedScheduler.scheduleLongDelay(delayMs, launchConfirmationTaskName(schedule.id)) {
+            val shouldReschedule =
+                synchronized(launchConfirmationLock) {
+                    if (launchConfirmationWatchdogs[schedule.id] !== watchdog) {
+                        false
+                    } else {
+                        launchConfirmationWatchdogs.remove(schedule.id)
+                        if (plannerLaunchScheduleId == schedule.id) {
+                            plannerLaunchScheduleId = null
+                        }
+                        true
+                    }
+                }
+            if (!shouldReschedule) {
+                return@scheduleLongDelay
+            }
             val current = PersistentScheduleRegistry.get(schedule.id) ?: return@scheduleLongDelay
-            if (current.state == PersistentScheduleState.SCHEDULED && current.triggerAtMs <= System.currentTimeMillis()) {
+            val now = System.currentTimeMillis()
+            if (
+                current.state == PersistentScheduleState.SCHEDULED &&
+                current.triggerAtMs == watchdog.triggerAtMs &&
+                current.updatedAtMs == watchdog.updatedAtMs &&
+                current.triggerAtMs <= now
+            ) {
                 PersistentScheduleRegistry.rescheduleDeferred(
                     context.applicationContext ?: context,
                     current.id,
                     "launch_unconfirmed",
+                    now,
                 )
             }
         }
+        if (scheduledTaskId == -1 && launchConfirmationWatchdogs[schedule.id] === watchdog) {
+            launchConfirmationWatchdogs.remove(schedule.id)
+        }
     }
+
+    private fun cancelLaunchConfirmationTimeoutLocked(scheduleId: String) {
+        launchConfirmationWatchdogs.remove(scheduleId)
+        UnifiedScheduler.cancelNamedTask(launchConfirmationTaskName(scheduleId))
+    }
+
+    private fun launchConfirmationTaskName(scheduleId: String): String =
+        "persistent_launch_timeout:$scheduleId"
 
     private fun buildTargetLaunchIntent(
         context: Context,
