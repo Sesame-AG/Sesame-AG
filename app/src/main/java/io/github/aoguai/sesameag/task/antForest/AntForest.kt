@@ -4286,14 +4286,14 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             }
 
             TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE -> {
-                blacklistClassifiedForestTask(taskType, taskTitle, code)
+                blacklistClassifiedForestTask(taskType, code)
                 tryKey?.let(forestTaskTryCount::remove)
                 Log.error(TAG, "森林任务[$taskTitle] classification=UNSUPPORTED_NO_CLOSURE decision=BLACKLIST reason=未抓到稳定完成RPC $detail")
                 false
             }
 
             TaskRpcFailureType.NON_RETRYABLE_INVALID -> {
-                blacklistClassifiedForestTask(taskType, taskTitle, code)
+                blacklistClassifiedForestTask(taskType, code)
                 tryKey?.let(forestTaskTryCount::remove)
                 Log.error(TAG, "森林任务[$taskTitle] classification=NON_RETRYABLE_INVALID decision=BLACKLIST $detail")
                 false
@@ -4311,11 +4311,19 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         }
     }
 
-    private fun blacklistClassifiedForestTask(taskType: String, taskTitle: String, code: String) {
-        if (code.isNotBlank()) {
-            TaskBlacklist.autoAddToBlacklist(forestTaskBlacklistModule, taskType, taskTitle, code)
+    private fun blacklistClassifiedForestTask(taskType: String, code: String) {
+        if (taskType.isBlank()) {
+            return
         }
-        TaskBlacklist.addToBlacklist(forestTaskBlacklistModule, taskType, taskTitle)
+        if (code.isNotBlank()) {
+            TaskBlacklist.autoAddToBlacklist(
+                moduleName = forestTaskBlacklistModule,
+                taskId = taskType,
+                taskTitle = "",
+                errorCode = code
+            )
+        }
+        TaskBlacklist.addToBlacklist(forestTaskBlacklistModule, taskType)
     }
 
     private fun classifyForestTaskFailure(response: JSONObject): TaskRpcFailureType {
@@ -5260,6 +5268,13 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             return response.optBoolean("success", true)
         }
 
+        override fun blacklist(
+            item: TaskFlowItem,
+            result: TaskFlowActionResult,
+        ) {
+            blacklistClassifiedForestTask(item.type.ifBlank { item.id }, result.code)
+        }
+
         override fun extractItems(response: JSONObject): List<TaskFlowItem> {
             val items = mutableListOf<TaskFlowItem>()
             val signs = response.optJSONArray("signs")
@@ -5626,13 +5641,12 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 "popupTask" to { AntForestRpcCall.popupTask() },
                 "home_leaves_task_list" to { AntForestRpcCall.queryLeafTaskList() },
                 "take_look_end_task_list" to { AntForestRpcCall.queryTakeLookEndTaskList() },
-                "open_green_home_task_list" to {
-                    val extend = JSONObject().apply {
-                        put("businessSource", "ANTFOREST-home_task_list")
-                        put("osType", "android")
-                        put("version", "20260109")
-                    }
-                    AntForestRpcCall.listTaskopengreen("ANTFOREST_VITALITY_TASK", "chInfo_ch_appcenter__chsub_9patch", extend)
+                "open_green_home_task_list" to { AntForestRpcCall.queryOpenGreenHomeTaskList() },
+                "open_green_project_task_list" to {
+                    AntForestRpcCall.listTaskopengreen(
+                        "ANTFOREST_PROJECT_TASK",
+                        AntForestRpcCall.OPEN_GREEN_RIGHTS_SOURCE
+                    )
                 }
             )
             if (!isSigned) {
