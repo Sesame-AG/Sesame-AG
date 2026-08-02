@@ -660,7 +660,7 @@ object AntSportsRpcCall {
      */
 
     fun queryUser(): String {
-        val data = """[{"apiVersion":"energy","mainPage":true,"source":"$SPORTS_WALK_SOURCE","timeZone":"$TIME_ZONE"}]"""
+        val data = """[{"chInfo":"$SPORTS_WALK_SOURCE","clientOS":"android","features":$FEATURES,"mainPage":true,"timeZone":"$TIME_ZONE"}]"""
         return RequestManager.requestString("com.alipay.sportsplay.biz.rpc.walk.queryUser", data)
     }
 
@@ -717,8 +717,28 @@ object AntSportsRpcCall {
     fun queryCityKnowledgeDetail(cityId: String): String =
         RequestManager.requestString(
             "com.alipay.sportsplay.biz.rpc.walk.queryCityKnowledgeDetail",
-            """[{"chInfo":"medical_health","cityId":"$cityId","clientOS":"android","features":$FEATURES}]""",
+            """[{"chInfo":"$SPORTS_WALK_SOURCE","cityId":"$cityId","clientOS":"android","features":$FEATURES}]""",
         )
+
+    /**
+     * 查询用户已经进入过的路线历史；首页不发送 pageNo，避免伪造分页参数。
+     */
+    fun queryUserPathList(pageNo: Int? = null): String {
+        val request =
+            JSONObject().apply {
+                put("chInfo", SPORTS_WALK_SOURCE)
+                put("clientOS", "android")
+                put("features", JSONArray(FEATURES))
+                if (pageNo != null) {
+                    put("pageNo", pageNo)
+                }
+                put("pageSize", 7)
+            }
+        return RequestManager.requestString(
+            "com.alipay.sportsplay.biz.rpc.walk.queryUserPathList",
+            JSONArray().put(request).toString(),
+        )
+    }
 
     /**
      * @brief 查询城市见闻领取汇总
@@ -771,7 +791,7 @@ object AntSportsRpcCall {
     ): String =
         RequestManager.requestString(
             "com.alipay.sportsplay.biz.rpc.walk.queryPath",
-            """[{"apiVersion":"energy","appId":"$SPORTS_WALK_APP_ID","chInfo":"$SPORTS_WALK_SOURCE","date":"$date","pathId":"$pathId","source":"$SPORTS_WALK_SOURCE","timeZone":"$TIME_ZONE"}]""",
+            """[{"chInfo":"$SPORTS_WALK_SOURCE","clientOS":"android","date":"$date","enableNewVersion":true,"features":$FEATURES,"pathId":"$pathId","timeZone":"$TIME_ZONE"}]""",
         )
 
     /**
@@ -784,7 +804,7 @@ object AntSportsRpcCall {
      * @remark 对应API：com.alipay.sportsplay.biz.rpc.walk.joinPath
      */
     fun joinPath(pathId: String): String {
-        val requestBody = """[{"apiVersion":"energy","pathId":"$pathId","source":"$SPORTS_WALK_SOURCE"}]"""
+        val requestBody = """[{"chInfo":"$SPORTS_WALK_SOURCE","clientOS":"android","features":$FEATURES,"pathId":"$pathId"}]"""
         return RequestManager.requestString("com.alipay.sportsplay.biz.rpc.walk.joinPath", requestBody)
     }
 
@@ -804,7 +824,7 @@ object AntSportsRpcCall {
         pathId: String,
         useStepCount: Int,
     ): String {
-        val requestBody = """[{"apiVersion":"energy","chInfo":"ch_othertinyapp","clientOS":"android","date":"$date","features":$FEATURES,"pathId":"$pathId","source":"ch_othertinyapp","timeZone":"$TIME_ZONE","useStepCount":$useStepCount}]"""
+        val requestBody = """[{"chInfo":"$SPORTS_WALK_SOURCE","clientOS":"android","date":"$date","features":$FEATURES,"pathId":"$pathId","source":"$SPORTS_WALK_SOURCE","timeZone":"$TIME_ZONE","useStepCount":$useStepCount}]"""
         return RequestManager.requestString("com.alipay.sportsplay.biz.rpc.walk.go", requestBody)
     }
 
@@ -820,7 +840,7 @@ object AntSportsRpcCall {
     fun receiveEvent(eventBillNo: String): String =
         RequestManager.requestString(
             "com.alipay.sportsplay.biz.rpc.walk.receiveEvent",
-            """[{"eventBillNo":"$eventBillNo"}]""",
+            """[{"apiVersion":"energy","eventBillNo":"$eventBillNo"}]""",
         )
 
     /**
@@ -885,7 +905,7 @@ object AntSportsRpcCall {
     fun reviveSteps(): String =
         RequestManager.requestString(
             "com.alipay.sportsplay.biz.rpc.walk.steprevive.reviveSteps",
-            """[{"chInfo":"ch_othertinyapp","clientOS":"android","features":$FEATURES,"timeZone":"$TIME_ZONE"}]""",
+            """[{"apiVersion":"energy","source":"$SPORTS_WALK_SOURCE","timeZone":"$TIME_ZONE"}]""",
         )
 
     /**
@@ -907,13 +927,10 @@ object AntSportsRpcCall {
      *
      * @remark 对应API：com.alipay.sportsplay.biz.rpc.walk.queryPathReward
      */
-    fun queryPathReward(
-        appId: String,
-        pathId: String,
-    ): String =
+    fun queryPathReward(pathId: String): String =
         RequestManager.requestString(
             "com.alipay.sportsplay.biz.rpc.walk.queryPathReward",
-            """[{"appId":"$appId","pathId":"$pathId","source":"$SPORTS_WALK_SOURCE"}]""",
+            """[{"chInfo":"$SPORTS_WALK_SOURCE","clientOS":"android","features":$FEATURES,"pathId":"$pathId"}]""",
         )
 
     /**
@@ -1816,6 +1833,50 @@ object AntSportsRpcCall {
                     ).toString()
             return RequestManager.requestString(
                 "com.alipay.neverland.biz.rpc.queryItemList",
+                args,
+            )
+        }
+
+        /** 权益中心下拉奖励使用独立请求形状，不能复用商城字段。 */
+        fun queryRightsCenterItemList(): String {
+            val args =
+                JSONArray()
+                    .put(
+                        JSONObject().apply {
+                            put("adSession", "")
+                            put("categoryType", "ALL")
+                            put("chInfo", DEFAULT_SOURCE)
+                            put("cityCode", QUICK_GAME_CITY_CODE)
+                            put("filterBenefitList", JSONArray())
+                            put("pageNum", 1)
+                            put("pageSize", 15)
+                            put("recommendItemIdList", JSONArray())
+                        },
+                    ).toString()
+            return RequestManager.requestString(
+                "com.alipay.neverland.biz.rpc.queryItemList",
+                args,
+            )
+        }
+
+        /** 权益中心下拉奖励领取；energyNum 保持抓包中的数字类型。 */
+        fun receiveRightsCenterDropdownReward(
+            encryptValue: String,
+            energyNum: Int,
+            taskId: String,
+        ): String {
+            val args =
+                JSONArray()
+                    .put(
+                        JSONObject().apply {
+                            put("encryptValue", encryptValue)
+                            put("energyNum", energyNum)
+                            put("lightTaskId", taskId)
+                            put("type", "DROPDOWN_REWARD_TASK")
+                        },
+                    ).toString()
+            return RequestManager.requestString(
+                "com.alipay.neverland.biz.rpc.energyReceive",
                 args,
             )
         }
