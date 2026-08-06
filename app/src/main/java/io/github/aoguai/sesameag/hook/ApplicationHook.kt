@@ -1213,9 +1213,9 @@ class ApplicationHook {
                 pendingInit = false
                 pendingInitReason = null
                 EnergyWaitingManager.restoreForCurrentSession("init_ready")
-                handlePersistentLaunchAfterInit(appContext!!)
+                val deferGenericStartupTrigger = handlePersistentLaunchAfterInit(appContext!!)
                 ModuleStatusReporter.requestUpdate(reason = "ready")
-                ApplicationHookEntry.onInitCompleted(reason)
+                ApplicationHookEntry.onInitCompleted(reason, deferGenericStartupTrigger)
                 return true
             } catch (th: Throwable) {
                 if (sessionApplied) {
@@ -1229,14 +1229,17 @@ class ApplicationHook {
             }
         }
 
-        private fun handlePersistentLaunchAfterInit(context: Context) {
+        private fun handlePersistentLaunchAfterInit(context: Context): Boolean {
             val launchScheduleId = pendingPersistentLaunchScheduleId
             if (launchScheduleId.isNullOrBlank()) {
                 UnifiedScheduler.reconcilePersistentSchedules(
                     context,
                     mode = PersistentReconcileMode.FIRE_ALARM_DUE,
                 )
-                return
+                return PersistentScheduleRegistry.hasActiveModuleChild(
+                    AccountSessionCoordinator.currentUserId(),
+                    AccountSessionCoordinator.currentSessionEpoch(),
+                )
             }
             record(TAG, "初始化完成，处理持久调度唤醒任务[$launchScheduleId]")
             val schedule = PersistentScheduleRegistry.get(launchScheduleId)
@@ -1248,6 +1251,10 @@ class ApplicationHook {
                 record(TAG, "初始化完成但持久调度任务不存在[$launchScheduleId]")
                 pendingPersistentLaunchScheduleId = null
             }
+            return PersistentScheduleRegistry.hasActiveModuleChild(
+                AccountSessionCoordinator.currentUserId(),
+                AccountSessionCoordinator.currentSessionEpoch(),
+            )
         }
 
         private fun checkBatteryPermission() {

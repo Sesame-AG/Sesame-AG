@@ -68,6 +68,16 @@ object ApplicationHookCore {
             return
         }
 
+        val currentOwnerUserId = AccountSessionCoordinator.currentUserId()
+        val currentSessionEpoch = AccountSessionCoordinator.currentSessionEpoch()
+        if (PersistentScheduleRegistry.hasActiveModuleChild(currentOwnerUserId, currentSessionEpoch)) {
+            record(
+                TAG,
+                "module persistent child is active, defer mainTask: pending=${ApplicationHookConstants.pendingTriggerCount()} owner=$currentOwnerUserId session=$currentSessionEpoch",
+            )
+            return
+        }
+
         record(TAG, "▶️ dispatch mainTask, pending=${ApplicationHookConstants.pendingTriggerCount()}")
         val job = mainTask.startTask(force = false, rounds = 1)
         job.invokeOnCompletion {

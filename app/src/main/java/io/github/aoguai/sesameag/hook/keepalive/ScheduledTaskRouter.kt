@@ -76,7 +76,11 @@ object ScheduledTaskRouter {
             val routeResult = routeInternal(context, schedule, source)
             when (routeResult) {
                 RouteResult.HANDLED -> {
-                    Unit
+                    if (targetProcess && schedule.kind == PersistentScheduleKind.MODULE_CHILD) {
+                        // Claim the child slot before an asynchronous module worker is queued.
+                        // This closes the startup arbitration window between QUEUED and RUNNING.
+                        PersistentScheduleRegistry.markRunning(schedule.id)
+                    }
                 }
 
                 RouteResult.CONSUMED -> {

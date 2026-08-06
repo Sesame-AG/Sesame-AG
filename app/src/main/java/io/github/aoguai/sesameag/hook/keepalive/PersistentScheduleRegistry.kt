@@ -3,6 +3,7 @@ package io.github.aoguai.sesameag.hook.keepalive
 import android.content.Context
 import com.fasterxml.jackson.core.type.TypeReference
 import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
+import io.github.aoguai.sesameag.hook.ApplicationHookCore
 import io.github.aoguai.sesameag.util.DataStore
 import io.github.aoguai.sesameag.util.Files
 import io.github.aoguai.sesameag.util.Log
@@ -16,6 +17,15 @@ object PersistentScheduleRegistry {
     private const val STORE_KEY = "persistentSchedules"
     private const val RETAIN_FINISHED_MS = 24 * 60 * 60 * 1000L
     private const val MAX_DEFERRED_ATTEMPTS = 3
+    private val activeModuleChildStates = setOf(
+        PersistentScheduleState.QUEUED,
+        PersistentScheduleState.RUNNING,
+    )
+    private val terminalScheduleStates = setOf(
+        PersistentScheduleState.FIRED,
+        PersistentScheduleState.FAILED,
+        PersistentScheduleState.EXPIRED,
+    )
 
     private val scheduleListType = object : TypeReference<MutableList<PersistentSchedule>>() {}
 
@@ -112,6 +122,9 @@ object PersistentScheduleRegistry {
         save(schedules)
         removed.forEach { SystemWakeScheduler.cancelLaunchConfirmationTimeout(it.id) }
         context?.let { ctx -> SystemWakeScheduler.schedule(ctx, removed.first(), silent = true) }
+        if (removed.any { it.kind == PersistentScheduleKind.MODULE_CHILD }) {
+            ApplicationHookCore.dispatchIfNeeded()
+        }
         return removed.size
     }
 
@@ -170,6 +183,24 @@ object PersistentScheduleRegistry {
     fun list(): List<PersistentSchedule> {
         if (!ensureStorage()) return emptyList()
         return loadMutable().toList()
+    }
+
+    /**
+     * Checks only the current session identity and persisted execution state.  Task names and
+     * payload text are intentionally not part of the admission decision.
+     */
+    fun hasActiveModuleChild(
+        ownerUserId: String?,
+        sessionEpoch: Long,
+    ): Boolean {
+        val safeOwnerUserId = ownerUserId?.trim().orEmpty()
+        if (safeOwnerUserId.isEmpty() || sessionEpoch <= 0L || !ensureStorage()) return false
+        return loadMutable().any { schedule ->
+                schedule.kind == PersistentScheduleKind.MODULE_CHILD &&
+                schedule.ownerUserId?.trim() == safeOwnerUserId &&
+                schedule.sessionEpoch == sessionEpoch &&
+                schedule.state in activeModuleChildStates
+        }
     }
 
     /**
@@ -263,7 +294,13 @@ object PersistentScheduleRegistry {
         id: String,
         now: Long = System.currentTimeMillis(),
     ) {
+        val schedule = get(id)
+        val shouldDispatch = schedule?.kind == PersistentScheduleKind.MODULE_CHILD &&
+            schedule.state !in terminalScheduleStates
         updateSchedule(id) { it.withFired(now) }
+        if (shouldDispatch) {
+            ApplicationHookCore.dispatchIfNeeded()
+        }
     }
 
     fun markFired(
@@ -375,7 +412,13 @@ object PersistentScheduleRegistry {
         error: String,
         now: Long = System.currentTimeMillis(),
     ) {
+        val schedule = get(id)
+        val shouldDispatch = schedule?.kind == PersistentScheduleKind.MODULE_CHILD &&
+            schedule.state !in terminalScheduleStates
         updateSchedule(id) { it.withFailure(error, now) }
+        if (shouldDispatch) {
+            ApplicationHookCore.dispatchIfNeeded()
+        }
     }
 
     fun markFailed(
@@ -397,9 +440,14 @@ object PersistentScheduleRegistry {
         now: Long = System.currentTimeMillis(),
     ) {
         val schedule = get(id)
+        val shouldDispatch = schedule?.kind == PersistentScheduleKind.MODULE_CHILD &&
+            schedule.state !in terminalScheduleStates
         updateSchedule(id) { it.withScheduleState(PersistentScheduleState.EXPIRED, now) }
         if (context != null && schedule != null) {
             SystemWakeScheduler.schedule(context, schedule, silent = true)
+        }
+        if (shouldDispatch) {
+            ApplicationHookCore.dispatchIfNeeded()
         }
     }
 
@@ -569,6 +617,7 @@ object PersistentScheduleRegistry {
             if (index < 0) return@withRegistryLock
             val previous = schedules[index]
             val updated = updater(previous)
+            if (updated == previous) return@withRegistryLock
             schedules[index] = updated
             save(schedules)
             if (previous.state == PersistentScheduleState.SCHEDULED &&

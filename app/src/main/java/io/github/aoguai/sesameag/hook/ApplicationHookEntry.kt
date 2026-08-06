@@ -4,7 +4,10 @@ object ApplicationHookEntry {
     private fun currentOwnerUserId(): String? = AccountSessionCoordinator.currentUserId()
     private fun currentSessionEpoch(): Long = AccountSessionCoordinator.currentSessionEpoch()
 
-    fun onInitCompleted(reason: String) {
+    fun onInitCompleted(
+        reason: String,
+        deferGenericStartupTrigger: Boolean = false,
+    ) {
         if (reason == "broadcast_restart" || reason == "config_reload") {
             if (!ApplicationHook.consumeReloadResumeDecision(reason)) {
                 ApplicationHookCore.dispatchIfNeeded()
@@ -27,7 +30,7 @@ object ApplicationHookEntry {
             "onResume", "user_switch" -> ApplicationHookConstants.TriggerType.ON_RESUME
             else -> ApplicationHookConstants.TriggerType.INIT
         }
-        if (ApplicationHookConstants.hasPendingTriggers()) {
+        if (!deferGenericStartupTrigger && ApplicationHookConstants.hasPendingTriggers()) {
             ApplicationHookCore.dispatchIfNeeded()
             return
         }
