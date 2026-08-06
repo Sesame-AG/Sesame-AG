@@ -527,14 +527,6 @@ object AntOceanRpcCall {
     }
     
     @JvmStatic
-    fun queryFishList(pageNum: Int): String {
-        return RequestManager.requestString(
-            "alipay.antocean.ocean.h5.queryFishList",
-            "[{\"combineStatus\":\"UNOBTAINED\",\"needSummary\":\"Y\",\"pageNum\":$pageNum,\"source\":\"$SOURCE_FOREST\",\"targetUserId\":\"\",\"uniqueId\":\"${getUniqueId()}\"}]"
-        )
-    }
-    
-    @JvmStatic
     fun usePropByType(propCode: String, assets: Int, attachAssetsSet: Set<Int>): String? {
         return try {
             if (attachAssetsSet.isNotEmpty()) {

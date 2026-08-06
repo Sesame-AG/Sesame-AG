@@ -69,10 +69,6 @@ object RpcTrafficCapture {
         }
     }
 
-    fun isInstalled(): Boolean {
-        return ariverRequestHookInstalled.get() || h5HookInstalled.get()
-    }
-
     fun recordModuleRequest(method: String?, payload: String?) {
         if (!isCaptureEnabled() || method.isNullOrBlank()) {
             return

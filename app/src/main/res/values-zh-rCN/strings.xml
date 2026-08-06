@@ -114,7 +114,6 @@
     <string name="start_at_0_o_clock">0点整执行</string>
     <string name="start_at_7_o_clock">7点前启动</string>
     <string name="tiyubiz">文体中心</string>
-    <string name="friend_watch">查看好友列表</string>
     <string name="user_patrol">巡护森林</string>
     <string name="toast_vertical_offset">气泡纵向偏移</string>
     <string name="animal_game_time">小鸡游戏时间</string>
@@ -141,7 +140,6 @@
     <string name="stall_auto_open">新村自动摆摊</string>
     <string name="stall_auto_task">新村自动任务</string>
     <string name="stall_receive_award">新村自动领奖</string>
-    <string name="accept_gift">收麦子</string>
     <string name="visit_friend_list">送麦子名单</string>
     <string name="stall_open_type">摊位类型(打开:摆摊列表/关闭:不摆列表)</string>
     <string name="stall_open_list">摊位列表</string>
@@ -169,7 +167,6 @@
     <string name="file_exported">文件已导出到: </string>
     <string name="file_not_support_open_with_browser">该文件不支持用浏览器打开</string>
     <string name="not_support_open_with_browser">不支持用浏览器打开</string>
-    <string name="text_diary_toast">测试弹窗字符串</string>
     <string name="normal_text">数据加载中…</string>
     <string name="build_version_1_0_0">Build Version: </string>
     <string name="bulid_target">Build Target: </string>

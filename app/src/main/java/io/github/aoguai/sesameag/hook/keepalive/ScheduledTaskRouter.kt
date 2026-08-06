@@ -114,12 +114,6 @@ object ScheduledTaskRouter {
         }
     }
 
-    fun route(
-        context: Context,
-        schedule: PersistentSchedule,
-        source: String,
-    ): Boolean = routeInternal(context, schedule, source) != RouteResult.FAILED
-
     private fun routeInternal(
         context: Context,
         schedule: PersistentSchedule,

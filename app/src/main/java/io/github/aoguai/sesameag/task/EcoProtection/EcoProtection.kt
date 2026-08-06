@@ -31,7 +31,7 @@ class EcoProtection : ModelTask() {
 
     private var ancientTreeOnlyWeek: BooleanModelField? = null
     private var ancientTreeCityCodeList: SelectModelField? = null
-    public override fun getFields(): ModelFields {
+    override fun getFields(): ModelFields {
         val modelFields = ModelFields()
         modelFields.addField(
             BooleanModelField("ancientTreeOnlyWeek", "古树保护 | 仅周一三五", false).withDesc(

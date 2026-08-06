@@ -117,16 +117,6 @@ object PermissionUtil {
         }.getOrDefault(false)
     }
 
-    /**
-     * 请求精确闹钟权限。
-     *
-     * 仅允许从模块前台 Activity 发起；自动调度链路只能读取权限状态。
-     */
-    @JvmStatic
-    fun checkOrRequestAlarmPermissions(activity: Activity): Boolean {
-        return checkOrRequestExactAlarmPermissions(activity)
-    }
-
     @JvmStatic
     fun checkOrRequestExactAlarmPermissions(
         activity: Activity,
@@ -174,16 +164,6 @@ object PermissionUtil {
         }.onFailure {
             Log.printStackTrace(TAG, "检查电池优化权限失败: $targetPackage", it)
         }.getOrDefault(false)
-    }
-
-    /**
-     * 请求加入电池优化白名单。
-     *
-     * 仅允许从模块前台 Activity 发起；自动调度链路只能读取权限状态。
-     */
-    @JvmStatic
-    fun checkOrRequestBatteryPermissions(activity: Activity): Boolean {
-        return checkOrRequestBatteryPermissions(activity, activity.packageName)
     }
 
     @JvmStatic

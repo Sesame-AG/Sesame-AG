@@ -219,21 +219,6 @@ object EnergyWaitingPersistence {
         }
     }
 
-    /**
-     * 清空持久化存储中的所有任务
-     */
-    fun clearTasks() {
-        val store = getStore() ?: return
-        try {
-            val dataStoreKey = getDataStoreKey()
-            store.put(dataStoreKey, emptyList<WaitingTaskPersistData>())
-            lastPersistedTaskCount.set(0)
-            Log.forest("清空持久化存储 (uid: ${store.uid})")
-        } catch (e: Exception) {
-            Log.error(TAG, "清空持久化存储失败: ${e.message}")
-        }
-    }
-
     private fun extractHomeBubbles(userHomeObj: org.json.JSONObject): org.json.JSONArray? {
         val teamHomeResult = userHomeObj.optJSONObject("teamHomeResult")
         if (teamHomeResult != null) {

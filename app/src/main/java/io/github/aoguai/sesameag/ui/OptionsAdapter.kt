@@ -59,19 +59,9 @@ class OptionsAdapter private constructor(
         @SuppressLint("StaticFieldLeak")
         private var adapter: OptionsAdapter? = null
 
-        /**
-         * 获取单例适配器实例
-         * @param c 上下文对象
-         * @return 适配器实例
-         */
-        @JvmStatic
-        fun getInstance(c: Context): OptionsAdapter {
-            return adapter ?: OptionsAdapter(c).also { adapter = it }
-        }
-        
         @JvmStatic
         fun get(c: Context): OptionsAdapter {
-            return getInstance(c)
+            return adapter ?: OptionsAdapter(c).also { adapter = it }
         }
     }
 }

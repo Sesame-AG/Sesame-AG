@@ -116,10 +116,6 @@ object ExchangeEffectCatalog {
         )
     }
 
-    fun matchesNeed(item: ExchangeItem, need: ExchangeEffectNeed): Boolean {
-        return item.effectTags.any { it.need == need }
-    }
-
     fun priorityFor(item: ExchangeItem, need: ExchangeEffectNeed): Int {
         var priority = Int.MAX_VALUE
         item.effectTags.forEach { tag ->

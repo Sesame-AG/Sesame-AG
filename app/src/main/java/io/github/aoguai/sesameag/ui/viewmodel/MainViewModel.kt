@@ -8,7 +8,6 @@ import android.content.IntentFilter
 import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import io.github.aoguai.sesameag.SesameApplication.Companion.PREFERENCES_KEY
 import io.github.aoguai.sesameag.data.Config
 import io.github.aoguai.sesameag.entity.UserEntity
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
@@ -68,12 +67,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
 
     companion object {
-        const val TAG = "MainViewModel"
+        private const val TAG = "MainViewModel"
     }
 
     // 1. 定义状态
-    private val prefs = application.getSharedPreferences(PREFERENCES_KEY, Context.MODE_PRIVATE)
-
     private val _oneWord = MutableStateFlow("正在获取句子...")
     val oneWord: StateFlow<String> = _oneWord.asStateFlow()
 

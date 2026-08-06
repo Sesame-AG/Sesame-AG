@@ -2,8 +2,6 @@ package io.github.aoguai.sesameag.ui
 
 import android.content.Context
 import android.content.DialogInterface
-import android.widget.Button
-import androidx.appcompat.app.AlertDialog
 import androidx.core.content.ContextCompat
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import io.github.aoguai.sesameag.R

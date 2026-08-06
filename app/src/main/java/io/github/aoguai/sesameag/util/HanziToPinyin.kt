@@ -1,6 +1,5 @@
 package io.github.aoguai.sesameag.util
 
-import android.text.TextUtils
 import io.github.aoguai.sesameag.util.Log.record
 import java.text.Collator
 import java.util.Locale

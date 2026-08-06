@@ -27,7 +27,6 @@ import io.github.aoguai.sesameag.data.General
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.service.ConnectionState
 import io.github.aoguai.sesameag.service.LsposedServiceManager
-import io.github.aoguai.sesameag.ui.extension.openUrl
 import io.github.aoguai.sesameag.ui.extension.performNavigationToSettings
 import io.github.aoguai.sesameag.ui.permissions.PermissionHealthItem
 import io.github.aoguai.sesameag.ui.permissions.PermissionHealthSnapshot
@@ -250,7 +249,6 @@ class MainActivity : ComponentActivity() {
     sealed class MainUiEvent {
         data object RefreshOneWord : MainUiEvent()
         data class OpenLog(val channel: LogChannel) : MainUiEvent()
-        data object OpenGithub : MainUiEvent()
         data class ToggleIconHidden(val isHidden: Boolean) : MainUiEvent()
         data object OpenExtend : MainUiEvent()
         data object ClearConfig : MainUiEvent()
@@ -264,7 +262,6 @@ class MainActivity : ComponentActivity() {
         when (event) {
             MainUiEvent.RefreshOneWord -> viewModel.fetchOneWord()
             is MainUiEvent.OpenLog -> openLogChannel(event.channel)
-            MainUiEvent.OpenGithub -> openUrl(General.PROJECT_HOMEPAGE_URL)
             is MainUiEvent.RequestPermissionCheck -> {
                 requestAllPermissionsFromCard(event.onCompleted)
             }

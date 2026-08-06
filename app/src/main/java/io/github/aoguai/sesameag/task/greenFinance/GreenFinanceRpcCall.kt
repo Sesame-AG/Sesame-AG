@@ -153,56 +153,6 @@ object GreenFinanceRpcCall {
     }
 
     /**
-     * 查询证明任务列表
-     */
-    @JvmStatic
-    fun consultProveTaskList(): String {
-        return RequestManager.requestString(
-            "com.alipay.mcaplatformunit.common.mobile.newservice.GreenFinanceProveTaskService.consultProveTaskList",
-            "[{\"custType\":\"MERCHANT\",\"uid\":\"${currentUid}\"}]"
-        )
-    }
-
-    /**
-     * 查询证明任务
-     *
-     * @param bizId 业务ID
-     */
-    @JvmStatic
-    fun proveTaskQuery(bizId: String): String {
-        return RequestManager.requestString(
-            "com.alipay.mcaplatformunit.common.mobile.newservice.GreenFinanceProveTaskService.proveTaskQuery",
-            "[{\"bizId\":\"$bizId\",\"custType\":\"MERCHANT\",\"uid\":\"${currentUid}\"}]"
-        )
-    }
-
-    /**
-     * 证明任务触发
-     *
-     * @param bizId 业务ID
-     */
-    @JvmStatic
-    fun proveTaskTrigger(bizId: String): String {
-        return RequestManager.requestString(
-            "com.alipay.mcaplatformunit.common.mobile.newservice.GreenFinanceProveTaskService.proveTaskTrigger",
-            "[{\"bizId\":\"$bizId\",\"custType\":\"MERCHANT\",\"uid\":\"${currentUid}\"}]"
-        )
-    }
-
-    /**
-     * 收集证明任务
-     *
-     * @param bizId 业务ID
-     */
-    @JvmStatic
-    fun proveTaskCollect(bizId: String): String {
-        return RequestManager.requestString(
-            "com.alipay.mcaplatformunit.common.mobile.newservice.GreenFinanceProveTaskService.proveTaskCollect",
-            "[{\"bizId\":\"$bizId\",\"custType\":\"MERCHANT\",\"uid\":\"${currentUid}\"}]"
-        )
-    }
-
-    /**
      * 收集
      *
      * @param bsnId 业务单号
@@ -212,28 +162,6 @@ object GreenFinanceRpcCall {
         return RequestManager.requestString(
             "com.alipay.mcaplatformunit.common.mobile.service.GreenFinancePointCollectService.collect",
             "[{\"bsnId\":\"$bsnId\",\"clientVersion\":\"VERSION2\",\"custType\":\"MERCHANT\",\"uid\":\"${currentUid}\"}]"
-        )
-    }
-
-    /**
-     * 查询签到证书
-     */
-    @JvmStatic
-    fun queryCertificate(): String {
-        return RequestManager.requestString(
-            "com.alipay.mcaplatformunit.common.mobile.newservice.GreenFinanceCertificationService.queryCertificate",
-            "[{\"custType\":\"MERCHANT\",\"uid\":\"${currentUid}\"}]"
-        )
-    }
-
-    /**
-     * 生成签到证书
-     */
-    @JvmStatic
-    fun generateCertificate(): String {
-        return RequestManager.requestString(
-            "com.alipay.mcaplatformunit.common.mobile.newservice.GreenFinanceCertificationService.generateCertificate",
-            "[{\"custType\":\"MERCHANT\",\"uid\":\"${currentUid}\"}]"
         )
     }
 
@@ -260,31 +188,6 @@ object GreenFinanceRpcCall {
         return RequestManager.requestString(
             "com.alipay.loanpromoweb.promo.camp.trigger",
             "[{\"campId\":\"$campId\"}]"
-        )
-    }
-
-    /**
-     * 绿色评级任务
-     *
-     * @param bizType 业务类型（ECO_FRIENDLY_BAG_PROVE、classifyTrashCanProve�?     * @param imageUrl 图片URL
-     */
-    @JvmStatic
-    fun proveTask(bizType: String, imageUrl: String): String {
-        return RequestManager.requestString(
-            "com.alipay.mcaplatformunit.common.mobile.newservice.GreenFinanceProveTaskService.proveTask",
-            "[{\"bizType\":\"$bizType\",\"custType\":\"MERCHANT\",\"imageUrl\":\"$imageUrl\",\"uid\":\"${currentUid}\"}]"
-        )
-    }
-
-    /**
-     * 查询证明任务状�?     *
-     * @param taskId 任务ID
-     */
-    @JvmStatic
-    fun queryProveTaskStatus(taskId: String): String {
-        return RequestManager.requestString(
-            "com.alipay.mcaplatformunit.common.mobile.newservice.GreenFinanceProveTaskService.queryProveTaskStatus",
-            "[{\"taskId\":\"$taskId\",\"custType\":\"MERCHANT\",\"uid\":\"${currentUid}\"}]"
         )
     }
 

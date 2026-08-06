@@ -14,8 +14,6 @@ import org.json.JSONObject
 
 object FarmGame {
     private const val TAG = "FarmGame"
-    private const val QUERY_GAME_LIST_RPC = "com.alipay.charitygamecenter.queryGameList"
-    private const val QUERY_OPTIONAL_PLAY_RPC = "com.alipay.charitygamecenter.queryOptionalPlay"
     private const val LEYUAN_DAILY_TASK_SCENE_CODE = "ANTFARM_LEYUAN_DAILY_TASK"
     private const val LEYUAN_SIGN_TASK_TYPE = "2026cc_lyqd"
     private const val LEYUAN_OPEN_BOX_TASK_TYPE = "2026cc_GAME_ljkbx"

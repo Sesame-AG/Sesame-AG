@@ -32,7 +32,6 @@ object AntStallRpcCall {
     private const val METHOD_FINISH_TASK = "com.alipay.antiep.finishTask"
     private const val METHOD_GENERATE_TOKEN = "com.alipay.antiep.generateToken"
     private const val METHOD_RECEIVE_TASK_AWARD = "com.alipay.antiep.receiveTaskAward"
-    private const val METHOD_TASK_AWARD = "com.alipay.antstall.task.award"
 
     /**
      * @brief 获取个人主页数据
@@ -70,28 +69,6 @@ object AntStallRpcCall {
     }
 
     /**
-     * @brief 一键收摊前的预检查
-     * @return 响应字符串
-     */
-    fun preOneKeyClose(): String {
-        return RequestManager.requestString(
-            "com.alipay.antstall.user.shop.close.preOneKey",
-            "[{\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
-        )
-    }
-
-    /**
-     * @brief 一键收摊
-     * @return 响应字符串
-     */
-    fun oneKeyClose(): String {
-        return RequestManager.requestString(
-            "com.alipay.antstall.user.shop.oneKeyClose",
-            "[{\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
-        )
-    }
-
-    /**
      * @brief 收摊前的预检查
      * @param shopId 商店ID
      * @param billNo 账单编号
@@ -113,17 +90,6 @@ object AntStallRpcCall {
         return RequestManager.requestString(
             "com.alipay.antstall.user.shop.close",
             "[{\"shopId\":\"$shopId\",\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
-        )
-    }
-
-    /**
-     * @brief 一键开店
-     * @return 响应字符串
-     */
-    fun oneKeyOpen(): String {
-        return RequestManager.requestString(
-            "com.alipay.antstall.user.shop.oneKeyOpen",
-            "[{\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
         )
     }
 
@@ -312,32 +278,6 @@ object AntStallRpcCall {
             "[{\"ignoreLimit\":true,\"requestType\":\"RPC\",\"sceneCode\":\"ANTSTALL_TASK\",\"source\":\"$IEP_SOURCE\",\"systemType\":\"android\",\"taskType\":\"$taskType\",\"version\":\"$VERSION\"}]"
         )
         return response
-    }
-
-    /**
-     * @brief 领取小铺任务奖励
-     * @param amount 奖励数量
-     * @param prizeId 奖品ID
-     * @param taskType 任务类型
-     * @return 响应字符串
-     */
-    fun taskAward(amount: String, prizeId: String, taskType: String): String {
-        val response = RequestManager.requestString(
-            METHOD_TASK_AWARD,
-            "[{\"amount\":$amount,\"prizeId\":\"$prizeId\",\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"taskType\":\"$taskType\",\"version\":\"$VERSION\"}]"
-        )
-        return response
-    }
-
-    /**
-     * @brief 获取任务权益
-     * @return 响应字符串
-     */
-    fun taskBenefit(): String {
-        return RequestManager.requestString(
-            "com.alipay.antstall.task.benefit",
-            "[{\"source\":\"$BASE_SOURCE\",\"systemType\":\"android\",\"version\":\"$VERSION\"}]"
-        )
     }
 
     /**

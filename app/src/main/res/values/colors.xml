@@ -2,7 +2,6 @@
 <resources>
     <!-- Light theme: aligned with Sesame-AG app icon and Material 3 semantic roles. -->
     <color name="background">#F8F9FA</color>
-    <color name="base_color">#008B4F</color>
     <color name="colorPrimary">#008B4F</color>
     <color name="textColorPrimary">#1B1C1D</color>
 
@@ -13,16 +12,8 @@
 
     <color name="orange">#C24616</color>
 
-    <color name="not_active_text">#B3261E</color>
     <color name="active_text">#FFFFFF</color>
-    <color name="load_active_text">#6F7971</color>
 
-    <color name="navigationBarColor">#00000000</color>
-
-    <color name="toast_text_color">#1B1C1D</color>
-
-    <color name="switch_white">#FFFFFF</color>
-    <color name="switch_off">#DEE2E6</color>
 
 </resources>
 

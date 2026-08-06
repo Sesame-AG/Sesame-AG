@@ -4,7 +4,6 @@ import android.annotation.SuppressLint
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.entity.MapperEntity
-import io.github.aoguai.sesameag.entity.SportsEnergyExchange
 import io.github.aoguai.sesameag.entity.friend.FriendCapabilityState
 import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
 import io.github.aoguai.sesameag.hook.ApplicationHook
@@ -109,31 +108,6 @@ class AntSports : ModelTask() {
         private const val SYNC_STEP_CONFIRM_TARGET_STEP_KEY = "target_step"
         const val PERSISTENT_CHILD_KIND = "sports_child_task"
         private const val MOTION_DAILY_QUIZ_REWARD_TASK_ID = "QUIZ_ANSWER_ENERGY_BALL_TASK"
-
-        private const val RPC_WALK_QUERY_PATH = "com.alipay.sportsplay.biz.rpc.walk.queryPath"
-        private const val RPC_WALK_QUERY_USER = "com.alipay.sportsplay.biz.rpc.walk.queryUser"
-        private const val RPC_WALK_QUERY_WORLD_MAP = "com.alipay.sportsplay.biz.rpc.walk.queryWorldMap"
-        private const val RPC_WALK_QUERY_CITY_PATH = "com.alipay.sportsplay.biz.rpc.walk.queryCityPath"
-        private const val RPC_WALK_QUERY_CITY_KNOWLEDGE_SUMMARY =
-            "com.alipay.sportsplay.biz.rpc.walk.queryCityKnowledgeSummary"
-        private const val RPC_WALK_QUERY_MEDAL_DETAIL =
-            "com.alipay.sportsplay.biz.rpc.walk.queryMedalDetail"
-        private const val RPC_WALK_QUERY_RECOMMEND_PATH_LIST =
-            "com.alipay.sportsplay.biz.rpc.walk.queryRecommendPathList"
-        private const val RPC_WALK_REVIVE_QUERY_DETAIL =
-            "com.alipay.sportsplay.biz.rpc.walk.steprevive.queryUserReviveStepT2"
-        private const val RPC_WALK_REVIVE_QUERY_TASK_LIST =
-            "com.alipay.sportsplay.biz.rpc.walk.steprevive.queryTaskList"
-        private const val RPC_WALK_REVIVE_QUERY_TASK_FINISH_STATUS =
-            "com.alipay.sportsplay.biz.rpc.walk.steprevive.queryTaskFinishStatus"
-        private const val RPC_TIYUBIZ_PATH_FEATURE_QUERY = "alipay.tiyubiz.path.feature.query"
-        private const val RPC_TIYUBIZ_PATH_MAP_HOMEPAGE = "alipay.tiyubiz.path.map.homepage"
-        private const val RPC_TIYUBIZ_PATH_MAP_STEP_QUERY = "alipay.tiyubiz.path.map.step.query"
-        private const val RPC_USER_ONLINE_GAME_LIST_QUERY = "alipay.tiyubiz.userOnlineGame.listquery"
-        private const val RPC_ONLINE_GAME_SPORTS_LIST_QUERY = "alipay.tiyubiz.onlineGame.sports.listquery"
-        private const val RPC_ONLINE_GAME_EVENT_QUERY = "alipay.tiyubiz.onlineGame.eventQuery"
-        private const val RPC_USER_ONLINE_GAME_DETAIL_QUERY = "alipay.tiyubiz.userOnlineGame.detailQuery.forwenti"
-        private const val RPC_USER_ONLINE_GAME_DATA_QUERY = "alipay.tiyubiz.userOnlineGame.dataQuery"
 
         private const val WALK_CHALLENGE_SPORTS_TYPE = "walk"
         private const val WALK_CHALLENGE_MIN_STEP_COUNT = 150
@@ -982,24 +956,6 @@ class AntSports : ModelTask() {
             Log.sports("运动能量兑换🎁兑换失败[${verifiedCandidate.item.name}]#$orderResp")
         }
         return false
-    }
-
-    private fun querySportsExchangeNeedEnergyValue(source: String): String {
-        return try {
-            val response = JSONObject(AntSportsRpcCall.NeverlandRpcCall.queryExchangeCondition(source))
-            if (!ResChecker.checkRes(TAG, response)) {
-                return "1"
-            }
-            val data = response.optJSONObject("data") ?: response.optJSONObject("result") ?: response
-            sequenceOf(
-                data.optString("needEnergyValue"),
-                data.optString("minEnergyValue"),
-                data.optString("assetAmount")
-            ).firstOrNull { it.isNotBlank() } ?: "1"
-        } catch (t: Throwable) {
-            Log.printStackTrace(TAG, "querySportsExchangeNeedEnergyValue err:", t)
-            "1"
-        }
     }
 
     private fun buildSportsEnergyExchangeCandidate(raw: JSONObject): SportsEnergyExchangeCandidate? {
@@ -8728,11 +8684,6 @@ class AntSports : ModelTask() {
     interface WalkPathTheme {
         companion object {
             const val DA_MEI_ZHONG_GUO = 0  ///< 大美中国 (默认)
-            const val GONG_YI_YI_XIAO_BU = 1  ///< 公益一小步
-            const val DENG_DING_ZHI_MA_SHAN = 2  ///< 登顶芝麻山
-            const val WEI_C_DA_TIAO_ZHAN = 3  ///< 维C大挑战
-            const val LONG_NIAN_QI_FU = 4  ///< 龙年祈福
-            const val SHOU_HU_TI_YU_MENG = 5  ///< 守护体育梦
 
             /** @brief 界面显示的名称列表 */
             val nickNames = arrayOf(
@@ -8746,7 +8697,7 @@ class AntSports : ModelTask() {
 
             /**
              * @brief 对应目标应用接口的 ThemeID 映射表
-             * @note 数组顺序必须与上方常量定义保持严格一致
+             * @note 数组顺序必须与名称列表保持严格一致
              */
             val themeIds = arrayOf(
                 "M202308082226",  ///< [0] 大美中国

@@ -63,20 +63,6 @@ class AntOcean : ModelTask() {
         ENERGY_LACK(2, "能量不足"),
         ;
 
-        companion object {
-            /**
-             * 根据字符串获取对应枚举
-             */
-            fun fromString(value: String): ApplyAction? {
-                for (action in values()) {
-                    if (action.name.equals(value, ignoreCase = true)) {
-                        return action
-                    }
-                }
-                Log.error("ApplyAction", "Unknown applyAction: $value")
-                return null
-            }
-        }
     }
 
     /**
@@ -2451,11 +2437,6 @@ class AntOcean : ModelTask() {
             detail = oceanTaskActionDetail(item, "helpFriendCleanTask"),
         )
     }
-
-    private fun canRetrySelfOceanCleanTask(): Boolean =
-        cleanOcean?.value == true &&
-            !selfOceanCleanRetried &&
-            !currentOceanUserId.isNullOrBlank()
 
     private fun finishOceanTask(item: TaskFlowItem): TaskFlowActionResult {
         val response = AntOceanRpcCall.finishTask(item.sceneCode, item.type)

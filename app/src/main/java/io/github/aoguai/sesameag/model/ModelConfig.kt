@@ -47,14 +47,6 @@ data class ModelConfig(
     }
 
     /**
-     * 判断模型是否包含指定字段
-     *
-     * @param fieldCode 字段代码
-     * @return 如果模型包含该字段，则返回true，否则返回false
-     */
-    fun hasModelField(fieldCode: String): Boolean = fields.containsKey(fieldCode)
-
-    /**
      * 获取指定字段代码的模型字段
      *
      * @param fieldCode 字段代码

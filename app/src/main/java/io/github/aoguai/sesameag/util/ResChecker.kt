@@ -11,7 +11,6 @@ import java.util.concurrent.ConcurrentHashMap
  */
 object ResChecker {
     
-    private val TAG = ResChecker::class.java.simpleName
     private val silentFailureCodes = setOf(
         "400000012",
         "2600000014",

@@ -47,8 +47,6 @@ class AntOrchard : ModelTask() {
         private const val LEYUAN_DAILY_TASK_SCENE_CODE = "ANTORCHARD_LEYUAN_DAILY_TASK"
         private const val TAOBAO_VISIT_SCENE_CODE = "972"
         private const val TAOBAO_VISIT_TASK_GROUP_ID = "12172"
-        private const val TAOBAO_LIMIT_BALLOON_TASK_ID = "TAOBAO_LIMIT_BALLOON"
-        private const val TAOBAO_LIMIT_BALLOON_TITLE = "农场限时福利"
         private const val RECEIVE_SPREAD_MANURE_ACTIVITY_AWARD_ACTION = "RECEIVE_SPREAD_MANURE_ACTIVITY_AWARD"
         private val ORCHARD_BUSINESS_LIMIT_CODES =
             setOf(

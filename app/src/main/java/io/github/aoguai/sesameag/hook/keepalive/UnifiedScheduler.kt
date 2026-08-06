@@ -85,8 +85,6 @@ object UnifiedScheduler {
 
     fun activeTaskCount(): Int = taskMap.size
 
-    fun hasScheduledTasks(): Boolean = taskMap.isNotEmpty()
-
     fun schedulePersistentTrigger(
         context: Context,
         name: String,

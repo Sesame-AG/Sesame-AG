@@ -7,11 +7,10 @@ import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.ui.graphics.vector.ImageVector
 
 sealed class BottomNavItem(
-    val route: String,
     val label: String,
     val icon: ImageVector
 ) {
-    data object Logs : BottomNavItem("logs", "日志", Icons.AutoMirrored.Rounded.Article)
-    data object Home : BottomNavItem("home", "主页", Icons.Rounded.Home)
-    data object Settings : BottomNavItem("settings", "设置", Icons.Rounded.Settings)
+    data object Logs : BottomNavItem("日志", Icons.AutoMirrored.Rounded.Article)
+    data object Home : BottomNavItem("主页", Icons.Rounded.Home)
+    data object Settings : BottomNavItem("设置", Icons.Rounded.Settings)
 }

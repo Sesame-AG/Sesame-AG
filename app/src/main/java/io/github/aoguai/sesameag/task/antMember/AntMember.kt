@@ -1,7 +1,6 @@
 package io.github.aoguai.sesameag.task.antMember
 
 import android.annotation.SuppressLint
-import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.Status.Companion.canMemberPointExchangeBenefitToday
 import io.github.aoguai.sesameag.data.Status.Companion.canMemberSignInToday
 import io.github.aoguai.sesameag.data.Status.Companion.hasFlagToday
@@ -9,9 +8,7 @@ import io.github.aoguai.sesameag.data.Status.Companion.memberPointExchangeBenefi
 import io.github.aoguai.sesameag.data.Status.Companion.memberSignInToday
 import io.github.aoguai.sesameag.data.Status.Companion.setFlagToday
 import io.github.aoguai.sesameag.data.StatusFlags
-import io.github.aoguai.sesameag.entity.BeanExchangeRight
 import io.github.aoguai.sesameag.entity.MapperEntity
-import io.github.aoguai.sesameag.entity.MemberBenefit
 import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.hook.ExchangeOptionsRefreshBridge
@@ -2619,30 +2616,6 @@ class AntMember : ModelTask() {
                 )
             }
         }
-    }
-
-    private fun prepareCurrentMemberTaskForExecution(task: CurrentMemberTask): CurrentMemberTask? {
-        if (task.taskProcessId.isNotEmpty()) {
-            return task
-        }
-        val applyResponse = AntMemberRpcCall.applyMemberTask(task.taskConfigId)
-        val applyObject = JSONObject(applyResponse)
-        if (stopMemberCoreTasksForRpcRisk("AntMember.memberTask.apply", applyObject)) {
-            return null
-        }
-        if (isSkippableMemberTaskRejection(applyObject)) {
-            Log.member("会员任务[${task.title}]#不满足营销规则，跳过领取")
-            return null
-        }
-        if (!ResChecker.checkRes(TAG, "领取会员任务失败:", applyObject)) {
-            Log.error(TAG, "领取会员任务失败:" + applyObject.optString("resultDesc", applyResponse))
-            return null
-        }
-        val appliedTask = buildCurrentMemberTaskFromApplyResponse(task, applyObject)
-        if (appliedTask == null) {
-            Log.member("会员任务[${task.title}]#领取成功但缺少processId或可闭环目标业务字段，跳过执行")
-        }
-        return appliedTask
     }
 
     private fun buildCurrentMemberTaskFromApplyResponse(

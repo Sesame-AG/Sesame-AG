@@ -87,13 +87,7 @@ class RpcDebugViewModel(application: Application) : AndroidViewModel(application
     fun showAddDialog(context: Context) {
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val clipText = clipboard.primaryClip?.getItemAt(0)?.text?.toString() ?: ""
-        // 1. 修复 RpcDebugItemRaw 报错：传入默认空值
-        val (name, method, requestData, description) = try {
-            parseJsonFields(clipText)
-        } catch (e: Exception) {
-            // ✅ 修复点：传入空参数
-            RpcDebugItemRaw("", "", null, "")
-        }
+        val (name, method, requestData, description) = parseJsonFields(clipText)
         // 2. 准备 JSON 字符串 (用于填充输入框)
         val initialJson = if (method.isNotEmpty()) {
             try {

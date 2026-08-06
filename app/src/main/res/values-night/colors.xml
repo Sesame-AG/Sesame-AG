@@ -2,7 +2,6 @@
 <resources>
     <!-- Dark theme: muted green palette to avoid high-brightness accents at night. -->
     <color name="background">#111315</color>
-    <color name="base_color">#4E8F68</color>
     <color name="colorPrimary">#4E8F68</color>
     <color name="textColorPrimary">#E2E3E5</color>
 
@@ -13,15 +12,7 @@
 
     <color name="orange">#D99A75</color>
 
-    <color name="not_active_text">#E08B83</color>
     <color name="active_text">#F0F6EF</color>
-    <color name="load_active_text">#98A59A</color>
 
-    <color name="navigationBarColor">#00000000</color>
-
-    <color name="toast_text_color">#E2E3E5</color>
-
-    <color name="switch_white">#FFFFFF</color>
-    <color name="switch_off">#3F4448</color>
 </resources>
 

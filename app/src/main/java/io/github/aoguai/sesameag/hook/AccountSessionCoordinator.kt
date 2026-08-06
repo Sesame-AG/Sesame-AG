@@ -81,12 +81,6 @@ object AccountSessionCoordinator {
 
     fun isSwitching(): Boolean = switchInProgress
 
-    fun hasActiveSessionFor(userId: String?): Boolean {
-        val safeUserId = userId?.trim().orEmpty()
-        val current = currentSession ?: return false
-        return safeUserId.isNotEmpty() && current.userId == safeUserId
-    }
-
     fun beginSessionSwitch(
         reason: String,
         targetUserId: String?,

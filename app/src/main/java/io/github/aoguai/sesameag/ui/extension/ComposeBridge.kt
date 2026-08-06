@@ -2,16 +2,9 @@ package io.github.aoguai.sesameag.ui.extension
 
 import android.app.Activity
 import android.content.Context
-import android.os.CountDownTimer
 import android.os.Handler
 import android.os.Looper
 import android.view.ViewGroup
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember

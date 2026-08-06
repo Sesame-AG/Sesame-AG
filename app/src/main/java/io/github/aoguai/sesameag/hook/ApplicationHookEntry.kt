@@ -60,18 +60,6 @@ object ApplicationHookEntry {
         )
     }
 
-    fun onIntervalRetry() {
-        ApplicationHookCore.requestExecution(
-            ApplicationHookConstants.TriggerInfo(
-                type = ApplicationHookConstants.TriggerType.INTERVAL_RETRY,
-                priority = ApplicationHookConstants.TriggerPriority.LOW,
-                dedupeKey = "interval_retry",
-                ownerUserId = currentOwnerUserId(),
-                sessionEpoch = currentSessionEpoch()
-            )
-        )
-    }
-
     fun onWakeupMidnight() {
         ApplicationHookCore.requestExecution(
             ApplicationHookConstants.TriggerInfo(

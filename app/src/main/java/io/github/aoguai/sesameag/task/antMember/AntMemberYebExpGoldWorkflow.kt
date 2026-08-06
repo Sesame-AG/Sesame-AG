@@ -743,15 +743,6 @@ private fun markYebExpGoldTaskSource(task: JSONObject, source: YebExpGoldTaskSou
     task.put(YEB_TASK_SOURCE_KEY, source.name)
 }
 
-private fun getYebExpGoldTaskSource(task: JSONObject?): YebExpGoldTaskSource {
-    val sourceName = task?.optString(YEB_TASK_SOURCE_KEY).orEmpty()
-    YebExpGoldTaskSource.values().firstOrNull { it.name == sourceName }?.let { return it }
-    if (task?.optString("appletId") == AntMemberYebExpGoldRpcCall.YEB_EXP_GOLD_MAIN_QUERY_APPLET_ID) {
-        return YebExpGoldTaskSource.MAIN_QUERY
-    }
-    return YebExpGoldTaskSource.PROMO_TASK_LIST
-}
-
 private fun completeYebExpGoldTaskBySource(
     taskId: String,
     source: YebExpGoldTaskSource

@@ -95,15 +95,6 @@ object VersionHook {
         return capturedVersion
     }
 
-    /**
-     * 重置捕获状态 (用于测试或重新初始化)
-     */
-    fun reset() {
-        capturedVersion = null
-        hookInstalled = false
-        record(TAG, "🔄 版本号 Hook 状态已重置")
-    }
-
     private fun findMethod(targetClass: Class<*>, name: String, vararg parameterTypes: Class<*>): Method {
         var current: Class<*>? = targetClass
         while (current != null) {

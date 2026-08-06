@@ -148,30 +148,6 @@ object AntMemberRpcCall {
         )
     }
 
-    @JvmStatic
-    fun queryReSignInCardInfo(): String {
-        val args =
-            JSONObject().apply {
-                put("sourcePassMap", buildMemberSourcePassMap())
-            }
-        return RequestManager.requestString(
-            "com.alipay.amic.biz.rpc.signin.h5.queryReSignInCardInfo",
-            JSONArray().put(args).toString(),
-        )
-    }
-
-    @JvmStatic
-    fun querySimpleIndex(): String {
-        val args =
-            JSONObject().apply {
-                put("sourcePassMap", buildMemberSourcePassMap())
-            }
-        return RequestManager.requestString(
-            "com.alipay.alipaymember.biz.rpc.member.h5.querySimpleIndex",
-            JSONArray().put(args).toString(),
-        )
-    }
-
     // 商家开门打卡任务
     @JvmStatic
     fun signIn(activityNo: String): String =
@@ -386,27 +362,6 @@ object AntMemberRpcCall {
     }
 
     @JvmStatic
-    fun queryMemberSignPageTaskList(
-        pageNo: Int = 1,
-        pageSize: Int = 8,
-    ): String {
-        val args =
-            JSONObject().apply {
-                put("pageNo", pageNo)
-                put("pageSize", pageSize)
-                put("source", "antmember")
-                put("sourcePassMap", buildMemberSourcePassMap())
-                put("spaceCode", "ant_member_xlight_task")
-                put("switchNormal", true)
-                put("taskTopConfigId", "")
-            }
-        return RequestManager.requestString(
-            "com.alipay.amic.memtask.h5.MemTaskListQueryFacade.signPageTaskList",
-            JSONArray().put(args).toString(),
-        )
-    }
-
-    @JvmStatic
     fun applyMemberTask(taskConfigId: String): String {
         val args =
             JSONObject().apply {
@@ -550,12 +505,6 @@ object AntMemberRpcCall {
             "com.alipay.alipaymember.biz.rpc.membertask.h5.award",
             JSONArray().put(args).toString(),
         )
-    }
-
-    @JvmStatic
-    fun rpcCall_signIn(): String {
-        val args1 = """[{"sceneCode":"KOUBEI_INTEGRAL","source":"ALIPAY_TAB","version":"2.0"}]"""
-        return RequestManager.requestString("alipay.kbmemberprod.action.signIn", args1)
     }
 
     /**
@@ -876,16 +825,6 @@ object AntMemberRpcCall {
             JSONArray().put(args).toString(),
         )
     }
-
-    /**
-     * 获取保障金信息
-     */
-    @JvmStatic
-    fun queryInsuredHome(): String =
-        RequestManager.requestString(
-            "com.alipay.insplatformbff.insgift.accountService.queryAccountForPlat",
-            """[{"includePolicy":true,"specialChannel":"wealth_entry"}]""",
-        )
 
     /**
      * 获取所有可领取的保障金
@@ -1272,13 +1211,6 @@ object AntMemberRpcCall {
             JSONArray().put(args).toString(),
         )
     }
-
-    @JvmStatic
-    fun queryUserAccountInfo(pointProdCode: String): String =
-        RequestManager.requestString(
-            "com.alipay.insmarketingbff.point.queryUserAccountInfo",
-            """[{"channel":"HiChat","pointProdCode":"$pointProdCode","pointUnitType":"COUNT"}]""",
-        )
 
     /**
      * 查询会员信息

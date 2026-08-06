@@ -97,8 +97,6 @@ internal object ApplicationResumeCoordinator {
             .getOrDefault(false)
     }
 
-    fun currentForegroundSessionEpoch(): Long = foregroundSessionEpoch
-
     fun tryRecoverOffline(resumeSource: String): Boolean {
         if (!ApplicationHookConstants.isOffline()) return false
 

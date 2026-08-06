@@ -9,7 +9,7 @@ import kotlinx.coroutines.withTimeout
 import java.io.DataOutputStream
 import java.io.File
 
-class SafeRootShell : Shell {
+internal class SafeRootShell : Shell {
     companion object {
         private const val TAG = "SafeRootShell"
     }

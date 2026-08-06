@@ -6,7 +6,6 @@ import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.ResChecker
 import kotlinx.coroutines.Dispatchers
-import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
 
@@ -14,8 +13,6 @@ import org.json.JSONObject
  * RPC调试工具类
  */
 class DebugRpc {
-    fun getName(): String = "Rpc测试"
-
     fun start(broadcastFun: String, broadcastData: String, testType: String) {
         GlobalThreadPools.execute(Dispatchers.IO) {
             when (testType) {
@@ -34,12 +31,6 @@ class DebugRpc {
     }
 
     private fun test(method: String, data: String): String? = RequestManager.requestString(method, data)
-
-    fun queryEnvironmentCertDetailList(alias: String, pageNum: Int, targetUserID: String): String? =
-        DebugRpcCall.queryEnvironmentCertDetailList(alias, pageNum, targetUserID)
-
-    fun sendTree(certificateId: String, friendUserId: String): String? =
-        DebugRpcCall.sendTree(certificateId, friendUserId)
 
     private fun getNewTreeItems() {
         try {

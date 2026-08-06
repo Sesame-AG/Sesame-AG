@@ -36,14 +36,6 @@ object OtherEntityProvider {
         OtherEntity("shareToFriends", "好友分享🙆‍♂️|下方配置排除列表"),
     )
 
-    @JvmStatic
-    fun listPropGroupOptions(): List<OtherEntity> = listOf(
-        OtherEntity("COLLECT_HISTORY_ANIMAL_7_DAYS", "当前图鉴抽卡券 🎴"),
-        OtherEntity("COLLECT_TO_FRIEND_TIMES_7_DAYS", "好友卡抽卡券 👥"),
-        OtherEntity("COLLECT_TIMES_7_DAYS", "万能卡 🃏")
-    )
-
-
     //信用2101任务列表
     @JvmStatic
     fun listCreditOptions(): List<OtherEntity> = listOf(

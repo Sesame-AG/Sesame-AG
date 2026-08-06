@@ -85,7 +85,6 @@ android {
         }
     }
     buildFeatures {
-        viewBinding = true
         buildConfig = true
         compose = true
         aidl = true
@@ -120,11 +119,6 @@ android {
         }
     }
 
-    sourceSets {
-        getByName("main") {
-            jniLibs.setSrcDirs(listOf("src/main/jniLibs"))
-        }
-    }
     val cmakeFile = file("src/main/cpp/CMakeLists.txt")
     if (!isCIBuild && cmakeFile.exists()) {
         externalNativeBuild {
@@ -144,8 +138,7 @@ kotlin {
 }
 
 composeCompiler {
-    // Keep release builds away from Compose stack-trace/tooling metadata that triggers mapping generation.
-    generateFunctionKeyMetaClasses.set(false)
+    // Omit Compose source and trace metadata.
     includeSourceInformation.set(false)
     includeTraceMarkers.set(false)
 }
@@ -161,11 +154,8 @@ dependencies {
     implementation(libs.rikka.shizuku.api) // Shizuku API
     implementation(libs.rikka.shizuku.provider) // Shizuku 提供者
     implementation(libs.rikka.refine) // Rikka 反射工具
-//    implementation(libs.rikka.hidden.stub)
-    // implementation(libs.ui.tooling.preview.android)
     implementation(libs.cmd.android)
     implementation(libs.androidx.ui.text.google.fonts)
-    implementation(libs.material3) // 用于通过 Shizuku 执行命令
 
     // Compose 相关依赖 - 现代化 UI 框架
     val composeBom = platform("androidx.compose:compose-bom:2025.12.00") // Compose BOM 版本管理
@@ -182,20 +172,12 @@ dependencies {
     // 生命周期和数据绑定
     implementation(libs.androidx.lifecycle.viewmodel.compose) // Compose ViewModel 支持
 
-    // JSON 序列化
-    implementation(libs.kotlinx.serialization.json) // Kotlin JSON 序列化库
-
     // Kotlin 协程依赖 - 异步编程（纯协程调度）
     implementation(libs.kotlinx.coroutines.core) // 协程核心库
     implementation(libs.kotlinx.coroutines.android) // Android 协程支持
 
-    // 数据观察和 HTTP 服务
-    implementation(libs.androidx.lifecycle.livedata.ktx) // LiveData KTX 扩展
-    implementation(libs.androidx.runtime.livedata) // Compose LiveData 运行时
+    // HTTP 服务
     implementation(libs.nanohttpd) // 轻量级 HTTP 服务器
-
-    // UI 布局和组件
-    implementation(libs.androidx.constraintlayout) // 约束布局
 
     implementation(libs.activity.compose) // Compose Activity 支持
 
@@ -205,10 +187,7 @@ dependencies {
     implementation(libs.slf4j.api) // SLF4J 日志 API
     implementation(libs.logback.android) // Logback Android 日志实现
     implementation(libs.appcompat) // AppCompat 兼容库
-    implementation(libs.recyclerview) // RecyclerView 列表组件
-    implementation(libs.viewpager2) // ViewPager2 页面滑动
     implementation(libs.material) // Material Design 组件
-    implementation(libs.webkit) // WebView 组件
 
     // 仅编译时依赖 - Xposed 相关
     compileOnly(libs.libxposed.api) // Xposed API 102 https://github.com/libxposed/api
@@ -219,8 +198,6 @@ dependencies {
     implementation(libs.jackson.kotlin) // Jackson Kotlin 支持
 
     // 核心库脱糖和系统 API 访问
-//    coreLibraryDesugaring(libs.desugar)            // Java 8+ API 脱糖支持
-
     implementation(libs.hiddenapibypass) // 隐藏 API 访问绕过
 
     // Jackson JSON 处理库

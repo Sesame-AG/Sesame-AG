@@ -2,7 +2,6 @@ package io.github.aoguai.sesameag.util.maps
 
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.ObjectMapper
-import io.github.aoguai.sesameag.util.ErrorHandler
 import io.github.aoguai.sesameag.util.Files
 import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log
@@ -169,14 +168,18 @@ abstract class IdMapManager {
      */
     @Synchronized
     open fun save(userId: String?): Boolean {
-        return ErrorHandler.safely("IdMapManager", "保存IdMap失败", fallback = false) {
+        return try {
             val file = Files.getTargetFileofUser(userId, thisFileName()) ?: run {
                 Log.error("IdMapManager", "无法获取目标文件")
-                return@safely false
+                return false
             }
             val json = JsonUtil.formatJson(idMap)
             Files.write2File(json, file)
-        } ?: false
+        } catch (e: Exception) {
+            Log.error("IdMapManager", "保存IdMap失败: ${e.message}")
+            Log.printStackTrace("IdMapManager", e)
+            false
+        }
     }
     
     @Synchronized

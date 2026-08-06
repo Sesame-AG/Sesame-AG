@@ -94,27 +94,6 @@ object PersistentScheduleRegistry {
         return effectiveSchedule.withFailure("system_alarm_schedule_failed", now)
     }
 
-    fun removeById(
-        context: Context?,
-        id: String,
-    ): Boolean = withRegistryLock { removeByIdUnlocked(context, id) }
-
-    private fun removeByIdUnlocked(
-        context: Context?,
-        id: String,
-    ): Boolean {
-        if (id.isBlank()) return false
-        if (!ensureStorage()) return false
-        val schedules = loadMutable()
-        val removed = schedules.filter { it.id == id }
-        if (removed.isEmpty()) return false
-        schedules.removeAll(removed.toSet())
-        save(schedules)
-        removed.forEach { SystemWakeScheduler.cancelLaunchConfirmationTimeout(it.id) }
-        context?.let { ctx -> SystemWakeScheduler.schedule(ctx, removed.first(), silent = true) }
-        return true
-    }
-
     fun removeByDedupeKey(
         context: Context?,
         dedupeKey: String,

@@ -9,8 +9,6 @@ import java.util.concurrent.ConcurrentHashMap
 
 object ForestUtil {
 
-    private const val TAG = "ForestUtil"
-
     /**
      * 用户频率限制信息
      * @param failCount 失败次数（1-3）

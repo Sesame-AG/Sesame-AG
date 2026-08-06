@@ -35,14 +35,6 @@ class AreaCode(id: String, name: String) : MapperEntity() {
          * 如果列表尚未初始化，则从文件中读取城市代码
          * 如果读取失败，则使用默认城市代码
          */
-        /**
-         * 获取区域代码列表（作为MapperEntity列表）
-         * 用于Java互操作，特别是方法引用场景
-         */
-        @JvmStatic
-        @Throws(JSONException::class)
-        fun getListAsMapperEntity(): List<MapperEntity> = getList()
-
         @JvmStatic
         @Throws(JSONException::class)
         fun getList(): List<AreaCode> {

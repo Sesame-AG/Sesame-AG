@@ -12,7 +12,6 @@ object AntDodoRpcCall {
     private const val METHOD_QUERY_ANIMAL_STATUS = "alipay.antdodo.rpc.h5.queryAnimalStatus"
     private const val METHOD_HOME_PAGE = "alipay.antdodo.rpc.h5.homePage"
     private const val METHOD_COLLECT = "alipay.antdodo.rpc.h5.collect"
-    private const val METHOD_TASK_ENTRANCE = "alipay.antdodo.rpc.h5.taskEntrance"
     private const val METHOD_TASK_LIST = "alipay.antdodo.rpc.h5.taskList"
     private const val METHOD_PROP_LIST = "alipay.antdodo.rpc.h5.propList"
     private const val METHOD_CONSUME_PROP = "alipay.antdodo.rpc.h5.consumeProp"
@@ -42,17 +41,6 @@ object AntDodoRpcCall {
     @JvmStatic
     fun homePage(): String {
         return RequestManager.requestString(METHOD_HOME_PAGE, "[{}]")
-    }
-
-    /**
-     * 任务入口
-     */
-    @JvmStatic
-    fun taskEntrance(): String {
-        return RequestManager.requestString(
-            METHOD_TASK_ENTRANCE,
-            "[{\"statusList\":[\"TODO\",\"FINISHED\"]}]"
-        )
     }
 
     /**

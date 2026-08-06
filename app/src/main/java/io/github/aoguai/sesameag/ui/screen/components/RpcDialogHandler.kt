@@ -106,7 +106,7 @@ fun RpcDialogHandler(state: RpcDialogState, viewModel: RpcDebugViewModel) {
                                         return@TextButton
                                     }
                                     Log.d("RpcUI", "剪贴板原始内容: [$clipText]")
-                                    val parsed = viewModel.parseJsonFields(clipText) // 假设您把这个方法改成了 public
+                                    val parsed = viewModel.parseJsonFields(clipText)
                                     Log.d("RpcUI", "解析结果 Name: ${parsed.name}")
                                     name = parsed.name
                                     description = parsed.description

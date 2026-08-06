@@ -135,14 +135,6 @@ object SmartSchedulerManager {
     }
 
     /**
-     * 取消同名任务（若存在）。
-     */
-    fun cancelNamedTask(taskName: String) {
-        val taskId = namedTasks.remove(taskName) ?: return
-        cancelTask(taskId)
-    }
-
-    /**
      * 取消所有任务
      */
     fun cancelAll() {

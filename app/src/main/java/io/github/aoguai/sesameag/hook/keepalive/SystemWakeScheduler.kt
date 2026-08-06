@@ -116,77 +116,6 @@ object SystemWakeScheduler {
         }
     }
 
-    private fun scheduleOnContext(
-        alarmContext: Context,
-        schedule: PersistentSchedule,
-        silent: Boolean,
-    ): Boolean {
-        val alarmManager = alarmContext.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
-        if (alarmManager == null) {
-            Log.error(TAG, "无法获取 AlarmManager，持久调度失败: ${schedule.name}")
-            return false
-        }
-
-        val triggerAt = schedule.triggerAtMs.coerceAtLeast(System.currentTimeMillis())
-        return try {
-            val pendingIntent =
-                buildPendingIntent(alarmContext, schedule, PendingIntent.FLAG_UPDATE_CURRENT)
-                    ?: run {
-                        Log.error(TAG, "创建 PendingIntent 失败，持久调度失败: ${schedule.name}")
-                        return false
-                    }
-            val precisionPolicy = schedule.effectivePrecisionPolicy()
-            if (!PersistentSchedulePrecisionPolicy.isStrict(precisionPolicy, schedule.kind)) {
-                scheduleFlexible(alarmManager, triggerAt, schedule.toleranceMs, pendingIntent)
-                if (!silent) {
-                    Log.runtime(
-                        TAG,
-                        "已注册弹性系统闹钟[${schedule.name}] ${TimeUtil.getCommonDate(triggerAt)} policy=$precisionPolicy",
-                    )
-                }
-            } else if (PermissionUtil.checkAlarmPermissions(alarmContext)) {
-                scheduleExact(alarmManager, triggerAt, pendingIntent)
-                if (!silent) {
-                    Log.runtime(
-                        TAG,
-                        "已注册精确系统闹钟[${schedule.name}] ${TimeUtil.getCommonDate(triggerAt)} policy=$precisionPolicy",
-                    )
-                }
-            } else {
-                // 严格 deadline 仍保留原有的 Doze 兼容降级；普通轮询绝不能走该路径。
-                scheduleStrictFallback(alarmManager, triggerAt, pendingIntent)
-                if (!silent) {
-                    Log.runtime(
-                        TAG,
-                        "精确闹钟权限缺失，严格任务降级注册[${schedule.name}] ${TimeUtil.getCommonDate(
-                            triggerAt,
-                        )} policy=$precisionPolicy precision_degraded",
-                    )
-                }
-            }
-            if (shouldLaunchTarget(schedule)) {
-                scheduleLaunchConfirmationTimeout(alarmContext, schedule, triggerAt)
-            }
-            true
-        } catch (t: Throwable) {
-            Log.printStackTrace(TAG, "注册系统闹钟失败[${schedule.name}]", t)
-            false
-        }
-    }
-
-    /**
-     * A schedule removal changes the registry snapshot; re-plan the singleton physical alarm from
-     * that snapshot instead of cancelling an id-specific PendingIntent and accidentally losing a
-     * neighbouring schedule in the same window.
-     */
-    fun cancel(
-        context: Context,
-        schedule: PersistentSchedule,
-        silent: Boolean = false,
-    ) {
-        schedule(context, schedule, silent)
-    }
-
     private fun scheduleExact(
         alarmManager: AlarmManager,
         triggerAt: Long,
@@ -315,51 +244,7 @@ object SystemWakeScheduler {
         }
     }
 
-    private fun buildPendingIntent(
-        context: Context,
-        schedule: PersistentSchedule,
-        updateFlag: Int,
-    ): PendingIntent? =
-        if (context.packageName == General.MODULE_PACKAGE_NAME) {
-            buildReceiverPendingIntent(context, schedule, updateFlag)
-        } else if (shouldLaunchTarget(schedule)) {
-            buildTargetLaunchPendingIntent(
-                context,
-                schedule,
-                updateFlag,
-                allowBackgroundAlways = true,
-            )
-        } else {
-            buildReceiverPendingIntent(context, schedule, updateFlag)
-        }
-
     private fun shouldLaunchTarget(schedule: PersistentSchedule): Boolean = PersistentLaunchPolicy.shouldLaunchTarget(schedule)
-
-    private fun buildReceiverPendingIntent(
-        context: Context,
-        schedule: PersistentSchedule,
-        updateFlag: Int,
-    ): PendingIntent? {
-        val intent =
-            Intent(context, ScheduledTriggerReceiver::class.java).apply {
-                action = ACTION_TRIGGER
-                data =
-                    Uri
-                        .Builder()
-                        .scheme("sesameag")
-                        .authority("persistent-schedule")
-                        .appendPath(schedule.id)
-                        .build()
-                putExtra(EXTRA_SCHEDULE_ID, schedule.id)
-            }
-        val flags = updateFlag or PendingIntent.FLAG_IMMUTABLE
-        return try {
-            PendingIntent.getBroadcast(context, requestCodeFor(schedule.id), intent, flags)
-        } catch (t: Throwable) {
-            Log.printStackTrace(TAG, "创建 PendingIntent 失败[${schedule.name}]", t)
-            null
-        }
-    }
 
     private fun buildTargetLaunchPendingIntent(
         context: Context,

@@ -160,8 +160,6 @@ object RequestManager {
         Log.record(TAG, "正在尝试执行离线恢复策略...")
         // 策略 A: 重新拉起 App (推荐)
         ApplicationHook.reOpenApp()
-        // 策略 B: 发送重登录广播 (如果宿主还能响应广播)
-        // ApplicationHook.reLoginByBroadcast()
     }
 
     /**

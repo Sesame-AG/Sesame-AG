@@ -47,7 +47,6 @@ import io.github.aoguai.sesameag.task.common.TaskFlowEngine
 import io.github.aoguai.sesameag.task.common.TaskFlowItem
 import io.github.aoguai.sesameag.task.common.TaskFlowPhase
 import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
-import io.github.aoguai.sesameag.task.antFarm.AntFarmRpcCall
 import io.github.aoguai.sesameag.task.antFarm.FarmGame
 import io.github.aoguai.sesameag.task.exchange.ExchangeCost
 import io.github.aoguai.sesameag.task.exchange.ExchangeEffectCatalog
@@ -81,8 +80,6 @@ import io.github.aoguai.sesameag.util.TimeUtil
 import io.github.aoguai.sesameag.util.friend.FriendCapabilityRecorder
 import io.github.aoguai.sesameag.util.friend.FriendRepository
 import io.github.aoguai.sesameag.util.maps.UserMap
-import io.github.aoguai.sesameag.util.maps.IdMapManager
-import io.github.aoguai.sesameag.util.maps.VitalityRewardsMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -415,17 +412,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
 
     internal fun hasWaterFriendsBeforeCollectExecuted(): Boolean {
         return preCollectWateringExecutedThisRound
-    }
-
-    private fun hasRebornProtectWorkEnabled(): Boolean {
-        val type = helpFriendCollectType?.value ?: HelpFriendCollectType.NONE
-        if (type == HelpFriendCollectType.NONE || rebornWeeklyCompleted) {
-            return false
-        }
-        if (type == HelpFriendCollectType.HELP && helpFriendCollectList?.isEmpty() != false) {
-            return false
-        }
-        return true
     }
 
     internal fun hasFriendRankingWorkEnabled(): Boolean {

@@ -7,7 +7,7 @@ import java.util.*
 import kotlin.math.abs
 
 /**
- * 时间工具类。提供了一系列方法来处理时间相关的操作，包括时间范围检查、时间比较、日期格式化等。
+ * 时间工具类。提供时间比较、日期格式化和日历转换等基础操作。
  *
  * **迁移说明**:
  * - 保持所有方法的Java兼容性 (@JvmStatic)
@@ -17,36 +17,6 @@ import kotlin.math.abs
 object TimeUtil {
 
     private const val NANOS_PER_MILLISECOND = 1_000_000L
-
-    // ==================== 时间范围检查 ====================
-
-    @JvmStatic
-    fun checkNowInTimeRange(timeRange: String): Boolean {
-        return checkInTimeRange(System.currentTimeMillis(), timeRange)
-    }
-
-    @JvmStatic
-    fun checkInTimeRange(timeMillis: Long, timeRangeList: List<String>): Boolean {
-        return timeRangeList.any { checkInTimeRange(timeMillis, it) }
-    }
-
-    @JvmStatic
-    fun checkInTimeRange(timeMillis: Long, timeRange: String): Boolean {
-        return try {
-            val timeRangeArray = timeRange.split("-")
-            if (timeRangeArray.size == 2) {
-                val min = timeRangeArray[0]
-                val max = timeRangeArray[1]
-                // Include both start and end boundaries
-                isAfterOrCompareTimeStr(timeMillis, min) && isBeforeOrCompareTimeStr(timeMillis, max)
-            } else {
-                false
-            }
-        } catch (e: Exception) {
-            Log.printStackTrace(e)
-            false
-        }
-    }
 
     // ==================== 时间字符串比较 ====================
 
@@ -58,11 +28,6 @@ object TimeUtil {
     @JvmStatic
     fun isNowAfterTimeStr(afterTimeStr: String): Boolean {
         return isAfterTimeStr(System.currentTimeMillis(), afterTimeStr)
-    }
-
-    @JvmStatic
-    fun isNowBeforeOrCompareTimeStr(beforeTimeStr: String): Boolean {
-        return isBeforeOrCompareTimeStr(System.currentTimeMillis(), beforeTimeStr)
     }
 
     @JvmStatic
@@ -80,16 +45,6 @@ object TimeUtil {
     fun isAfterTimeStr(timeMillis: Long, afterTimeStr: String): Boolean {
         val compared = isCompareTimeStr(timeMillis, afterTimeStr)
         return compared != null && compared > 0
-    }
-
-    @JvmStatic
-    fun isBeforeOrCompareTimeStr(timeMillis: Long, beforeTimeStr: String): Boolean {
-        val compared = isCompareTimeStr(timeMillis, beforeTimeStr)
-        // Handle the case when times are equal (should return true for <= comparison)
-        return when (compared) {
-            null -> false
-            else -> compared <= 0
-        }
     }
 
     @JvmStatic
@@ -309,25 +264,6 @@ object TimeUtil {
         }
     }
 
-    @JvmField
-    val OTHER_DATE_TIME_FORMAT_THREAD_LOCAL: ThreadLocal<SimpleDateFormat> = object : ThreadLocal<SimpleDateFormat>() {
-        override fun initialValue(): SimpleDateFormat {
-            return SimpleDateFormat("yyyy.MM.dd HH:mm:ss", Locale.getDefault())
-        }
-    }
-
-    @JvmStatic
-    fun timeToStamp(timers: String): Long {
-        return try {
-            val simpleDateFormat = OTHER_DATE_TIME_FORMAT_THREAD_LOCAL.get()
-                ?: SimpleDateFormat("yyyy.MM.dd HH:mm:ss", Locale.getDefault())
-            val newD = simpleDateFormat.parse(timers)
-            newD?.time ?: System.currentTimeMillis()
-        } catch (e: Exception) {
-            System.currentTimeMillis()
-        }
-    }
-
     /**
      * 获取格式化的日期时间字符串 yyyy-MM-dd HH:mm:ss
      */
@@ -411,17 +347,7 @@ object TimeUtil {
         return isLessThanSecondOfDays(firstCalendar, secondCalendar)
     }
 
-    /**
-     * 通过时间戳比较传入的时间戳的天数是否小于当前时间戳的天数
-     */
-    @JvmStatic
-    fun isLessThanNowOfDays(timestamp: Long): Boolean {
-        return isLessThanSecondOfDays(getCalendarByTimeMillis(timestamp), getNow())
-    }
-
-    /**
-     * 判断两个日历对象是否为同一天
-     */
+    /** 判断两个日历对象是否为同一天。 */
     @JvmStatic
     fun isSameDay(firstCalendar: Calendar, secondCalendar: Calendar): Boolean {
         return firstCalendar.get(Calendar.YEAR) == secondCalendar.get(Calendar.YEAR) &&
@@ -454,10 +380,10 @@ object TimeUtil {
         return isToday(getCalendarByTimeMillis(timestamp))
     }
 
-    // ==================== 协程兼容方法 ====================
+    // ==================== 阻塞延迟方法 ====================
 
     /**
-     * 协程兼容的延迟方法
+     * 在当前线程执行阻塞延迟。
      */
     @JvmStatic
     fun sleepCompat(millis: Long) {

@@ -1,6 +1,5 @@
 package io.github.aoguai.sesameag.ui.screen.content
 
-import SettingsSwitchItem
 import android.content.Intent
 import android.os.Build
 import android.widget.Toast
@@ -40,6 +39,7 @@ import io.github.aoguai.sesameag.ui.ManualTaskActivity
 import io.github.aoguai.sesameag.ui.RpcDebugActivity
 import io.github.aoguai.sesameag.ui.compose.CommonAlertDialog
 import io.github.aoguai.sesameag.ui.screen.components.SettingsItem
+import io.github.aoguai.sesameag.ui.screen.components.SettingsSwitchItem
 import io.github.aoguai.sesameag.ui.screen.components.UserItemCard
 import io.github.aoguai.sesameag.ui.screen.components.UserSelectionDialog
 

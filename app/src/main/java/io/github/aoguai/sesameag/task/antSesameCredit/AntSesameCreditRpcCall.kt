@@ -227,17 +227,6 @@ object AntSesameCreditRpcCall {
     }
 
     /**
-     * 芝麻粒首页
-     */
-    @JvmStatic
-    fun queryPointHome(): String {
-        return RequestManager.requestString(
-            "com.antgroup.zmxy.zmmemberop.biz.rpc.PointHomeRpcManager.queryHome",
-            "[{}]"
-        )
-    }
-
-    /**
      * 芝麻粒积分宝箱查询：data.hasBox=true 且 data.status=WAIT_CLAIM 时可开启
      */
     @JvmStatic

@@ -21,7 +21,6 @@ data class RebornWeeklyState(
 )
 
 object RebornEnergyWeeklyPersistence {
-    private const val TAG = "RebornEnergyWeekly"
     private const val STORE_KEY = "reborn_energy_weekly_state"
 
     private fun currentUserStore(): UserDataStore? {

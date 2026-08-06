@@ -17,7 +17,7 @@ object AntFarmRpcCall {
     private const val GAME_CENTER_VERSION = "10.8.20.8000"
     private const val KITCHEN_TASK_SOURCE = "antfarmzuofanrw"
 
-    enum class FamilyInviteVisitOutcome {
+    internal enum class FamilyInviteVisitOutcome {
         SUBMITTED,
         ALREADY_COMPLETED_CONFIRMED,
         RETRY_LATER,
@@ -71,8 +71,6 @@ object AntFarmRpcCall {
                 "\"version\":\"" +
                 VERSION +
                 "\"}]"
-        val args =
-            "[{\"needHasInviteUserByCycle\":true,\"requestType\":\"RPC\",\"sceneCode\":\"ANTFARM_FAMILY_SHARE\",\"source\":\"ANTFARM\",\"startIndex\":0}]"
         return requestString("com.alipay.antiep.canInvitePersonListP2P", args1)
     }
 
@@ -308,30 +306,6 @@ object AntFarmRpcCall {
     }
 
     @JvmStatic
-    fun getAnswerInfo(): String {
-        val args1 =
-            (
-                "[{\"answerSource\":\"foodTask\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\",\"version\":\"" +
-                    VERSION + "\"}]"
-            )
-        return requestString("com.alipay.antfarm.getAnswerInfo", args1)
-    }
-
-    @JvmStatic
-    fun answerQuestion(
-        quesId: String,
-        answer: Int,
-    ): String {
-        val args1 =
-            (
-                "[{\"answers\":\"[{\\\"questionId\\\":\\\"" + quesId + "\\\",\\\"answers\\\":[" + answer +
-                    "]}]\",\"bizkey\":\"ANSWER\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\",\"version\":\"" +
-                    VERSION + "\"}]"
-            )
-        return requestString("com.alipay.antfarm.doFarmTask", args1)
-    }
-
-    @JvmStatic
     fun receiveFarmTaskAward(
         taskId: String,
         awardType: String? = null,
@@ -499,8 +473,7 @@ object AntFarmRpcCall {
         )
     }
 
-    @JvmStatic
-    fun RandomScore(str: String?): Int {
+    private fun randomScore(str: String?): Int {
         if ("starGame" == str) {
             return nextInt(300, 400)
         } else if ("jumpGame" == str) {
@@ -518,7 +491,7 @@ object AntFarmRpcCall {
     fun recordFarmGame(gameType: String?): String {
         val uuid: String = uuid
         val md5String = getMD5(uuid)
-        val score = RandomScore(gameType)
+        val score = randomScore(gameType)
         if ("flyGame" == gameType) {
             val foodCount = score / 50
             return requestString(
@@ -556,8 +529,7 @@ object AntFarmRpcCall {
             return sb.toString()
         }
 
-    @JvmStatic
-    fun getMD5(password: String): String {
+    private fun getMD5(password: String): String {
         try {
             // 得到一个信息摘要器
             val digest = MessageDigest.getInstance("md5")
@@ -616,13 +588,6 @@ object AntFarmRpcCall {
         requestString(
             "com.alipay.antfarm.queryFoodMaterialPack",
             "[{\"requestType\":\"RPC\",\"sceneCode\":\"ANTFARM\",\"source\":\"kitchen\",\"version\":\"unknown\"}]",
-        )
-
-    @JvmStatic
-    fun listCookbook(): String =
-        requestString(
-            "com.alipay.antfarm.listCookbook",
-            "[{\"requestType\":\"RPC\",\"sceneCode\":\"ANTFARM\",\"source\":\"ACHIEVEMENT\",\"version\":\"unknown\"}]",
         )
 
     @JvmStatic
@@ -1496,8 +1461,7 @@ object AntFarmRpcCall {
      * FAMILY48 是服务端声明“任务已完成”的业务终态，不能把 success=false 静默当作成功。
      * 仅在随后的家庭任务快照不再显示 FAMILY_SHARE TODO 时，才允许调用方写入当日标记。
      */
-    @JvmStatic
-    fun confirmFamilyInviteVisitOutcome(response: JSONObject): FamilyInviteVisitOutcome {
+    internal fun confirmFamilyInviteVisitOutcome(response: JSONObject): FamilyInviteVisitOutcome {
         if (response.optString("memo") == "SUCCESS") {
             return FamilyInviteVisitOutcome.SUBMITTED
         }
@@ -1560,74 +1524,6 @@ object AntFarmRpcCall {
             "[{\"friendFarmId\": \"" + friendFarmId + "\",\"groupId\": \"" + groupId +
                 "\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ChickFamily\",\"source\":\"H5\",\"spaceType\":\"ChickFamily\"}]"
         return requestString("com.alipay.antfarm.feedFriendAnimal", args)
-    }
-
-    @JvmStatic
-    fun queryFamilyDrawActivity(): String {
-        val args =
-            "[{\"bizType\":\"ANTFARM_GAME_CENTER\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\"}]"
-        return requestString("com.alipay.antfarm.queryFamilyDrawActivity", args)
-    }
-
-    @JvmStatic
-    fun familyDraw(): String {
-        val args =
-            "[{\"bizType\":\"ANTFARM_GAME_CENTER\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\"}]"
-        return requestString("com.alipay.antfarm.familyDraw", args)
-    }
-
-    @JvmStatic
-    fun familyBatchInviteP2P(
-        inviteP2PVOList: JSONArray?,
-        sceneCode: String?,
-    ): String {
-        val args =
-            "[{\"inviteP2PVOList\":" + inviteP2PVOList + ",\"requestType\":\"RPC\",\"sceneCode\":\"" + sceneCode +
-                "\",\"source\":\"antfarm\"}]"
-        return requestString("com.alipay.antiep.batchInviteP2P", args)
-    }
-
-    @JvmStatic
-    fun familyDrawSignReceiveFarmTaskAward(taskId: String?): String {
-        val args =
-            "[{\"awardType\":\"FAMILY_DRAW_TIME\",\"bizType\":\"ANTFARM_GAME_CENTER\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\",\"taskId\":\"" +
-                taskId +
-                "\",\"taskSceneCode\":\"ANTFARM_FAMILY_DRAW_TASK\"}]"
-        return requestString("com.alipay.antfarm.receiveFarmTaskAward", args)
-    }
-
-    /**
-     * 扭蛋任务查询好友列表
-     */
-    @JvmStatic
-    @Throws(JSONException::class)
-    fun familyShareP2PPanelInfo(sceneCode: String?): String {
-        val jo = JSONObject()
-        jo.put("requestType", "RPC")
-        jo.put("source", "antfarm")
-        jo.put("sceneCode", sceneCode)
-        return requestString("com.alipay.antiep.shareP2PPanelInfo", JSONArray().put(jo).toString())
-    }
-
-    /**
-     * 扭蛋任务列表
-     */
-    @JvmStatic
-    fun familyDrawListFarmTask(): String {
-        val args =
-            "[{\"bizType\":\"ANTFARM_GAME_CENTER\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM_FAMILY_DRAW_TASK\",\"signSceneCode\":\"\",\"source\":\"H5\",\"taskSceneCode\":\"ANTFARM_FAMILY_DRAW_TASK\"}]"
-        return requestString("com.alipay.antfarm.listFarmTask", args)
-    }
-
-    @JvmStatic
-    fun giftFamilyDrawFragment(
-        giftUserId: String?,
-        giftNum: Int,
-    ): String {
-        val args =
-            "[{\"bizType\":\"ANTFARM_GAME_CENTER\",\"giftNum\":" + giftNum + ",\"giftUserId\":\"" + giftUserId +
-                "\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\"}]"
-        return requestString("com.alipay.antfarm.giftFamilyDrawFragment", args)
     }
 
     @JvmStatic

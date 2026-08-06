@@ -5,13 +5,9 @@ import io.github.aoguai.sesameag.util.RandomUtil
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
-import java.util.Random
 
 object AntCooperateRpcCall {
     private const val VERSION = "20230501"
-
-    // 使用 Random 保持与原 Java 逻辑一致
-    private val RANDOM: Random = Random()
 
     @JvmStatic
     fun queryUserCooperatePlantList(): String {

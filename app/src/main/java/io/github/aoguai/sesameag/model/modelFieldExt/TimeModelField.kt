@@ -213,15 +213,6 @@ class TimePointListModelField(
     )
 ) {
     @JsonIgnore
-    fun getPointTokens(): List<String> {
-        val spec = getTriggerSpec()
-        if (spec.disabled) {
-            return emptyList()
-        }
-        return spec.allowRules.map { it.token }
-    }
-
-    @JsonIgnore
     fun nextPointAt(now: Long = System.currentTimeMillis(), includeNow: Boolean = false): Long? {
         return TimeTriggerEvaluator.nextCheckpointAt(getTriggerSpec(), now, includeNow)
     }

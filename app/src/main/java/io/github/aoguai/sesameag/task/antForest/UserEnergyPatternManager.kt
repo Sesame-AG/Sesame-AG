@@ -21,8 +21,6 @@ data class UserEnergyPattern(
  * 单一职责：管理用户的能量收取模式和统计数据
  */
 object UserEnergyPatternManager {
-    private const val TAG = "UserEnergyPatternManager"
-
     // 用户模式存储
     private val userPatterns = ConcurrentHashMap<String, UserEnergyPattern>()
 

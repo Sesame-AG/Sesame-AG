@@ -5,9 +5,6 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException
 import com.fasterxml.jackson.databind.node.ObjectNode
 import io.github.aoguai.sesameag.BuildConfig
-import io.github.aoguai.sesameag.entity.UserEntity
-import io.github.aoguai.sesameag.model.ModelConfig
-import io.github.aoguai.sesameag.model.ModelField
 import io.github.aoguai.sesameag.model.ModelFields
 import io.github.aoguai.sesameag.model.Model
 import io.github.aoguai.sesameag.model.modelFieldExt.FriendSelectionCountModelField
@@ -87,28 +84,6 @@ class Config private constructor() {
             }
             modelFieldsMap[modelCode] = newModelFields
         }
-    }
-
-    /**
-     * 检查是否存在指定的模型字段
-     *
-     * @param modelCode 模型代码
-     * @return 是否存在该模型字段
-     */
-    fun hasModelFields(modelCode: String): Boolean {
-        return modelFieldsMap.containsKey(modelCode)
-    }
-
-    /**
-     * 检查指定模型字段是否存在
-     *
-     * @param modelCode 模型代码
-     * @param fieldCode 字段代码
-     * @return 是否存在该字段
-     */
-    fun hasModelField(modelCode: String, fieldCode: String): Boolean {
-        val modelFields = modelFieldsMap[modelCode] ?: return false
-        return modelFields.containsKey(fieldCode)
     }
 
     @JsonIgnore

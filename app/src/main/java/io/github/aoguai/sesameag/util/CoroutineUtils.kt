@@ -1,13 +1,8 @@
 package io.github.aoguai.sesameag.util
 
-import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 
@@ -17,24 +12,6 @@ import kotlinx.coroutines.withTimeout
  * 提供协程相关的通用功能，用于替代传统的线程操作
  */
 object CoroutineUtils {
-
-    /**
-     * 协程安全的延迟方法
-     *
-     * 在协程环境中使用 delay()，在非协程环境中降级到 Thread.sleep()
-     *
-     * @param millis 延迟毫秒数
-     */
-    @JvmStatic
-    suspend fun delayCompat(millis: Long) {
-        try {
-            delay(millis)
-        } catch (e: Exception) {
-            Log.printStackTrace("协程延迟异常", e)
-            // 如果协程延迟失败，降级到线程休眠
-            Thread.sleep(millis)
-        }
-    }
 
     /**
      * 兼容性延迟方法（同步版本）
@@ -59,39 +36,6 @@ object CoroutineUtils {
                 Log.record("CoroutineUtils", "延迟被中断: ${ie.message}")
             }
         }
-    }
-
-    /**
-     * 在指定调度器上运行协程
-     */
-    @JvmStatic
-    fun runOnDispatcher(
-        dispatcher: CoroutineDispatcher = Dispatchers.Default,
-        block: suspend CoroutineScope.() -> Unit
-    ): Job {
-        return CoroutineScope(dispatcher + SupervisorJob()).launch {
-            try {
-                block()
-            } catch (e: Exception) {
-                Log.printStackTrace("协程执行异常", e)
-            }
-        }
-    }
-
-    /**
-     * 在IO调度器上运行协程
-     */
-    @JvmStatic
-    fun runOnIO(block: suspend CoroutineScope.() -> Unit): Job {
-        return runOnDispatcher(Dispatchers.IO, block)
-    }
-
-    /**
-     * 在计算调度器上运行协程
-     */
-    @JvmStatic
-    fun runOnComputation(block: suspend CoroutineScope.() -> Unit): Job {
-        return runOnDispatcher(Dispatchers.Default, block)
     }
 
     /**

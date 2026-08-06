@@ -47,19 +47,6 @@ class ShellManager(context: Context) {
         onStateChanged?.invoke(currentType)
     }
 
-    /**
-     * 2. 新增 reset 方法
-     * 用于强制重置选择状态（例如 Shizuku 授权后）
-     */
-    fun reset() {
-        if (selectedShell == null) {
-            return
-        }
-        selectedShell = null
-        Log.d(TAG, "ShellManager 已重置，下次执行将重新选择 Executor")
-        notifyChange() // 🔥 通知：重置了
-    }
-
     private suspend fun selectExecutor(notifyUnavailable: Boolean = true) {
         selectionMutex.withLock {
             // 如果已经选中且可用，直接返回

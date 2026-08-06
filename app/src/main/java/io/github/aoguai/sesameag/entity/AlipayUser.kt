@@ -40,25 +40,6 @@ class AlipayUser(id: String, name: String) : MapperEntity() {
         }
 
         /**
-         * 获取所有支付宝用户列表（作为MapperEntity列表）
-         * 用于Java互操作，特别是方法引用场景
-         *
-         * @return 用户列表（作为MapperEntity列表）
-         */
-        @JvmStatic
-        fun getListAsMapperEntity(): List<MapperEntity> {
-            return getList()
-        }
-
-        /**
-         * 获取仅互关且排除当前账号的好友列表（作为MapperEntity列表）。
-         */
-        @JvmStatic
-        fun getFriendListAsMapperEntity(): List<MapperEntity> {
-            return getFriendList()
-        }
-
-        /**
          * 获取符合过滤条件的用户列表
          *
          * @param filterFunc 过滤函数，用于筛选用户

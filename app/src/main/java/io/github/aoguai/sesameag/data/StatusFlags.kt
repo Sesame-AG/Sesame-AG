@@ -411,9 +411,6 @@ object StatusFlags {
     /** 庄园：好友串门邀请今日已处理 */
     const val FLAG_FARM_INVITE_FRIEND_VISIT_FAMILY = "antFarm::inviteFriendVisitFamily"
 
-    /** 庄园：家庭批量串门送扭蛋今日已处理 */
-    const val FLAG_FARM_FAMILY_BATCH_INVITE_P2P = "antFarm::familyBatchInviteP2P"
-
     /** 庄园答题：今日已答题 */
     const val FLAG_FARM_QUESTION_ANSWERED = "farmQuestion::answered"
 

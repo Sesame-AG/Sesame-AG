@@ -65,54 +65,10 @@ class RuntimeInfo private constructor() {
      * 将运行时信息保存到文件中。
      */
     @Synchronized
-    fun save() {
+    private fun save() {
         val file = Files.runtimeInfoFile(userId) ?: return
         Files.write2File(joAll.toString(), file)
     }
-
-    /**
-     * 获取指定键的值（Object 类型）。如果该键不存在，返回 null。
-     *
-     * @param key 键
-     * @return 键对应的值
-     * @throws JSONException 可能抛出的异常
-     */
-    @Throws(JSONException::class)
-    operator fun get(key: RuntimeInfoKey): Any? = joCurrent.opt(key.name)
-
-    /**
-     * 根据键获取对应的字符串值。如果键不存在，返回空字符串。
-     *
-     * @param key 键
-     * @return 对应的字符串值
-     */
-    fun getString(key: String): String = joCurrent.optString(key)
-
-    /**
-     * 根据键获取对应的 long 值。如果键不存在，返回默认值。
-     *
-     * @param key  键
-     * @param def 默认值
-     * @return 对应的 long 值
-     */
-    fun getLong(key: String, def: Long): Long = joCurrent.optLong(key, def)
-
-    /**
-     * 根据键获取对应的布尔值。如果键不存在，返回默认值。
-     *
-     * @param key  键
-     * @param def 默认值
-     * @return 对应的布尔值
-     */
-    fun getBool(key: String, def: Boolean): Boolean = joCurrent.optBoolean(key, def)
-
-    /**
-     * 根据枚举键获取对应的字符串值。
-     *
-     * @param key 键（枚举值）
-     * @return 对应的字符串值
-     */
-    fun getString(key: RuntimeInfoKey): String = joCurrent.optString(key.name)
 
     /**
      * 根据枚举键获取对应的 long 值。如果键不存在，返回默认值 0L。
@@ -138,7 +94,7 @@ class RuntimeInfo private constructor() {
      * @param key   键
      * @param value 存储的值
      */
-    fun put(key: String, value: Any?) {
+    private fun put(key: String, value: Any?) {
         try {
             joCurrent.put(key, value)
             joAll.put(userId, joCurrent)

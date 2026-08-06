@@ -119,7 +119,6 @@ If you purchased it, please contact the seller for a refund or report the seller
     <string name="start_at_0_o_clock">Execute at 0 o\'clock</string>
     <string name="start_at_7_o_clock">Start before 7 o\'clock</string>
     <string name="tiyubiz">Tiyubiz</string>
-    <string name="friend_watch">Friend watch</string>
     <string name="user_patrol">User patrol</string>
     <string name="toast_vertical_offset">Toast vertical offset</string>
     <string name="animal_game_time">Animal game time</string>
@@ -145,7 +144,6 @@ If you purchased it, please contact the seller for a refund or report the seller
     <string name="stall_auto_open">Stall auto open</string>
     <string name="stall_auto_task">Stall auto task</string>
     <string name="stall_receive_award">Stall receive award</string>
-    <string name="accept_gift">Accept gift</string>
     <string name="visit_friend_list">Visit friend list</string>
     <string name="stall_open_type">Stall open type</string>
     <string name="stall_open_list">Stall open list</string>
@@ -173,7 +171,6 @@ If you purchased it, please contact the seller for a refund or report the seller
     <string name="file_exported">The file has been exported to: </string>
     <string name="file_not_support_open_with_browser">The file is not supported to open with browser</string>
     <string name="not_support_open_with_browser">Not supported to open with browser</string>
-    <string name="text_diary_toast">Test Toast String</string>
     <string name="normal_text">Data loading…</string>
     <string name="build_version_1_0_0">Build Version: </string>
     <string name="bulid_target">Build Target: </string>
