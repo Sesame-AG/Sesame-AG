@@ -208,10 +208,11 @@ fun SettingsContent(
                 showDialog = true,
                 onDismissRequest = { showClearConfigDialog = false },
                 onConfirm = {
+                    showClearConfigDialog = false
                     onEvent(MainActivity.MainUiEvent.ClearConfig)
                 },
                 title = "⚠️ 警告",
-                text = "🤔❗ 确认清除所有模块配置？\n此操作无法撤销❗❗❗",
+                text = "🤔❗ 将清除所有账号配置、状态、JSON、RPC 调试数据、日志和抓包。\n不清除导出的备份和系统授权。\n此操作无法撤销❗❗❗",
                 icon = Icons.Outlined.Warning,
                 iconTint = MaterialTheme.colorScheme.error,
                 confirmText = "确认清除",

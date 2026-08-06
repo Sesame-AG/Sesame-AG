@@ -23,4 +23,8 @@ object ThemeManager {
         _isDynamicColor.value = enabled
         prefs.edit().putBoolean("dynamic_color", enabled).apply()
     }
+
+    fun resetToDefaults() {
+        _isDynamicColor.value = true
+    }
 }
