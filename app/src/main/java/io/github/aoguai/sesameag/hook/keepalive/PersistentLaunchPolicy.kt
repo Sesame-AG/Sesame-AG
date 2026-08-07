@@ -5,6 +5,7 @@ import android.os.Process
 import io.github.aoguai.sesameag.data.Config
 import io.github.aoguai.sesameag.data.General
 import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
+import io.github.aoguai.sesameag.hook.AccountSlotRegistry
 import io.github.aoguai.sesameag.model.BaseModel
 import io.github.aoguai.sesameag.util.Files
 import io.github.aoguai.sesameag.util.maps.UserMap
@@ -36,7 +37,9 @@ internal object PersistentLaunchPolicy {
     }
 
     fun shouldLaunchTarget(schedule: PersistentSchedule): Boolean =
-        payloadRequestsTargetLaunch(schedule.payloadJson) && isForegroundLaunchEnabled(schedule.ownerUserId)
+        AccountSlotRegistry.isExecutableUser(schedule.ownerUserId) &&
+            payloadRequestsTargetLaunch(schedule.payloadJson) &&
+            isForegroundLaunchEnabled(schedule.ownerUserId)
 
     fun isFrontLaunchDisabled(error: String?): Boolean = error == FRONT_LAUNCH_DISABLED_ERROR
 
@@ -57,11 +60,14 @@ internal object PersistentLaunchPolicy {
 
     fun isForegroundLaunchEnabled(ownerUserId: String?): Boolean {
         val safeOwnerUserId = ownerUserId?.trim()?.takeIf { it.isNotEmpty() }
+        if (safeOwnerUserId == null || !AccountSlotRegistry.isExecutableUser(safeOwnerUserId)) {
+            return false
+        }
         val currentUserId =
             (AccountSessionCoordinator.currentUserId() ?: UserMap.currentUid)
                 ?.trim()
                 ?.takeIf { it.isNotEmpty() }
-        if (Config.isLoaded() && (safeOwnerUserId == null || currentUserId == null || safeOwnerUserId == currentUserId)) {
+        if (Config.isLoaded() && (currentUserId == null || safeOwnerUserId == currentUserId)) {
             return BaseModel.allowPersistentForegroundLaunch.value != false
         }
         return readPersistedForegroundLaunchEnabled(safeOwnerUserId) ?: (BaseModel.allowPersistentForegroundLaunch.value != false)

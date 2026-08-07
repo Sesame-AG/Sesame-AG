@@ -45,6 +45,18 @@ internal object ApplicationBroadcastDispatcher {
         if (finalProcessName != null && finalProcessName.endsWith(":widgetProvider")) {
             return
         }
+        if (!RuntimeIdentityGuard.isTrustedForExecution()) {
+            record(TAG, "execution_gate_denied: runtime_identity")
+            return
+        }
+        val nonBusinessActions = setOf(
+            ApplicationHookConstants.BroadcastActions.HOOK_READY,
+            ApplicationHookConstants.BroadcastActions.PERMISSION_SNAPSHOT,
+        )
+        if (action !in nonBusinessActions && !isCurrentAccountExecutable()) {
+            record(TAG, "execution_gate_denied: account_slot")
+            return
+        }
 
         when (action) {
             ApplicationHookConstants.BroadcastActions.RESTART -> handleRestartBroadcast(safeIntent)
@@ -59,6 +71,12 @@ internal object ApplicationBroadcastDispatcher {
             ApplicationHookConstants.BroadcastActions.REFRESH_FRIENDS -> handleRefreshFriendsBroadcast(context, safeIntent)
             ApplicationHookConstants.BroadcastActions.REFRESH_EXCHANGE_OPTIONS -> handleRefreshExchangeOptionsBroadcast(context, safeIntent)
         }
+    }
+
+    private fun isCurrentAccountExecutable(): Boolean {
+        val loader = ApplicationHook.classLoader ?: return false
+        val userId = runCatching { HookUtil.getUserId(loader) }.getOrNull()
+        return AccountSlotRegistry.isExecutableUser(userId)
     }
 
     private fun handleRestartBroadcast(intent: Intent) {

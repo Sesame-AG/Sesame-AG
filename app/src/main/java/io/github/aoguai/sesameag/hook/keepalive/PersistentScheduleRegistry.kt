@@ -3,6 +3,7 @@ package io.github.aoguai.sesameag.hook.keepalive
 import android.content.Context
 import com.fasterxml.jackson.core.type.TypeReference
 import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
+import io.github.aoguai.sesameag.hook.AccountSlotRegistry
 import io.github.aoguai.sesameag.hook.ApplicationHookCore
 import io.github.aoguai.sesameag.util.DataStore
 import io.github.aoguai.sesameag.util.Files
@@ -54,6 +55,9 @@ object PersistentScheduleRegistry {
         context: Context,
         schedule: PersistentSchedule,
     ): PersistentSchedule {
+        if (!AccountSlotRegistry.isExecutableUser(schedule.ownerUserId)) {
+            return schedule.withFailure("account_slot_inactive")
+        }
         if (!ensureStorage()) {
             return schedule.withFailure("persistent_storage_unavailable")
         }
@@ -174,6 +178,34 @@ object PersistentScheduleRegistry {
         return removed.size
     }
 
+    fun cancelByOwner(
+        context: Context?,
+        ownerUserId: String,
+    ): Int = withRegistryLock { cancelByOwnerUnlocked(context, ownerUserId) }
+
+    private fun cancelByOwnerUnlocked(
+        context: Context?,
+        ownerUserId: String,
+    ): Int {
+        val safeOwnerUserId = ownerUserId.trim()
+        if (safeOwnerUserId.isEmpty() || !ensureStorage()) return 0
+        val schedules = loadMutable()
+        val removed = schedules.filter { schedule ->
+            schedule.ownerUserId?.trim() == safeOwnerUserId
+        }
+        if (removed.isEmpty()) return 0
+        schedules.removeAll(removed.toSet())
+        save(schedules)
+        removed.forEach { SystemWakeScheduler.cancelLaunchConfirmationTimeout(it.id) }
+        context?.let { ctx ->
+            SystemWakeScheduler.schedule(ctx, schedules.firstOrNull() ?: PersistentSchedule(), silent = true)
+        }
+        if (removed.any { it.kind == PersistentScheduleKind.MODULE_CHILD }) {
+            ApplicationHookCore.dispatchIfNeeded()
+        }
+        return removed.size
+    }
+
     fun get(id: String): PersistentSchedule? {
         if (id.isBlank()) return null
         if (!ensureStorage()) return null
@@ -258,7 +290,13 @@ object PersistentScheduleRegistry {
     ) {
         if (!ensureStorage()) return
         val safeOwnerUserId = ownerUserId.trim()
-        if (safeOwnerUserId.isEmpty() || sessionEpoch <= 0L) return
+        if (
+            safeOwnerUserId.isEmpty() ||
+            sessionEpoch <= 0L ||
+            !AccountSlotRegistry.isExecutableUser(safeOwnerUserId)
+        ) {
+            return
+        }
         val schedules = loadMutable()
         if (schedules.isEmpty()) return
         val retained = mutableListOf<PersistentSchedule>()

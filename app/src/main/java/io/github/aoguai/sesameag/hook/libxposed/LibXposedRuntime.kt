@@ -3,6 +3,7 @@ package io.github.aoguai.sesameag.hook.libxposed
 import android.util.Log
 import io.github.aoguai.sesameag.data.General
 import io.github.aoguai.sesameag.hook.ApplicationHook
+import io.github.aoguai.sesameag.hook.RuntimeIdentityGuard
 import io.github.aoguai.sesameag.hook.XposedEnv
 import io.github.aoguai.sesameag.util.ModuleStatus
 import io.github.libxposed.api.XposedModule
@@ -25,6 +26,13 @@ internal class LibXposedRuntime(
     fun onModuleLoaded(module: XposedModule, param: ModuleLoadedParam) {
         if (processName != null) {
             module.log(Log.WARN, TAG, "Ignoring duplicate onModuleLoaded callback")
+            return
+        }
+
+        val identityDecision = RuntimeIdentityGuard.verifyModuleLoaded(module.moduleApplicationInfo)
+        if (!identityDecision.accepted) {
+            module.log(Log.ERROR, TAG, "instance_rejected: ${identityDecision.reasonCode}")
+            module.detach()
             return
         }
 
@@ -60,6 +68,16 @@ internal class LibXposedRuntime(
 
         val targetProcessName = processName ?: run {
             module.log(Log.ERROR, TAG, "Package callback arrived before module runtime initialization")
+            module.detach()
+            return
+        }
+        val identityDecision = RuntimeIdentityGuard.verifyPackageReady(
+            applicationInfo = param.applicationInfo,
+            packageName = param.packageName,
+            processName = targetProcessName,
+        )
+        if (!identityDecision.accepted) {
+            module.log(Log.ERROR, TAG, "instance_rejected: ${identityDecision.reasonCode}")
             module.detach()
             return
         }

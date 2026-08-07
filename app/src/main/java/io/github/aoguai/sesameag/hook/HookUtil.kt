@@ -11,8 +11,6 @@ import java.lang.reflect.Method
 object HookUtil {
     private const val TAG = "HookUtil"
 
-    private var lastToastTime = 0L
-
     private var microContextCache: Any? = null
 
     data class FriendRefreshResult(
@@ -35,41 +33,6 @@ object HookUtil {
         } catch (e: Exception) {
             Log.printStackTrace(TAG, "hookOtherService 失败", e)
         }
-    }
-
-    /**
-     * 突破目标应用最大可登录账号数量限制
-     * @param classLoader 类加载器
-     */
-    fun bypassAccountLimit(classLoader: ClassLoader) {
-        Log.runtime(TAG, "Hook AccountManagerListAdapter#getCount")
-        try {
-            val adapterClass = loadClass(classLoader, "com.alipay.mobile.security.accountmanager.data.AccountManagerListAdapter")
-            val getCountMethod = findMethod(adapterClass, "getCount")
-            ApplicationHook.requireXposedInterface().hook(getCountMethod).intercept { chain ->
-                val result = chain.proceed()
-                try {
-                    val list = chain.getThisObject()?.let { getFieldValue(it, "queryAccountList") as? List<*> }
-                    if (list != null) {
-                        val now = System.currentTimeMillis()
-                        if (now - lastToastTime > 1000 * 60) {
-                            Toast.show("🎉 已尝试为你突破限制")
-                            lastToastTime = now
-                        }
-                        list.size
-                    } else {
-                        result
-                    }
-                } catch (e: Throwable) {
-                    Log.printStackTrace(TAG, e)
-                    Log.error(TAG, "Hook AccountManagerListAdapter#getCount failed: ${e.message}")
-                    result
-                }
-            }
-        } catch (t: Throwable) {
-            Log.printStackTrace(TAG, "Hook AccountManagerListAdapter#getCount 失败", t)
-        }
-        Log.runtime(TAG, "Hook AccountManagerListAdapter#getCount END")
     }
 
     fun getMicroApplicationContext(classLoader: ClassLoader): Any? {

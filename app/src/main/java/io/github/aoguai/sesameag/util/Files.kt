@@ -86,6 +86,18 @@ object Files {
         return configDir
     }
 
+    /** Lists existing account configuration directories without creating or migrating files. */
+    @JvmStatic
+    fun listExistingUserConfigIds(): List<String> =
+        CONFIG_DIR.listFiles()
+            ?.asSequence()
+            ?.filter { directory ->
+                directory.isDirectory && File(directory, "config_v2.json").isFile
+            }
+            ?.map { directory -> directory.name }
+            ?.toList()
+            .orEmpty()
+
     @JvmStatic
     fun getDefaultConfigV2File(): File {
         return File(CONFIG_DIR, "config_v2.json")

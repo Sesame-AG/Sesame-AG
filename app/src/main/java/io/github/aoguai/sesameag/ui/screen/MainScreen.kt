@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.aoguai.sesameag.SesameApplication.Companion.PREFERENCES_KEY
 import io.github.aoguai.sesameag.entity.UserEntity
+import io.github.aoguai.sesameag.hook.AccountSlotSnapshot
 import io.github.aoguai.sesameag.ui.MainActivity
 import io.github.aoguai.sesameag.ui.compose.CommonAlertDialog
 import io.github.aoguai.sesameag.ui.navigation.BottomNavItem
@@ -52,6 +53,7 @@ fun MainScreen(
     viewModel: MainViewModel,
     isDynamicColor: Boolean, // 传给 MainScreen
     userList: List<UserEntity>, // 🔥 确保 userList 被传入 MainScreen
+    accountSlots: AccountSlotSnapshot,
     onNavigateToSettings: (UserEntity) -> Unit, // 🔥 新增回调：跳转设置
     onEvent: (MainActivity.MainUiEvent) -> Unit,
 ) {
@@ -164,9 +166,12 @@ fun MainScreen(
 
                 BottomNavItem.Settings -> SettingsContent(
                     userList = userList,
+                    accountSlots = accountSlots,
                     isDynamicColor = isDynamicColor, // 传给 MainScreen
                     onToggleDynamicColor = ThemeManager::setDynamicColor, // 传入回调
                     onNavigateToSettings = onNavigateToSettings,
+                    onRemoveExecutableSlot = viewModel::removeExecutableAccountSlot,
+                    onSelectLegacySlots = viewModel::selectLegacyAccountSlots,
                     onEvent = onEvent
                 )
             }

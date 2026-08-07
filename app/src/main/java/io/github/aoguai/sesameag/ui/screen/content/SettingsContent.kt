@@ -20,6 +20,8 @@ import androidx.compose.material.icons.rounded.DeleteForever
 import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.SatelliteAlt
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -33,6 +35,8 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
 import io.github.aoguai.sesameag.data.General
 import io.github.aoguai.sesameag.entity.UserEntity
+import io.github.aoguai.sesameag.hook.AccountSlotMigrationState
+import io.github.aoguai.sesameag.hook.AccountSlotSnapshot
 import io.github.aoguai.sesameag.ui.FriendCenterActivity
 import io.github.aoguai.sesameag.ui.MainActivity
 import io.github.aoguai.sesameag.ui.ManualTaskActivity
@@ -47,14 +51,20 @@ import io.github.aoguai.sesameag.ui.screen.components.UserSelectionDialog
 @Composable
 fun SettingsContent(
     userList: List<UserEntity>,
+    accountSlots: AccountSlotSnapshot,
     isDynamicColor: Boolean,          // 新增参数
     onToggleDynamicColor: (Boolean) -> Unit, // 新增参数
     onNavigateToSettings: (UserEntity) -> Unit,
+    onRemoveExecutableSlot: (String?) -> Unit,
+    onSelectLegacySlots: (Collection<String?>) -> Unit,
     onEvent: (MainActivity.MainUiEvent) -> Unit
 ) {
     // 状态定义在最外层
     var showClearConfigDialog by remember { mutableStateOf(false) }
     var showFriendCenterUserDialog by remember { mutableStateOf(false) }
+    var pendingSlotRemoval by remember { mutableStateOf<String?>(null) }
+    var slotMenuUserId by remember { mutableStateOf<String?>(null) }
+    var selectedLegacySlots by remember { mutableStateOf<Set<String>>(emptySet()) }
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
 
@@ -87,6 +97,37 @@ fun SettingsContent(
                 )
             }
 
+            if (accountSlots.migrationState == AccountSlotMigrationState.SELECTION_REQUIRED) {
+                items(accountSlots.legacyCandidates) { userId ->
+                    val selected = userId in selectedLegacySlots
+                    SettingsItem(
+                        title = "${if (selected) "✓ " else ""}${maskUserId(userId)}",
+                        icon = Icons.Rounded.AccountCircle,
+                        onClick = {
+                            selectedLegacySlots = when {
+                                selected -> selectedLegacySlots - userId
+                                selectedLegacySlots.size < 2 -> selectedLegacySlots + userId
+                                else -> selectedLegacySlots
+                            }
+                        }
+                    )
+                }
+                item {
+                    SettingsItem(
+                        title = "确认选择（${selectedLegacySlots.size}/2）",
+                        icon = Icons.Rounded.AccountCircle,
+                        onClick = {
+                            if (selectedLegacySlots.size == 2) {
+                                onSelectLegacySlots(selectedLegacySlots.toList())
+                                selectedLegacySlots = emptySet()
+                            } else {
+                                Toast.makeText(context, "请恰好选择两个账号", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    )
+                }
+            }
+
             if (userList.isEmpty()) {
                 item {
                     Text(
@@ -97,7 +138,36 @@ fun SettingsContent(
                 }
             } else {
                 items(userList) { user ->
-                    UserItemCard(user = user, onClick = { onNavigateToSettings(user) })
+                    val userId = user.userId?.trim()
+                    val canRemoveSlot =
+                        accountSlots.migrationState == AccountSlotMigrationState.READY &&
+                            userId != null &&
+                            userId in accountSlots.activeUserIds
+                    Box {
+                        UserItemCard(
+                            user = user,
+                            onClick = { onNavigateToSettings(user) },
+                            onLongClick = if (canRemoveSlot) {
+                                { slotMenuUserId = userId }
+                            } else {
+                                null
+                            }
+                        )
+                        if (canRemoveSlot && slotMenuUserId == userId) {
+                            DropdownMenu(
+                                expanded = true,
+                                onDismissRequest = { slotMenuUserId = null }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("移出可执行槽位") },
+                                    onClick = {
+                                        slotMenuUserId = null
+                                        pendingSlotRemoval = userId
+                                    }
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
@@ -220,6 +290,23 @@ fun SettingsContent(
             )
         }
 
+        pendingSlotRemoval?.let { userId ->
+            CommonAlertDialog(
+                showDialog = true,
+                onDismissRequest = { pendingSlotRemoval = null },
+                onConfirm = {
+                    onRemoveExecutableSlot(userId)
+                    pendingSlotRemoval = null
+                },
+                title = "移出可执行槽位",
+                text = "移出后不可执行，不删除账号数据。",
+                icon = Icons.Outlined.Warning,
+                iconTint = MaterialTheme.colorScheme.error,
+                confirmText = "确认移出",
+                confirmButtonColor = MaterialTheme.colorScheme.error
+            )
+        }
+
         if (showFriendCenterUserDialog) {
             UserSelectionDialog(
                 userList = userList,
@@ -229,4 +316,7 @@ fun SettingsContent(
         }
     }
 }
+
+private fun maskUserId(userId: String): String =
+    if (userId.length <= 4) "****" else "***${userId.takeLast(4)}"
 

@@ -9,6 +9,7 @@ import androidx.core.net.toUri
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.aoguai.sesameag.data.Config
 import io.github.aoguai.sesameag.entity.UserEntity
+import io.github.aoguai.sesameag.hook.AccountSlotRegistry
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.model.Model
 import io.github.aoguai.sesameag.task.customTasks.CustomTask
@@ -54,6 +55,11 @@ class ManualTaskActivity : ComponentActivity() {
     }
 
     private fun runTask(task: CustomTask, params: Map<String, Any>) {
+        val activeUserId = DataStore.get("activedUser", UserEntity::class.java)?.userId
+        if (!AccountSlotRegistry.isExecutableUser(activeUserId)) {
+            ToastUtil.showToast(this, "当前账号不在可执行槽位，无法运行手动任务")
+            return
+        }
         try {
             val intent = Intent(ApplicationHookConstants.BroadcastActions.MANUAL_TASK)
             intent.putExtra("task", task.name)

@@ -1,5 +1,7 @@
 package io.github.aoguai.sesameag.ui.screen.components
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -21,17 +23,23 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import io.github.aoguai.sesameag.entity.UserEntity
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun UserItemCard(
     user: UserEntity,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
 ) {
     Surface(
-        onClick = onClick,
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surfaceContainerHigh, // 稍微突出的背景色
         tonalElevation = 2.dp,
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick,
+            )
     ) {
         Row(
             modifier = Modifier

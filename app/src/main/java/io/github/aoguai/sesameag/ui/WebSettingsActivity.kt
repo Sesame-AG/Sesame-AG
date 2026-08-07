@@ -31,6 +31,7 @@ import com.google.android.material.appbar.MaterialToolbar
 import io.github.aoguai.sesameag.BuildConfig
 import io.github.aoguai.sesameag.R
 import io.github.aoguai.sesameag.data.Config
+import io.github.aoguai.sesameag.hook.AccountSlotRegistry
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.model.Model
@@ -101,7 +102,13 @@ class WebSettingsActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
 
         context = this
-        userId = intent?.getStringExtra("userId")
+        val requestedUserId = AccountSlotRegistry.normalizeUserId(intent?.getStringExtra("userId"))
+        if (requestedUserId == null || requestedUserId !in Files.listExistingUserConfigIds()) {
+            Toast.makeText(this, "账号配置不存在或账号标识无效", Toast.LENGTH_LONG).show()
+            finish()
+            return
+        }
+        userId = requestedUserId
         userName = intent?.getStringExtra("userName")
 
         setContentView(R.layout.activity_web_settings)

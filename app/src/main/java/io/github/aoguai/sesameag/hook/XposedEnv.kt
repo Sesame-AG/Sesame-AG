@@ -8,5 +8,8 @@ object XposedEnv {
     lateinit var appInfo: ApplicationInfo
     lateinit var packageName: String
     lateinit var processName: String
+
+    @Volatile
+    var runtimeIdentity: RuntimeIdentity? = null
 }
 

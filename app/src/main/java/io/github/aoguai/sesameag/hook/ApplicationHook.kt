@@ -125,7 +125,7 @@ class ApplicationHook {
 
     // --- 入口方法 ---
     fun loadPackage(lpparam: PackageReadyParam) {
-        if (General.PACKAGE_NAME != lpparam.packageName) return
+        if (General.PACKAGE_NAME != lpparam.packageName || !RuntimeIdentityGuard.isPackageReady()) return
         handleHookLogic(
             lpparam.classLoader,
             lpparam.packageName,
@@ -195,7 +195,7 @@ class ApplicationHook {
 
     private fun shouldHookProcess(): Boolean {
         val isMainProcess = General.PACKAGE_NAME == finalProcessName
-        return isMainProcess
+        return isMainProcess && RuntimeIdentityGuard.isPackageReady()
 //            record(TAG, "跳过辅助进程: $finalProcessName")
     }
 
@@ -223,6 +223,12 @@ class ApplicationHook {
                 val result = chain.proceed()
                 val context = chain.args[0] as? Context ?: return@intercept result
                 val application = chain.getThisObject() as? Application
+                val identityDecision = RuntimeIdentityGuard.verifyApplicationAttach(context)
+                if (!identityDecision.accepted) {
+                    android.util.Log.w(TAG, "instance_rejected: ${identityDecision.reasonCode}")
+                    return@intercept result
+                }
+                XposedEnv.runtimeIdentity = RuntimeIdentityGuard.trustedIdentity()
                 appContext = context
                 mainHandler = Handler(Looper.getMainLooper())
                 Log.init(context)
@@ -239,9 +245,6 @@ class ApplicationHook {
                     AuthCodeHelper.init(classLoader!!)
 
                     initVersionInfo(packageName)
-                    if (VersionHook.hasVersion() && alipayVersion.compareTo(AlipayVersion("10.7.26.8100")) == 0) {
-                        HookUtil.bypassAccountLimit(classLoader!!)
-                    }
                 }
                 result
             }
@@ -617,7 +620,9 @@ class ApplicationHook {
 
         internal fun isReadyForExec(): Boolean {
             val session = AccountSessionCoordinator.currentSession()
-            return init &&
+            return RuntimeIdentityGuard.isTrustedForExecution() &&
+                AccountSlotRegistry.isExecutableUser(session?.userId) &&
+                init &&
                 Config.isLoaded() &&
                 service != null &&
                 WorkflowRootGuard.hasGrantedRoot() &&
@@ -1076,6 +1081,10 @@ class ApplicationHook {
                     record(TAG, "⏳ Service 未就绪，延后初始化: $reason")
                     return false
                 }
+                if (!RuntimeIdentityGuard.isTrustedForExecution()) {
+                    record(TAG, "instance_rejected: ${RuntimeIdentityGuard.lastReasonCode() ?: "identity_not_verified"}")
+                    return false
+                }
 
                 val activeClassLoader = classLoader ?: return false
                 val userId = HookUtil.getUserId(activeClassLoader)
@@ -1092,12 +1101,14 @@ class ApplicationHook {
                     userId,
                     allowPersistedReuse = allowPersistedSessionReuse,
                 )
-                appContext?.let { context ->
-                    PersistentScheduleRegistry.activateSession(
-                        context = context,
-                        ownerUserId = userId,
-                        sessionEpoch = AccountSessionCoordinator.currentSessionEpoch(),
-                    )
+                when (val admission = AccountSlotRegistry.admitRuntimeUser(userId)) {
+                    is AccountSlotAdmission.Denied -> {
+                        record(TAG, "execution_gate_denied: ${admission.reasonCode}")
+                        destroyHandlerInternal("account_slot_${admission.reasonCode}", invalidateSession = true)
+                        return false
+                    }
+
+                    is AccountSlotAdmission.Allowed -> Unit
                 }
                 if (init) {
                     if (shouldCaptureReloadState(reason)) {
@@ -1146,7 +1157,9 @@ class ApplicationHook {
                 val activeUserSnapshot = AccountSessionCoordinator.ensureActiveUserSnapshot(userId, activeClassLoader)
                 val legalAccepted = Config.isLoaded() && Config.isLegalAcceptedForCurrentVersion()
                 val workflowAllowed =
-                    WorkflowRootGuard.hasGrantedRoot() &&
+                    RuntimeIdentityGuard.isTrustedForExecution() &&
+                        AccountSlotRegistry.isExecutableUser(userId) &&
+                        WorkflowRootGuard.hasGrantedRoot() &&
                         legalAccepted &&
                         !ApplicationHookConstants.isOffline()
                 AccountSessionCoordinator.applySession(

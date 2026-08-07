@@ -226,6 +226,7 @@ class MainActivity : ComponentActivity() {
             val moduleStatus by viewModel.moduleStatus.collectAsStateWithLifecycle()
             //  获取实时的 UserEntity 列表
             val userList by viewModel.userList.collectAsStateWithLifecycle()
+            val accountSlots by viewModel.accountSlots.collectAsStateWithLifecycle()
             val permissionHealth by viewModel.permissionHealth.collectAsStateWithLifecycle()
             val isDynamicColor by ThemeManager.isDynamicColor.collectAsStateWithLifecycle()
 
@@ -241,6 +242,7 @@ class MainActivity : ComponentActivity() {
                     isDynamicColor = isDynamicColor, // 传给 MainScreen
                     // 传入回调
                     userList = userList, // 传入列表
+                    accountSlots = accountSlots,
                     // 🔥 处理跳转逻辑
                     onNavigateToSettings = { selectedUser ->
                         performNavigationToSettings(selectedUser)
