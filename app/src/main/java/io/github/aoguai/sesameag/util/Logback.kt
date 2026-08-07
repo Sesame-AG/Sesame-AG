@@ -9,10 +9,12 @@ import ch.qos.logback.classic.LoggerContext
 import ch.qos.logback.classic.android.LogcatAppender
 import ch.qos.logback.classic.encoder.PatternLayoutEncoder
 import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.FileAppender
 import ch.qos.logback.core.rolling.RollingFileAppender
 import ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy
 import ch.qos.logback.core.rolling.TimeBasedRollingPolicy
 import ch.qos.logback.core.util.FileSize
+import io.github.aoguai.sesameag.data.General
 import io.github.aoguai.sesameag.model.BaseModel
 import org.slf4j.LoggerFactory
 import java.io.File
@@ -27,6 +29,7 @@ object Logback {
     private var isFileInitialized = false
     private var appContext: Context? = null
     private var nextMidnightMillis: Long = 0
+    private var isRollingOwnerProcess = false
 
     // 捕获 Hook 在账户配置加载前已可能写入日志，首轮文件初始化必须直接创建 capture Appender。
     private var isCaptureFileAppenderEnabled = true
@@ -66,7 +69,7 @@ object Logback {
 
     /**
      * 初始化文件日志 (有了 Context 之后调用)
-     * 这是一个“追加”操作，不会打断 Logcat 日志
+     * 目标应用主进程负责滚动，其他进程只追加当前活动文件，不会打断 Logcat 日志。
      */
     @Synchronized
     fun initFileLogging(
@@ -82,6 +85,7 @@ object Logback {
 
         // 2. 保存 Context 供后续跨天自动刷新使用
         this.appContext = context.applicationContext
+        isRollingOwnerProcess = context.packageName == General.PACKAGE_NAME
 
         // 3. 如果是触发了跨天刷新，需重置上下文以彻底清除旧的 Appender 句柄
         if (isRebuildingExistingAppenders) {
@@ -124,9 +128,10 @@ object Logback {
 
     /**
      * 【联动刷新】供 Log.kt 每次写日志前调用，感应日期变化并自动重定向。
-     * 只有当跨天时，才会触发 initFileLogging 重新建立 Appender。
+     * 只有滚动所有者进程跨天时，才会触发 initFileLogging 重新建立滚动 Appender。
      */
     fun refreshIfCrossDay() {
+        if (!isRollingOwnerProcess) return
         val now = System.currentTimeMillis()
         if (isFileInitialized && now >= nextMidnightMillis) {
             appContext?.let { initFileLogging(it) }
@@ -182,41 +187,53 @@ object Logback {
         logName: String,
         logDir: String,
     ) {
-        val fileAppender = RollingFileAppender<ILoggingEvent>()
+        val fileAppender: FileAppender<ILoggingEvent> = if (isRollingOwnerProcess) {
+            RollingFileAppender<ILoggingEvent>()
+        } else {
+            FileAppender<ILoggingEvent>()
+        }
 
         fileAppender.apply {
             context = lc
-            name = "FILE-$logName"
+            name = if (isRollingOwnerProcess) "FILE-$logName" else "APPEND-$logName"
             file = "$logDir$logName.log"
             isAppend = true
+            if (!isRollingOwnerProcess) {
+                isPrudent = true
+            }
+        }
 
+        if (isRollingOwnerProcess) {
+            val rollingAppender = fileAppender as RollingFileAppender<ILoggingEvent>
             if (shouldDisableSizeRolling(logName)) {
                 val policy =
                     TimeBasedRollingPolicy<ILoggingEvent>().apply {
                         context = lc
                         fileNamePattern = "${logDir}bak/$logName-%d{yyyy-MM-dd}.log"
-                        setTotalSizeCap(FileSize.valueOf("${DEFAULT_LOG_TOTAL_SIZE_CAP_MB}MB"))
+                        setTotalSizeCap(resolveTotalSizeCap())
                         maxHistory = 3
                         isCleanHistoryOnStart = true
-                        setParent(fileAppender)
+                        setParent(rollingAppender)
                         start()
                     }
-                rollingPolicy = policy
+                rollingAppender.rollingPolicy = policy
             } else {
                 val policy =
                     SizeAndTimeBasedRollingPolicy<ILoggingEvent>().apply {
                         context = lc
                         fileNamePattern = "${logDir}bak/$logName-%d{yyyy-MM-dd}.%i.log"
                         setMaxFileSize(resolveMaxFileSize(logName))
-                        setTotalSizeCap(FileSize.valueOf("${DEFAULT_LOG_TOTAL_SIZE_CAP_MB}MB"))
+                        setTotalSizeCap(resolveTotalSizeCap())
                         maxHistory = 3
                         isCleanHistoryOnStart = true
-                        setParent(fileAppender)
+                        setParent(rollingAppender)
                         start()
                     }
-                rollingPolicy = policy
+                rollingAppender.rollingPolicy = policy
             }
+        }
 
+        fileAppender.apply {
             encoder =
                 PatternLayoutEncoder().apply {
                     context = lc
@@ -260,5 +277,10 @@ object Logback {
                 DEFAULT_LOG_FILE_MAX_SIZE_MB
             }
         return FileSize.valueOf("${sizeMb.coerceAtLeast(1)}MB")
+    }
+
+    private fun resolveTotalSizeCap(): FileSize {
+        val sizeMb = (BaseModel.logTotalSizeCapMb.value ?: DEFAULT_LOG_TOTAL_SIZE_CAP_MB).coerceAtLeast(1)
+        return FileSize.valueOf("${sizeMb}MB")
     }
 }
