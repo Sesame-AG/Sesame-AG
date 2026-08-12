@@ -54,6 +54,10 @@ private val sesameCreditDefaultBlacklist =
         "zml_zfbfeizhu_xiadan_sanfang|去飞猪订酒店", // 参数错误：promiseActivityExtCheck，固定跳过
         "zml_renyi30s_7dacu", // promiseActivityExtCheck 返回 ILLEGAL_ARGUMENT，无稳定游戏完成闭环
         "zml_zhuanhua_7dacu", // promiseActivityExtCheck 返回 ILLEGAL_ARGUMENT，无稳定游戏完成闭环
+        "zml_dageluosi_zhuanhua", // promiseActivityExtCheck 返回 ILLEGAL_ARGUMENT，无稳定游戏完成闭环
+        "zml_nuolegejian_zhuanhua", // promiseActivityExtCheck 返回 ILLEGAL_ARGUMENT，无稳定游戏完成闭环
+        "zml_doupocangqiong_renwu|去玩斗破苍穹", // pushActivity 返回 ILLEGAL_ARGUMENT，无稳定游戏完成闭环
+        "zml_lieyanjuexing_renwu|去玩烈焰觉醒", // pushActivity 返回 ILLEGAL_ARGUMENT，无稳定游戏完成闭环
         // 芝麻树 SIGNUP_SEND 游戏/导流任务
         "AP11327686|秒杀浏览",
         "AP18365439|去天天秒杀下1单", // rentGreenTaskFinish 返回 20020012，任务完成失败
@@ -294,6 +298,8 @@ private val forestDefaultBlacklist =
         "FOREST_ACTIVITY_DRAW_LHY_ZHWUFU", // 玩游戏得2次机会：finishTaskopengreen 返回 400000040
         "FOREST_ACTIVITY_DRAW_LJZC_ZHWUFU", // 玩游戏得2次机会：finishTaskopengreen 返回 400000040
         "WDHYSJ_QDRW_NORMAL", // 【限时】玩游戏得2次机会：finishTaskopengreen 返回 400000040
+        "FOREST_NORMAL_DRAW_BWXRK_ZH", // 【限时】玩游戏得2次机会：finishTaskopengreen 返回 400000040
+        "ZHRW_HUIYUANjiaoshui_202608", // 每日浇水免费拿绿植：finishTask 返回 400000040
         "MHXCZ_RYCZ_HDCCL|玩梦幻消除战充值任意金额", // 森林抽抽乐充值任务，缺少稳定完成RPC闭环
         "RYCZ", // 森林抽抽乐充值类任务前缀，缺少稳定完成RPC闭环
         "SYH_51HLZ_zhuanhua202604", // 【抢金条】完成游戏任务：不支持rpc调用
@@ -335,18 +341,6 @@ private val fishPondDefaultBlacklist =
         "RESCUE_AD",
         "RESULT_DOUBLE_AD",
         "FLOAT_GAME_AD",
-        "玩保卫向日葵30s",
-        "玩三国冰河时代30s",
-        "农场对对碰匹配5组",
-        "闯关挪挪车通过1关",
-        "美食奇遇记合成10次",
-        "农场螺丝王消除5组螺丝",
-        "开启领钓竿提醒",
-        "去玩热门小游戏",
-        "送福袋 我也得福袋",
-        "钓鱼结果页翻倍",
-        "补救广告",
-        "浮球游戏广告",
     )
 
 private val stallDefaultBlacklist =
@@ -477,10 +471,9 @@ private val sportsDefaultBlacklist =
 
 private val myBankWelfareDefaultBlacklist =
     setOf(
-        "查看借呗额度", // 需真实授信业务行为，默认跳过
-        "查看我的借呗额度", // 真实标题变体，服务端返回 10000005 不支持 loanpromoweb 事件闭环
-        "办理全国大流量卡", // 需真实办理业务，默认跳过
-        "完成1笔借呗支用", // 需真实借款支用行为，默认跳过
+        "AP12341521", // 查看借呗额度：需真实授信业务行为
+        "AP18353629", // 办理全国大流量卡：需真实办理业务
+        "AP12333795", // 完成1笔借呗支用：需真实借款支用行为
     )
 
 val DEFAULT_BLACKLIST: Map<String, Set<String>> =

@@ -15,10 +15,8 @@ import io.github.aoguai.sesameag.model.modelFieldExt.SelectModelField
 import io.github.aoguai.sesameag.model.withDesc
 import io.github.aoguai.sesameag.task.ModelTask
 import io.github.aoguai.sesameag.task.antMember.AntMemberRpcCall
-import io.github.aoguai.sesameag.task.common.TaskFlowAction
 import io.github.aoguai.sesameag.task.common.TaskFlowActionResult
 import io.github.aoguai.sesameag.task.common.TaskFlowAdapter
-import io.github.aoguai.sesameag.task.common.TaskFlowDecision
 import io.github.aoguai.sesameag.task.common.TaskFlowEngine
 import io.github.aoguai.sesameag.task.common.TaskFlowItem
 import io.github.aoguai.sesameag.task.common.TaskFlowPhase
@@ -794,9 +792,6 @@ class MyBankWelfare : ModelTask() {
         override val moduleName: String = DISPLAY_NAME
         override val flowName: String = "${BUSINESS_NAME}任务"
 
-        private val signedUpTaskKeys = LinkedHashSet<String>()
-        private val sentTaskKeys = LinkedHashSet<String>()
-
         override fun isFlowHandledToday(): Boolean =
             hasFlagToday(StatusFlags.FLAG_MYBANK_WELFARE_TASKS_DONE)
 
@@ -850,7 +845,7 @@ class MyBankWelfare : ModelTask() {
                         type = taskDetail.optString("sendCampTriggerType").trim(),
                         sceneCode = TASK_CENTER_ID,
                         actionType = morphoDetail.optString("tagType").trim(),
-                        blacklistKeys = listOf(taskId, title).filter { it.isNotBlank() },
+                        blacklistKeys = listOf(taskId),
                         raw = taskDetail,
                         progress = buildTaskProgress(current, limit),
                         current = current,
@@ -865,14 +860,8 @@ class MyBankWelfare : ModelTask() {
             if (item.type !in SUPPORTED_TRIGGER_TYPES) {
                 return TaskFlowPhase.UNSUPPORTED
             }
-            val taskKey = buildTaskKey(item)
             return when (item.status.uppercase(Locale.ROOT)) {
-                "NONE_SIGNUP" -> if (taskKey in signedUpTaskKeys) {
-                    TaskFlowPhase.SIGNUP_COMPLETE
-                } else {
-                    TaskFlowPhase.SIGNUP_REQUIRED
-                }
-
+                "NONE_SIGNUP" -> TaskFlowPhase.SIGNUP_REQUIRED
                 "SIGNUP_COMPLETE" -> TaskFlowPhase.SIGNUP_COMPLETE
                 "RECEIVE_SUCCESS" -> TaskFlowPhase.TERMINAL
                 else -> TaskFlowPhase.UNKNOWN
@@ -880,8 +869,8 @@ class MyBankWelfare : ModelTask() {
         }
 
         override fun shouldSkip(item: TaskFlowItem): Boolean {
-            if (item.type !in SUPPORTED_TRIGGER_TYPES) {
-                val taskKey = buildTaskKey(item)
+            if (item.type.isNotBlank() && item.type !in SUPPORTED_TRIGGER_TYPES) {
+                val taskKey = item.id
                 if (loggedUnsupportedTaskKeys.add(taskKey)) {
                     logInfo(
                         "$flowName[跳过未支持触发类型：${item.title}] " +
@@ -891,10 +880,7 @@ class MyBankWelfare : ModelTask() {
                 }
                 return true
             }
-            return when (mapPhase(item)) {
-                TaskFlowPhase.SIGNUP_COMPLETE -> buildTaskKey(item) in sentTaskKeys
-                else -> false
-            }
+            return false
         }
 
         override fun receive(item: TaskFlowItem): TaskFlowActionResult =
@@ -910,23 +896,6 @@ class MyBankWelfare : ModelTask() {
         override fun signup(item: TaskFlowItem): TaskFlowActionResult = triggerTaskStage(item, "signup")
 
         override fun send(item: TaskFlowItem): TaskFlowActionResult = triggerTaskStage(item, "send")
-
-        override fun afterSuccess(item: TaskFlowItem, action: TaskFlowAction, result: TaskFlowActionResult) {
-            if (result.progressChanged) {
-                rememberSuccessfulStage(item, action)
-            }
-        }
-
-        override fun afterFailure(
-            item: TaskFlowItem,
-            action: TaskFlowAction,
-            result: TaskFlowActionResult,
-            decision: TaskFlowDecision
-        ) {
-            if (decision == TaskFlowDecision.MARK_HANDLED) {
-                rememberSuccessfulStage(item, action)
-            }
-        }
 
         override fun onAllTasksDone(snapshot: TaskFlowSnapshot) {
             setFlagToday(StatusFlags.FLAG_MYBANK_WELFARE_TASKS_DONE)
@@ -976,18 +945,6 @@ class MyBankWelfare : ModelTask() {
             )
         }
 
-        private fun rememberSuccessfulStage(item: TaskFlowItem, action: TaskFlowAction) {
-            val taskKey = buildTaskKey(item)
-            when (action) {
-                TaskFlowAction.SIGNUP -> signedUpTaskKeys.add(taskKey)
-                TaskFlowAction.SEND,
-                TaskFlowAction.COMPLETE -> sentTaskKeys.add(taskKey)
-                TaskFlowAction.RECEIVE -> Unit
-            }
-        }
-
-        private fun buildTaskKey(item: TaskFlowItem): String = item.id.ifBlank { item.title }
-
         private fun buildTaskProgress(current: Int?, limit: Int?): String {
             return when {
                 current != null && limit != null -> "$current/$limit"
@@ -1026,26 +983,23 @@ class MyBankWelfare : ModelTask() {
                 response.optString("resultCode").equals("SUCCESS", ignoreCase = true) ||
                 response.optString("code") == "100000000"
             val prizeSendOrderList = response.optJSONObject("result")?.optJSONArray("prizeSendOrderList")
-            var hasSendSuccess = false
-            var hasBenefitPointPrize = false
+            var hasSuccessfulBenefitPointPrize = false
             if (prizeSendOrderList != null) {
                 for (i in 0 until prizeSendOrderList.length()) {
                     val prizeOrder = prizeSendOrderList.optJSONObject(i) ?: continue
-                    if (prizeOrder.optString("sendStatus") == "SUCCESS") {
-                        hasSendSuccess = true
-                    }
                     val prizeType = prizeOrder.optString("prizeType")
                     val prizeSubType = prizeOrder.optString("prizeSubType")
-                    if (prizeType == "MYBK_BENEFIT_POINT" || prizeSubType == "MYBK_BENEFIT_POINT") {
-                        hasBenefitPointPrize = true
+                    val isBenefitPointPrize =
+                        prizeType == "MYBK_BENEFIT_POINT" || prizeSubType == "MYBK_BENEFIT_POINT"
+                    if (isBenefitPointPrize && prizeOrder.optString("sendStatus") == "SUCCESS") {
+                        hasSuccessfulBenefitPointPrize = true
                     }
                 }
             }
             return when {
-                stageCode == "send" && (hasBenefitPointPrize || hasSendSuccess) -> TaskFlowActionResult.success()
-                stageCode == "send" && baseSuccess ->
+                stageCode == "send" && (hasSuccessfulBenefitPointPrize || baseSuccess) ->
                     TaskFlowActionResult.success(refreshAfterAction = true, progressChanged = false)
-                hasSendSuccess || baseSuccess -> TaskFlowActionResult.success()
+                baseSuccess -> TaskFlowActionResult.success(refreshAfterAction = true, progressChanged = false)
                 else -> null
             }
         }

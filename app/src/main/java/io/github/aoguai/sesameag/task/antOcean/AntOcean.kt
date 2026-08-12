@@ -1729,6 +1729,17 @@ class AntOcean : ModelTask() {
                 return
             }
             if (!ResChecker.checkRes(TAG, jo)) {
+                if (isFriendPieceReceiveLimit(jo)) {
+                    Log.error(
+                        TAG,
+                        "神奇海洋🌊[送碎片]#好友=$userId 已被其他用户送过，跳过当前好友并继续后续选择",
+                    )
+                } else {
+                    Log.error(
+                        TAG,
+                        "神奇海洋🌊[送碎片]#好友=$userId 请求失败:" + extractOceanTaskFailureMessage(jo),
+                    )
+                }
                 return
             }
             extractNestedJsonArray(jo, "normalRewardVOS")?.let { checkReward(it) }
@@ -2642,6 +2653,9 @@ class AntOcean : ModelTask() {
         return code == "PIECE_HAVE_GAVE" ||
             containsAnyOcean(message, "碎片已经成功送出啦")
     }
+
+    private fun isFriendPieceReceiveLimit(response: JSONObject): Boolean =
+        extractOceanTaskFailureCode(response) == "RECEIVE_PIECE_LIMIT"
 
     private fun extractOceanTaskFailureCode(response: JSONObject): String =
         response

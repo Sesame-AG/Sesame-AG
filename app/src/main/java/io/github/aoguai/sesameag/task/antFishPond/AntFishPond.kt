@@ -286,6 +286,13 @@ class AntFishPond : ModelTask() {
         allowMarkDone: Boolean = true,
     ): Boolean {
         try {
+            if (skipIfHandledToday &&
+                Status.hasFlagToday(StatusFlags.FLAG_ANTFISHPOND_TASKS_DONE) &&
+                Status.hasFlagToday(StatusFlags.FLAG_ANTFISHPOND_SIGN_DONE)
+            ) {
+                Log.fishpond("福气鱼池任务[今日已处理，跳过]")
+                return true
+            }
             val listJson = queryTaskList() ?: return false
             handleSign(listJson)
 
@@ -370,7 +377,8 @@ class AntFishPond : ModelTask() {
         override val moduleName: String = TASK_BLACKLIST_MODULE
         override val flowName: String = "福气鱼池任务"
 
-        override fun isFlowHandledToday(): Boolean = skipIfHandledToday && Status.hasFlagToday(StatusFlags.FLAG_ANTFISHPOND_TASKS_DONE)
+        override fun isFlowHandledToday(): Boolean =
+            skipIfHandledToday && Status.hasFlagToday(StatusFlags.FLAG_ANTFISHPOND_TASKS_DONE)
 
         override fun query(): JSONObject {
             val response = AntFishPondRpcCall.listTask()

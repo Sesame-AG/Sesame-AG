@@ -506,7 +506,6 @@ class TaskFlowEngine(
                     }
                     if (result.refreshAfterAction) {
                         refreshRequested = true
-                        break
                     }
                     continue
                 }
@@ -525,7 +524,6 @@ class TaskFlowEngine(
                             noProgressConfirmationActionKeys.add(actionKey)
                             noProgressConfirmationRefreshRequested = true
                         }
-                        break
                     }
                     continue
                 }
@@ -571,7 +569,7 @@ class TaskFlowEngine(
                     "[本轮动作:${describeRoundActions(roundActions)}]" +
                     "[本轮明确延后:${describeDeferredReasonCounts(roundDeferredReasonCounts)}]" +
                     "[本轮批量后刷新:${progressed && !stopCurrentRound}]" +
-                    "[立即刷新请求:$refreshRequested]" +
+                    "[本轮结束后刷新请求:$refreshRequested]" +
                     "[本轮有进展:$progressed]",
             )
 

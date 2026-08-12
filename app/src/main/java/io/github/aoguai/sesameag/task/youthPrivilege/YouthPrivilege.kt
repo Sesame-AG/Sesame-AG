@@ -249,8 +249,7 @@ class YouthPrivilege : ModelTask() {
         if (has(key) && !isNull(key)) optInt(key) else null
 
     private inner class YouthTaskFlowAdapter : TaskFlowAdapter {
-        // 报名成功后，抓包仍可能保留 TO_APPLY；用户确认的闭环要求继续调用 taskComplete。
-        private val signedUpTaskCodes = mutableSetOf<String>()
+        private val loggedUnsupportedTaskCodes = mutableSetOf<String>()
 
         override val moduleName: String = getName()
         override val flowName: String = "青春特权任务"
@@ -304,7 +303,6 @@ class YouthPrivilege : ModelTask() {
             when {
                 item.status == STATUS_COMPLETE || item.actionType == ACTION_DO_NOTHING -> TaskFlowPhase.TERMINAL
                 item.type != TASK_TYPE_BROWSER -> TaskFlowPhase.UNKNOWN
-                item.id in signedUpTaskCodes -> TaskFlowPhase.SIGNUP_COMPLETE
                 item.status == STATUS_PROCESSING || item.actionType == ACTION_COMPLETE -> TaskFlowPhase.SIGNUP_COMPLETE
                 item.status == STATUS_TO_APPLY || item.actionType == ACTION_SIGNUP -> TaskFlowPhase.SIGNUP_REQUIRED
                 else -> TaskFlowPhase.UNKNOWN
@@ -313,14 +311,17 @@ class YouthPrivilege : ModelTask() {
         override fun isFlowHandledToday(): Boolean =
             Status.hasFlagToday(StatusFlags.FLAG_YOUTH_PRIVILEGE_TASKS_DONE)
 
-        override fun afterSuccess(
-            item: TaskFlowItem,
-            action: TaskFlowAction,
-            result: TaskFlowActionResult,
-        ) {
-            if (action == TaskFlowAction.SIGNUP) {
-                signedUpTaskCodes.add(item.id)
+        override fun shouldSkip(item: TaskFlowItem): Boolean {
+            if (item.type.isBlank() || item.type == TASK_TYPE_BROWSER) {
+                return false
             }
+            if (loggedUnsupportedTaskCodes.add(item.id)) {
+                Log.youthPrivilege(
+                    "青春特权任务[跳过非浏览任务] taskCode=${item.id} " +
+                        "taskType=${item.type} status=${item.status.ifBlank { "UNKNOWN" }}",
+                )
+            }
+            return true
         }
 
         override fun signup(item: TaskFlowItem): TaskFlowActionResult =
