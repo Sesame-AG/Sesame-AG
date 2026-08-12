@@ -285,6 +285,7 @@ class AntSesameCredit : ModelTask() {
                 return
             }
             Log.sesame("开始执行信誉任务领取")
+            collectGrowthGuideRewards()
             var resp: String?
             try {
                 resp = AntSesameCreditRpcCall.Zmxy.queryGrowthGuideToDoList()
@@ -335,29 +336,7 @@ class AntSesameCredit : ModelTask() {
                 val status = task.optString("status", "")
                 val subTitle = task.optString("subTitle", "")
 
-                // ===== 2.1 公益类任务 =====
                 if ("wait_receive" == status) {
-                    val openResp: String?
-                    try {
-                        openResp = AntSesameCreditRpcCall.Zmxy.openBehaviorCollect(behaviorId)
-                    } catch (e: Throwable) {
-                        Log.printStackTrace("$TAG.handleGrowthGuideTasks.openBehaviorCollect", e)
-                        continue
-                    }
-
-                    try {
-                        val openJo = JSONObject(openResp)
-                        if (ResChecker.checkRes(TAG, openJo)) {
-                            Log.sesame("信誉任务[领取成功] $title")
-                        } else {
-                            Log.sesame(("信誉任务[领取失败] behaviorId=" + behaviorId + " title=" + title + " resp=" + openResp))
-                        }
-                    } catch (e: Throwable) {
-                        Log.printStackTrace(
-                            "$TAG.handleGrowthGuideTasks.parseOpenBehaviorCollect",
-                            e,
-                        )
-                    }
                     continue
                 }
 
@@ -557,9 +536,67 @@ class AntSesameCredit : ModelTask() {
                     )
                 }
             }
+            collectGrowthGuideRewards()
         } catch (e: Throwable) {
             Log.printStackTrace("$TAG.handleGrowthGuideTasks.Fatal", e)
         }
+    }
+
+    private fun collectGrowthGuideRewards() {
+        val attemptedBehaviorIds = mutableSetOf<String>()
+        repeat(20) {
+            val response = JSONObject(AntSesameCreditRpcCall.Zmxy.queryGrowthGuideToDoList())
+            if (!ResChecker.checkRes(TAG, response)) {
+                Log.sesame("信誉任务列表获取失败: ${response.optString("resultView", response.toString())}")
+                return
+            }
+            val taskList = response.optJSONArray("toDoList") ?: return
+            val rewardTasks = mutableListOf<JSONObject>()
+            for (index in 0 until taskList.length()) {
+                val task = taskList.optJSONObject(index) ?: continue
+                if (task.optString("status") == "wait_receive") {
+                    rewardTasks.add(task)
+                }
+            }
+            if (rewardTasks.isEmpty()) {
+                return
+            }
+
+            val unattemptedTasks = rewardTasks.filter { task ->
+                val behaviorId = task.optString("behaviorId")
+                behaviorId.isNotBlank() && behaviorId !in attemptedBehaviorIds
+            }
+            if (unattemptedTasks.isEmpty()) {
+                val remainingIds = rewardTasks.map { it.optString("behaviorId") }.filter { it.isNotBlank() }
+                Log.error(
+                    "$TAG.collectGrowthGuideRewards",
+                    "信誉任务领取ACK后状态未推进 behaviorIds=$remainingIds，保留后续重试",
+                )
+                return
+            }
+
+            var progressed = false
+            for (task in unattemptedTasks) {
+                val behaviorId = task.optString("behaviorId")
+                attemptedBehaviorIds.add(behaviorId)
+                val title = task.optString("title", behaviorId)
+                val openResponse = JSONObject(AntSesameCreditRpcCall.Zmxy.openBehaviorCollect(behaviorId))
+                if (!ResChecker.checkRes(TAG, openResponse)) {
+                    Log.error(
+                        "$TAG.collectGrowthGuideRewards",
+                        "信誉任务[领取失败] behaviorId=$behaviorId title=$title resp=$openResponse",
+                    )
+                    continue
+                }
+                progressed = true
+                Log.sesame("信誉任务[领取成功] $title")
+            }
+            if (!progressed) {
+                return
+            }
+            GlobalThreadPools.sleepCompat(300L)
+        }
+        Log.error("$TAG.collectGrowthGuideRewards", "信誉任务奖励刷新达到轮次上限，保留后续重试")
     }
 
     internal fun handleNewTaskCenterTasks() {
@@ -731,7 +768,6 @@ class AntSesameCredit : ModelTask() {
         private var joinLimitReached = hasFlagToday(StatusFlags.FLAG_SESAME_JOIN_LIMIT_REACHED)
         private var joinLimitLogged = false
         private val joinedRecordIds = mutableMapOf<String, String>()
-        private val successfulFinishRecordIds = mutableSetOf<String>()
         private val opRepeatFinishRecordIds = mutableSetOf<String>()
         private val processingTemplateRefreshKeys = mutableSetOf<String>()
         private val loggedSkipKeys = mutableSetOf<String>()
@@ -928,15 +964,6 @@ class AntSesameCredit : ModelTask() {
                     detail = sesameCreditActionDetail(item, "finish"),
                 )
             }
-            if (recordId in successfulFinishRecordIds) {
-                return TaskFlowActionResult.failure(
-                    failureType = TaskRpcFailureType.TERMINAL_DONE,
-                    code = "RECORD_ID_ALREADY_FINISHED",
-                    message = "本轮recordId已完成",
-                    rpc = "AntSesameCreditRpcCall.finishSesameTask",
-                    detail = sesameCreditActionDetail(item, "finish"),
-                )
-            }
             if (recordId in opRepeatFinishRecordIds) {
                 return TaskFlowActionResult.failure(
                     failureType = TaskRpcFailureType.RETRYABLE_RPC,
@@ -944,6 +971,7 @@ class AntSesameCredit : ModelTask() {
                     message = "本轮recordId已因OP_REPEAT_CHECK失败，等待下轮刷新",
                     rpc = "AntSesameCreditRpcCall.finishSesameTask",
                     detail = sesameCreditActionDetail(item, "finish"),
+                    continueCurrentRoundOnFailure = true,
                 )
             }
 
@@ -980,17 +1008,19 @@ class AntSesameCredit : ModelTask() {
                     raw = finishRes,
                     detail = sesameCreditActionDetail(item, "finish"),
                     stopCurrentRound = isSesameTaskFlowInterrupted(responseObj),
+                    continueCurrentRoundOnFailure = errorCode == "OP_REPEAT_CHECK",
                 )
             }
 
             val completedNum = raw.optInt("completedNum", 0)
             val needCompleteNum = raw.optInt("needCompleteNum", 1).takeIf { it > 0 } ?: 1
-            successfulFinishRecordIds.add(recordId)
             opRepeatFinishRecordIds.remove(recordId)
             joinedRecordIds.remove(raw.optString("templateId"))
-            markSesamePushModelTaskFinished(recordId)
-            Log.sesame("芝麻信用💳[完成任务${item.title}]#(${completedNum + 1}/$needCompleteNum)")
-            return TaskFlowActionResult.success(refreshAfterAction = true)
+            Log.sesame("芝麻信用💳[任务动作已提交，等待状态回查]${item.title}#(${completedNum + 1}/$needCompleteNum)")
+            return TaskFlowActionResult.success(
+                refreshAfterAction = true,
+                progressChanged = false,
+            )
         }
 
         override fun afterSuccess(
@@ -4955,7 +4985,7 @@ class AntSesameCredit : ModelTask() {
                     TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE
                 }
 
-                code in setOf("20020012", "TASK_ID_INVALID", "PROMISE_TEMPLATE_NOT_EXIST") ||
+                code in setOf("20020012", "TASK_ID_INVALID", "ILLEGAL_ARGUMENT", "PROMISE_TEMPLATE_NOT_EXIST") ||
                     (isExplicitSesameTaskFailure(response) &&
                         explicitSesameTaskRetryable(response) == false) -> {
                     TaskRpcFailureType.NON_RETRYABLE_INVALID

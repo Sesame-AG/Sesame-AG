@@ -42,13 +42,13 @@ internal suspend fun AntSesameCredit.prepareSesameWorkflows(
 
     var claimSesame = false
     var claimProgress = false
+    var sesameTaskWorkflowRan = false
 
     if (sesameGrainExchange?.value == true) {
         deferredTasks.add(scope.async(Dispatchers.IO) { doSesameGrainExchange() })
     }
 
     if (sesameTask?.value == true || collectSesame?.value == true) {
-        claimProgress = true
         if (hasFlagToday(StatusFlags.FLAG_SESAME_ZML_CHECKIN_DONE)) {
             Log.sesame("⏭️ 今天已处理过芝麻粒福利签到，跳过执行")
         } else {
@@ -59,6 +59,8 @@ internal suspend fun AntSesameCredit.prepareSesameWorkflows(
             if (hasFlagToday(StatusFlags.FLAG_SESAME_DO_ALL_AVAILABLE_TASK)) {
                 Log.sesame("⏭️ 今天已完成过芝麻信用任务，跳过执行")
             } else {
+                sesameTaskWorkflowRan = true
+                claimProgress = true
                 Log.sesame("🎮 开始执行芝麻信用任务")
                 val sesameTaskSummary = doAllAvailableSesameTask()
                 if (sesameTaskSummary.interrupted || ApplicationHookConstants.isOffline()) {
@@ -72,10 +74,11 @@ internal suspend fun AntSesameCredit.prepareSesameWorkflows(
         }
 
         if (collectSesame?.value == true) {
-            if (hasFlagToday(StatusFlags.FLAG_SESAME_COLLECT_DONE)) {
+            if (hasFlagToday(StatusFlags.FLAG_SESAME_COLLECT_DONE) && !sesameTaskWorkflowRan) {
                 Log.sesame("⏭️ 今天已处理过芝麻粒领取，跳过执行")
             } else {
                 claimSesame = true
+                claimProgress = true
                 Log.sesame("🎯 芝麻相关任务执行中，稍后统一领取芝麻粒")
             }
         }
