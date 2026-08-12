@@ -783,20 +783,49 @@ object AntForestRpcCall {
         bizNo: String,
         energyId: Int,
         notifyFriend: Boolean,
+        orderIndex: Int,
     ): String =
         try {
             val arg =
                 JSONObject().apply {
-                    put("bizNo", bizNo + UUID.randomUUID().toString())
+                    put("bizNo", "$bizNo${orderIndex.coerceAtLeast(1)}")
                     put("energyId", energyId)
-                    put("extendInfo", JSONObject().put("sendChat", if (notifyFriend) "Y" else "N"))
-                    put("from", "friendIndex")
-                    put("source", "chInfo_ch_appcenter__chsub_9patch")
+                    put("extInfo", JSONObject().put("sendChat", if (notifyFriend) "Y" else "N"))
+                    put("from", "")
+                    put("source", HOME_TASK_SOURCE)
                     put("targetUser", targetUser)
                     put("transferType", "WATERING")
-                    put("version", VERSION)
+                    put("version", ONE_CLICK_WATERING_VERSION)
                 }
-            RequestManager.requestString("alipay.antmember.forest.h5.transferEnergy", "[$arg]")
+            RequestManager.requestString(
+                RpcEntity(
+                    "alipay.antmember.forest.h5.transferEnergy",
+                    JSONArray().put(arg).toString(),
+                    headers = forestHeaders(HOME_TASK_SOURCE),
+                ),
+            )
+        } catch (e: Exception) {
+            Log.printStackTrace(e)
+            ""
+        }
+
+    @JvmStatic
+    fun queryWaterLimit(targetUserId: String): String =
+        try {
+            val arg =
+                JSONObject().apply {
+                    put("queryBizType", "waterLimit")
+                    put("source", "SELF_HOME")
+                    put("targetUserId", targetUserId)
+                    put("version", ONE_CLICK_WATERING_VERSION)
+                }
+            RequestManager.requestString(
+                RpcEntity(
+                    "alipay.antforest.forest.h5.queryMiscInfo",
+                    JSONArray().put(arg).toString(),
+                    headers = forestHeaders(HOME_TASK_SOURCE),
+                ),
+            )
         } catch (e: Exception) {
             Log.printStackTrace(e)
             ""
@@ -1933,17 +1962,25 @@ object AntForestRpcCall {
     @Throws(JSONException::class)
     fun giveProp(
         giveConfigId: String,
+        propGroup: String,
         propId: String,
         targetUserId: String,
     ): String {
         val jo =
             JSONObject().apply {
                 put("giveConfigId", giveConfigId)
+                put("propGroup", propGroup)
                 put("propId", propId)
-                put("source", "self_corner")
+                put("source", "friendHome_slide")
                 put("targetUserId", targetUserId)
             }
-        return RequestManager.requestString("alipay.antforest.forest.h5.giveProp", JSONArray().put(jo).toString())
+        return RequestManager.requestString(
+            RpcEntity(
+                "alipay.antforest.forest.h5.giveProp",
+                JSONArray().put(jo).toString(),
+                headers = forestHeaders(HOME_TASK_SOURCE),
+            ),
+        )
     }
 
     @JvmStatic
