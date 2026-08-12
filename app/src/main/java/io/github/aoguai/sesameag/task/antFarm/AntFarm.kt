@@ -2426,7 +2426,7 @@ class AntFarm : ModelTask() {
 
         // 6. 其他功能（换装、领取饲料）
         // 小鸡换装
-        if (listOrnaments?.value == true && Status.canOrnamentToday()) {
+        if (listOrnaments?.value == true) {
             listOrnaments()
         }
     }
@@ -2936,9 +2936,21 @@ class AntFarm : ModelTask() {
                     break
                 }
 
-                val result = performDonationDetailed(activityId, activityName, amount)
+                val donationTarget = resolveDonationTarget(activity)
+                if (activity.optString("projectType") == "SOLDBY" && donationTarget == null) {
+                    hasInvalidActivityInfo = true
+                    Log.farm("公益捐蛋活动❤️[$activityName]#自营项目缺少可用捐赠标的，跳过残缺请求")
+                    continue
+                }
+                val result = performDonationDetailed(activityId, activityName, amount, donationTarget = donationTarget)
                 if (!result.success) {
                     donationFailed = true
+                    break
+                }
+                val targetDonateAmount = donationTarget?.let { findDonationTargetAmount(activity, it.targetId) }
+                if (!confirmDonationProgress(activityId, donationTotal, result.confirmedDonationTotal, donationTarget, targetDonateAmount)) {
+                    donationFailed = true
+                    Log.error(TAG, "公益捐蛋活动[$activityName] ACK成功但服务端状态未确认，保留后续复核")
                     break
                 }
 
@@ -2983,11 +2995,105 @@ class AntFarm : ModelTask() {
     internal data class DonationPerformResult(
         val success: Boolean,
         val actualAmount: Int = 0,
+        val confirmedDonationTotal: Double? = null,
         val classification: TaskRpcFailureType? = null,
         val code: String = "",
         val message: String = "",
         val raw: String = ""
     )
+
+    internal data class DonationTarget(
+        val projectId: String,
+        val batchId: String,
+        val targetId: String,
+    )
+
+    internal fun resolveDonationTarget(activity: JSONObject): DonationTarget? {
+        if (activity.optString("projectType") != "SOLDBY") {
+            return null
+        }
+        val projectId = activity.optString("projectId")
+        val batches = activity.optJSONArray("batchInfo") ?: return null
+        for (batchIndex in 0 until batches.length()) {
+            val batch = batches.optJSONObject(batchIndex) ?: continue
+            val batchId = batch.optString("batchId")
+            val targets = batch.optJSONArray("targetList") ?: continue
+            for (targetIndex in 0 until targets.length()) {
+                val target = targets.optJSONObject(targetIndex) ?: continue
+                if (target.optBoolean("finished", false)) {
+                    continue
+                }
+                val targetId = target.optString("targetId")
+                if (projectId.isNotBlank() && batchId.isNotBlank() && targetId.isNotBlank()) {
+                    return DonationTarget(projectId, batchId, targetId)
+                }
+            }
+        }
+        return null
+    }
+
+    internal fun findDonationTargetAmount(activity: JSONObject, targetId: String): Double? {
+        val batches = activity.optJSONArray("batchInfo") ?: return null
+        for (batchIndex in 0 until batches.length()) {
+            val targets = batches.optJSONObject(batchIndex)?.optJSONArray("targetList") ?: continue
+            for (targetIndex in 0 until targets.length()) {
+                val target = targets.optJSONObject(targetIndex) ?: continue
+                if (target.optString("targetId") == targetId && target.has("donateAmount")) {
+                    return target.optDouble("donateAmount")
+                }
+            }
+        }
+        return null
+    }
+
+    internal fun confirmDonationProgress(
+        activityId: String,
+        previousDonationTotal: Double,
+        confirmedDonationTotal: Double?,
+        donationTarget: DonationTarget?,
+        previousTargetAmount: Double?,
+    ): Boolean {
+        return try {
+            val response = JSONObject(AntFarmRpcCall.listActivityInfo())
+            if (!ResChecker.checkRes(TAG, response)) {
+                Log.error(TAG, "公益捐蛋回查失败: $response")
+                false
+            } else {
+                val activityInfos = response.optJSONArray("activityInfos")
+                var refreshedActivity: JSONObject? = null
+                if (activityInfos != null) {
+                    for (index in 0 until activityInfos.length()) {
+                        val candidate = activityInfos.optJSONObject(index) ?: continue
+                        if (candidate.optString("activityId") == activityId) {
+                            refreshedActivity = candidate
+                            break
+                        }
+                    }
+                }
+                val confirmedActivity = refreshedActivity
+                if (confirmedActivity == null) {
+                    Log.error(TAG, "公益捐蛋回查未找到活动 activityId=$activityId")
+                    false
+                } else {
+                    val totalConfirmed =
+                        confirmedDonationTotal != null &&
+                            confirmedDonationTotal > previousDonationTotal &&
+                            confirmedActivity.optDouble("donationTotal", previousDonationTotal) >= confirmedDonationTotal
+                    val targetConfirmed =
+                        if (donationTarget != null && previousTargetAmount != null) {
+                            val refreshedTargetAmount = findDonationTargetAmount(confirmedActivity, donationTarget.targetId)
+                            refreshedTargetAmount != null && refreshedTargetAmount > previousTargetAmount
+                        } else {
+                            false
+                        }
+                    totalConfirmed || targetConfirmed
+                }
+            }
+        } catch (t: Throwable) {
+            Log.printStackTrace(TAG, "confirmDonationProgress err:", t)
+            false
+        }
+    }
 
     private fun isUndonatedByCurrentUser(activity: JSONObject, uid: String): Boolean? {
         val activityRecords = activity.optJSONArray("activityRecords") ?: return null
@@ -3009,15 +3115,25 @@ class AntFarm : ModelTask() {
         activityId: String?,
         activityName: String?,
         count: Int,
-        historyCount: Int = 0
+        historyCount: Int = 0,
+        donationTarget: DonationTarget? = null,
     ): DonationPerformResult {
         try {
-            val s = AntFarmRpcCall.donation(activityId, count)
+            val s = AntFarmRpcCall.donation(
+                activityId = activityId,
+                donationAmount = count,
+                projectId = donationTarget?.projectId,
+                batchId = donationTarget?.batchId,
+                targetId = donationTarget?.targetId,
+            )
             val donationResponse = JSONObject(s)
             if (ResChecker.checkRes(TAG, donationResponse)) {
                 val donationDetails = donationResponse.optJSONObject("donation")
                 val responseAmount = donationDetails?.optInt("donationAmount", count) ?: count
                 val actualAmount = if (responseAmount > 0) responseAmount else count
+                val confirmedDonationTotal = donationDetails
+                    ?.takeIf { it.has("donationTotal") }
+                    ?.optDouble("donationTotal")
                 syncHarvestBenevolenceScoreAfterDonation(donationDetails, actualAmount)
 
                 if (historyCount == 0) {
@@ -3025,7 +3141,11 @@ class AntFarm : ModelTask() {
                 } else {
                     Log.farm("捐赠活动❤️[$activityName]#捐赠了${actualAmount}颗蛋，累计捐赠${historyCount + 1}次")
                 }
-                return DonationPerformResult(true, actualAmount)
+                return DonationPerformResult(
+                    success = true,
+                    actualAmount = actualAmount,
+                    confirmedDonationTotal = confirmedDonationTotal,
+                )
             }
             val classification = classifyFarmRpcFailure(donationResponse)
             Log.farm(
@@ -7661,77 +7781,66 @@ class AntFarm : ModelTask() {
         try {
             val s = AntFarmRpcCall.queryLoveCabin(UserMap.currentUid)
             val jsonObject = JSONObject(s)
-            if ("SUCCESS" == jsonObject.getString("memo")) {
+            if (ResChecker.checkRes(TAG, jsonObject)) {
                 val ownAnimal = jsonObject.getJSONObject("ownAnimal")
+                val currentOrnaments = ownAnimal.optJSONArray("ornaments")
+                if (currentOrnaments != null && currentOrnaments.length() > 0) {
+                    Log.farm("庄园小鸡💞[当前已穿戴装扮]")
+                    Status.setOrnamentToday()
+                    return
+                }
+                if (!Status.canOrnamentToday()) {
+                    Log.farm("庄园小鸡💞[今日换装标记已存在但当前未穿戴，重新选择装扮]")
+                }
                 val animalId = ownAnimal.getString("animalId")
                 val farmId = ownAnimal.getString("farmId")
                 val listResult = AntFarmRpcCall.listOrnaments()
                 val jolistOrnaments = JSONObject(listResult)
-                // 检查是否有 achievementOrnaments 数组
-                if (!jolistOrnaments.has("achievementOrnaments")) {
-                    return  // 数组为空，直接返回
+                if (!ResChecker.checkRes(TAG, jolistOrnaments)) {
+                    Log.error(TAG, "庄园小鸡装扮列表查询失败: $jolistOrnaments")
+                    return
                 }
-                val achievementOrnaments = jolistOrnaments.getJSONArray("achievementOrnaments")
+                val achievementOrnaments = jolistOrnaments.optJSONArray("achievementOrnaments") ?: return
                 val random = Random()
-                val possibleOrnaments: MutableList<String> = ArrayList() // 收集所有可保存的套装组合
+                val possibleOrnaments = mutableListOf<Pair<String, String>>()
                 for (i in 0..<achievementOrnaments.length()) {
                     val ornament = achievementOrnaments.getJSONObject(i)
-                    if (ornament.getBoolean("acquired")) {
-                        val sets = ornament.getJSONArray("sets")
-                        val availableSets: MutableList<JSONObject> = ArrayList()
-                        // 收集所有带有 cap 和 coat 的套装组合
-                        for (j in 0..<sets.length()) {
-                            val set = sets.getJSONObject(j)
-                            if ("cap" == set.getString("subType") || "coat" == set.getString("subType")) {
-                                availableSets.add(set)
-                            }
-                        }
-                        // 如果有可用的帽子和外套套装组合
-                        if (availableSets.size >= 2) {
-                            // 将所有可保存的套装组合添加到 possibleOrnaments 列表中
-                            for (j in 0..<availableSets.size - 1) {
-                                val selectedCoat = availableSets[j]
-                                val selectedCap = availableSets[j + 1]
-                                val id1 = selectedCoat.getString("id") // 外套 ID
-                                val id2 = selectedCap.getString("id") // 帽子 ID
-                                val ornaments = "$id1,$id2"
-                                possibleOrnaments.add(ornaments)
-                            }
+                    if (!ornament.optBoolean("acquired", false)) {
+                        continue
+                    }
+                    val sets = ornament.optJSONArray("sets") ?: continue
+                    var coatId = ""
+                    var capId = ""
+                    for (setIndex in 0 until sets.length()) {
+                        val set = sets.optJSONObject(setIndex) ?: continue
+                        when (set.optString("subType")) {
+                            "coat" -> coatId = set.optString("id")
+                            "cap" -> capId = set.optString("id")
                         }
                     }
+                    if (coatId.isNotBlank() && capId.isNotBlank()) {
+                        possibleOrnaments.add("$coatId,$capId" to ornament.optString("name"))
+                    }
                 }
-                // 如果有可保存的套装组合，则随机选择一个进行保存
-                if (!possibleOrnaments.isEmpty()) {
-                    val ornamentsToSave =
-                        possibleOrnaments[random.nextInt(possibleOrnaments.size)]
+                if (possibleOrnaments.isNotEmpty()) {
+                    val selectedOrnament = possibleOrnaments[random.nextInt(possibleOrnaments.size)]
+                    val ornamentsToSave = selectedOrnament.first
                     val saveResult = AntFarmRpcCall.saveOrnaments(animalId, farmId, ornamentsToSave)
                     val saveResultJson = JSONObject(saveResult)
-                    // 判断保存是否成功并输出日志
                     if (saveResultJson.optBoolean("success")) {
-                        // 获取保存的整套服装名称
-                        val ornamentIds: Array<String?> =
-                            ornamentsToSave.split(",".toRegex()).dropLastWhile { it.isEmpty() }
-                                .toTypedArray()
-                        var wholeSetName = "" // 整套服装名称
-                        // 遍历 achievementOrnaments 查找对应的套装名称
-                        for (i in 0..<achievementOrnaments.length()) {
-                            val ornament = achievementOrnaments.getJSONObject(i)
-                            val sets = ornament.getJSONArray("sets")
-                            // 找到对应的整套服装名称
-                            if (sets.length() == 2 && sets.getJSONObject(0)
-                                    .getString("id") == ornamentIds[0]
-                                && sets.getJSONObject(1).getString("id") == ornamentIds[1]
-                            ) {
-                                wholeSetName = ornament.getString("name")
-                                break
-                            }
+                        val refreshed = JSONObject(AntFarmRpcCall.queryLoveCabin(UserMap.currentUid))
+                        val refreshedOrnaments = refreshed.optJSONObject("ownAnimal")?.optJSONArray("ornaments")
+                        if (ResChecker.checkRes(TAG, refreshed) && refreshedOrnaments != null && refreshedOrnaments.length() > 0) {
+                            Log.farm("庄园小鸡💞[换装:${selectedOrnament.second}]")
+                            Status.setOrnamentToday()
+                        } else {
+                            Log.error(TAG, "庄园小鸡换装ACK成功但穿戴状态未确认: $refreshed")
                         }
-                        // 输出日志
-                        Log.farm("庄园小鸡💞[换装:$wholeSetName]")
-                        Status.setOrnamentToday()
                     } else {
                         Log.farm("保存时装失败，错误码： $saveResultJson")
                     }
+                } else {
+                    Log.farm("庄园小鸡💞[暂无已拥有的完整帽子/外套套装]")
                 }
             }
         } catch (t: Throwable) {

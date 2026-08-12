@@ -226,14 +226,28 @@ object AntFarmRpcCall {
     fun donation(
         activityId: String?,
         donationAmount: Int,
+        projectId: String? = null,
+        batchId: String? = null,
+        targetId: String? = null,
     ): String {
-        val args1 =
-            (
-                "[{\"activityId\":\"" + activityId + "\",\"donationAmount\":" + donationAmount +
-                    ",\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\",\"version\":\"" +
-                    VERSION + "\"}]"
-            )
-        return requestString("com.alipay.antfarm.donation", args1)
+        val hasStructuredTarget =
+            !projectId.isNullOrBlank() && !batchId.isNullOrBlank() && !targetId.isNullOrBlank()
+        val args = JSONObject().apply {
+            put("activityId", activityId)
+            put("donationAmount", donationAmount)
+            put("requestType", "NORMAL")
+            put("sceneCode", "ANTFARM")
+            put("source", if (hasStructuredTarget) "ANTFARM" else "H5")
+            put("version", if (hasStructuredTarget) GAME_CENTER_VERSION else VERSION)
+            if (hasStructuredTarget) {
+                put("batchId", batchId)
+                put("businessCoinType", "BENE_SCORE")
+                put("cele", 1)
+                put("projectId", projectId)
+                put("targetId", targetId)
+            }
+        }
+        return requestString("com.alipay.antfarm.donation", JSONArray().put(args).toString())
     }
 
     @JvmStatic

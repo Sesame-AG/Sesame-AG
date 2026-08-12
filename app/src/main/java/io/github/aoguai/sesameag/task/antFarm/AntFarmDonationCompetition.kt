@@ -1017,9 +1017,26 @@ private fun AntFarm.donateForCompetition(count: Int): Boolean {
 
             val activityId = projectJo.getString("activityId")
             val activityName = projectJo.optString("projectName", activityId)
+            val donationTarget = resolveDonationTarget(projectJo)
+            if (projectJo.optString("projectType") == "SOLDBY" && donationTarget == null) {
+                Log.record(TAG, "排位赛捐赠中止：自营项目[$activityName]缺少可用捐赠标的")
+                continue
+            }
+            val previousTargetAmount = donationTarget?.let { findDonationTargetAmount(projectJo, it.targetId) }
 
-            val donationResult = performDonationDetailed(activityId, activityName, count)
-            return donationResult.success
+            val donationResult = performDonationDetailed(
+                activityId = activityId,
+                activityName = activityName,
+                count = count,
+                donationTarget = donationTarget,
+            )
+            return donationResult.success && confirmDonationProgress(
+                activityId = activityId,
+                previousDonationTotal = donationTotal,
+                confirmedDonationTotal = donationResult.confirmedDonationTotal,
+                donationTarget = donationTarget,
+                previousTargetAmount = previousTargetAmount,
+            )
         }
     } catch (e: Exception) {
         Log.printStackTrace(TAG, "donateForCompetition err:", e)
