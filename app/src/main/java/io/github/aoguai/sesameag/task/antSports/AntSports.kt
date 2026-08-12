@@ -71,10 +71,10 @@ import kotlin.math.min
  *
  * @details
  * 负责统一调度蚂蚁运动相关的所有自动化逻辑，包括：
- * - 步数同步与行走路线（旧版 & 新版路线）
+ * - 步数同步与新版行走路线
  * - 运动任务面板任务、首页能量球任务
  * - 首页金币收集、慈善捐步
- * - 文体中心任务 / 行走路线
+ * - 文体中心任务 / 走路挑战赛
  * - 抢好友大战（训练好友 + 抢购好友）
  * - 健康岛（Neverland）任务、泡泡、走路建造
  *
@@ -549,7 +549,7 @@ class AntSports : ModelTask() {
 
         // 文体中心 & 捐步 & 步数同步
         modelFields.addField(BooleanModelField("tiyubiz", "文体中心 | 开启", false).withDesc(
-            "执行文体中心签到、任务、线路推进和走路挑战赛线上赛。"
+            "执行文体中心签到、任务、奖励领取和走路挑战赛线上赛。"
         ).also { tiyubiz = it })
         modelFields.addField(
             IntegerModelField("minExchangeCount", "旧版捐步 | 最小步数", 0, 0, 100000).withDesc(
@@ -5636,148 +5636,6 @@ class AntSports : ModelTask() {
         }
     }
 
-    /**
-     * @brief 文体中心路径特性查询 + 行走任务/加入路径
-     */
-    internal fun pathFeatureQuery() {
-        try {
-            val s = AntSportsRpcCall.pathFeatureQuery()
-            var jo = JSONObject(s)
-            if (ResChecker.checkRes(TAG, jo)) {
-                val path = jo.getJSONObject("path")
-                val pathId = path.getString("pathId")
-                val title = path.getString("title")
-                val minGoStepCount = path.getInt("minGoStepCount")
-                if (jo.has("userPath")) {
-                    val userPath = jo.getJSONObject("userPath")
-                    val userPathRecordStatus = userPath.getString("userPathRecordStatus")
-                    if ("COMPLETED" == userPathRecordStatus) {
-                        pathMapHomepage(pathId)
-                        pathMapJoin(title, pathId)
-                    } else if ("GOING" == userPathRecordStatus) {
-                        pathMapHomepage(pathId)
-                        val countDate = TimeUtil.getFormatDate()
-                        jo = JSONObject(AntSportsRpcCall.stepQuery(countDate, pathId))
-                        if (ResChecker.checkRes(TAG, jo)) {
-                            val canGoStepCount = jo.getInt("canGoStepCount")
-                            if (canGoStepCount >= minGoStepCount) {
-                                val userPathRecordId = userPath.getString("userPathRecordId")
-                                tiyubizGo(countDate, title, canGoStepCount, pathId, userPathRecordId)
-                            }
-                        }
-                    }
-                } else {
-                    pathMapJoin(title, pathId)
-                }
-            } else {
-                Log.sports(jo.getString("resultDesc"))
-            }
-        } catch (t: Throwable) {
-            Log.printStackTrace(TAG, "pathFeatureQuery err:", t)
-        }
-    }
-
-    /**
-     * @brief 文体中心地图首页 & 奖励领取
-     */
-    private fun pathMapHomepage(pathId: String) {
-        try {
-            val s = AntSportsRpcCall.pathMapHomepage(pathId)
-            var jo = JSONObject(s)
-            if (ResChecker.checkRes(TAG, jo)) {
-                if (!jo.has("userPathGoRewardList")) return
-                val userPathGoRewardList = jo.getJSONArray("userPathGoRewardList")
-                for (i in 0 until userPathGoRewardList.length()) {
-                    jo = userPathGoRewardList.getJSONObject(i)
-                    if ("UNRECEIVED" != jo.getString("status")) continue
-                    val userPathRewardId = jo.getString("userPathRewardId")
-                    val res = JSONObject(AntSportsRpcCall.rewardReceive(pathId, userPathRewardId))
-                    if (ResChecker.checkRes(TAG, res)) {
-                        val detail = res.getJSONObject("userPathRewardDetail")
-                        val rightsRuleList = detail.getJSONArray("userPathRewardRightsList")
-                        val award = StringBuilder()
-                        for (j in 0 until rightsRuleList.length()) {
-                            val right = rightsRuleList.getJSONObject(j).getJSONObject("rightsContent")
-                            award.append(right.getString("name"))
-                                .append("*")
-                                .append(right.getInt("count"))
-                        }
-                        Log.sports("文体宝箱🎁[$award]")
-                    } else {
-                        Log.sports("文体中心开宝箱")
-                        Log.sports(res.toString())
-                    }
-                }
-            } else {
-                Log.sports("文体中心开宝箱")
-                Log.sports(s)
-            }
-        } catch (t: Throwable) {
-            Log.printStackTrace(TAG, "pathMapHomepage err:", t)
-        }
-    }
-
-    /**
-     * @brief 文体中心加入路线
-     */
-    private fun pathMapJoin(title: String, pathId: String) {
-        try {
-            val jo = JSONObject(AntSportsRpcCall.pathMapJoin(pathId))
-            if (isSportsRpcSuccess(jo)) {
-                Log.sports("加入线路🚶🏻‍♂️[$title]")
-                pathFeatureQuery()
-            } else if (isSportsRouteBusinessTerminal(extractSportsRpcErrorCode(jo))) {
-                val errorCode = extractSportsRpcErrorCode(jo)
-                val errorMsg = extractSportsRpcErrorMessage(jo)
-                Log.sports("文体中心路线[业务终态：已参加][$title][code=${errorCode.ifEmpty { "UNKNOWN" }}][msg=$errorMsg]"
-                )
-            } else {
-                Log.error(TAG, "文体中心路线[加入失败][$title] raw=$jo")
-            }
-        } catch (t: Throwable) {
-            Log.printStackTrace(TAG, "pathMapJoin err:", t)
-        }
-    }
-
-    /**
-     * @brief 文体中心行走逻辑
-     */
-    private fun tiyubizGo(
-        countDate: String,
-        title: String,
-        goStepCount: Int,
-        pathId: String,
-        userPathRecordId: String
-    ) {
-        try {
-            val s = AntSportsRpcCall.tiyubizGo(countDate, goStepCount, pathId, userPathRecordId)
-            var jo = JSONObject(s)
-            if (isSportsRpcSuccess(jo)) {
-                jo = jo.getJSONObject("userPath")
-                Log.sports(
-                    "行走线路🚶🏻‍♂️[$title]#前进了" +
-                        jo.getInt("userPathRecordForwardStepCount") + "步"
-                )
-                pathMapHomepage(pathId)
-                val completed = "COMPLETED" == jo.getString("userPathRecordStatus")
-                if (completed) {
-                    Log.sports("完成线路🚶🏻‍♂️[$title]")
-                    pathFeatureQuery()
-                }
-            } else if (isSportsRouteBusinessTerminal(extractSportsRpcErrorCode(jo))) {
-                val errorCode = extractSportsRpcErrorCode(jo)
-                val errorMsg = extractSportsRpcErrorMessage(jo)
-                Log.sports("文体中心路线[业务终态：已完成][$title][code=${errorCode.ifEmpty { "UNKNOWN" }}][msg=$errorMsg]"
-                )
-                pathMapHomepage(pathId)
-            } else {
-                Log.error(TAG, "文体中心路线[前进失败][$title] raw=$s")
-            }
-        } catch (t: Throwable) {
-            Log.printStackTrace(TAG, "tiyubizGo err:", t)
-        }
-    }
-
     // ---------------------------------------------------------------------
     // 抢好友大战
     // ---------------------------------------------------------------------
@@ -7060,9 +6918,18 @@ class AntSports : ModelTask() {
                 clearNeverlandTaskPendingConfirmation(taskId)
                 return true
             }
+            if (refreshedTask == null) {
+                markNeverlandTaskDoneToday(taskId)
+                clearNeverlandTaskPendingConfirmation(taskId)
+                Log.sports(
+                    "健康岛任务${action}动作已返回，任务中心查询成功但同任务已移除，按服务端消费终态处理" +
+                        "[taskId=$taskId]",
+                )
+                return true
+            }
             Log.sports(
                 "健康岛任务${action}动作已返回，但同任务仍未终态" +
-                    "[taskId=$taskId,status=${refreshedTask?.optString("taskStatus", "UNKNOWN") ?: "MISSING"}]",
+                    "[taskId=$taskId,status=${refreshedTask.optString("taskStatus", "UNKNOWN")}]",
             )
             return false
         }

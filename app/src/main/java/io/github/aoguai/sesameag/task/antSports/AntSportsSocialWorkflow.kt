@@ -7,7 +7,6 @@ internal fun AntSports.runSportsCenterWorkflow() {
     userTaskGroupQuery("SPORTS_DAILY_SIGN_GROUP")
     userTaskGroupQuery("SPORTS_DAILY_GROUP")
     userTaskRightsReceive()
-    pathFeatureQuery()
     participate()
 }
 

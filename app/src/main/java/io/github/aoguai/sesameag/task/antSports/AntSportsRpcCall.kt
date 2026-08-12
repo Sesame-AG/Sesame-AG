@@ -50,11 +50,6 @@ object AntSportsRpcCall {
      */
     private const val CITY_CODE = "330100"
 
-    /**
-     * @brief 应用ID - 蚂蚁运动小程序ID
-     */
-    private const val APP_ID = "2021002116659397"
-
     private const val SPORTS_WALK_SOURCE = "ch_othertinyapp"
 
     /**
@@ -1245,110 +1240,6 @@ object AntSportsRpcCall {
             args.toString(),
         )
     }
-
-    /**
-     * @brief 查询路线功能特性
-     *
-     * @return RPC调用结果的 JSON 字符串
-     *
-     * @remark 对应API：alipay.tiyubiz.path.feature.query
-     */
-    fun pathFeatureQuery(): String =
-        RequestManager.requestString(
-            "alipay.tiyubiz.path.feature.query",
-            """[{"appId":"$APP_ID","features":["USER_CURRENT_PATH_SIMPLE"],"sceneCode":"wenti_shijiebei"}]""",
-        )
-
-    /**
-     * @brief 加入路线地图
-     *
-     * @param pathId 路线ID
-     *
-     * @return RPC调用结果的 JSON 字符串
-     *
-     * @remark 对应API：alipay.tiyubiz.path.map.join
-     */
-    fun pathMapJoin(pathId: String): String =
-        RequestManager.requestString(
-            "alipay.tiyubiz.path.map.join",
-            """[{"appId":"$APP_ID","pathId":"$pathId"}]""",
-        )
-
-    /**
-     * @brief 查询路线地图首页
-     *
-     * @param pathId 路线ID
-     *
-     * @return RPC调用结果的 JSON 字符串
-     *
-     * @remark 对应API：alipay.tiyubiz.path.map.homepage
-     */
-    fun pathMapHomepage(pathId: String): String =
-        RequestManager.requestString(
-            "alipay.tiyubiz.path.map.homepage",
-            """[{"appId":"$APP_ID","pathId":"$pathId"}]""",
-        )
-
-    /**
-     * @brief 查询步数
-     *
-     * @param countDate 统计日期
-     * @param pathId 路线ID
-     *
-     * @return RPC调用结果的 JSON 字符串
-     *
-     * @remark 对应API：alipay.tiyubiz.path.map.step.query
-     */
-    fun stepQuery(
-        countDate: String,
-        pathId: String,
-    ): String =
-        RequestManager.requestString(
-            "alipay.tiyubiz.path.map.step.query",
-            """[{"appId":"$APP_ID","countDate":"$countDate","pathId":"$pathId","timeZone":"$TIME_ZONE"}]""",
-        )
-
-    /**
-     * @brief 行走路线（文体中心版本）
-     *
-     * @param countDate 统计日期
-     * @param goStepCount 行走步数
-     * @param pathId 路线ID
-     * @param userPathRecordId 用户路线记录ID
-     *
-     * @return RPC调用结果的 JSON 字符串
-     *
-     * @remark 对应API：alipay.tiyubiz.path.map.go
-     */
-    fun tiyubizGo(
-        countDate: String,
-        goStepCount: Int,
-        pathId: String,
-        userPathRecordId: String,
-    ): String =
-        RequestManager.requestString(
-            "alipay.tiyubiz.path.map.go",
-            """[{"appId":"$APP_ID","countDate":"$countDate","goStepCount":$goStepCount,"pathId":"$pathId","timeZone":"$TIME_ZONE","userPathRecordId":"$userPathRecordId"}]""",
-        )
-
-    /**
-     * @brief 领取路线奖励（文体中心版本）
-     *
-     * @param pathId 路线ID
-     * @param userPathRewardId 用户路线奖励ID
-     *
-     * @return RPC调用结果的 JSON 字符串
-     *
-     * @remark 对应API：alipay.tiyubiz.path.map.reward.receive
-     */
-    fun rewardReceive(
-        pathId: String,
-        userPathRewardId: String,
-    ): String =
-        RequestManager.requestString(
-            "alipay.tiyubiz.path.map.reward.receive",
-            """[{"appId":"$APP_ID","pathId":"$pathId","userPathRewardId":"$userPathRewardId"}]""",
-        )
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 抢好友大战模块
