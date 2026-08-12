@@ -315,6 +315,10 @@ class AntOrchard : ModelTask() {
                 val batchSpreadInfo = orchardIndexData.optJSONObject("batchSpreadInfo")
 
                 val taobaoData = JSONObject(taobaoDataStr)
+                if (isPlantSelectionExplicitlyMissing(taobaoData, targetScene)) {
+                    Log.orchard("$sceneName 前置状态不足: 服务端未返回已选种状态，本轮跳过施肥")
+                    return
+                }
                 val accountInfo = taobaoData.optJSONObject("gameInfo")?.optJSONObject("accountInfo")
                 if (isMain) {
                     taobaoData.optJSONObject("statistics")?.let { statistics ->
@@ -475,6 +479,16 @@ class AntOrchard : ModelTask() {
             },
         )
     }
+
+    private fun isPlantSelectionExplicitlyMissing(
+        taobaoData: JSONObject,
+        targetScene: String,
+    ): Boolean =
+        if (targetScene == "main") {
+            taobaoData.optJSONObject("gameInfo")?.optJSONObject("plantInfo")?.has("seedStage") == false
+        } else {
+            taobaoData.optJSONObject("yebScenePlantInfo")?.has("plantProgressInfo") == false
+        }
 
     // ... 其余方法保持不变 ...
     internal fun receiveMoneyTreeReward() {
@@ -675,7 +689,7 @@ class AntOrchard : ModelTask() {
                         type = taskId,
                         sceneCode = task.optString("sceneCode").trim(),
                         actionType = task.optString("actionType").trim(),
-                        blacklistKeys = listOf(groupId, taskId, title).filter { it.isNotBlank() },
+                        blacklistKeys = listOf(groupId, taskId).filter { it.isNotBlank() },
                         raw = task,
                         progress = buildOrchardTaskProgress(task),
                         current = currentProgress,
