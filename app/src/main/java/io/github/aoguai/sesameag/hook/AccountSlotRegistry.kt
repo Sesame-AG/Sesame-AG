@@ -47,6 +47,16 @@ sealed interface AccountSlotAdmission {
     data class Denied(val reasonCode: String) : AccountSlotAdmission
 }
 
+sealed interface AccountSlotExecutionCheck {
+    data class Allowed(val userId: String) : AccountSlotExecutionCheck
+
+    data object InvalidUserId : AccountSlotExecutionCheck
+
+    data class Inactive(val userId: String) : AccountSlotExecutionCheck
+
+    data object RegistryUnavailable : AccountSlotExecutionCheck
+}
+
 data class AccountSlotRemoval(
     val removed: Boolean,
     val reasonCode: String? = null,
@@ -63,6 +73,12 @@ object AccountSlotRegistry {
     private const val LOCK_FILE_NAME = ".account-slots.lock"
     private const val SCHEMA_VERSION = 1
     private const val MAX_USER_ID_LENGTH = 128
+    private const val REGISTRY_UNAVAILABLE_LOG_INTERVAL_MS = 60_000L
+
+    // File locks are not reentrant in one JVM. Serialize every local read/write before
+    // taking the cross-process lock so concurrent task callbacks cannot self-conflict.
+    private val recordMutationLock = Any()
+    private var lastRegistryUnavailableLogAtMs = 0L
 
     private data class LoadedRecord(
         val record: AccountSlotRecord,
@@ -107,11 +123,21 @@ object AccountSlotRegistry {
         } ?: AccountSlotAdmission.Denied("registry_unavailable")
     }
 
-    fun isExecutableUser(rawUserId: String?): Boolean {
-        val userId = normalizeUserId(rawUserId) ?: return false
+    fun checkExecutableUser(rawUserId: String?): AccountSlotExecutionCheck {
+        val userId = normalizeUserId(rawUserId) ?: return AccountSlotExecutionCheck.InvalidUserId
         val current = snapshot()
-        return current.isReady && userId in current.activeUserIds
+        if (current.errorCode != null) {
+            return AccountSlotExecutionCheck.RegistryUnavailable
+        }
+        return if (current.isReady && userId in current.activeUserIds) {
+            AccountSlotExecutionCheck.Allowed(userId)
+        } else {
+            AccountSlotExecutionCheck.Inactive(userId)
+        }
     }
+
+    fun isExecutableUser(rawUserId: String?): Boolean =
+        checkExecutableUser(rawUserId) is AccountSlotExecutionCheck.Allowed
 
     fun selectLegacySlots(rawUserIds: Collection<String?>): AccountSlotRemoval {
         val selected = rawUserIds.mapNotNull(::normalizeUserId).distinct()
@@ -244,26 +270,40 @@ object AccountSlotRegistry {
         return record.copy(activeUserIds = activeUserIds)
     }
 
-    private fun <T> withLockedRecord(operation: (LoadedRecord) -> LockedResult<T>): T? {
-        return runCatching {
-            val configDir = Files.CONFIG_DIR
-            if (!configDir.isDirectory && !configDir.mkdirs()) {
-                return null
-            }
-            val lockFile = File(configDir, LOCK_FILE_NAME)
-            FileChannel.open(lockFile.toPath(), CREATE, WRITE).use { channel ->
-                val lock = runCatching { channel.tryLock() }.getOrNull() ?: return null
-                lock.use {
-                    val loaded = readLockedRecord(configDir) ?: return null
-                    val result = operation(loaded)
-                    val recordToWrite = result.updatedRecord ?: loaded.record.takeIf { loaded.needsWrite }
-                    if (recordToWrite != null && !writeLockedRecord(configDir, recordToWrite)) {
-                        return null
+    private fun <T> withLockedRecord(operation: (LoadedRecord) -> LockedResult<T>): T? =
+        synchronized(recordMutationLock) {
+            runCatching {
+                val configDir = Files.CONFIG_DIR
+                require(configDir.isDirectory || configDir.mkdirs()) { "config_dir_unavailable" }
+                val lockFile = File(configDir, LOCK_FILE_NAME)
+                FileChannel.open(lockFile.toPath(), CREATE, WRITE).use { channel ->
+                    // Wait for the module UI process to finish its short atomic update instead of
+                    // treating transient lock contention as an account-slot revocation.
+                    channel.lock().use {
+                        val loaded = requireNotNull(readLockedRecord(configDir)) { "registry_read_failed" }
+                        val result = operation(loaded)
+                        val recordToWrite = result.updatedRecord ?: loaded.record.takeIf { loaded.needsWrite }
+                        if (recordToWrite != null) {
+                            check(writeLockedRecord(configDir, recordToWrite)) { "registry_write_failed" }
+                        }
+                        result.value
                     }
-                    result.value
                 }
+            }.onFailure(::logRegistryUnavailable).getOrNull()
+        }
+
+    private fun logRegistryUnavailable(error: Throwable) {
+        val now = System.currentTimeMillis()
+        synchronized(recordMutationLock) {
+            if (now - lastRegistryUnavailableLogAtMs < REGISTRY_UNAVAILABLE_LOG_INTERVAL_MS) {
+                return
             }
-        }.getOrNull()
+            lastRegistryUnavailableLogAtMs = now
+        }
+        Log.record(
+            TAG,
+            "account_slot_registry_unavailable: ${error.javaClass.simpleName}:${error.message.orEmpty().take(200)}",
+        )
     }
 
     private fun readLockedRecord(configDir: File): LoadedRecord? {
