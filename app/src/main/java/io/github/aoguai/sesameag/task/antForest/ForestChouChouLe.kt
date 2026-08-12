@@ -241,7 +241,8 @@ class ForestChouChouLe {
 
             // 3. 先消化服务端已发放的抽奖次数；外部手动任务未完成时不能阻断已确认余额。
             val lotteryHandled = !taskResult.stopped && processLottery(s)
-            if (taskResult.completed && lotteryHandled) {
+            val completionCheck = if (lotteryHandled) hasActionableTaskAfterCompletionFlag(s) else CompletionFlagCheck.UNKNOWN
+            if (lotteryHandled && completionCheck == CompletionFlagCheck.NO_ACTIONABLE) {
                 Status.setFlagToday(s.flag)
             } else {
                 Status.removeFlag(s.flag)
@@ -272,10 +273,15 @@ class ForestChouChouLe {
             if (taskStatus !in setOf(TaskStatus.TODO.name, TaskStatus.FINISHED.name, "COMPLETE", "WAIT_RECEIVE", "TO_RECEIVE")) {
                 continue
             }
-            if (!isBlockedTask(taskType)) {
+            if (isBlockedTask(taskType)) {
+                continue
+            }
+            if (taskStatus in setOf(TaskStatus.FINISHED.name, "COMPLETE", "WAIT_RECEIVE", "TO_RECEIVE") ||
+                isAutomatableDrawTask(baseInfo)
+            ) {
                 val bizInfo = baseInfo.optString("bizInfo").toJson() ?: JSONObject()
                 val taskName = extractTaskName(bizInfo, taskType.ifBlank { "未知任务" })
-                Log.forest("${s.name} 已有完成标记但发现待处理任务: $taskName [$taskStatus]")
+                Log.forest("${s.name} 发现待处理任务: $taskName [$taskStatus]")
                 return CompletionFlagCheck.ACTIONABLE
             }
         }
@@ -285,6 +291,32 @@ class ForestChouChouLe {
         if (!activityResponse.check()) return CompletionFlagCheck.UNKNOWN
         val drawBalance = activityResponse.optJSONObject("drawAsset")?.optInt("blance", -1) ?: return CompletionFlagCheck.UNKNOWN
         return if (drawBalance > 0) CompletionFlagCheck.ACTIONABLE else CompletionFlagCheck.NO_ACTIONABLE
+    }
+
+    private fun isAutomatableDrawTask(taskBaseInfo: JSONObject): Boolean {
+        val taskStatus = taskBaseInfo.optString("taskStatus").uppercase(Locale.ROOT)
+        if (taskStatus !in setOf(TaskStatus.TODO.name, "WAIT_COMPLETE")) {
+            return false
+        }
+        val bizInfo = taskBaseInfo.optString("bizInfo").toJson() ?: JSONObject()
+        val prodPlayParam = taskBaseInfo.optString("prodPlayParam").toJson() ?: JSONObject()
+        val exchangeTask = taskBaseInfo.optString("taskProdPlayType") == "EXCHANGE_ASSET" &&
+            bizInfo.optJSONObject("exchangeAssetsInfo") != null &&
+            prodPlayParam.optString("acwSceneCode") == "VITALITY_EXCHANGE_DRAW"
+        if (exchangeTask) {
+            return true
+        }
+        if (taskBaseInfo.optString("taskProdPlayType") in setOf("VISIT_FLOAT_BALL", "CALL_APP_OUT_TASK")) {
+            return false
+        }
+        if (bizInfo.has("autoCompleteTask") && !bizInfo.optBoolean("autoCompleteTask")) {
+            return false
+        }
+        if (taskBaseInfo.optString("taskMode") != "ACC_ANTIEP") {
+            return true
+        }
+        return prodPlayParam.optJSONObject("taskCategorization")
+            ?.optString("categorizationSecondLevel") != "Game"
     }
 
     /**
