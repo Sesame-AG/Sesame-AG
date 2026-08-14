@@ -1263,6 +1263,10 @@ class AntOcean : ModelTask() {
 
     private fun collectEnergy(bubbleVOList: JSONArray) {
         val antForest = getModel(AntForest::class.java)
+//        复用森林收取能量总开关 当没有打开时，不执行
+        if (antForest != null && !antForest.isCollectEnergyEnabled()) {
+            return
+        }
         // 逐条处理：单个能量球字段缺失/结构变化只跳过该条并记录，不再因一个异常中断整段收取（根因A）
         for (i in 0 until bubbleVOList.length()) {
             try {
