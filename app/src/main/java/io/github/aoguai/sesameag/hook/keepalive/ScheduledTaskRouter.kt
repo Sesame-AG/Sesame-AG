@@ -9,6 +9,7 @@ import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.hook.ApplicationHookCore
 import io.github.aoguai.sesameag.hook.ApplicationResumeCoordinator
 import io.github.aoguai.sesameag.model.Model
+import io.github.aoguai.sesameag.task.antDodo.AntDodo
 import io.github.aoguai.sesameag.task.antFarm.AntFarm
 import io.github.aoguai.sesameag.task.antForest.EnergyWaitingManager
 import io.github.aoguai.sesameag.task.antSports.AntSports
@@ -290,6 +291,30 @@ object ScheduledTaskRouter {
                         RouteResult.FAILED
                     }
                 }
+            }
+            return routeResult(dispatchExecute(context, schedule, source, wakenAtTime = false, wakenTime = null))
+        }
+        if (childKind == AntDodo.PERSISTENT_CHILD_KIND) {
+            val childId = payload.optString("child_id").trim()
+            if (childId != AntDodo.COLLECT_TO_FRIEND_CHILD_ID) {
+                Log.record(TAG, "神奇物种持久子任务缺少或未知 child_id: ${schedule.name}")
+                return RouteResult.FAILED
+            }
+            if (targetProcess) {
+                val antDodo = Model.getModel(AntDodo::class.java)
+                if (antDodo != null) {
+                    if (!antDodo.isEnable()) {
+                        Log.record(TAG, "神奇物种持久子任务触发时模块已关闭，标记完成: ${schedule.name}")
+                        return RouteResult.SKIPPED
+                    }
+                    return if (antDodo.triggerPersistentCollectToFriend(schedule.payloadJson, schedule.id)) {
+                        RouteResult.HANDLED
+                    } else {
+                        RouteResult.FAILED
+                    }
+                }
+                Log.record(TAG, "神奇物种实例尚未就绪，延后持久子任务: ${schedule.name}")
+                return RouteResult.DEFERRED
             }
             return routeResult(dispatchExecute(context, schedule, source, wakenAtTime = false, wakenTime = null))
         }

@@ -134,6 +134,21 @@ object AntFishPondRpcCall {
     }
 
     @JvmStatic
+    fun finishNormalTask(taskType: String, sceneCode: String = SCENE_TASK): String {
+        val outBizNo = "${taskType}_${System.currentTimeMillis()}_${RandomUtil.getRandomString(8)}"
+        return request(
+            METHOD_FINISH_TASK,
+            JSONObject()
+                .put("outBizNo", outBizNo)
+                .put("requestType", "NORMAL")
+                .put("sceneCode", sceneCode)
+                .put("source", SOURCE_FARMPOOL)
+                .put("taskType", taskType)
+                .put("version", VERSION),
+        )
+    }
+
+    @JvmStatic
     fun receiveTaskAward(taskType: String, sceneCode: String = SCENE_TASK): String {
         val response = request(
             METHOD_RECEIVE_TASK_AWARD,

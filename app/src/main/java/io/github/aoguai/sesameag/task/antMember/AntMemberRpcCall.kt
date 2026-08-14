@@ -1804,6 +1804,10 @@ object AntMemberRpcCall {
     fun queryBillBlockWorldHome(): String = RequestManager.requestString("alipay.memberasset.block.queryBlockHome", "[{}]")
 
     @JvmStatic
+    fun collectBillBlockWorldDailyProductCoin(): String =
+        RequestManager.requestString("alipay.memberasset.block.collectDailyProductCoin", "[null]")
+
+    @JvmStatic
     fun collectBillBlockWorldBlock(
         blockRecordId: String,
         posX: Int,

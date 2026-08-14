@@ -4,6 +4,15 @@ import org.json.JSONException
 import org.json.JSONArray
 import org.json.JSONObject
 import io.github.aoguai.sesameag.entity.friend.FriendCapabilityState
+import io.github.aoguai.sesameag.data.Status
+import io.github.aoguai.sesameag.data.StatusFlags
+import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
+import io.github.aoguai.sesameag.hook.ApplicationHook
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleDefaults
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleKind
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleRegistry
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleState
+import io.github.aoguai.sesameag.hook.keepalive.UnifiedScheduler
 import io.github.aoguai.sesameag.model.BaseModel
 import io.github.aoguai.sesameag.model.ModelFields
 import io.github.aoguai.sesameag.model.ModelGroup
@@ -28,11 +37,19 @@ import io.github.aoguai.sesameag.task.exchange.ExchangeReplenisher
 import io.github.aoguai.sesameag.util.FriendGuard
 import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.Log
+import io.github.aoguai.sesameag.util.WakeLockManager
 import io.github.aoguai.sesameag.util.maps.UserMap
 import io.github.aoguai.sesameag.util.ResChecker
 import io.github.aoguai.sesameag.util.friend.FriendCapabilityRecorder
 
 class AntDodo : ModelTask() {
+    private data class CollectToFriendResult(
+        val progressed: Boolean,
+        val remainingCount: Int?,
+    ) {
+        val completed: Boolean
+            get() = remainingCount == 0
+    }
 
     private var collectToFriend: BooleanModelField? = null
     private var collectToFriendType: ChoiceModelField? = null
@@ -135,12 +152,16 @@ class AntDodo : ModelTask() {
             receiveTaskAward()
             collect()
             if (collectToFriend?.value == true) {
-                var friendCollectPasses = 0
-                while (friendCollectPasses < 2) {
-                    if (!collectToFriend()) {
-                        break
+                if (hasPendingCollectToFriendSchedule()) {
+                    Log.dodo("神奇物种帮抽卡已有有效持久调度，跳过常规重复查询")
+                } else {
+                    var friendCollectPasses = 0
+                    while (friendCollectPasses < 2) {
+                        if (!collectToFriend().progressed) {
+                            break
+                        }
+                        friendCollectPasses++
                     }
-                    friendCollectPasses++
                 }
             }
             sendAntDodoCard()
@@ -158,6 +179,10 @@ class AntDodo : ModelTask() {
     }
 
     private fun collect() {
+        if (Status.hasFlagToday(StatusFlags.FLAG_ANTDODO_DAILY_COLLECT_DONE)) {
+            Log.dodo("神奇物种卡片今日已收集，跳过重复查询")
+            return
+        }
         try {
             val response = AntDodoRpcCall.queryAnimalStatus()
             if (response.isNullOrEmpty()) {
@@ -168,9 +193,12 @@ class AntDodo : ModelTask() {
             if (ResChecker.checkRes(TAG, jo)) {
                 val data = jo.getJSONObject("data")
                 if (data.getBoolean("collect")) {
+                    Status.setFlagToday(StatusFlags.FLAG_ANTDODO_DAILY_COLLECT_DONE)
                     Log.dodo("神奇物种卡片今日收集完成！")
                 } else {
-                    collectAnimalCard()
+                    if (collectAnimalCard()) {
+                        confirmDailyCollectDone()
+                    }
                 }
             } else {
                 Log.runtime(TAG, jo.getString("resultDesc"))
@@ -181,14 +209,33 @@ class AntDodo : ModelTask() {
         }
     }
 
-    private fun collectAnimalCard() {
-        try {
+    private fun confirmDailyCollectDone() {
+        val response = AntDodoRpcCall.queryAnimalStatus()
+        if (response.isNullOrEmpty()) {
+            Log.runtime(TAG, "神奇物种卡片收集后queryAnimalStatus返回空")
+            return
+        }
+        val result = JSONObject(response)
+        if (!ResChecker.checkRes(TAG, result)) {
+            Log.runtime(TAG, "神奇物种卡片收集后状态确认失败:${result.optString("resultDesc")}")
+            return
+        }
+        val data = result.optJSONObject("data")
+        if (data?.optBoolean("collect") == true) {
+            Status.setFlagToday(StatusFlags.FLAG_ANTDODO_DAILY_COLLECT_DONE)
+            Log.dodo("神奇物种卡片今日收集完成！")
+        }
+    }
+
+    private fun collectAnimalCard(): Boolean {
+        return try {
             val homeResponse = AntDodoRpcCall.homePage()
             if (homeResponse.isNullOrEmpty()) {
                 Log.runtime(TAG, "homePage返回空")
-                return
+                return false
             }
             var jo = JSONObject(homeResponse)
+            var attempted = false
             if (ResChecker.checkRes(TAG, jo)) {
                 var data = jo.getJSONObject("data")
                 val ja = data.getJSONArray("limit")
@@ -204,6 +251,7 @@ class AntDodo : ModelTask() {
                     val leftFreeQuota = jo.getInt("leftFreeQuota")
                     for (j in 0 until leftFreeQuota) {
                         val collectResponse = AntDodoRpcCall.collect()
+                        attempted = true
                         if (collectResponse.isNullOrEmpty()) {
                             Log.runtime(TAG, "collect返回空")
                             continue
@@ -223,9 +271,11 @@ class AntDodo : ModelTask() {
             } else {
                 Log.runtime(TAG, jo.getString("resultDesc"))
             }
+            attempted
         } catch (t: Throwable) {
             Log.runtime(TAG, "AntDodo CollectAnimalCard err:")
             Log.printStackTrace(TAG, t)
+            false
         }
     }
 
@@ -1220,28 +1270,42 @@ class AntDodo : ModelTask() {
         }
     }
 
-    private fun collectToFriend(): Boolean {
+    private fun collectToFriend(manageScheduledWakeup: Boolean = true): CollectToFriendResult {
         try {
             val queryResponse = AntDodoRpcCall.queryFriend()
             if (queryResponse.isNullOrEmpty()) {
                 Log.runtime(TAG, "queryFriend返回空")
-                return false
+                return CollectToFriendResult(progressed = false, remainingCount = null)
             }
             var jo = JSONObject(queryResponse)
             if (ResChecker.checkRes(TAG, jo)) {
                 var handled = false
-                var count = 0
                 val limitList = jo.getJSONObject("data").getJSONObject("extend").getJSONArray("limit")
+                var collectLimit: JSONObject? = null
                 for (i in 0 until limitList.length()) {
                     val limit = limitList.getJSONObject(i)
                     if (limit.getString("actionCode") == "COLLECT_TO_FRIEND") {
-                        if (limit.getLong("startTime") > System.currentTimeMillis()) {
-                            return false
-                        }
-                        count = limit.getInt("leftLimit")
+                        collectLimit = limit
                         break
                     }
                 }
+                val resolvedLimit = collectLimit
+                if (resolvedLimit == null || !resolvedLimit.has("startTime") || !resolvedLimit.has("leftLimit")) {
+                    Log.runtime(TAG, "神奇物种帮抽卡限额缺少COLLECT_TO_FRIEND.startTime/leftLimit")
+                    return CollectToFriendResult(progressed = false, remainingCount = null)
+                }
+                val startTime = resolvedLimit.getLong("startTime")
+                var count = resolvedLimit.getInt("leftLimit").coerceAtLeast(0)
+                if (startTime > System.currentTimeMillis()) {
+                    if (manageScheduledWakeup) {
+                        registerCollectToFriendSchedule(startTime)
+                    }
+                    return CollectToFriendResult(progressed = false, remainingCount = count)
+                }
+                if (count <= 0) {
+                    return CollectToFriendResult(progressed = false, remainingCount = 0)
+                }
+                val initialCount = count
                 val friendList = jo.getJSONObject("data").getJSONArray("friends")
                 for (i in 0 until friendList.length()) {
                     if (count <= 0) break
@@ -1274,7 +1338,16 @@ class AntDodo : ModelTask() {
                         val userName = UserMap.getMaskName(useId) ?: useId
                         Log.dodo("神奇物种🦕帮好友[$userName]抽卡[$ecosystem]#$name")
                         handleFriendExchange(useId, collectData)
-                        count--
+                        val refreshedCount = queryCollectToFriendLeftLimit()
+                        if (refreshedCount == null) {
+                            Log.runtime(TAG, "神奇物种帮抽卡动作成功但未能确认剩余次数，停止当前链路")
+                            return CollectToFriendResult(progressed = false, remainingCount = null)
+                        }
+                        if (refreshedCount >= count) {
+                            Log.runtime(TAG, "神奇物种帮抽卡动作成功但剩余次数未推进#$refreshedCount")
+                            return CollectToFriendResult(progressed = false, remainingCount = refreshedCount)
+                        }
+                        count = refreshedCount
                         handled = true
                     } else if (!ResChecker.isSilentFailure(jo)) {
                         val message = jo.optString("resultDesc").ifBlank {
@@ -1283,7 +1356,17 @@ class AntDodo : ModelTask() {
                         Log.runtime(TAG, message)
                     }
                 }
-                return handled
+                val remainingCount = count
+                when {
+                    remainingCount == 0 -> Log.dodo("神奇物种🦕帮好友抽卡机会已全部使用")
+                    remainingCount < initialCount -> Log.dodo("神奇物种帮抽卡剩余次数#$remainingCount")
+                    handled -> Log.runtime(TAG, "神奇物种帮抽卡动作成功但剩余次数未推进#$remainingCount")
+                    else -> Log.dodo("神奇物种帮抽卡仍有${remainingCount}次机会，但当前没有符合配置的好友")
+                }
+                return CollectToFriendResult(
+                    progressed = handled && remainingCount < initialCount,
+                    remainingCount = remainingCount,
+                )
             } else if (!ResChecker.isSilentFailure(jo)) {
                 val message = jo.optString("resultDesc").ifBlank {
                     jo.optString("desc", "查询神奇物种好友列表失败")
@@ -1294,7 +1377,139 @@ class AntDodo : ModelTask() {
             Log.runtime(TAG, "AntDodo CollectHelpFriend err:")
             Log.printStackTrace(TAG, t)
         }
-        return false
+        return CollectToFriendResult(progressed = false, remainingCount = null)
+    }
+
+    private fun queryCollectToFriendLeftLimit(): Int? {
+        val response = AntDodoRpcCall.queryFriend()
+        if (response.isNullOrEmpty()) {
+            return null
+        }
+        val json = JSONObject(response)
+        if (!ResChecker.checkRes(TAG, json)) {
+            return null
+        }
+        val limitList = json.optJSONObject("data")?.optJSONObject("extend")?.optJSONArray("limit") ?: return null
+        for (index in 0 until limitList.length()) {
+            val limit = limitList.optJSONObject(index) ?: continue
+            if (limit.optString("actionCode") == "COLLECT_TO_FRIEND" && limit.has("leftLimit")) {
+                return limit.optInt("leftLimit").coerceAtLeast(0)
+            }
+        }
+        return null
+    }
+
+    private fun registerCollectToFriendSchedule(triggerAtMs: Long) {
+        val context = ApplicationHook.appContext ?: return
+        val ownerUserId =
+            AccountSessionCoordinator.currentUserId()?.takeIf { it.isNotBlank() }
+                ?: UserMap.currentUid?.takeIf { it.isNotBlank() }
+                ?: return
+        val sessionEpoch = AccountSessionCoordinator.currentSessionEpoch()
+        val payload =
+            JSONObject()
+                .put("child_kind", PERSISTENT_CHILD_KIND)
+                .put("child_id", COLLECT_TO_FRIEND_CHILD_ID)
+                .put("owner_user_id", ownerUserId)
+                .put("session_epoch", sessionEpoch)
+        val schedule = UnifiedScheduler.schedulePersistentTrigger(
+            context = context,
+            name = "神奇物种子任务:帮好友抽卡",
+            kind = PersistentScheduleKind.MODULE_CHILD,
+            triggerAtMs = triggerAtMs,
+            dedupeKey = collectToFriendDedupeKey(ownerUserId),
+            payloadJson = payload.toString(),
+            toleranceMs = PersistentScheduleDefaults.DEFAULT_TOLERANCE_MS,
+            ownerUserId = ownerUserId,
+            sessionEpoch = sessionEpoch,
+        )
+        if (schedule.state == PersistentScheduleState.SCHEDULED) {
+            Log.dodo("神奇物种帮抽卡将在开放时间继续执行")
+        } else {
+            Log.runtime(TAG, "神奇物种帮抽卡持久调度注册失败:${schedule.lastError.orEmpty()}")
+        }
+    }
+
+    internal fun triggerPersistentCollectToFriend(
+        payloadJson: String,
+        scheduleId: String,
+    ): Boolean {
+        val payload = runCatching { JSONObject(payloadJson.ifBlank { "{}" }) }.getOrDefault(JSONObject())
+        val ownerUserId = payload.optString("owner_user_id").trim()
+        val sessionEpoch = payload.optLong("session_epoch", 0L)
+        if (
+            ownerUserId.isBlank() ||
+            sessionEpoch <= 0L ||
+            !AccountSessionCoordinator.isCurrentSession(ownerUserId, sessionEpoch)
+        ) {
+            Log.dodo("神奇物种持久帮抽卡会话已失效，跳过执行")
+            PersistentScheduleRegistry.markFired(ApplicationHook.appContext, scheduleId)
+            return true
+        }
+        if (collectToFriend?.value != true) {
+            Log.dodo("神奇物种持久帮抽卡触发时功能已关闭，跳过执行")
+            PersistentScheduleRegistry.markFired(ApplicationHook.appContext, scheduleId)
+            return true
+        }
+        GlobalThreadPools.execute {
+            PersistentScheduleRegistry.markRunning(scheduleId)
+            val executionLease =
+                ApplicationHook.appContext?.let { context ->
+                    WakeLockManager.acquire(
+                        context = context,
+                        timeoutMs = PersistentScheduleDefaults.TASK_EXECUTION_WAKELOCK_MS,
+                        source = "dodo_persistent_collect_to_friend",
+                        scheduleId = scheduleId,
+                    )
+                }
+            try {
+                val result = collectToFriend(manageScheduledWakeup = false)
+                if (result.completed) {
+                    PersistentScheduleRegistry.markFired(ApplicationHook.appContext, scheduleId)
+                } else {
+                    PersistentScheduleRegistry.markFailed(
+                        ApplicationHook.appContext,
+                        scheduleId,
+                        "collect_to_friend_unfinished:remaining=${result.remainingCount ?: "unknown"}",
+                    )
+                }
+            } catch (t: Throwable) {
+                Log.printStackTrace(TAG, "神奇物种持久帮抽卡执行失败", t)
+                PersistentScheduleRegistry.markFailed(ApplicationHook.appContext, scheduleId, t.message ?: t.javaClass.name)
+            } finally {
+                executionLease?.close()
+            }
+        }
+        return true
+    }
+
+    private fun collectToFriendDedupeKey(ownerUserId: String): String = "dodo_child_$ownerUserId::$COLLECT_TO_FRIEND_CHILD_ID"
+
+    private fun hasPendingCollectToFriendSchedule(): Boolean {
+        val ownerUserId =
+            AccountSessionCoordinator.currentUserId()?.takeIf { it.isNotBlank() }
+                ?: UserMap.currentUid?.takeIf { it.isNotBlank() }
+                ?: return false
+        val sessionEpoch = AccountSessionCoordinator.currentSessionEpoch()
+        if (sessionEpoch <= 0L) {
+            return false
+        }
+        val dedupeKey = collectToFriendDedupeKey(ownerUserId)
+        val now = System.currentTimeMillis()
+        return PersistentScheduleRegistry.list().any { schedule ->
+            schedule.kind == PersistentScheduleKind.MODULE_CHILD &&
+                schedule.ownerUserId?.trim() == ownerUserId &&
+                schedule.sessionEpoch == sessionEpoch &&
+                schedule.dedupeKey == dedupeKey &&
+                when (schedule.state) {
+                    PersistentScheduleState.SCHEDULED -> schedule.triggerAtMs > now
+                    PersistentScheduleState.QUEUED,
+                    PersistentScheduleState.RUNNING,
+                    -> true
+
+                    else -> false
+                }
+        }
     }
 
     private fun handleFriendExchange(targetUserId: String, collectData: JSONObject) {
@@ -1704,6 +1919,8 @@ class AntDodo : ModelTask() {
     companion object {
         private val TAG = AntDodo::class.java.simpleName
         private const val TASK_BLACKLIST_MODULE = "神奇物种"
+        const val PERSISTENT_CHILD_KIND = "dodo_child_task"
+        const val COLLECT_TO_FRIEND_CHILD_ID = "collect_to_friend"
         private val BUSINESS_DRIVEN_TASK_TYPES = setOf("HELP_FRIEND_COLLECT", "SEND_FRIEND_CARD")
     }
 }

@@ -2963,7 +2963,22 @@ class AntStall : ModelTask() {
                 val collectJson = JSONObject(collectResponse)
 
                 if (ResChecker.checkRes(TAG, collectJson)) {
-                    Log.stall("蚂蚁新村⛪获得肥料${manure}g")
+                    val refreshed = JSONObject(AntStallRpcCall.queryManureInfo())
+                    if (!refreshed.optBoolean("success")) {
+                        Log.error(TAG, "collectManure confirm err: $refreshed")
+                        return
+                    }
+                    val refreshedInfo = refreshed.optJSONObject("astManureInfoVO")
+                    if (refreshedInfo == null || !refreshedInfo.has("hasManure")) {
+                        Log.error(TAG, "collectManure confirm missing astManureInfoVO.hasManure: $refreshed")
+                        return
+                    }
+                    if (refreshedInfo.optBoolean("hasManure")) {
+                        Log.stall("蚂蚁新村肥料收取后回查仍有待收肥料，保留后续重试")
+                        return
+                    }
+                    val collected = collectJson.optInt("collectNumber", manure).takeIf { it > 0 } ?: manure
+                    Log.stall("蚂蚁新村⛪获得肥料${collected}g")
                 }
             } else {
                 Log.stall("没有可收取的肥料。")

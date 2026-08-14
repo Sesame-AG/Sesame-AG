@@ -168,6 +168,12 @@ object StatusFlags {
     /** 余额宝体验金：今日待使用券已转换 */
     const val FLAG_ANTMEMBER_YEB_EXP_GOLD_VOUCHER_CONVERT_DONE = "AntMember::yebExpGoldVoucherConvertDone"
 
+    /** 账单贴纸：今日可领取贴纸及后续奖励已处理 */
+    const val FLAG_ANTMEMBER_STICKERS_DONE = "AntMember::stickersDone"
+
+    /** 账单拼贴世界：今日首页已确认无可继续处理项 */
+    const val FLAG_ANTMEMBER_BILL_BLOCK_WORLD_DONE = "AntMember::billBlockWorldDone"
+
     // ============================================================
     // 芝麻信用 / 芝麻粒
     // ============================================================
@@ -304,6 +310,13 @@ object StatusFlags {
 
     /** 神奇海洋：今日任务列表已确认无可执行项 */
     const val FLAG_ANTOCEAN_TASKS_DONE = "AntOcean::tasksDone"
+
+    // ============================================================
+    // 神奇物种
+    // ============================================================
+
+    /** 神奇物种：今日卡片收集已由服务端确认完成 */
+    const val FLAG_ANTDODO_DAILY_COLLECT_DONE = "AntDodo::dailyCollectDone"
 
     // ============================================================
     // 农场 / 新村 / 团队

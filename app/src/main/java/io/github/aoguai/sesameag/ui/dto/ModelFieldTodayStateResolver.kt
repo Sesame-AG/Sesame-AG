@@ -143,6 +143,14 @@ object ModelFieldTodayStateResolver {
                 )
             }
 
+            "AntMember.CollectStickers" -> {
+                flag(StatusFlags.FLAG_ANTMEMBER_STICKERS_DONE, "今日账单贴纸已处理")
+            }
+
+            "AntMember.billBlockWorld" -> {
+                flag(StatusFlags.FLAG_ANTMEMBER_BILL_BLOCK_WORLD_DONE, "今日账单拼贴世界已处理")
+            }
+
             "AntMember.memberPointExchangeBenefit" -> {
                 flag(StatusFlags.FLAG_ANTMEMBER_MEMBER_BENEFIT_REFRESH_DONE, "今日会员积分兑换权益已处理")
             }

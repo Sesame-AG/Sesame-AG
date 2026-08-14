@@ -166,11 +166,18 @@ object FarmGame {
 
     private suspend fun recordFarmGame(gameType: GameType): FarmGameCompletion {
         try {
+            if (gameType == GameType.starGame || gameType == GameType.jumpGame) {
+                return recordLevelAwardGameOnce(gameType)
+            }
             while (true) {
                 val beforeSnapshot = queryFarmGameSnapshot(gameType) ?: return FarmGameCompletion.UNCONFIRMED
                 if (beforeSnapshot.level3Get == true) {
                     Log.farm("[${gameType.gameName()}]#今日奖励已领满")
                     return FarmGameCompletion.CONFIRMED_TERMINAL
+                }
+                if (beforeSnapshot.level3Get == null) {
+                    Log.farm("庄园游戏[${gameType.gameName()}]缺少gameAward.level3Get，保留下一轮重试")
+                    return FarmGameCompletion.UNCONFIRMED
                 }
 
                 val remainingCount = beforeSnapshot.remainingGameCount
@@ -210,6 +217,50 @@ object FarmGame {
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "recordFarmGame err:", t)
             return FarmGameCompletion.UNCONFIRMED
+        }
+    }
+
+    private suspend fun recordLevelAwardGameOnce(gameType: GameType): FarmGameCompletion {
+        val beforeSnapshot = queryFarmGameSnapshot(gameType) ?: return FarmGameCompletion.UNCONFIRMED
+        when (beforeSnapshot.level3Get) {
+            true -> {
+                Log.farm("[${gameType.gameName()}]#今日奖励已领满")
+                return FarmGameCompletion.CONFIRMED_TERMINAL
+            }
+
+            null -> {
+                Log.farm("庄园游戏[${gameType.gameName()}]缺少gameAward.level3Get，保留下一轮重试")
+                return FarmGameCompletion.UNCONFIRMED
+            }
+
+            false -> Unit
+        }
+
+        val recordResponse = JSONObject(AntFarmRpcCall.recordFarmGame(gameType.name))
+        if (!ResChecker.checkRes(TAG, recordResponse)) {
+            Log.farm("庄园游戏提交失败: $recordResponse")
+            return FarmGameCompletion.UNCONFIRMED
+        }
+        val award = parseGameAward(recordResponse)
+        Log.farm("庄园游戏🎮[${gameType.gameName()}]#$award")
+        delay(3000)
+
+        val afterSnapshot = queryFarmGameSnapshot(gameType) ?: return FarmGameCompletion.UNCONFIRMED
+        return when (afterSnapshot.level3Get) {
+            true -> {
+                Log.farm("[${gameType.gameName()}]#今日奖励已领满")
+                FarmGameCompletion.CONFIRMED_TERMINAL
+            }
+
+            null -> {
+                Log.farm("庄园游戏[${gameType.gameName()}]提交后回查缺少gameAward.level3Get，当前轮不再重复提交")
+                FarmGameCompletion.UNCONFIRMED
+            }
+
+            false -> {
+                Log.farm("庄园游戏[${gameType.gameName()}]提交 ACK 但level3Get未推进，当前轮不再重复提交")
+                FarmGameCompletion.UNCONFIRMED
+            }
         }
     }
 

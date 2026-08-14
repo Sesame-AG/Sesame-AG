@@ -1,6 +1,7 @@
 package io.github.aoguai.sesameag.task.antMember
 
 import android.annotation.SuppressLint
+import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.Status.Companion.canMemberPointExchangeBenefitToday
 import io.github.aoguai.sesameag.data.Status.Companion.canMemberSignInToday
 import io.github.aoguai.sesameag.data.Status.Companion.hasFlagToday
@@ -7753,6 +7754,10 @@ class AntMember : ModelTask() {
      */
     @SuppressLint("DefaultLocale")
     fun queryAndCollectStickers() {
+        if (Status.hasFlagToday(StatusFlags.FLAG_ANTMEMBER_STICKERS_DONE)) {
+            Log.member("账单贴纸今日已处理，跳过重复扫描")
+            return
+        }
         try {
             val now = Date()
             val year = SimpleDateFormat("yyyy", Locale.ENGLISH).format(now)
@@ -7842,6 +7847,7 @@ class AntMember : ModelTask() {
                 Log.member("贴纸后续处理存在失败，保留后续重试机会")
                 return
             }
+            Status.setFlagToday(StatusFlags.FLAG_ANTMEMBER_STICKERS_DONE)
 
         } catch (e: Exception) {
             Log.printStackTrace("$TAG stickerAutoCollect err", e)

@@ -4073,6 +4073,17 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                         break@label
                     }
 
+                    "WATER_NOT_GET_LOCK" -> {
+                        Log.error(
+                            TAG,
+                            "module=森林 action=friendWater rpc=AntForestRpcCall.transferEnergy " +
+                                "code=WATER_NOT_GET_LOCK msg=${jo.optString("resultDesc")} " +
+                                "classification=RETRYABLE_RPC decision=RETRY_LATER " +
+                                "target=${UserMap.getMaskName(safeUserId)} raw=$jo"
+                        )
+                        break@label
+                    }
+
                     "ENERGY_INSUFFICIENT" -> {
                         Log.forest("好友浇水🚿" + jo.optString("resultDesc"))
                         isContinue = false

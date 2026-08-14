@@ -1,5 +1,7 @@
 package io.github.aoguai.sesameag.task.antMember
 
+import io.github.aoguai.sesameag.data.Status
+import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
@@ -39,6 +41,8 @@ private data class BlockWorldSnapshot(
     val chapters: List<BlockWorldChapter>,
     val pendingBlocks: List<BlockWorldBlock>,
     val placedBlocks: List<BlockWorldBlock>,
+    val dailyProductAmt: Int?,
+    val coinBalance: Int?,
 ) {
     fun currentChapter(): BlockWorldChapter? = chapters.firstOrNull { it.id == canvas.chapterId }
 }
@@ -50,6 +54,7 @@ private data class BlockWorldPosition(
 
 private data class BlockWorldActionResult(
     val performed: Boolean,
+    val responseConfirmedProgress: Boolean = false,
 )
 
 private class BillBlockWorldWorkflow {
@@ -58,8 +63,14 @@ private class BillBlockWorldWorkflow {
     private val reclaimedBlocks = linkedMapOf<String, BlockWorldBlock>()
 
     fun run() {
+        if (Status.hasFlagToday(StatusFlags.FLAG_ANTMEMBER_BILL_BLOCK_WORLD_DONE)) {
+            Log.member("账单拼贴世界今日已处理，跳过重复查询")
+            return
+        }
         var snapshot = queryHome() ?: return
         while (true) {
+            var dailyProductResponseConfirmed = false
+            val pendingDailyProductAmt = snapshot.dailyProductAmt
             val chapter = snapshot.currentChapter()
             if (chapter == null) {
                 Log.member("账单拼贴世界⏭️未找到当前章节，停止处理")
@@ -69,6 +80,13 @@ private class BillBlockWorldWorkflow {
             // 章节奖励和画布资源是独立状态：已领奖章节仍可能有待领取贴纸或可合成方块。
             val actionName =
                 when {
+                    pendingDailyProductAmt != null && pendingDailyProductAmt > 0 -> {
+                        val result = collectDailyProductCoin()
+                        if (!result.performed) return
+                        dailyProductResponseConfirmed = result.responseConfirmedProgress
+                        "领取每日贴贴币"
+                    }
+
                     snapshot.pendingBlocks.isNotEmpty() -> {
                         if (!performPlace(snapshot).performed) return
                         "放置待领取贴纸"
@@ -84,7 +102,17 @@ private class BillBlockWorldWorkflow {
                         "合成贴纸"
                     }
 
+                    snapshot.dailyProductAmt == null -> {
+                        Log.member("账单拼贴世界⏭️每日贴贴币状态未知，当前不确认画布资源已收敛")
+                        return
+                    }
+
                     isRewarded(chapter) -> {
+                        if (snapshot.dailyProductAmt != 0) {
+                            Log.member("账单拼贴世界⏭️每日贴贴币数量异常，当前不写入今日完成标识")
+                            return
+                        }
+                        Status.setFlagToday(StatusFlags.FLAG_ANTMEMBER_BILL_BLOCK_WORLD_DONE)
                         Log.member("账单拼贴世界✅当前章节已领奖且画布资源已收敛")
                         return
                     }
@@ -101,6 +129,17 @@ private class BillBlockWorldWorkflow {
                     }
                 }
             val refreshed = queryHome() ?: return
+            if (actionName == "领取每日贴贴币") {
+                val pendingCleared = refreshed.dailyProductAmt == 0
+                val balanceIncreased =
+                    snapshot.coinBalance?.let { before ->
+                        refreshed.coinBalance?.let { after -> after > before }
+                    } == true
+                if (!pendingCleared && !balanceIncreased && !dailyProductResponseConfirmed) {
+                    Log.member("账单拼贴世界⏭️每日贴贴币领取后未获得可确认的数量或余额推进，停止当前链路")
+                    return
+                }
+            }
             if (snapshotStateKey(refreshed) == snapshotStateKey(snapshot)) {
                 Log.member("账单拼贴世界⏭️[$actionName]回查未发现状态变化，停止当前链路")
                 return
@@ -138,13 +177,28 @@ private class BillBlockWorldWorkflow {
             Log.member("账单拼贴世界❌画布状态不完整，停止当前链路")
             return null
         }
+        val dailyProductAmt = optionalInt(data, "dailyProductAmt")
+        val coinBalance = optionalInt(data, "coinBalance")
+        if (dailyProductAmt == null) {
+            Log.member("账单拼贴世界⏭️首页缺少dailyProductAmt，当前无法确认每日贴贴币状态")
+        }
+        if (dailyProductAmt != null && dailyProductAmt > 0 && coinBalance == null) {
+            Log.member("账单拼贴世界⏭️首页缺少coinBalance，将仅依据待领数量或动作响应确认领取结果")
+        }
         return BlockWorldSnapshot(
             canvas = canvas,
             chapters = parseChapters(data.optJSONArray("chapterTasks")),
             pendingBlocks = parseBlocks(data.optJSONArray("pendingBlocks"), includePosition = false),
             placedBlocks = parseBlocks(data.optJSONArray("placedBlocks"), includePosition = true),
+            dailyProductAmt = dailyProductAmt,
+            coinBalance = coinBalance,
         )
     }
+
+    private fun optionalInt(
+        data: JSONObject,
+        key: String,
+    ): Int? = data.takeIf { it.has(key) && !it.isNull(key) }?.optInt(key)
 
     private fun parseChapters(chapters: JSONArray?): List<BlockWorldChapter> {
         if (chapters == null) {
@@ -246,6 +300,10 @@ private class BillBlockWorldWorkflow {
             append(snapshot.canvas.width)
             append('x')
             append(snapshot.canvas.length)
+            append("|dailyProduct:")
+            append(snapshot.dailyProductAmt)
+            append(':')
+            append(snapshot.coinBalance)
             snapshot.chapters.sortedBy { it.id }.forEach { chapter ->
                 append("|chapter:")
                 append(chapter.id)
@@ -308,6 +366,31 @@ private class BillBlockWorldWorkflow {
         createdBlockIds.add(block.recordId)
         Log.member("账单拼贴世界🧩重新放置贴纸")
         return BlockWorldActionResult(performed = true)
+    }
+
+    private fun collectDailyProductCoin(): BlockWorldActionResult {
+        val rawResponse =
+            runCatching { AntMemberRpcCall.collectBillBlockWorldDailyProductCoin() }.getOrElse {
+                Log.member("账单拼贴世界❌领取每日贴贴币请求失败:${it.message}")
+                return BlockWorldActionResult(performed = false)
+            }
+        val response =
+            runCatching { JSONObject(rawResponse) }.getOrElse {
+                Log.member("账单拼贴世界❌领取每日贴贴币响应解析失败:${it.message}")
+                return BlockWorldActionResult(performed = true)
+            }
+        if (!isSuccess(response)) {
+            val code = response.optString("resultCode").ifBlank { "UNKNOWN" }
+            val message = response.optString("message").ifBlank { response.optString("resultDesc") }
+            Log.member("账单拼贴世界❌领取每日贴贴币失败#code=$code message=${message.ifBlank { response.toString() }}")
+            return BlockWorldActionResult(performed = true)
+        }
+        val gainedCoinAmt = response.optInt("gainedCoinAmt", 0)
+        Log.member("账单拼贴世界💰领取每日贴贴币${if (gainedCoinAmt > 0) "#$gainedCoinAmt" else ""}")
+        return BlockWorldActionResult(
+            performed = true,
+            responseConfirmedProgress = gainedCoinAmt > 0,
+        )
     }
 
     private fun collectPendingBlock(
@@ -501,8 +584,7 @@ private class BillBlockWorldWorkflow {
     private fun findSafeMergePair(snapshot: BlockWorldSnapshot): Pair<BlockWorldBlock, BlockWorldBlock>? {
         val placedBlocks =
             snapshot.placedBlocks.filter { block ->
-                block.recordId in createdBlockIds &&
-                    isValidBlock(block) &&
+                isValidBlock(block) &&
                     block.posX != null &&
                     block.posY != null
             }
@@ -519,12 +601,12 @@ private class BillBlockWorldWorkflow {
     }
 
     private fun findPendingMergeBlock(snapshot: BlockWorldSnapshot): BlockWorldBlock? {
-        val createdBlocks = snapshot.placedBlocks.filter { it.recordId in createdBlockIds && isValidBlock(it) }
+        val placedBlocks = snapshot.placedBlocks.filter(::isValidBlock)
         return snapshot.pendingBlocks.firstOrNull { candidate ->
             isValidBlock(candidate) &&
                 findFreePosition(snapshot, candidate) != null &&
                 (
-                    createdBlocks.any { canMerge(it, candidate) } ||
+                    placedBlocks.any { canMerge(it, candidate) } ||
                         snapshot.pendingBlocks.any { other ->
                             other.recordId != candidate.recordId && canMerge(other, candidate)
                         }

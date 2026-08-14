@@ -47,6 +47,8 @@ class AntOrchard : ModelTask() {
         private const val LEYUAN_DAILY_TASK_SCENE_CODE = "ANTORCHARD_LEYUAN_DAILY_TASK"
         private const val TAOBAO_VISIT_SCENE_CODE = "972"
         private const val TAOBAO_VISIT_TASK_GROUP_ID = "12172"
+        private const val TASK_JINDOU_TREASURE = "ORCHARD_NORMAL_JINDOUDUOBAO"
+        private const val TASK_FORTUNE_TREE = "ORCHARD_NORMAL_FACAISHU_NEW"
         private const val RECEIVE_SPREAD_MANURE_ACTIVITY_AWARD_ACTION = "RECEIVE_SPREAD_MANURE_ACTIVITY_AWARD"
         private val ORCHARD_BUSINESS_LIMIT_CODES =
             setOf(
@@ -797,14 +799,24 @@ class AntOrchard : ModelTask() {
                         detail = orchardActionDetail(item, "receive"),
                         stopCurrentRound = true,
                     )
-            if (isOrchardRpcSuccessResponse(response)) {
+            if (isOrchardRpcSuccessResponse(response.first)) {
+                val refreshedTask = queryOrchardTaskById(taskId, response.second)
+                if (refreshedTask?.optString("taskStatus") != "RECEIVED") {
+                    return TaskFlowActionResult.defer(
+                        deferredReason = DeferredReason.STATE_CONFIRMATION,
+                        message = "triggerTbTask已返回成功，等待同源任务状态确认RECEIVED",
+                        rpc = "AntOrchardRpcCall.triggerTbTask",
+                        raw = refreshedTask?.toString() ?: response.first.toString(),
+                        detail = orchardActionDetail(item, "receive"),
+                    )
+                }
                 val awardCount = task.optInt("awardCount", task.optInt("confAwardCount", 0))
                 val awardSuffix = if (awardCount > 0) "#${awardCount}g肥料" else ""
                 Log.orchard("领取奖励🎖️[${item.title}]$awardSuffix")
                 return TaskFlowActionResult.success()
             }
             return buildOrchardTaskFailureResult(
-                response = response,
+                response = response.first,
                 taskId = item.id,
                 title = item.title,
                 action = "receive",
@@ -1326,7 +1338,7 @@ class AntOrchard : ModelTask() {
         }
         val finishResponse = JSONObject(responseText)
         if (isOrchardRpcSuccessResponse(finishResponse)) {
-            val refreshedTask = queryOrchardTaskById(taskId)
+            val refreshedTask = queryOrchardTaskById(taskId, source)
             when {
                 refreshedTask == null -> {
                     return TaskFlowActionResult.defer(
@@ -1631,6 +1643,9 @@ class AntOrchard : ModelTask() {
         task.optString("actionType") == "VISIT" && task.optString("taskPlantType") == "TAOBAO"
 
     private fun resolveTaskActionSource(task: JSONObject): String? {
+        if (task.optString("taskId") in setOf(TASK_JINDOU_TREASURE, TASK_FORTUNE_TREE)) {
+            return ENTRY_SOURCE
+        }
         val targetUrl = task.optJSONObject("taskDisplayConfig")?.optString("targetUrl").orEmpty()
         if (targetUrl.isBlank()) {
             return null
@@ -1691,7 +1706,7 @@ class AntOrchard : ModelTask() {
             )
         }
 
-        val refreshedTask = queryOrchardTaskById(taskId)
+        val refreshedTask = queryOrchardTaskById(taskId, actualSource)
         val taskStatus = refreshedTask?.optString("taskStatus").orEmpty()
         if (taskStatus == "FINISHED" || taskStatus == "RECEIVED") {
             val awardCount =
@@ -1720,8 +1735,11 @@ class AntOrchard : ModelTask() {
         )
     }
 
-    private fun queryOrchardTaskById(taskId: String): JSONObject? {
-        val response = JSONObject(AntOrchardRpcCall.orchardListTask())
+    private fun queryOrchardTaskById(
+        taskId: String,
+        source: String = ENTRY_SOURCE,
+    ): JSONObject? {
+        val response = JSONObject(AntOrchardRpcCall.orchardListTask(source))
         if (response.optString("resultCode") != "100") {
             Log.orchard("农场任务状态查询失败[$taskId]: $response")
             return null
@@ -2318,7 +2336,12 @@ class AntOrchard : ModelTask() {
                     return
                 }
 
-                remaining -= batchCount
+                val confirmedRemaining = queryUnsmashedGoldenEggs() ?: return
+                if (confirmedRemaining >= remaining) {
+                    Log.orchard("金蛋砸取后首页状态未推进，停止当前链路")
+                    return
+                }
+                remaining = confirmedRemaining
                 if (remaining > 0) {
                     CoroutineUtils.sleepCompat(executeIntervalInt.toLong())
                 }
@@ -2328,26 +2351,48 @@ class AntOrchard : ModelTask() {
         }
     }
 
+    private fun queryUnsmashedGoldenEggs(): Int? {
+        val index = JSONObject(AntOrchardRpcCall.orchardIndex())
+        if (index.optString("resultCode") != "100") {
+            Log.orchard("金蛋状态回查失败: ${index.optString("resultDesc", index.toString())}")
+            return null
+        }
+        val goldenEggInfo = index.optJSONObject("goldenEggInfo")
+        if (goldenEggInfo == null || !goldenEggInfo.has("unsmashedGoldenEggs")) {
+            Log.orchard("金蛋状态回查缺少goldenEggInfo.unsmashedGoldenEggs")
+            return null
+        }
+        return goldenEggInfo.optInt("unsmashedGoldenEggs").coerceAtLeast(0)
+    }
+
     private fun claimTaskReward(
         taskId: String,
         taskPlantType: String,
         task: JSONObject? = null,
-    ): JSONObject? {
-        val sourceCandidates = linkedSetOf<String>().apply {
-            task?.let(::resolveTaskActionSource)?.let(::add)
-            add(getSceneSource())
-            add(ENTRY_SOURCE)
-            add(YEB_SOURCE)
-        }
+    ): Pair<JSONObject, String>? {
+        val resolvedSource = task?.let(::resolveTaskActionSource)
+        val sourceCandidates =
+            if (taskId in setOf(TASK_JINDOU_TREASURE, TASK_FORTUNE_TREE)) {
+                linkedSetOf(resolvedSource ?: ENTRY_SOURCE)
+            } else {
+                linkedSetOf<String>().apply {
+                    resolvedSource?.let(::add)
+                    add(getSceneSource())
+                    add(ENTRY_SOURCE)
+                    add(YEB_SOURCE)
+                }
+            }
         var lastResponse: JSONObject? = null
+        var lastSource = sourceCandidates.first()
         for (source in sourceCandidates) {
             val response = JSONObject(AntOrchardRpcCall.triggerTbTask(taskId, taskPlantType, source))
             lastResponse = response
+            lastSource = source
             if (response.optString("resultCode") == "100") {
-                return response
+                return response to source
             }
         }
-        return lastResponse
+        return lastResponse?.let { it to lastSource }
     }
 
     internal fun syncTaobaoLimitBalloon() {

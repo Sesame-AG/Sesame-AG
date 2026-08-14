@@ -32,7 +32,22 @@ internal suspend fun AntOrchard.runOrchardRewardWorkflow(indexJson: JSONObject, 
         } else {
             val remain = limit - smashed
             if (remain > 0) {
-                GameTask.Orchard_ncscc.report(remain)
+                if (GameTask.Orchard_ncscc.report(remain)) {
+                    val refreshedIndex = JSONObject(AntOrchardRpcCall.orchardIndex())
+                    if (refreshedIndex.optString("resultCode") != "100") {
+                        Log.orchard("金蛋游戏上报后首页回查失败: ${refreshedIndex.optString("resultDesc", refreshedIndex.toString())}")
+                    } else {
+                        val refreshedGoldenEggInfo = refreshedIndex.optJSONObject("goldenEggInfo")
+                        if (refreshedGoldenEggInfo == null || !refreshedGoldenEggInfo.has("unsmashedGoldenEggs")) {
+                            Log.orchard("金蛋游戏上报后首页回查缺少goldenEggInfo.unsmashedGoldenEggs")
+                            return
+                        }
+                        val refreshedUnsmashed = refreshedGoldenEggInfo.optInt("unsmashedGoldenEggs").coerceAtLeast(0)
+                        if (refreshedUnsmashed > 0) {
+                            smashedGoldenEgg(refreshedUnsmashed)
+                        }
+                    }
+                }
             }
         }
     }
