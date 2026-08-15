@@ -161,9 +161,6 @@ dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2026.08.00") // Compose BOM 版本管理
     implementation(composeBom)
 
-    testImplementation(composeBom)
-    testImplementation(libs.junit)
-    androidTestImplementation(composeBom)
     implementation(libs.androidx.material3) // Material 3 设计组件
     implementation(libs.androidx.material3.adaptive.navigation.suite) // 自适应导航栏/导航轨
     implementation(libs.androidx.material3.adaptive.navigation3) // Navigation 3 自适应列表-详情场景
