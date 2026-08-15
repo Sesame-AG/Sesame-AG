@@ -3,8 +3,18 @@ package io.github.aoguai.sesameag.task.customTasks
 import io.github.aoguai.sesameag.data.Config
 import io.github.aoguai.sesameag.hook.ApplicationHook
 import io.github.aoguai.sesameag.model.Model
+import io.github.aoguai.sesameag.task.ModelTask
+import io.github.aoguai.sesameag.task.antCooperate.AntCooperate
+import io.github.aoguai.sesameag.task.antDodo.AntDodo
 import io.github.aoguai.sesameag.task.antFarm.AntFarm
+import io.github.aoguai.sesameag.task.antFishPond.AntFishPond
 import io.github.aoguai.sesameag.task.antForest.AntForest
+import io.github.aoguai.sesameag.task.antMember.AntMember
+import io.github.aoguai.sesameag.task.antOcean.AntOcean
+import io.github.aoguai.sesameag.task.antOrchard.AntOrchard
+import io.github.aoguai.sesameag.task.antSesameCredit.AntSesameCredit
+import io.github.aoguai.sesameag.task.antSports.AntSports
+import io.github.aoguai.sesameag.task.antStall.AntStall
 import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.WorkflowRootGuard
@@ -110,6 +120,19 @@ object ManualTask {
                                 val toolCount = extraParams["toolCount"] as? Int ?: 1
                                 getFarmInstance()?.manualUseFarmTool(toolType, toolCount)
                             }
+
+                            // 任务模块整体手动触发：直接运行该模块的 runSuspend()，跳过 check() 调度门控
+                            CustomTask.ANT_FOREST -> runModuleTask(AntForest::class.java)
+                            CustomTask.ANT_FARM -> runModuleTask(AntFarm::class.java)
+                            CustomTask.ANT_OCEAN -> runModuleTask(AntOcean::class.java)
+                            CustomTask.ANT_STALL -> runModuleTask(AntStall::class.java)
+                            CustomTask.ANT_DODO -> runModuleTask(AntDodo::class.java)
+                            CustomTask.ANT_COOPERATE -> runModuleTask(AntCooperate::class.java)
+                            CustomTask.ANT_MEMBER -> runModuleTask(AntMember::class.java)
+                            CustomTask.ANT_SESAME_CREDIT -> runModuleTask(AntSesameCredit::class.java)
+                            CustomTask.ANT_ORCHARD -> runModuleTask(AntOrchard::class.java)
+                            CustomTask.ANT_FISH_POND -> runModuleTask(AntFishPond::class.java)
+                            CustomTask.ANT_SPORTS -> runModuleTask(AntSports::class.java)
                         }
                     } catch (t: Throwable) {
                         Log.record("ManualTask", "❌ 执行 ${task.displayName} 出错: ${t.message}")
@@ -151,6 +174,19 @@ object ManualTask {
             }
         }
         return AntFarm.instance
+    }
+
+    /**
+     * 手动触发任务模块整体执行：直接调用该模块的 runSuspend()，绕过 check() 调度门控。
+     * 适用于风控后手动重跑单个模块，无需等待自动调度。
+     */
+    private suspend fun <T : ModelTask> runModuleTask(clazz: Class<T>) {
+        val instance = Model.getModel(clazz)
+        if (instance == null) {
+            Log.record("ManualTask", "❌ 无法加载 ${clazz.simpleName} 模块")
+            return
+        }
+        instance.run()
     }
 }
 

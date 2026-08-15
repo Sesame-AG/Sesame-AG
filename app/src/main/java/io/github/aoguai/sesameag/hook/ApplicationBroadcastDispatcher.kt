@@ -683,6 +683,21 @@ internal object ApplicationBroadcastDispatcher {
                             extraParams["toolCount"] = intent.getIntExtra("toolCount", 1)
                         }
 
+                        // 任务模块整体手动触发，无需额外参数
+                        CustomTask.ANT_FOREST,
+                        CustomTask.ANT_FARM,
+                        CustomTask.ANT_OCEAN,
+                        CustomTask.ANT_STALL,
+                        CustomTask.ANT_DODO,
+                        CustomTask.ANT_COOPERATE,
+                        CustomTask.ANT_MEMBER,
+                        CustomTask.ANT_SESAME_CREDIT,
+                        CustomTask.ANT_ORCHARD,
+                        CustomTask.ANT_FISH_POND,
+                        CustomTask.ANT_SPORTS -> {
+                            Unit
+                        }
+
                         else -> {
                             record(TAG, "❌ 无效的任务指令: $taskName")
                         }
