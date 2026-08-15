@@ -13,8 +13,6 @@ import io.github.aoguai.sesameag.R
 import io.github.aoguai.sesameag.data.General
 import io.github.aoguai.sesameag.entity.UserEntity
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
-import io.github.aoguai.sesameag.model.CustomSettings
-import io.github.aoguai.sesameag.ui.LogViewerActivity
 import io.github.aoguai.sesameag.util.DataStore
 import io.github.aoguai.sesameag.util.SesameAgUtil
 import io.github.aoguai.sesameag.util.Files
@@ -58,7 +56,7 @@ class ExtendViewModel : ViewModel() {
         private set
 
     // 初始化数据
-    fun loadData(context: Context) {
+    fun loadData(context: Context, onOpenLog: (String) -> Unit) {
         menuItems.clear()
 
         // 1. 广播类功能
@@ -109,19 +107,10 @@ class ExtendViewModel : ViewModel() {
                 ToastUtil.showToast(context, "统计文件路径获取失败")
                 return@MenuItem
             }
-            val intent = Intent(context, LogViewerActivity::class.java).apply {
-                data = android.net.Uri.fromFile(file)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            context.startActivity(intent)
+            onOpenLog(file.absolutePath)
         })
 
-        // 3. 每日单次运行 (特殊处理：调用原有逻辑)
-        menuItems.add(MenuItem("每日单次运行设置") {
-            CustomSettings.showSingleRunMenu(context) { loadData(context) }
-        })
-
-        // 4. Debug 功能
+        // 3. Debug 功能
         menuItems.add(MenuItem("写入光盘") {
             currentDialog = ExtendDialog.WritePhotoTest("xxxx")
         })

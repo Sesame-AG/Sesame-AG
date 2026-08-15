@@ -1,16 +1,6 @@
 package io.github.aoguai.sesameag.model.modelFieldExt
 
-import android.annotation.SuppressLint
-import android.content.Context
-import android.view.Gravity
-import android.view.View
-import android.view.ViewGroup
-import android.widget.Button
-import android.widget.LinearLayout
-import androidx.core.content.ContextCompat
-import io.github.aoguai.sesameag.R
 import io.github.aoguai.sesameag.model.ModelField
-import io.github.aoguai.sesameag.ui.StringDialog
 
 /**
  * 表示一个存储字符串列表的字段模型，用于管理和展示列表数据。
@@ -20,26 +10,5 @@ open class ListModelField(code: String, name: String, value: MutableList<String>
 
     override fun getType(): String = "LIST"
 
-    @SuppressLint("UseCompatLoadingForDrawables")
-    override fun getView(context: Context): View {
-        val btn = Button(context).apply {
-            text = name
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-            setTextColor(ContextCompat.getColor(context, R.color.selection_color))
-            background = context.resources.getDrawable(R.drawable.dialog_list_button, context.theme)
-            gravity = Gravity.START or Gravity.CENTER_VERTICAL
-            minHeight = 150
-            maxHeight = 180
-            setPaddingRelative(40, 0, 40, 0)
-            isAllCaps = false
-            setOnClickListener { v ->
-                StringDialog.showEditDialog(v.context, (v as Button).text, this@ListModelField)
-            }
-        }
-        return btn
-    }
 }
 

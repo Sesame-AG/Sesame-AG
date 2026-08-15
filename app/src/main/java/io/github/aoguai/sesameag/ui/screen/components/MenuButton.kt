@@ -41,7 +41,7 @@ fun MenuButton(
         ) {
             Icon(imageVector = icon, contentDescription = null, modifier = Modifier.size(28.dp))
             Spacer(modifier = Modifier.height(2.dp))
-            Text(text = text, style = MaterialTheme.typography.labelMedium, maxLines = 1)
+            Text(text = text, style = MaterialTheme.typography.labelLarge, maxLines = 1)
         }
     }
 }

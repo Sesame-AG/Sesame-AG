@@ -1,14 +1,6 @@
 package io.github.aoguai.sesameag.model
 
-import android.content.Context
-import android.view.View
-import android.view.ViewGroup
-import android.widget.LinearLayout
-import android.widget.Toast
-import androidx.core.content.ContextCompat
 import com.fasterxml.jackson.annotation.JsonIgnore
-import com.google.android.material.button.MaterialButton
-import io.github.aoguai.sesameag.R
 import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.TypeUtil
@@ -265,39 +257,6 @@ open class ModelField<T> : Serializable {
         value = defaultValue // 设置当前值为默认值
     }
 
-    /**
-     * 获取字段的视图
-     *
-     * @param context 上下文对象
-     * @return 生成的视图
-     */
-    @JsonIgnore
-    open fun getView(context: Context): View {
-        return MaterialButton(
-            context,
-            null,
-            com.google.android.material.R.attr.materialButtonOutlinedStyle
-        ).apply {
-            text = name
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-            cornerRadius = 28 // M3 推荐圆角
-            insetTop = 24 // 上下 padding
-            insetBottom = 24
-            setPaddingRelative(40, 0, 40, 0) // 左右 padding
-            iconPadding = 16
-            iconGravity = MaterialButton.ICON_GRAVITY_TEXT_START
-            setRippleColorResource(R.color.selection_color) // 可自定义 ripple
-            setTextColor(ContextCompat.getColor(context, R.color.selection_color)) // 使用 M3 色彩
-            textAlignment = View.TEXT_ALIGNMENT_TEXT_START
-            // 点击提示
-            setOnClickListener {
-                Toast.makeText(context, "无配置项", Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
 }
 
 /**

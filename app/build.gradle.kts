@@ -6,6 +6,7 @@ import java.util.TimeZone
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.rikka.tools.refine)
 }
 var isCIBuild: Boolean = System.getenv("CI").toBoolean()
@@ -155,22 +156,26 @@ dependencies {
     implementation(libs.rikka.shizuku.provider) // Shizuku 提供者
     implementation(libs.rikka.refine) // Rikka 反射工具
     implementation(libs.cmd.android)
-    implementation(libs.androidx.ui.text.google.fonts)
 
     // Compose 相关依赖 - 现代化 UI 框架
-    val composeBom = platform("androidx.compose:compose-bom:2025.12.00") // Compose BOM 版本管理
+    val composeBom = platform("androidx.compose:compose-bom:2026.08.00") // Compose BOM 版本管理
     implementation(composeBom)
 
     testImplementation(composeBom)
     testImplementation(libs.junit)
     androidTestImplementation(composeBom)
     implementation(libs.androidx.material3) // Material 3 设计组件
+    implementation(libs.androidx.material3.adaptive.navigation.suite) // 自适应导航栏/导航轨
+    implementation(libs.androidx.material3.adaptive.navigation3) // Navigation 3 自适应列表-详情场景
     implementation(libs.androidx.ui.tooling.preview) // UI 工具预览
     debugImplementation(libs.androidx.ui.tooling) // 调试时的 UI 工具
     implementation(libs.androidx.material.icons.extended) // Material 3 图标
+    implementation(libs.androidx.navigation3.runtime)
+    implementation(libs.androidx.navigation3.ui)
 
     // 生命周期和数据绑定
     implementation(libs.androidx.lifecycle.viewmodel.compose) // Compose ViewModel 支持
+    implementation(libs.androidx.lifecycle.viewmodel.navigation3) // Navigation 3 目的地 ViewModel 生命周期
 
     // Kotlin 协程依赖 - 异步编程（纯协程调度）
     implementation(libs.kotlinx.coroutines.core) // 协程核心库
@@ -186,8 +191,6 @@ dependencies {
     implementation(libs.kotlin.stdlib) // Kotlin 标准库
     implementation(libs.slf4j.api) // SLF4J 日志 API
     implementation(libs.logback.android) // Logback Android 日志实现
-    implementation(libs.appcompat) // AppCompat 兼容库
-    implementation(libs.material) // Material Design 组件
 
     // 仅编译时依赖 - Xposed 相关
     compileOnly(libs.libxposed.api) // Xposed API 102 https://github.com/libxposed/api

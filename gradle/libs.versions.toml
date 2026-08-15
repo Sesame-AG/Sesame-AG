@@ -1,5 +1,7 @@
 [versions]
 activity-compose = "1.12.1"
+material3 = "1.5.0-alpha26"
+navigation3 = "1.0.0"
 
 android-plugin = "9.2.1"
 cmdAndroid = "0.8.2"
@@ -12,8 +14,6 @@ shizukuVersion = "13.1.5"
 hiddenapi = "4.4.0"
 slf4j = "2.1.0-alpha1"
 logback-android = "3.0.0"
-appcompat = "1.7.1"
-material = "1.13.0"
 okhttp = "5.3.2"
 jackson = "2.20.1"
 jackson-annotations = "2.20"
@@ -22,14 +22,18 @@ xposed-service = "102.0.0"
 
 core-ktx = "1.17.0"
 junit = "4.13.2"
-uiTextGoogleFonts = "1.10.0"
 [libraries]
 
-androidx-material3 = { module = "androidx.compose.material3:material3" }
+androidx-material3 = { module = "androidx.compose.material3:material3", version.ref = "material3" }
+androidx-material3-adaptive-navigation-suite = { module = "androidx.compose.material3:material3-adaptive-navigation-suite" }
+androidx-material3-adaptive-navigation3 = { module = "androidx.compose.material3.adaptive:adaptive-navigation3" }
 androidx-material-icons-extended = { module = "androidx.compose.material:material-icons-extended" }
 androidx-lifecycle-viewmodel-compose = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycleLivedataKtx" }
+androidx-lifecycle-viewmodel-navigation3 = { module = "androidx.lifecycle:lifecycle-viewmodel-navigation3", version.ref = "lifecycleLivedataKtx" }
 androidx-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
 androidx-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }
+androidx-navigation3-runtime = { module = "androidx.navigation3:navigation3-runtime", version.ref = "navigation3" }
+androidx-navigation3-ui = { module = "androidx.navigation3:navigation3-ui", version.ref = "navigation3" }
 cmd-android = { module = "com.github.niki914:cmd-android", version.ref = "cmdAndroid" }
 hiddenapibypass = { module = "org.lsposed.hiddenapibypass:hiddenapibypass", version.ref = "hiddenapibypass" }
 jackson-kotlin = { module = "com.fasterxml.jackson.module:jackson-module-kotlin", version.ref = "jackson" }
@@ -44,9 +48,7 @@ rikka-refine = { module = "dev.rikka.tools.refine:runtime", version.ref = "hidde
 
 slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
 logback-android = { module = "com.github.tony19:logback-android", version.ref = "logback-android" }
-appcompat = { module = "androidx.appcompat:appcompat", version.ref = "appcompat" }
 core-ktx = { module = "androidx.core:core-ktx", version.ref = "core-ktx" }
-material = { module = "com.google.android.material:material", version.ref = "material" }
 okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
 jackson-core = { module = "com.fasterxml.jackson.core:jackson-core", version.ref = "jackson" }
 jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson" }
@@ -55,13 +57,10 @@ libxposed-api = { group = "io.github.libxposed", name = "api", version.ref = "xp
 libxposed-service = { group = "io.github.libxposed", name = "service", version.ref = "xposed-service" }
 
 junit = { group = "junit", name = "junit", version.ref = "junit" }
-androidx-ui-text-google-fonts = { group = "androidx.compose.ui", name = "ui-text-google-fonts", version.ref = "uiTextGoogleFonts" }
-
-
-
 [plugins]
 android-application = { id = "com.android.application", version.ref = "android-plugin" }
 android-library = { id = "com.android.library", version.ref = "android-plugin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 rikka-tools-refine = { id = "dev.rikka.tools.refine", version.ref = "hiddenapi" }
 

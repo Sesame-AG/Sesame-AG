@@ -38,13 +38,14 @@ import io.github.aoguai.sesameag.ui.viewmodel.ExtendViewModel
 @Composable
 fun ExtendScreen(
     onBackClick: () -> Unit,
+    onOpenLog: (String) -> Unit,
     viewModel: ExtendViewModel = viewModel()
 ) {
     val context = LocalContext.current
 
     // 初始化数据
     LaunchedEffect(Unit) {
-        viewModel.loadData(context)
+        viewModel.loadData(context, onOpenLog)
     }
 
     Scaffold(

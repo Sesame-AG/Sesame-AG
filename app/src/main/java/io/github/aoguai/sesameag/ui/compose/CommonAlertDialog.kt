@@ -29,12 +29,8 @@ fun CommonAlertDialog(
         AlertDialog(
             onDismissRequest = onDismissRequest,
             icon = icon?.let { { Icon(it, null, tint = iconTint) } },
-            title = {
-                Text(text = title, style = MaterialTheme.typography.titleLarge)
-            },
+            title = { Text(text = title) },
             text = {
-                // 🔥 关键修改：在这里调用 .parseHtml()
-                // 这会将 HTML 里的 <font color="red"> 变成 Compose 的红色样式
                 Text(
                     text = text.parseHtml(),
                     style = MaterialTheme.typography.bodyMedium
@@ -51,14 +47,13 @@ fun CommonAlertDialog(
                     Text(confirmText)
                 }
             },
-            // 🔥 关键修改：只有当 showCancelButton 为 true 时才显示
             dismissButton = if (showCancelButton) {
                 {
                     TextButton(onClick = onDismissRequest) {
                         Text(dismissText)
                     }
                 }
-            } else null, // 传 null 就不会显示取消按钮
+            } else null,
             containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
             textContentColor = MaterialTheme.colorScheme.onSurface
         )

@@ -26,7 +26,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,12 +41,13 @@ import io.github.aoguai.sesameag.ui.viewmodel.RpcDebugViewModel
 @Composable
 fun RpcDebugScreen(
     onBack: () -> Unit,
+    onOpenLog: (String) -> Unit,
     viewModel: RpcDebugViewModel = viewModel()
 ) {
     val items by viewModel.items.collectAsState()
     val dialogState by viewModel.dialogState.collectAsState()
     val context = LocalContext.current
-    var showMenu by remember { mutableStateOf(false) }
+    var showMenu by rememberSaveable { mutableStateOf(false) }
 
 
     Scaffold(
@@ -114,7 +115,7 @@ fun RpcDebugScreen(
                 items(items) { item ->
                     RpcItemCard(
                         item = item,
-                        onRun = { viewModel.runRpcItem(item, context) },
+                        onRun = { viewModel.runRpcItem(item, context, onOpenLog) },
                         onEdit = { viewModel.showEditDialog(item) },
                         onDelete = { viewModel.showDeleteDialog(item) },
                         onCopy = { viewModel.shareItem(item,context) }

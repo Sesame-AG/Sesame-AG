@@ -5,8 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,14 +13,17 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -31,6 +32,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -46,6 +48,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SmallFloatingActionButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -55,10 +58,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -86,20 +91,26 @@ fun FriendCenterScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    var newGroupName by remember { mutableStateOf("") }
-    var editingGroupId by remember { mutableStateOf<String?>(null) }
-    var editingGroupName by remember { mutableStateOf("") }
-    var showGroups by remember { mutableStateOf(false) }
-    var showInactive by remember { mutableStateOf(false) }
-    var showChanges by remember { mutableStateOf(false) }
-    var showGroupMembers by remember { mutableStateOf(false) }
-    var showAllProfiles by remember { mutableStateOf(true) }
-    var batchMode by remember { mutableStateOf(false) }
-    var batchSelectedUserIds by remember { mutableStateOf(setOf<String>()) }
-    var groupPickerTargetUserIds by remember { mutableStateOf(setOf<String>()) }
-    var groupPickerTitle by remember { mutableStateOf("") }
+    var newGroupName by rememberSaveable(userId) { mutableStateOf("") }
+    var editingGroupId by rememberSaveable(userId) { mutableStateOf<String?>(null) }
+    var editingGroupName by rememberSaveable(userId) { mutableStateOf("") }
+    var showGroups by rememberSaveable(userId) { mutableStateOf(false) }
+    var showInactive by rememberSaveable(userId) { mutableStateOf(false) }
+    var showChanges by rememberSaveable(userId) { mutableStateOf(false) }
+    var showGroupMembers by rememberSaveable(userId) { mutableStateOf(false) }
+    var showAllProfiles by rememberSaveable(userId) { mutableStateOf(true) }
+    var batchMode by rememberSaveable(userId) { mutableStateOf(false) }
+    var batchSelectedUserIds by rememberSaveable(userId) { mutableStateOf(setOf<String>()) }
+    var groupPickerTargetUserIds by rememberSaveable(userId) { mutableStateOf(setOf<String>()) }
+    var groupPickerTitle by rememberSaveable(userId) { mutableStateOf("") }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    val visibleProfileIds = remember(state.profiles) {
+        state.profiles.mapTo(linkedSetOf()) { it.userId }
+    }
+    val unblockedInactiveProfiles = remember(state.inactiveProfiles) {
+        state.inactiveProfiles.filter { !it.globalBlocked }
+    }
 
     LaunchedEffect(userId) {
         viewModel.load(userId)
@@ -109,8 +120,10 @@ fun FriendCenterScreen(
     DisposableEffect(lifecycleOwner, userId) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
-                viewModel.load(userId)
-                viewModel.requestRefreshAvailability(context)
+                scope.launch {
+                    viewModel.load(userId)
+                    viewModel.requestRefreshAvailability(context)
+                }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -164,8 +177,7 @@ fun FriendCenterScreen(
             }
             return@LaunchedEffect
         }
-        val visibleIds = state.profiles.mapTo(linkedSetOf()) { it.userId }
-        batchSelectedUserIds = batchSelectedUserIds.filterTo(linkedSetOf()) { visibleIds.contains(it) }
+        batchSelectedUserIds = batchSelectedUserIds.filterTo(linkedSetOf()) { visibleProfileIds.contains(it) }
     }
 
     if (groupPickerTargetUserIds.isNotEmpty()) {
@@ -195,13 +207,14 @@ fun FriendCenterScreen(
                 actions = {
                     if (batchMode) {
                         TextButton(onClick = {
-                            batchSelectedUserIds = state.profiles.mapTo(linkedSetOf()) { it.userId }
+                            batchSelectedUserIds = visibleProfileIds
                         }) {
                             Text("全选")
                         }
                         TextButton(onClick = {
-                            val visibleIds = state.profiles.mapTo(linkedSetOf()) { it.userId }
-                            batchSelectedUserIds = visibleIds.filterTo(linkedSetOf()) { !batchSelectedUserIds.contains(it) }
+                            batchSelectedUserIds = visibleProfileIds.filterTo(linkedSetOf()) {
+                                !batchSelectedUserIds.contains(it)
+                            }
                         }) {
                             Text("反选")
                         }
@@ -212,6 +225,9 @@ fun FriendCenterScreen(
                             Text("取消")
                         }
                     } else {
+                        IconButton(onClick = { batchMode = true }) {
+                            Icon(Icons.Outlined.Checklist, contentDescription = "批量选择好友")
+                        }
                         val refreshEnabled = state.refreshAvailable &&
                             !state.checkingRefreshAvailability &&
                             !state.refreshing
@@ -255,6 +271,8 @@ fun FriendCenterScreen(
         Box(
             modifier = Modifier
                 .padding(padding)
+                .consumeWindowInsets(padding)
+                .imePadding()
                 .fillMaxSize()
         ) {
             LazyColumn(
@@ -348,19 +366,15 @@ fun FriendCenterScreen(
                                     groupPickerTitle = "设置分组 | ${profile.displayName}"
                                 }
                             },
-                            onLongPress = {
-                                batchMode = true
-                                batchSelectedUserIds = batchSelectedUserIds + profile.userId
-                            },
-                            onRowClickInBatch = {
-                                if (batchMode) {
+                            onRowClickInBatch = if (batchMode) {
+                                {
                                     batchSelectedUserIds = if (checked) {
                                         batchSelectedUserIds - profile.userId
                                     } else {
                                         batchSelectedUserIds + profile.userId
                                     }
                                 }
-                            }
+                            } else null,
                         )
                     }
                 }
@@ -473,20 +487,19 @@ fun FriendCenterScreen(
                 HorizontalDivider()
                 SectionHeader(
                     title = "单向/失效好友",
-                    countText = "${state.inactiveProfiles.count { !it.globalBlocked }}",
+                    countText = "${unblockedInactiveProfiles.size}",
                     expanded = showInactive,
                     onClick = { showInactive = !showInactive }
                 )
             }
 
             if (showInactive) {
-                val inactive = state.inactiveProfiles.filter { !it.globalBlocked }
-                if (inactive.isEmpty()) {
+                if (unblockedInactiveProfiles.isEmpty()) {
                     item {
                         Text("暂无单向或失效好友。", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 } else {
-                    items(inactive, key = { "inactive-${it.userId}" }) { profile ->
+                    items(unblockedInactiveProfiles, key = { "inactive-${it.userId}" }) { profile ->
                         FriendProfileRow(
                             profile = profile,
                             checked = false,
@@ -600,6 +613,7 @@ private fun SectionHeader(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .heightIn(min = 48.dp)
             .clickable { onClick() }
             .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -617,10 +631,10 @@ private fun SectionHeader(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        Text(
-            text = if (expanded) " 收起" else " 展开",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.primary
+        Icon(
+            imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+            contentDescription = if (expanded) "收起" else "展开",
+            tint = MaterialTheme.colorScheme.primary,
         )
     }
 }
@@ -646,9 +660,7 @@ private fun GroupRow(
                 MaterialTheme.colorScheme.surfaceContainer
             }
         ),
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onSelect() }
+        modifier = Modifier.fillMaxWidth()
     ) {
         Column(
             modifier = Modifier
@@ -659,8 +671,14 @@ private fun GroupRow(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(group.name, fontWeight = FontWeight.SemiBold)
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                        .clickable { onSelect() }
+                        .padding(vertical = 8.dp)
+                ) {
+                    Text(group.name, style = MaterialTheme.typography.bodyLarge)
                     Text(
                         "成员 ${group.memberCount} 人 | 生效 ${group.effectiveCount} 人 | 未生效 ${group.inactiveCount} 人",
                         style = MaterialTheme.typography.bodySmall,
@@ -699,7 +717,6 @@ private fun GroupRow(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FriendProfileRow(
     profile: FriendProfileUiItem,
@@ -708,15 +725,14 @@ private fun FriendProfileRow(
     onBlockedChange: (Boolean) -> Unit,
     onGroupClick: () -> Unit,
     showCheckbox: Boolean = true,
-    onLongPress: (() -> Unit)? = null,
     onRowClickInBatch: (() -> Unit)? = null
 ) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .combinedClickable(
+            .clickable(
+                enabled = onRowClickInBatch != null,
                 onClick = { onRowClickInBatch?.invoke() },
-                onLongClick = { onLongPress?.invoke() }
             ),
         colors = CardDefaults.cardColors(
             containerColor = if (profile.effective) {
@@ -727,53 +743,82 @@ private fun FriendProfileRow(
         )
     ) {
         DisableSelection {
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically
             ) {
-                if (showCheckbox) {
-                    Checkbox(
-                        checked = checked,
-                        onCheckedChange = onCheckedChange
-                    )
-                }
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(profile.displayName.ifBlank { profile.userId }, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        "${profile.userId} | ${relationText(profile.relation)}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    val groupText = profile.groupNames.takeIf { it.isNotEmpty() }?.joinToString("、")
-                    if (!groupText.isNullOrBlank()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (showCheckbox) {
+                        Checkbox(
+                            checked = checked,
+                            onCheckedChange = onCheckedChange,
+                        )
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            "分组：$groupText",
+                            text = profile.displayName.ifBlank { profile.userId },
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                        Text(
+                            "${profile.userId} | ${relationText(profile.relation)}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                    }
-                    if (profile.capabilitySummary.isNotBlank()) {
-                        Text(
-                            profile.capabilitySummary,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Text(
-                        if (profile.effective) "当前可生效" else "不生效：${profile.inactiveReason}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (profile.effective) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.error
+                        val groupText = profile.groupNames.takeIf { it.isNotEmpty() }?.joinToString("、")
+                        if (!groupText.isNullOrBlank()) {
+                            Text(
+                                "分组：$groupText",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
-                    )
+                        if (profile.capabilitySummary.isNotBlank()) {
+                            Text(
+                                profile.capabilitySummary,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Text(
+                            if (profile.effective) "当前可生效" else "不生效：${profile.inactiveReason}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (profile.effective) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.error
+                            }
+                        )
+                    }
                 }
-                Column(horizontalAlignment = Alignment.End) {
-                    TextButton(onClick = { onBlockedChange(!profile.globalBlocked) }) {
-                        Text(if (profile.globalBlocked) "移出全局黑名单" else "加入全局黑名单")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Row(
+                        modifier =
+                            Modifier
+                                .heightIn(min = 48.dp)
+                                .toggleable(
+                                    value = profile.globalBlocked,
+                                    role = Role.Switch,
+                                    onValueChange = onBlockedChange,
+                                ),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "全局黑名单",
+                            modifier = Modifier.padding(end = 8.dp),
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                        Switch(
+                            checked = profile.globalBlocked,
+                            onCheckedChange = null,
+                        )
                     }
                     TextButton(onClick = onGroupClick) {
                         Text("分组")
