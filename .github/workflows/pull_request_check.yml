@@ -11,6 +11,7 @@ env:
   JAVA_DISTRIBUTION: "oracle"
   JAVA_VERSION: "17.0.1"
   ANDROID_API_LEVEL: "37"
+  ANDROID_PLATFORM: "android-37.0"
   ANDROID_BUILD_TOOLS: "37.0.0"
   LOCAL_GRADLE_VERSION: "9.5.1"
   LOCAL_AGP_VERSION: "9.2.1"
@@ -71,7 +72,7 @@ jobs:
           set -euo pipefail
           sdkmanager --install \
             "platform-tools" \
-            "platforms;android-${ANDROID_API_LEVEL}" \
+            "platforms;${ANDROID_PLATFORM}" \
             "build-tools;${ANDROID_BUILD_TOOLS}"
           set +o pipefail
           yes | sdkmanager --licenses >/dev/null
