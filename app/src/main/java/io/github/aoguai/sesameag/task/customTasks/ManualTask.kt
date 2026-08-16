@@ -3,6 +3,7 @@ package io.github.aoguai.sesameag.task.customTasks
 import io.github.aoguai.sesameag.data.Config
 import io.github.aoguai.sesameag.hook.ApplicationHook
 import io.github.aoguai.sesameag.model.Model
+import io.github.aoguai.sesameag.task.EcoProtection.EcoProtection
 import io.github.aoguai.sesameag.task.ModelTask
 import io.github.aoguai.sesameag.task.antCooperate.AntCooperate
 import io.github.aoguai.sesameag.task.antDodo.AntDodo
@@ -15,9 +16,15 @@ import io.github.aoguai.sesameag.task.antOrchard.AntOrchard
 import io.github.aoguai.sesameag.task.antSesameCredit.AntSesameCredit
 import io.github.aoguai.sesameag.task.antSports.AntSports
 import io.github.aoguai.sesameag.task.antStall.AntStall
+import io.github.aoguai.sesameag.task.greenFinance.GreenFinance
+import io.github.aoguai.sesameag.task.myBankWelfare.MyBankWelfare
+import io.github.aoguai.sesameag.task.other.OtherTask
+import io.github.aoguai.sesameag.task.reserve.Reserve
+import io.github.aoguai.sesameag.task.youthPrivilege.YouthPrivilege
 import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.WorkflowRootGuard
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -51,7 +58,7 @@ object ManualTask {
     }
 
     /**
-     * 顺序执行选中的庄园子任务
+     * 顺序执行选中的手动任务
      */
     suspend fun run(tasks: List<CustomTask>, extraParams: Map<String, Any> = emptyMap()) {
         if (!isManualEnabled) {
@@ -121,7 +128,7 @@ object ManualTask {
                                 getFarmInstance()?.manualUseFarmTool(toolType, toolCount)
                             }
 
-                            // 任务模块整体手动触发：直接运行该模块的 runSuspend()，跳过 check() 调度门控
+                            // 任务模块整体手动触发：跳过自动调度门控，但保留任务生命周期管理
                             CustomTask.ANT_FOREST -> runModuleTask(AntForest::class.java)
                             CustomTask.ANT_FARM -> runModuleTask(AntFarm::class.java)
                             CustomTask.ANT_OCEAN -> runModuleTask(AntOcean::class.java)
@@ -133,7 +140,16 @@ object ManualTask {
                             CustomTask.ANT_ORCHARD -> runModuleTask(AntOrchard::class.java)
                             CustomTask.ANT_FISH_POND -> runModuleTask(AntFishPond::class.java)
                             CustomTask.ANT_SPORTS -> runModuleTask(AntSports::class.java)
+                            CustomTask.YOUTH_PRIVILEGE -> runModuleTask(YouthPrivilege::class.java)
+                            CustomTask.ECO_PROTECTION -> runModuleTask(EcoProtection::class.java)
+                            CustomTask.GREEN_FINANCE -> runModuleTask(GreenFinance::class.java)
+                            CustomTask.MY_BANK_WELFARE -> runModuleTask(MyBankWelfare::class.java)
+                            CustomTask.RESERVE -> runModuleTask(Reserve::class.java)
+                            CustomTask.OTHER_TASK -> runModuleTask(OtherTask::class.java)
                         }
+                    } catch (e: CancellationException) {
+                        Log.record("ManualTask", "⏹️ 手动任务 ${task.displayName} 已取消")
+                        throw e
                     } catch (t: Throwable) {
                         Log.record("ManualTask", "❌ 执行 ${task.displayName} 出错: ${t.message}")
                         Log.printStackTrace(t)
@@ -150,13 +166,11 @@ object ManualTask {
      * 按需获取并确保蚂蚁森林实例已加载
      */
     private fun getForestInstance(): AntForest? {
-        if (AntForest.instance == null) {
-            val loader = ApplicationHook.classLoader ?: return null
-            Model.getModel(AntForest::class.java)?.let {
-                Log.record("ManualTask", "⚙️ 正在按需加载森林模块...")
-                it.prepare()
-                it.boot(loader)
-            }
+        AntForest.instance?.let { return it }
+        val loader = ApplicationHook.classLoader ?: return null
+        Model.getModel(AntForest::class.java)?.let {
+            Log.record("ManualTask", "⚙️ 正在按需加载森林模块...")
+            it.ensureBooted(loader)
         }
         return AntForest.instance
     }
@@ -165,28 +179,39 @@ object ManualTask {
      * 按需获取并确保蚂蚁庄园实例已加载
      */
     private fun getFarmInstance(): AntFarm? {
-        if (AntFarm.instance == null) {
-            val loader = ApplicationHook.classLoader ?: return null
-            Model.getModel(AntFarm::class.java)?.let {
-                Log.record("ManualTask", "⚙️ 正在按需加载庄园模块...")
-                it.prepare()
-                it.boot(loader)
-            }
+        AntFarm.instance?.let { return it }
+        val loader = ApplicationHook.classLoader ?: return null
+        Model.getModel(AntFarm::class.java)?.let {
+            Log.record("ManualTask", "⚙️ 正在按需加载庄园模块...")
+            it.ensureBooted(loader)
         }
         return AntFarm.instance
     }
 
     /**
-     * 手动触发任务模块整体执行：直接调用该模块的 runSuspend()，绕过 check() 调度门控。
+     * 手动触发任务模块整体执行：跳过自动调度门控，但保留任务生命周期和停止语义。
      * 适用于风控后手动重跑单个模块，无需等待自动调度。
      */
     private suspend fun <T : ModelTask> runModuleTask(clazz: Class<T>) {
+        val loader = ApplicationHook.classLoader
+        if (loader == null) {
+            Log.record("ManualTask", "❌ 无法加载 ${clazz.simpleName} 模块：ClassLoader 不可用")
+            return
+        }
+
         val instance = Model.getModel(clazz)
         if (instance == null) {
             Log.record("ManualTask", "❌ 无法加载 ${clazz.simpleName} 模块")
             return
         }
-        instance.run()
+
+        instance.ensureBooted(loader)
+        val job = instance.startManualTask(rounds = 1)
+        if (job == null) {
+            Log.record("ManualTask", "⚠️ ${instance.getName()} 正在运行或等待启动，跳过本次手动执行")
+            return
+        }
+        job.join()
     }
 }
 

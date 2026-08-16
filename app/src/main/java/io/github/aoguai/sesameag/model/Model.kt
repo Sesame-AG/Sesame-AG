@@ -45,7 +45,15 @@ abstract class Model {
     
     /** 获取模型字段 */
     abstract fun getFields(): ModelFields?
-    
+
+    private val lifecycleLock = Any()
+
+    @Volatile
+    private var isPrepared = false
+
+    @Volatile
+    private var isBooted = false
+
     /** 准备阶段，在boot之前调用 */
     open fun prepare() {}
     
@@ -54,6 +62,29 @@ abstract class Model {
     
     /** 销毁阶段，在模型卸载时调用 */
     open fun destroy() {}
+
+    private fun ensurePreparedLocked() {
+        if (!isPrepared) {
+            prepare()
+            isPrepared = true
+        }
+    }
+
+    internal fun ensurePrepared() {
+        synchronized(lifecycleLock) {
+            ensurePreparedLocked()
+        }
+    }
+
+    internal fun ensureBooted(classLoader: ClassLoader?) {
+        synchronized(lifecycleLock) {
+            ensurePreparedLocked()
+            if (!isBooted) {
+                boot(classLoader)
+                isBooted = true
+            }
+        }
+    }
     
     companion object {
         private const val TAG = "Model"
@@ -167,15 +198,15 @@ abstract class Model {
                 
                 // 准备阶段
                 try {
-                    model.prepare()
+                    model.ensurePrepared()
                 } catch (e: Exception) {
                     Log.printStackTrace(e)
                 }
-                
+
                 // 启动阶段（仅启用的模型）
                 try {
                     if (model.enableField.value == true) {
-                        model.boot(classLoader)
+                        model.ensureBooted(classLoader)
                     }
                 } catch (e: Exception) {
                     Log.printStackTrace(e)

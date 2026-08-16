@@ -694,7 +694,13 @@ internal object ApplicationBroadcastDispatcher {
                         CustomTask.ANT_SESAME_CREDIT,
                         CustomTask.ANT_ORCHARD,
                         CustomTask.ANT_FISH_POND,
-                        CustomTask.ANT_SPORTS -> {
+                        CustomTask.ANT_SPORTS,
+                        CustomTask.YOUTH_PRIVILEGE,
+                        CustomTask.ECO_PROTECTION,
+                        CustomTask.GREEN_FINANCE,
+                        CustomTask.MY_BANK_WELFARE,
+                        CustomTask.RESERVE,
+                        CustomTask.OTHER_TASK -> {
                             Unit
                         }
 

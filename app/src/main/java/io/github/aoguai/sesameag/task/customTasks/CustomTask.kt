@@ -1,7 +1,7 @@
 package io.github.aoguai.sesameag.task.customTasks
 
 /**
- * 庄园子任务枚举
+ * 手动任务枚举
  */
 enum class CustomTask(val displayName: String, val isModule: Boolean = false) {
     FOREST_WHACK_MOLE("森林打地鼠"),
@@ -22,6 +22,12 @@ enum class CustomTask(val displayName: String, val isModule: Boolean = false) {
     ANT_SESAME_CREDIT("芝麻信用", isModule = true),
     ANT_ORCHARD("农场", isModule = true),
     ANT_FISH_POND("福气鱼池", isModule = true),
-    ANT_SPORTS("运动", isModule = true)
+    ANT_SPORTS("运动", isModule = true),
+    YOUTH_PRIVILEGE("青春特权", isModule = true),
+    ECO_PROTECTION("生态保护", isModule = true),
+    GREEN_FINANCE("绿色经营", isModule = true),
+    MY_BANK_WELFARE("网商银行", isModule = true),
+    RESERVE("保护地", isModule = true),
+    OTHER_TASK("其他任务", isModule = true)
 }
 

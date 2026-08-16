@@ -276,13 +276,51 @@ abstract class ModelTask : Model() {
         force: Boolean = false,
         rounds: Int = 2
     ): Job {
+        return scheduleTask(
+            force = force,
+            rounds = rounds,
+            bypassExecutionChecks = false,
+            rejectExisting = false,
+        ) ?: error("无法创建自动任务启动任务")
+    }
+
+    /**
+     * 启动一次手动任务。
+     *
+     * 手动入口跳过自动任务的启用状态和调度检查，但仍复用任务 Job、互斥、运行状态和停止流程。
+     * @return 新启动的 Job；如果任务已经运行或正在等待启动则返回 null
+     */
+    fun startManualTask(rounds: Int = 1): Job? {
+        if (isRunning) {
+            Log.record(TAG, "任务 ${getName()} 正在运行，跳过手动启动")
+            return null
+        }
+        return scheduleTask(
+            force = false,
+            rounds = rounds,
+            bypassExecutionChecks = true,
+            rejectExisting = true,
+        )
+    }
+
+    private fun scheduleTask(
+        force: Boolean,
+        rounds: Int,
+        bypassExecutionChecks: Boolean,
+        rejectExisting: Boolean,
+    ): Job? {
         ensureTaskScope()
 
         val startJob = synchronized(startJobLock) {
             val existingJob = currentStartJob
             if (!force && existingJob != null && !existingJob.isCompleted) {
-                Log.record(TAG, "任务 ${getName()} 正在运行或等待启动，跳过重复启动")
-                existingJob
+                if (rejectExisting) {
+                    Log.record(TAG, "任务 ${getName()} 正在运行或等待启动，跳过手动启动")
+                    null
+                } else {
+                    Log.record(TAG, "任务 ${getName()} 正在运行或等待启动，跳过重复启动")
+                    existingJob
+                }
             } else {
                 taskScope!!.launch(start = CoroutineStart.LAZY) {
                     executionMutex.withLock {
@@ -294,7 +332,7 @@ abstract class ModelTask : Model() {
                             Log.record(TAG, "强制重启任务 ${getName()}")
                             stopTask()
                         }
-                        if (!isEnable() || !check()) {
+                        if (!bypassExecutionChecks && (!isEnable() || !check())) {
                             Log.record(TAG, "任务 ${getName()} 不满足执行条件")
                             return@withLock
                         }
@@ -327,7 +365,7 @@ abstract class ModelTask : Model() {
                 }
             }
         }
-        startJob.start()
+        startJob?.start()
         return startJob
     }
 
