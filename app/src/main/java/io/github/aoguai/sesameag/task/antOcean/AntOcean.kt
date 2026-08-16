@@ -1265,6 +1265,7 @@ class AntOcean : ModelTask() {
         val antForest = getModel(AntForest::class.java)
 //        复用森林收取能量总开关 当没有打开时，不执行
         if (antForest == null || !antForest.isCollectEnergyEnabled()) {
+            Log.runtime(TAG, "神奇海洋🌊能量球 收能量未开启，跳过收取")
             return
         }
         // 逐条处理：单个能量球字段缺失/结构变化只跳过该条并记录，不再因一个异常中断整段收取（根因A）
@@ -1284,7 +1285,8 @@ class AntOcean : ModelTask() {
                     Log.runtime(TAG, "神奇海洋🌊能量球[$bubbleId]缺少有效能量值，跳过收取")
                     continue
                 }
-                if (antForest != null && !antForest.shouldCollectSelfBubble(energy)) {
+                if (!antForest.shouldCollectSelfBubble(energy)) {
+                    Log.runtime(TAG, "神奇海洋🌊能量球[$bubbleId]能量值低于阈值，跳过收取")
                     continue
                 }
                 val s = AntOceanRpcCall.collectEnergy(bubbleId.toString(), userId)
