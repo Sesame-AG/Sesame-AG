@@ -179,17 +179,17 @@ class ApplicationHook {
     private fun loadRemotePreferences(framework: String): SharedPreferences? {
         val frameworkProperties = getFrameworkRuntimeInfo()?.properties
         if (frameworkProperties == null) {
-            logFramework(android.util.Log.INFO, "无法读取 $framework 的 capability，跳过远程偏好读取")
+            Log.runtime(TAG, "无法读取 $framework 的 capability，跳过远程偏好读取")
             return null
         }
         if (frameworkProperties.and(XposedInterface.PROP_CAP_REMOTE) == 0L) {
-            logFramework(android.util.Log.INFO, "$framework 未声明 remote capability，跳过远程偏好读取")
+            Log.runtime(TAG, "$framework 未声明 remote capability，跳过远程偏好读取")
             return null
         }
         return runCatching {
             requireXposedInterface().getRemotePreferences(SesameApplication.PREFERENCES_KEY)
         }.onFailure {
-            logFramework(android.util.Log.WARN, "读取远程偏好失败: ${it.message}", it)
+            logFrameworkWarning("读取远程偏好失败: ${it.message}", it)
         }.getOrNull()
     }
 
@@ -1710,16 +1710,15 @@ class ApplicationHook {
             }
         }
 
-        private fun logFramework(
-            priority: Int,
+        private fun logFrameworkWarning(
             message: String,
             throwable: Throwable? = null,
         ) {
             val logger = frameworkInterface ?: return
             if (throwable != null) {
-                logger.log(priority, TAG, message, throwable)
+                logger.log(android.util.Log.WARN, TAG, message, throwable)
             } else {
-                logger.log(priority, TAG, message)
+                logger.log(android.util.Log.WARN, TAG, message)
             }
         }
     }

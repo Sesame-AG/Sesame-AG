@@ -97,9 +97,11 @@ object GlobalThreadPools {
         context: CoroutineContext = computeDispatcher,
         block: suspend CoroutineScope.() -> T
     ): Deferred<T> {
-        return globalScope.async(context) {
+        val deferred = globalScope.async(context) {
             block()
         }
+        observeUnhandledCompletion(deferred)
+        return deferred
     }
 
     /**
@@ -132,8 +134,19 @@ object GlobalThreadPools {
      */
     @JvmOverloads
     fun submit(task: Runnable?, context: CoroutineContext = computeDispatcher): Deferred<Unit> {
-        return globalScope.async(context) {
+        val deferred = globalScope.async(context) {
             task?.run()
+            Unit
+        }
+        observeUnhandledCompletion(deferred)
+        return deferred
+    }
+
+    private fun observeUnhandledCompletion(job: Job) {
+        job.invokeOnCompletion { cause ->
+            if (cause != null && cause !is CancellationException) {
+                Log.error(TAG, "提交任务执行异常: ${cause.javaClass.simpleName}")
+            }
         }
     }
 

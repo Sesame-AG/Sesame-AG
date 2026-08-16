@@ -46,14 +46,6 @@ object PersistentScheduleRegistry {
         val expiredCount: Int,
     )
 
-    data class DiagnosticsSnapshot(
-        val totalCount: Int,
-        val byState: Map<String, Int>,
-        val byKind: Map<String, Int>,
-        val earliestScheduledAtMs: Long?,
-        val oldestUpdatedAtMs: Long?,
-    )
-
     fun upsert(
         context: Context,
         schedule: PersistentSchedule,
@@ -223,24 +215,6 @@ object PersistentScheduleRegistry {
     fun list(): List<PersistentSchedule> {
         if (!ensureStorage()) return emptyList()
         return loadMutable().toList()
-    }
-
-    /**
-     * Returns only schedule metadata. Payload JSON is intentionally excluded from the snapshot.
-     */
-    fun diagnosticsSnapshot(): DiagnosticsSnapshot {
-        val schedules = list()
-        return DiagnosticsSnapshot(
-            totalCount = schedules.size,
-            byState = schedules.groupingBy { it.state }.eachCount(),
-            byKind = schedules.groupingBy { it.kind }.eachCount(),
-            earliestScheduledAtMs = schedules
-                .asSequence()
-                .filter { it.state == PersistentScheduleState.SCHEDULED }
-                .map { it.triggerAtMs }
-                .minOrNull(),
-            oldestUpdatedAtMs = schedules.minOfOrNull { it.updatedAtMs },
-        )
     }
 
     /**

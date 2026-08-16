@@ -5,6 +5,7 @@ import io.github.aoguai.sesameag.data.General
 import io.github.aoguai.sesameag.hook.ApplicationHook
 import io.github.aoguai.sesameag.hook.RuntimeIdentityGuard
 import io.github.aoguai.sesameag.hook.XposedEnv
+import io.github.aoguai.sesameag.util.Log as SesameLog
 import io.github.aoguai.sesameag.util.ModuleStatus
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam
@@ -54,10 +55,12 @@ internal class LibXposedRuntime(
         val frameworkVersion = runCatching { module.frameworkVersion }.getOrDefault("unknown")
         val frameworkVersionCode = runCatching { module.frameworkVersionCode }.getOrDefault(-1L)
         val moduleProcess = runCatching { module.moduleApplicationInfo.processName }.getOrDefault("unknown")
-        module.log(
-            Log.INFO,
+        SesameLog.setWarningErrorMirror { priority, message ->
+            module.log(priority, TAG, message)
+        }
+        SesameLog.runtime(
             TAG,
-            "Initialized for process ${param.processName}; framework=$frameworkName $frameworkVersion $frameworkVersionCode api=$apiVersion module_process=$moduleProcess"
+            "Initialized for process ${param.processName}; framework=$frameworkName $frameworkVersion $frameworkVersionCode api=$apiVersion module_process=$moduleProcess",
         )
     }
 
@@ -89,9 +92,9 @@ internal class LibXposedRuntime(
             XposedEnv.packageName = param.packageName
             XposedEnv.processName = targetProcessName
             applicationHook.loadPackage(param)
-            module.log(Log.INFO, TAG, "Hooked ${param.packageName} in process $targetProcessName via onPackageReady")
+            SesameLog.runtime(TAG, "Hooked ${param.packageName} in process $targetProcessName via onPackageReady")
         } catch (t: Throwable) {
-            module.log(Log.ERROR, TAG, "Hook failed - ${t.message}", t)
+            module.log(Log.ERROR, TAG, "Hook failed - ${t.javaClass.simpleName}", t)
         } finally {
             // One scoped package is enough for this entry; hooks remain active after detaching.
             module.detach()
