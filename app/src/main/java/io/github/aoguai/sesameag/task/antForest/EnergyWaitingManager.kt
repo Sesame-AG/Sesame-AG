@@ -537,6 +537,7 @@ object EnergyWaitingManager {
         taskId: String,
         payloadJson: String,
         source: String,
+        scheduleId: String,
     ): PersistentTriggerResult {
         if (taskId.isBlank()) return PersistentTriggerResult.FAILED
         val task = waitingTasks[taskId]
@@ -567,8 +568,10 @@ object EnergyWaitingManager {
             // 收集开关关闭不是路由初始化问题；保留内存任务，但不反复重排同一已到期计划。
             return PersistentTriggerResult.CONSUMED
         }
-        startPreciseWaitingCoroutine(task)
-        Log.forest("森林蹲点持久任务触发[$taskId] source=$source")
+        startPreciseWaitingCoroutine(task, persistentScheduleId = scheduleId, persistentSource = source)
+        Log.forest(
+            "森林蹲点持久任务触发[scheduleId=$scheduleId] taskId=$taskId state=QUEUED source=$source owner=${currentOwnerUserId()} session=${task.sessionEpoch}",
+        )
         return PersistentTriggerResult.HANDLED
     }
 
@@ -798,7 +801,11 @@ object EnergyWaitingManager {
      * 启动精确蹲点协程
      * 核心原则：不提前收取，严格按时机执行
      */
-    private fun startPreciseWaitingCoroutine(task: WaitingTask) {
+    private fun startPreciseWaitingCoroutine(
+        task: WaitingTask,
+        persistentScheduleId: String? = null,
+        persistentSource: String = "forest_waiting",
+    ) {
         val ownerUserId = currentOwnerUserId()
         val sessionEpoch = task.sessionEpoch
         if (!isRunSessionCurrent(ownerUserId, sessionEpoch)) {
@@ -1003,8 +1010,17 @@ object EnergyWaitingManager {
                     } finally {
                         executionLease?.close()
                     }
-                } catch (_: CancellationException) {
+                } catch (e: CancellationException) {
                     Log.forest("精确蹲点任务[${task.taskId}]被取消")
+                    persistentScheduleId?.let { scheduleId ->
+                        PersistentScheduleRegistry.markWorkerFailedIfActive(
+                            ApplicationHook.appContext,
+                            scheduleId,
+                            "worker_cancelled:${e.javaClass.simpleName}",
+                            source = "forest_worker_cancel:$persistentSource",
+                        )
+                    }
+                    throw e
                 } catch (e: Exception) {
                     Log.printStackTrace(TAG, "精确蹲点任务[${task.taskId}]执行异常", e)
 
@@ -1027,6 +1043,13 @@ object EnergyWaitingManager {
                         EnergyWaitingPersistence.saveTasks(waitingTasks)
                     }
                 } finally {
+                    persistentScheduleId?.let { scheduleId ->
+                        PersistentScheduleRegistry.markFired(
+                            ApplicationHook.appContext,
+                            scheduleId,
+                            source = "forest_worker_complete:$persistentSource",
+                        )
+                    }
                     val runningJob = kotlinx.coroutines.currentCoroutineContext()[Job]
                     if (runningJob != null) {
                         waitingJobs.remove(task.taskId, runningJob)
@@ -1047,7 +1070,26 @@ object EnergyWaitingManager {
                 }
             }
         if (jobAccepted) {
-            job.start()
+            persistentScheduleId?.let { scheduleId ->
+                job.invokeOnCompletion { error ->
+                    PersistentScheduleRegistry.markWorkerFailedIfActive(
+                        ApplicationHook.appContext,
+                        scheduleId,
+                        "worker_completed_without_terminal_state:${error?.javaClass?.simpleName ?: "none"}",
+                        source = "forest_worker_completion:$persistentSource",
+                    )
+                }
+            }
+            runCatching { job.start() }.onFailure { error ->
+                persistentScheduleId?.let { scheduleId ->
+                    PersistentScheduleRegistry.markFailed(
+                        ApplicationHook.appContext,
+                        scheduleId,
+                        "worker_submit_failed:${error.javaClass.simpleName}",
+                        source = "forest_worker_submit:$persistentSource",
+                    )
+                }
+            }
         } else {
             job.cancel()
         }

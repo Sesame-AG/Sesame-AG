@@ -6,6 +6,8 @@ import io.github.aoguai.sesameag.hook.HookSender
 import io.github.aoguai.sesameag.hook.TokenHooker
 import io.github.aoguai.sesameag.model.BaseModel
 import io.github.aoguai.sesameag.util.Log
+import java.lang.ref.ReferenceQueue
+import java.lang.ref.WeakReference
 import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.util.concurrent.ConcurrentHashMap
@@ -44,11 +46,28 @@ object RpcTrafficCapture {
         val source: TrafficSource
     )
 
+    private class WeakIdentityKey(
+        callback: Any,
+        queue: ReferenceQueue<Any>? = null,
+    ) : WeakReference<Any>(callback, queue) {
+        private val identityHashCode = System.identityHashCode(callback)
+
+        override fun hashCode(): Int = identityHashCode
+
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is WeakIdentityKey) return false
+            val callback = get() ?: return false
+            return callback === other.get()
+        }
+    }
+
     private val installLock = Any()
     private val ariverRequestHookInstalled = AtomicBoolean(false)
     private val ariverResponseHookInstalled = AtomicBoolean(false)
     private val h5HookInstalled = AtomicBoolean(false)
-    private val pendingAriverRequests = ConcurrentHashMap<Any, PendingHostRequest>()
+    private val pendingAriverRequestQueue = ReferenceQueue<Any>()
+    private val pendingAriverRequests = ConcurrentHashMap<WeakIdentityKey, PendingHostRequest>()
 
     fun install(classLoader: ClassLoader): Boolean {
         synchronized(installLock) {
@@ -132,20 +151,23 @@ object RpcTrafficCapture {
             ApplicationHook.requireXposedInterface().hook(rpcMethod).intercept { chain ->
                 val args = chain.args
                 val methodName = args.getOrNull(0) as? String
-                val requestPayload = args.getOrNull(4)?.toString()
                 val callback = args.getOrNull(15)
-                dispatchTokenHook(methodName, requestPayload)
                 val captureEnabled = isCaptureEnabled() && !methodName.isNullOrBlank()
+                val requestPayload = if (captureEnabled) args.getOrNull(4)?.toString() else null
+                dispatchTokenHook(methodName, requestPayload)
 
                 if (captureEnabled) {
                     val startedAtMs = System.currentTimeMillis()
                     recordHostRequest(TrafficSource.ARIVER_RPC, methodName, requestPayload)
                     if (callback != null) {
-                        pendingAriverRequests[callback] = PendingHostRequest(
-                            method = methodName,
-                            requestPayload = requestPayload,
-                            startedAtMs = startedAtMs,
-                            source = TrafficSource.ARIVER_RPC
+                        putPendingAriverRequest(
+                            callback,
+                            PendingHostRequest(
+                                method = methodName,
+                                requestPayload = requestPayload,
+                                startedAtMs = startedAtMs,
+                                source = TrafficSource.ARIVER_RPC,
+                            ),
                         )
                     }
                 }
@@ -155,7 +177,7 @@ object RpcTrafficCapture {
                 } catch (t: Throwable) {
                     if (captureEnabled) {
                         val startedAtMs = if (callback != null) {
-                            pendingAriverRequests.remove(callback)?.startedAtMs ?: System.currentTimeMillis()
+                            removePendingAriverRequest(callback)?.startedAtMs ?: System.currentTimeMillis()
                         } else {
                             System.currentTimeMillis()
                         }
@@ -196,9 +218,11 @@ object RpcTrafficCapture {
                 ?: error("DefaultBridgeCallback#sendJSONResponse 未找到")
             ApplicationHook.requireXposedInterface().hook(sendJsonResponseMethod).intercept { chain ->
                 val callback = chain.getThisObject()
-                val responsePayload = chain.args.getOrNull(0)?.toString()
-                if (callback != null && !responsePayload.isNullOrBlank()) {
-                    recordPendingAriverResponse(callback, responsePayload)
+                if (callback != null && findPendingAriverRequest(callback) != null) {
+                    val responsePayload = chain.args.getOrNull(0)?.toString()
+                    if (!responsePayload.isNullOrBlank()) {
+                        recordPendingAriverResponse(callback, responsePayload)
+                    }
                 }
                 chain.proceed()
             }
@@ -226,8 +250,9 @@ object RpcTrafficCapture {
             ApplicationHook.requireXposedInterface().hook(rpcCallMethod).intercept { chain ->
                 val args = chain.args
                 val methodName = args.getOrNull(0) as? String
-                val requestPayload = args.getOrNull(1)?.toString()
-                val startedAtMs = if (isCaptureEnabled() && !methodName.isNullOrBlank()) {
+                val captureEnabled = isCaptureEnabled() && !methodName.isNullOrBlank()
+                val requestPayload = if (captureEnabled) args.getOrNull(1)?.toString() else null
+                val startedAtMs = if (captureEnabled) {
                     val now = System.currentTimeMillis()
                     recordHostRequest(TrafficSource.H5_RPC, methodName, requestPayload)
                     now
@@ -296,10 +321,10 @@ object RpcTrafficCapture {
 
     private fun tryRecordAriverResponseFromField(callback: Any) {
         if (!isCaptureEnabled()) {
-            pendingAriverRequests.remove(callback)
+            removePendingAriverRequest(callback)
             return
         }
-        if (pendingAriverRequests[callback] == null) {
+        if (findPendingAriverRequest(callback) == null) {
             return
         }
         val responsePayload = runCatching {
@@ -313,10 +338,10 @@ object RpcTrafficCapture {
 
     private fun recordPendingAriverResponse(callback: Any, responsePayload: String) {
         if (!isCaptureEnabled()) {
-            pendingAriverRequests.remove(callback)
+            removePendingAriverRequest(callback)
             return
         }
-        val pending = pendingAriverRequests.remove(callback) ?: return
+        val pending = removePendingAriverRequest(callback) ?: return
         recordHostResponse(
             source = pending.source,
             method = pending.method,
@@ -447,10 +472,38 @@ object RpcTrafficCapture {
         Log.capture(TAG, message)
     }
 
+    private fun putPendingAriverRequest(callback: Any, pending: PendingHostRequest) {
+        drainCollectedPendingAriverRequests()
+        pendingAriverRequests[WeakIdentityKey(callback, pendingAriverRequestQueue)] = pending
+    }
+
+    private fun findPendingAriverRequest(callback: Any): PendingHostRequest? {
+        drainCollectedPendingAriverRequests()
+        return pendingAriverRequests[WeakIdentityKey(callback)]
+    }
+
+    private fun removePendingAriverRequest(callback: Any): PendingHostRequest? {
+        drainCollectedPendingAriverRequests()
+        return pendingAriverRequests.remove(WeakIdentityKey(callback))
+    }
+
+    private fun drainCollectedPendingAriverRequests() {
+        while (true) {
+            val key = pendingAriverRequestQueue.poll() as? WeakIdentityKey ?: return
+            pendingAriverRequests.remove(key)
+        }
+    }
+
+    private fun clearPendingAriverRequests() {
+        drainCollectedPendingAriverRequests()
+        pendingAriverRequests.clear()
+    }
+
     private fun isCaptureEnabled(): Boolean {
+        drainCollectedPendingAriverRequests()
         val enabled = BaseModel.debugMode.value == true
-        if (!enabled && pendingAriverRequests.isNotEmpty()) {
-            pendingAriverRequests.clear()
+        if (!enabled) {
+            clearPendingAriverRequests()
         }
         return enabled
     }

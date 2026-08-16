@@ -1433,52 +1433,93 @@ class AntDodo : ModelTask() {
     internal fun triggerPersistentCollectToFriend(
         payloadJson: String,
         scheduleId: String,
+        source: String,
     ): Boolean {
         val payload = runCatching { JSONObject(payloadJson.ifBlank { "{}" }) }.getOrDefault(JSONObject())
         val ownerUserId = payload.optString("owner_user_id").trim()
         val sessionEpoch = payload.optLong("session_epoch", 0L)
+        Log.dodo(
+            "神奇物种持久帮抽卡接管[scheduleId=$scheduleId] state=QUEUED source=$source owner=$ownerUserId session=$sessionEpoch",
+        )
         if (
             ownerUserId.isBlank() ||
             sessionEpoch <= 0L ||
             !AccountSessionCoordinator.isCurrentSession(ownerUserId, sessionEpoch)
         ) {
             Log.dodo("神奇物种持久帮抽卡会话已失效，跳过执行")
-            PersistentScheduleRegistry.markFired(ApplicationHook.appContext, scheduleId)
+            PersistentScheduleRegistry.markFired(
+                ApplicationHook.appContext,
+                scheduleId,
+                source = "dodo_invalid_session:$source",
+            )
             return true
         }
         if (collectToFriend?.value != true) {
             Log.dodo("神奇物种持久帮抽卡触发时功能已关闭，跳过执行")
-            PersistentScheduleRegistry.markFired(ApplicationHook.appContext, scheduleId)
+            PersistentScheduleRegistry.markFired(
+                ApplicationHook.appContext,
+                scheduleId,
+                source = "dodo_disabled:$source",
+            )
             return true
         }
-        GlobalThreadPools.execute {
-            PersistentScheduleRegistry.markRunning(scheduleId)
-            val executionLease =
-                ApplicationHook.appContext?.let { context ->
-                    WakeLockManager.acquire(
-                        context = context,
-                        timeoutMs = PersistentScheduleDefaults.TASK_EXECUTION_WAKELOCK_MS,
-                        source = "dodo_persistent_collect_to_friend",
-                        scheduleId = scheduleId,
-                    )
+        val worker =
+            runCatching {
+                GlobalThreadPools.execute {
+                    PersistentScheduleRegistry.markRunning(scheduleId, source = "dodo_worker_start:$source")
+                    val executionLease =
+                        ApplicationHook.appContext?.let { context ->
+                            WakeLockManager.acquire(
+                                context = context,
+                                timeoutMs = PersistentScheduleDefaults.TASK_EXECUTION_WAKELOCK_MS,
+                                source = "dodo_persistent_collect_to_friend",
+                                scheduleId = scheduleId,
+                            )
+                        }
+                    try {
+                        val result = collectToFriend(manageScheduledWakeup = false)
+                        if (result.completed) {
+                            PersistentScheduleRegistry.markFired(
+                                ApplicationHook.appContext,
+                                scheduleId,
+                                source = "dodo_worker_success:$source",
+                            )
+                        } else {
+                            PersistentScheduleRegistry.markFailed(
+                                ApplicationHook.appContext,
+                                scheduleId,
+                                "collect_to_friend_unfinished:remaining=${result.remainingCount ?: "unknown"}",
+                                source = "dodo_worker_incomplete:$source",
+                            )
+                        }
+                    } catch (t: Throwable) {
+                        Log.printStackTrace(TAG, "神奇物种持久帮抽卡执行失败", t)
+                        PersistentScheduleRegistry.markFailed(
+                            ApplicationHook.appContext,
+                            scheduleId,
+                            t.message ?: t.javaClass.name,
+                            source = "dodo_worker_exception:$source",
+                        )
+                    } finally {
+                        executionLease?.close()
+                    }
                 }
-            try {
-                val result = collectToFriend(manageScheduledWakeup = false)
-                if (result.completed) {
-                    PersistentScheduleRegistry.markFired(ApplicationHook.appContext, scheduleId)
-                } else {
-                    PersistentScheduleRegistry.markFailed(
-                        ApplicationHook.appContext,
-                        scheduleId,
-                        "collect_to_friend_unfinished:remaining=${result.remainingCount ?: "unknown"}",
-                    )
-                }
-            } catch (t: Throwable) {
-                Log.printStackTrace(TAG, "神奇物种持久帮抽卡执行失败", t)
-                PersistentScheduleRegistry.markFailed(ApplicationHook.appContext, scheduleId, t.message ?: t.javaClass.name)
-            } finally {
-                executionLease?.close()
-            }
+            }.onFailure { error ->
+                Log.printStackTrace(TAG, "神奇物种持久帮抽卡提交失败", error)
+                PersistentScheduleRegistry.markFailed(
+                    ApplicationHook.appContext,
+                    scheduleId,
+                    "worker_submit_failed:${error.javaClass.simpleName}",
+                    source = "dodo_worker_submit:$source",
+                )
+            }.getOrNull() ?: return false
+        worker.invokeOnCompletion { error ->
+            PersistentScheduleRegistry.markWorkerFailedIfActive(
+                ApplicationHook.appContext,
+                scheduleId,
+                "worker_completed_without_terminal_state:${error?.javaClass?.simpleName ?: "none"}",
+                source = "dodo_worker_completion:$source",
+            )
         }
         return true
     }

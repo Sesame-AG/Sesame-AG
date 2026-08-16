@@ -3,9 +3,14 @@ package io.github.aoguai.sesameag.hook
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants.TriggerInfo
 import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleRegistry
 import io.github.aoguai.sesameag.util.Log.record
+import java.util.concurrent.atomic.AtomicBoolean
 
 object ApplicationHookCore {
     private const val TAG = "ApplicationHookCore"
+
+    // 触发队列有容量上限，但入口协程没有；只保留一个检查工作并合并并发请求。
+    private val dispatchScheduled = AtomicBoolean(false)
+    private val dispatchRequested = AtomicBoolean(false)
 
     fun requestExecution(trigger: TriggerInfo): Boolean {
         val boundTrigger = AccountSessionCoordinator.bindTrigger(trigger)
@@ -30,9 +35,38 @@ object ApplicationHookCore {
     }
 
     fun dispatchIfNeeded() {
-        ApplicationHookConstants.submitEntry("dispatch_pending_triggers") {
-            dispatchPendingTriggers()
+        dispatchRequested.set(true)
+        scheduleDispatchIfPossible()
+    }
+
+    private fun scheduleDispatchIfPossible() {
+        if (!canScheduleDispatch() || !dispatchScheduled.compareAndSet(false, true)) {
+            return
         }
+        ApplicationHookConstants.submitEntry("dispatch_pending_triggers") {
+            try {
+                dispatchRequested.set(false)
+                dispatchPendingTriggers()
+            } finally {
+                dispatchScheduled.set(false)
+                if (dispatchRequested.get()) {
+                    scheduleDispatchIfPossible()
+                }
+            }
+        }
+    }
+
+    private fun canScheduleDispatch(): Boolean {
+        if (!ApplicationHookConstants.hasPendingTriggers()) {
+            return false
+        }
+        if (ApplicationHook.mainTask?.isRunning == true) {
+            return false
+        }
+        return !PersistentScheduleRegistry.hasActiveModuleChild(
+            AccountSessionCoordinator.currentUserId(),
+            AccountSessionCoordinator.currentSessionEpoch(),
+        )
     }
 
     private fun dispatchPendingTriggers() {
