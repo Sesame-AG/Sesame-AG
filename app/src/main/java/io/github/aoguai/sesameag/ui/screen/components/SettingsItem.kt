@@ -1,12 +1,12 @@
 package io.github.aoguai.sesameag.ui.screen.components
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -16,22 +16,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
-
-
-// SettingsItem 保持不变
-// 简单的设置项组件
 @Composable
 fun SettingsItem(
     title: String,
     subtitle: String? = null,
     icon: ImageVector,
     isDanger: Boolean = false,
-    onClick: () -> Unit
+    onClick: (() -> Unit)? = null
 ) {
     Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerLow
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+        shape = MaterialTheme.shapes.small,
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
     ) {
         Row(
             modifier = Modifier
@@ -46,9 +44,13 @@ fun SettingsItem(
             )
             Spacer(Modifier.width(8.dp))
             Column {
-                Text(text = title, style = MaterialTheme.typography.titleMedium)
+                Text(text = title, style = MaterialTheme.typography.bodyLarge)
                 if (subtitle != null) {
-                    Text(text = subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }

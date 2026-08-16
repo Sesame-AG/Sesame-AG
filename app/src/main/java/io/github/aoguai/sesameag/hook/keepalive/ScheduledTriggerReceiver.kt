@@ -46,6 +46,7 @@ class ScheduledTriggerReceiver : BroadcastReceiver() {
             try {
                 withTimeout(RECEIVER_TIMEOUT_MS) {
                     if (plannedBatch) {
+                        Log.record(TAG, "物理系统闹钟到达[id=$scheduleId] state=batch source=alarm owner=unknown session=unknown")
                         val dueCount = PersistentScheduleRegistry.fireDueSchedules(ctx, "alarm_batch")
                         Log.record(TAG, "物理系统闹钟到达，已路由到期计划数=$dueCount")
                         return@withTimeout
@@ -56,10 +57,16 @@ class ScheduledTriggerReceiver : BroadcastReceiver() {
                         return@withTimeout
                     }
                     if (schedule.state != PersistentScheduleState.SCHEDULED) {
-                        Log.record(TAG, "持久调度[${schedule.name}]状态为${schedule.state}，忽略系统广播")
+                        Log.record(
+                            TAG,
+                            "持久调度状态[id=${schedule.id}] state=${schedule.state} kind=${schedule.kind} source=alarm owner=${schedule.ownerUserId} session=${schedule.sessionEpoch}，忽略系统广播",
+                        )
                         return@withTimeout
                     }
-                    Log.record(TAG, "系统闹钟到达[${schedule.name}] kind=${schedule.kind}")
+                    Log.record(
+                        TAG,
+                        "系统闹钟到达[id=${schedule.id}] state=${schedule.state} kind=${schedule.kind} source=alarm owner=${schedule.ownerUserId} session=${schedule.sessionEpoch}",
+                    )
                     ScheduledTaskRouter.fire(ctx, schedule, "alarm")
                 }
             } catch (_: TimeoutCancellationException) {

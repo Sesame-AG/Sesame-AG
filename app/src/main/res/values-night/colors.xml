@@ -1,18 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Dark theme: muted green palette to avoid high-brightness accents at night. -->
-    <color name="background">#111315</color>
-    <color name="colorPrimary">#4E8F68</color>
-    <color name="textColorPrimary">#E2E3E5</color>
-
-    <color name="selection_color">#6FA982</color>
-
-    <color name="main_button">#183624</color>
-    <color name="main_button_pressed">#6FA982</color>
-
-    <color name="orange">#D99A75</color>
-
-    <color name="active_text">#F0F6EF</color>
-
+    <color name="splash_background">#111315</color>
 </resources>
-

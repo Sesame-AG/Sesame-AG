@@ -1,19 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Light theme: aligned with Sesame-AG app icon and Material 3 semantic roles. -->
-    <color name="background">#F8F9FA</color>
-    <color name="colorPrimary">#008B4F</color>
-    <color name="textColorPrimary">#1B1C1D</color>
-
-    <color name="selection_color">#008B4F</color>
-
-    <color name="main_button">#C7F0D8</color>
-    <color name="main_button_pressed">#008B4F</color>
-
-    <color name="orange">#C24616</color>
-
-    <color name="active_text">#FFFFFF</color>
-
-
+    <color name="splash_background">#F8F9FA</color>
 </resources>
-

@@ -1168,39 +1168,78 @@ class AntSports : ModelTask() {
         val currentOwnerUserId = (AccountSessionCoordinator.currentUserId() ?: UserMap.currentUid).orEmpty()
         if (ownerUserId.isNotBlank() && ownerUserId != currentOwnerUserId) {
             Log.sports("运动持久子任务[$group][$childId]账号不匹配，跳过: owner=$ownerUserId current=$currentOwnerUserId")
+            PersistentScheduleRegistry.markFired(
+                ApplicationHook.appContext,
+                scheduleId,
+                source = "sports_owner_mismatch:$source",
+            )
             return true
         }
         if (!isPersistentChildSessionCurrent(currentOwnerUserId, payloadSessionEpoch)) {
             Log.sports("运动持久子任务[$group][$childId]会话无效，跳过触发: owner=$currentOwnerUserId session=$payloadSessionEpoch")
+            PersistentScheduleRegistry.markFired(
+                ApplicationHook.appContext,
+                scheduleId,
+                source = "sports_invalid_session:$source",
+            )
             return true
         }
         if (!isEnable()) {
             Log.sports("运动持久子任务[$group][$childId]触发时模块已关闭，跳过")
+            PersistentScheduleRegistry.markFired(
+                ApplicationHook.appContext,
+                scheduleId,
+                source = "sports_disabled:$source",
+            )
             return true
         }
-        GlobalThreadPools.execute {
-            PersistentScheduleRegistry.markRunning(scheduleId)
-            val executionLease = ApplicationHook.appContext?.let { context ->
-                WakeLockManager.acquire(
-                    context = context,
-                    timeoutMs = PersistentScheduleDefaults.TASK_EXECUTION_WAKELOCK_MS,
-                    source = "sports_persistent_child",
-                    scheduleId = scheduleId,
-                )
-            }
-            try {
-                runPersistentChildTask(childId, group, payload, source, currentOwnerUserId.orEmpty(), payloadSessionEpoch)
-                PersistentScheduleRegistry.markFired(ApplicationHook.appContext, scheduleId)
-            } catch (t: Throwable) {
-                Log.printStackTrace(TAG, "运动持久子任务执行失败[$group][$childId]", t)
+        val worker =
+            runCatching {
+                GlobalThreadPools.execute {
+                    PersistentScheduleRegistry.markRunning(scheduleId, source = "sports_worker_start:$source")
+                    val executionLease = ApplicationHook.appContext?.let { context ->
+                        WakeLockManager.acquire(
+                            context = context,
+                            timeoutMs = PersistentScheduleDefaults.TASK_EXECUTION_WAKELOCK_MS,
+                            source = "sports_persistent_child",
+                            scheduleId = scheduleId,
+                        )
+                    }
+                    try {
+                        runPersistentChildTask(childId, group, payload, source, currentOwnerUserId.orEmpty(), payloadSessionEpoch)
+                        PersistentScheduleRegistry.markFired(
+                            ApplicationHook.appContext,
+                            scheduleId,
+                            source = "sports_worker_success:$source",
+                        )
+                    } catch (t: Throwable) {
+                        Log.printStackTrace(TAG, "运动持久子任务执行失败[$group][$childId]", t)
+                        PersistentScheduleRegistry.markFailed(
+                            ApplicationHook.appContext,
+                            scheduleId,
+                            t.message ?: t.javaClass.simpleName,
+                            source = "sports_worker_exception:$source",
+                        )
+                    } finally {
+                        executionLease?.close()
+                    }
+                }
+            }.onFailure { error ->
+                Log.printStackTrace(TAG, "运动持久子任务提交失败[$group][$childId]", error)
                 PersistentScheduleRegistry.markFailed(
                     ApplicationHook.appContext,
                     scheduleId,
-                    t.message ?: t.javaClass.name,
+                    "worker_submit_failed:${error.javaClass.simpleName}",
+                    source = "sports_worker_submit:$source",
                 )
-            } finally {
-                executionLease?.close()
-            }
+            }.getOrNull() ?: return false
+        worker.invokeOnCompletion { error ->
+            PersistentScheduleRegistry.markWorkerFailedIfActive(
+                ApplicationHook.appContext,
+                scheduleId,
+                "worker_completed_without_terminal_state:${error?.javaClass?.simpleName ?: "none"}",
+                source = "sports_worker_completion:$source",
+            )
         }
         return true
     }

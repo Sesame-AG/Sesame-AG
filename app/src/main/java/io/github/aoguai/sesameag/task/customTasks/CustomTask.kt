@@ -11,7 +11,7 @@ enum class CustomTask(val displayName: String, val isModule: Boolean = false) {
     FARM_CHOUCHOULE("庄园抽抽乐"),
     FARM_SPECIAL_FOOD("庄园使用特殊美食"),
     FARM_USE_TOOL("使用庄园道具"),
-    // 任务模块整体手动触发（用于风控后手动重跑单个模块，跳过 check() 调度门控）
+    // 任务模块整体手动触发
     ANT_FOREST("蚂蚁森林", isModule = true),
     ANT_FARM("蚂蚁庄园", isModule = true),
     ANT_OCEAN("海洋", isModule = true),

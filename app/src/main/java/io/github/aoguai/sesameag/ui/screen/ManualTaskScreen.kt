@@ -1,8 +1,10 @@
 package io.github.aoguai.sesameag.ui.screen
 
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -20,6 +22,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -50,14 +53,14 @@ fun ManualTaskScreen(
             ?.value ?: false
     }
     // 子任务状态
-    var specialFoodCount by remember { mutableStateOf("1") }
+    var specialFoodCount by rememberSaveable { mutableStateOf("1") }
 
     // 道具使用状态
-    var selectedTool by remember { mutableStateOf("BIG_EATER_TOOL") }
-    var toolCount by remember { mutableStateOf("1") }
+    var selectedTool by rememberSaveable { mutableStateOf("BIG_EATER_TOOL") }
+    var toolCount by rememberSaveable { mutableStateOf("1") }
 
     // 能量雨状态
-    var exchangeEnergyRainCard by remember { mutableStateOf(initialExchangeEnergyRainCard) }
+    var exchangeEnergyRainCard by rememberSaveable { mutableStateOf(initialExchangeEnergyRainCard) }
 
     Scaffold(
         topBar = {
@@ -75,6 +78,8 @@ fun ManualTaskScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
+                .consumeWindowInsets(paddingValues)
+                .imePadding()
         ) {
             items(subTasks) { task ->
                 val params = when (task) {

@@ -39,39 +39,14 @@
         <!-- 主 Activity 由 launcher alias 或 LSPosed Manager 的设置页入口打开。 -->
         <activity
             android:name="io.github.aoguai.sesameag.ui.MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
             <!-- 仅用于 Manager 发现模块设置页；不参与旧 Xposed Hook 入口。 -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="de.robv.android.xposed.category.MODULE_SETTINGS" />
             </intent-filter>
         </activity>
-
-        <!-- 其他 Activity 保持不变 -->
-        <activity
-            android:name=".ui.ExtendActivity"
-            android:exported="false" />
-        <activity
-            android:name=".ui.WebSettingsActivity"
-            android:exported="false" />
-        <activity
-            android:name=".ui.FriendCenterActivity"
-            android:exported="false" />
-        <!-- RPC 调试 Activity -->
-        <activity
-            android:name=".ui.RpcDebugActivity"
-            android:exported="false" />
-        <!-- 高性能日志查看器 (Compose) -->
-        <!-- theme 必须设置为 NoActionBar，因为 Compose 自带了 TopAppBar -->
-        <activity
-            android:name=".ui.LogViewerActivity"
-            android:exported="false" />
-
-        <activity
-            android:name=".ui.ManualTaskActivity"
-            android:exported="false"
-            android:label="手动任务" />
-
 
         <!-- for-hide-icon -->
         <activity-alias

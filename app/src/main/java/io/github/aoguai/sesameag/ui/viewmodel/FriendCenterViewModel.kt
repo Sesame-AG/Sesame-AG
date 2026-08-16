@@ -2,6 +2,7 @@ package io.github.aoguai.sesameag.ui.viewmodel
 
 import android.content.Context
 import android.content.Intent
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.aoguai.sesameag.data.Config
@@ -13,11 +14,13 @@ import io.github.aoguai.sesameag.entity.friend.FriendRelation
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.util.friend.FriendRepository
 import io.github.aoguai.sesameag.util.maps.UserMap
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.UUID
 
 enum class FriendCenterFilter {
@@ -76,8 +79,16 @@ data class FriendCenterUiState(
         get() = groups.firstOrNull { it.id == selectedGroupId }
 }
 
-class FriendCenterViewModel : ViewModel() {
-    private val _uiState = MutableStateFlow(FriendCenterUiState())
+class FriendCenterViewModel(private val savedStateHandle: SavedStateHandle) : ViewModel() {
+    private val _uiState = MutableStateFlow(
+        FriendCenterUiState(
+            selectedGroupId = savedStateHandle[STATE_SELECTED_GROUP],
+            searchQuery = savedStateHandle.get<String>(STATE_SEARCH_QUERY).orEmpty(),
+            filter = savedStateHandle.get<String>(STATE_FILTER)
+                ?.let { runCatching { FriendCenterFilter.valueOf(it) }.getOrNull() }
+                ?: FriendCenterFilter.ALL,
+        )
+    )
     val uiState: StateFlow<FriendCenterUiState> = _uiState.asStateFlow()
     private var refreshAvailabilityToken: Long = 0L
     private var showRefreshAvailabilityMessage: Boolean = false
@@ -85,23 +96,27 @@ class FriendCenterViewModel : ViewModel() {
 
     companion object {
         private const val REFRESH_UNAVAILABLE_MESSAGE = "请先打开目标应用并回到模块，再刷新好友列表"
+        private const val STATE_SEARCH_QUERY = "friend_center_search_query"
+        private const val STATE_FILTER = "friend_center_filter"
+        private const val STATE_SELECTED_GROUP = "friend_center_selected_group"
     }
 
-    fun load(userId: String) {
+    suspend fun load(userId: String) {
         if (userId.isBlank()) {
             _uiState.value = FriendCenterUiState(message = "当前账号尚未载入，请先打开目标应用并返回模块")
             return
         }
-        UserMap.setCurrentUserId(userId)
-        UserMap.load(userId)
-        // 以当前账号 friend.json 快照为准，同步时把缺失好友标记为失效，避免长期残留“伪有效”关系。
-        FriendRepository.mergeFromUserMap(userId, allowPruneMissing = true)
-        refresh(
-            userId,
+        val previousState = _uiState.value
+        val loadedState = loadStateFromStorage(
+            userId = userId,
+            previousState = previousState,
             refreshAvailable = false,
             checkingRefreshAvailability = false,
-            lastRefreshMessage = ""
+            refreshing = previousState.refreshing,
+            lastRefreshMessage = "",
         )
+        _uiState.value = loadedState
+        savedStateHandle[STATE_SELECTED_GROUP] = loadedState.selectedGroupId
     }
 
     fun requestRefreshAvailability(context: Context, showUnavailableMessage: Boolean = false) {
@@ -245,16 +260,18 @@ class FriendCenterViewModel : ViewModel() {
                 return@launch
             }
             refreshRequestToken = 0L
-            UserMap.setCurrentUserId(currentUserId)
-            UserMap.load(currentUserId)
-            FriendRepository.mergeFromUserMap(currentUserId, allowPruneMissing = true)
-            refresh(
-                currentUserId,
-                latest.selectedGroupId,
-                message = "已发送刷新指令，未收到完成回执",
+            val fallbackMessage = "已发送刷新指令，未收到完成回执"
+            val loadedState = loadStateFromStorage(
+                userId = currentUserId,
+                previousState = latest,
+                refreshAvailable = latest.refreshAvailable,
+                checkingRefreshAvailability = latest.checkingRefreshAvailability,
                 refreshing = false,
-                lastRefreshMessage = "已发送刷新指令，未收到完成回执"
+                lastRefreshMessage = fallbackMessage,
+                message = fallbackMessage,
             )
+            _uiState.value = loadedState
+            savedStateHandle[STATE_SELECTED_GROUP] = loadedState.selectedGroupId
         }
     }
 
@@ -293,16 +310,19 @@ class FriendCenterViewModel : ViewModel() {
             }
         }
         if (success) {
-            UserMap.setCurrentUserId(targetUserId)
-            UserMap.load(targetUserId)
-            FriendRepository.mergeFromUserMap(targetUserId, allowPruneMissing = true)
-            refresh(
-                targetUserId,
-                state.selectedGroupId,
-                message = normalizedMessage,
-                refreshing = false,
-                lastRefreshMessage = normalizedMessage
-            )
+            viewModelScope.launch {
+                val loadedState = loadStateFromStorage(
+                    userId = targetUserId,
+                    previousState = state,
+                    refreshAvailable = state.refreshAvailable,
+                    checkingRefreshAvailability = state.checkingRefreshAvailability,
+                    refreshing = false,
+                    lastRefreshMessage = normalizedMessage,
+                    message = normalizedMessage,
+                )
+                _uiState.value = loadedState
+                savedStateHandle[STATE_SELECTED_GROUP] = loadedState.selectedGroupId
+            }
         } else {
             _uiState.value = state.copy(
                 refreshing = false,
@@ -315,18 +335,21 @@ class FriendCenterViewModel : ViewModel() {
     fun updateSearch(query: String) {
         val state = _uiState.value
         if (state.searchQuery == query) return
+        savedStateHandle[STATE_SEARCH_QUERY] = query
         refresh(state.userId, state.selectedGroupId, searchQuery = query)
     }
 
     fun updateFilter(filter: FriendCenterFilter) {
         val state = _uiState.value
         if (state.filter == filter) return
+        savedStateHandle[STATE_FILTER] = filter.name
         refresh(state.userId, state.selectedGroupId, filter = filter)
     }
 
     fun selectGroup(groupId: String) {
         val normalizedGroupId = groupId.trim()
         if (normalizedGroupId.isEmpty()) return
+        savedStateHandle[STATE_SELECTED_GROUP] = normalizedGroupId
         refresh(_uiState.value.userId, normalizedGroupId)
     }
 
@@ -493,6 +516,33 @@ class FriendCenterViewModel : ViewModel() {
         }
     }
 
+    private suspend fun loadStateFromStorage(
+        userId: String,
+        previousState: FriendCenterUiState,
+        refreshAvailable: Boolean,
+        checkingRefreshAvailability: Boolean,
+        refreshing: Boolean,
+        lastRefreshMessage: String,
+        message: String = "",
+    ): FriendCenterUiState = withContext(Dispatchers.IO) {
+        UserMap.setCurrentUserId(userId)
+        UserMap.load(userId)
+        // 以当前账号 friend.json 快照为准，同步时把缺失好友标记为失效，避免长期残留“伪有效”关系。
+        FriendRepository.mergeFromUserMap(userId, allowPruneMissing = true)
+        buildState(
+            userId = userId,
+            preferredGroupId = previousState.selectedGroupId,
+            config = FriendRepository.current(userId),
+            searchQuery = previousState.searchQuery,
+            filter = previousState.filter,
+            refreshAvailable = refreshAvailable,
+            checkingRefreshAvailability = checkingRefreshAvailability,
+            refreshing = refreshing,
+            lastRefreshMessage = lastRefreshMessage,
+            message = message,
+        )
+    }
+
     private fun refresh(
         userId: String,
         preferredGroupId: String? = null,
@@ -517,6 +567,7 @@ class FriendCenterViewModel : ViewModel() {
             lastRefreshMessage = lastRefreshMessage,
             message = message
         )
+        savedStateHandle[STATE_SELECTED_GROUP] = _uiState.value.selectedGroupId
     }
 
     private fun buildState(

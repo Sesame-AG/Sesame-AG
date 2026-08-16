@@ -1,10 +1,13 @@
 # Built application files
 *.apk
+*.aab
 *.ap_
+output-metadata.json
 /app/normal/*
 /app/compatible/*
 /app/lint-baseline.xml
 *.jks
+*.keystore
 # Files for the ART/Dalvik VM
 *.dex
 
@@ -47,7 +50,8 @@ captures/
 #*.jks
 
 # External native build folder generated in Android Studio 2.2 and later
-.externalNativeBuild
+.externalNativeBuild/
+.cxx/
 
 # Google Services (e.g. APIs or Firebase)
 google-services.json
@@ -76,7 +80,7 @@ fastlane/test_output
 test/
 
 # cache
-.lingma/rules/project_rule.md
+.kotlin/
 *.pyc
 
 # Cursor IDE
@@ -89,8 +93,22 @@ test/
 /serve-debug/webhook.db
 /serve-debug/web
 webui_debug*
-.kotlin/sessions/*
 /serve-debug/whackmole.py
 /serve-debug/user.py
 
 /libxposed/
+
+# Local AI coding assistant state
+/.agents/
+/.claude/
+/.claude-plugin/
+/.codex/
+/.codex-plugin/
+/.pi/
+/.cursor/
+/.windsurf/
+/.gemini/
+/.roo/
+/.aider/
+/.continue/
+/.lingma/

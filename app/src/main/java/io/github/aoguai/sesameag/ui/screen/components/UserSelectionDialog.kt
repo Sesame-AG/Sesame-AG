@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ManageAccounts
 import androidx.compose.material.icons.rounded.AccountCircle
@@ -47,38 +46,30 @@ fun UserSelectionDialog(
                 modifier = Modifier.size(32.dp)
             )
         },
-        title = {
-            Text(
-                text = "账号设置",
-                style = MaterialTheme.typography.titleLarge
-            )
-        },
+        title = { Text("账号设置") },
         text = {
-            // 给列表加个最大高度，防止太长铺满屏幕
             Box(modifier = Modifier.heightIn(max = 400.dp)) {
                 LazyColumn(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp) // Item 之间的间距
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(userList) { user ->
-                        // 使用 Surface 包裹，自带圆角和背景色适配
                         Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainerHigh, // 比背景稍微亮一点的颜色
+                            shape = MaterialTheme.shapes.small,
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
                             tonalElevation = 2.dp,
                             modifier = Modifier.fillMaxWidth(),
-                            onClick = { // Surface 自带 onClick，自带正确的水波纹
+                            onClick = {
                                 onUserSelected(user)
                                 onDismissRequest()
                             }
                         ) {
                             Row(
                                 modifier = Modifier
-                                    .padding(16.dp) // 内部留白
+                                    .padding(16.dp)
                                     .fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                // 左侧头像/图标
                                 Icon(
                                     imageVector = Icons.Rounded.AccountCircle,
                                     contentDescription = null,
@@ -88,7 +79,6 @@ fun UserSelectionDialog(
 
                                 Spacer(modifier = Modifier.width(16.dp))
 
-                                // 右侧文本信息
                                 Column {
                                     Text(
                                         text = user.showName,
@@ -114,7 +104,6 @@ fun UserSelectionDialog(
                 Text("取消")
             }
         },
-        // 设置 Dialog 的背景色，使其更融合
         containerColor = MaterialTheme.colorScheme.surfaceContainer,
         textContentColor = MaterialTheme.colorScheme.onSurface
     )

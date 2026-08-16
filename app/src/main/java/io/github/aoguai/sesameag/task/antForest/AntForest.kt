@@ -456,7 +456,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 "6秒拼手速 | 开启",
                 0, // 默认值为 0 (关闭)
                 whackMoleModeNames
-            ).withDesc("开启后按服务端返回的地鼠列表执行一次 6 秒拼手速。").also { whackMoleMode = it }
+            ).asSwitch().withDesc("开启后按服务端返回的地鼠列表执行一次 6 秒拼手速。").also { whackMoleMode = it }
         )
         modelFields.addField(
             TimePointModelField(

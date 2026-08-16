@@ -1,9 +1,5 @@
 package io.github.aoguai.sesameag.model.modelFieldExt
 
-import android.content.Context
-import android.view.View
-import android.widget.Button
-import android.widget.Toast
 import io.github.aoguai.sesameag.entity.friend.FriendCapabilityFilter
 import io.github.aoguai.sesameag.entity.friend.FriendCapabilityState
 import io.github.aoguai.sesameag.entity.friend.FriendCenterConfig
@@ -64,15 +60,6 @@ open class FriendSelectionModelField(
         value = value?.let { sanitizeSpec(it) }
         return super.getConfigValue()
     }
-
-    override fun getView(context: Context): View =
-        Button(context).apply {
-            text = name
-            isAllCaps = false
-            setOnClickListener {
-                Toast.makeText(context, "请在 Web 设置页编辑好友分组选择", Toast.LENGTH_SHORT).show()
-            }
-        }
 
     fun contains(userId: String?): Boolean = FriendSelectionResolver.contains(value, userId)
 
@@ -205,15 +192,6 @@ class FriendSelectionCountModelField(
         value = value?.let { sanitizeCountSpec(it) }
         return super.getConfigValue()
     }
-
-    override fun getView(context: Context): View =
-        Button(context).apply {
-            text = name
-            isAllCaps = false
-            setOnClickListener {
-                Toast.makeText(context, "请在 Web 设置页编辑好友分组选择", Toast.LENGTH_SHORT).show()
-            }
-        }
 
     fun contains(userId: String?): Boolean = FriendSelectionResolver.resolveCountMap(value).containsKey(userId?.trim())
 

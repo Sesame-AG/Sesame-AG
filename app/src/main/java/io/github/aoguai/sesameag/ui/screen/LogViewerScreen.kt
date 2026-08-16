@@ -1,5 +1,6 @@
 package io.github.aoguai.sesameag.ui.screen
 
+import android.app.Application
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.ExperimentalAnimationApi
@@ -43,15 +44,12 @@ import androidx.compose.material.icons.filled.FontDownload
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.TrackChanges
 import androidx.compose.material.icons.filled.VerticalAlignBottom
 import androidx.compose.material.icons.filled.VerticalAlignTop
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -62,6 +60,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SmallFloatingActionButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
@@ -72,6 +71,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
@@ -80,6 +80,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -104,6 +105,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import io.github.aoguai.sesameag.ui.compose.CommonAlertDialog
+import io.github.aoguai.sesameag.ui.screen.components.DelayedLoadingIndicator
 import io.github.aoguai.sesameag.ui.viewmodel.LogViewerViewModel
 import io.github.aoguai.sesameag.util.LogCatalog
 import io.github.aoguai.sesameag.util.Log
@@ -119,10 +121,14 @@ import kotlin.math.max
 fun LogViewerScreen(
     filePath: String,
     onBackClick: () -> Unit,
-    viewModel: LogViewerViewModel = viewModel()
 ) {
 
     val context = LocalContext.current
+    val application = context.applicationContext as Application
+    val viewModelFactory = remember(application) { LogViewerViewModel.factory(application) }
+    val viewModel: LogViewerViewModel = viewModel(
+        factory = viewModelFactory,
+    )
     val state by viewModel.uiState.collectAsState()
     val floatValue by viewModel.fontSize.collectAsState()
     val currentFontSize = floatValue.sp
@@ -132,11 +138,11 @@ fun LogViewerScreen(
     val scope = rememberCoroutineScope()
 
     // 菜单显示状态
-    var showMenu by remember { mutableStateOf(false) }
-    var isSearchActive by remember { mutableStateOf(false) }
+    var showMenu by rememberSaveable(filePath) { mutableStateOf(false) }
+    var isSearchActive by rememberSaveable(filePath) { mutableStateOf(false) }
 
     val focusRequester = remember { FocusRequester() }
-    var showClearDialog by remember { mutableStateOf(false) }
+    var showClearDialog by rememberSaveable(filePath) { mutableStateOf(false) }
 
     // 拦截返回键
     BackHandler(enabled = isSearchActive) {
@@ -144,11 +150,15 @@ fun LogViewerScreen(
         viewModel.search("")
     }
 
-    // 自动滚动逻辑
-    LaunchedEffect(filePath) {
+    DisposableEffect(filePath, viewModel) {
         viewModel.loadLogs(filePath)
+        onDispose { viewModel.stopLoading() }
+    }
+
+    // 自动滚动逻辑
+    LaunchedEffect(filePath, viewModel) {
         viewModel.scrollEvent.collectLatest { index ->
-            if (index >= 0 && index < state.totalCount) {
+            if (index >= 0 && index < viewModel.uiState.value.totalCount) {
                 try {
                     listState.scrollToItem(index)
                 } catch (_: CancellationException) {
@@ -162,7 +172,7 @@ fun LogViewerScreen(
 
     // 智能自动滚动控制
     LaunchedEffect(listState.canScrollForward, listState.isScrollInProgress) {
-        if (!state.isLoading && state.mappingList.isNotEmpty()) {
+        if (!state.isLoading && state.totalCount > 0) {
             if (!listState.canScrollForward) {
                 viewModel.toggleAutoScroll(true)
             } else if (listState.isScrollInProgress) {
@@ -310,20 +320,6 @@ fun LogViewerScreen(
                             }
                         } else {
                             Row {
-                                val autoScrollText = if (state.autoScroll) "暂停自动滚动" else "开启自动滚动"
-                                TooltipBox(
-                                    positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Below),
-                                    tooltip = { PlainTooltip { Text(autoScrollText) } },
-                                    state = rememberTooltipState()
-                                ) {
-                                    IconButton(onClick = { viewModel.toggleAutoScroll(!state.autoScroll) }) {
-                                        val icon = if (state.autoScroll) Icons.Default.TrackChanges else Icons.Default.Pause
-                                        // ✅ 修正高亮色：使用 Primary 色，或者 Tertiary 色
-                                        val tint = if (state.autoScroll) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                                        Icon(icon, "AutoScroll", tint = tint)
-                                    }
-                                }
-
                                 Box {
                                     TooltipBox(
                                         positionProvider = TooltipDefaults.rememberTooltipPositionProvider(TooltipAnchorPosition.Below),
@@ -348,6 +344,16 @@ fun LogViewerScreen(
                                             onClick = { showMenu = false; isSearchActive = true },
                                             leadingIcon = { Icon(Icons.Default.Search, null) }
                                         )
+                                        DropdownMenuItem(
+                                            text = { Text("自动滚动") },
+                                            onClick = { viewModel.toggleAutoScroll(!state.autoScroll) },
+                                            trailingIcon = {
+                                                Switch(
+                                                    checked = state.autoScroll,
+                                                    onCheckedChange = null,
+                                                )
+                                            },
+                                        )
                                         HorizontalDivider()
                                         DropdownMenuItem(
                                             text = { Text("滑动到顶部") },
@@ -368,7 +374,7 @@ fun LogViewerScreen(
                                         HorizontalDivider()
 
                                         // 二级菜单逻辑 ...
-                                        var showFontSubMenu by remember { mutableStateOf(false) }
+                                        var showFontSubMenu by rememberSaveable(filePath) { mutableStateOf(false) }
                                         Box {
                                             DropdownMenuItem(
                                                 text = { Text("字体设置") },
@@ -435,12 +441,12 @@ fun LogViewerScreen(
                     }
                 }
         ) {
-            if (state.isExporting || (state.isLoading && state.mappingList.isEmpty())) {
+            if (state.isExporting || (state.isLoading && state.totalCount == 0)) {
                 Column(
                     modifier = Modifier.align(Alignment.Center),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    CircularProgressIndicator()
+                    DelayedLoadingIndicator()
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         if (state.isExporting) "导出中..." else "Loading...",
@@ -459,7 +465,7 @@ fun LogViewerScreen(
                         items(
                             count = state.totalCount,
                             key = { index -> index },
-                            contentType = { 1 } // 🔥 显式指定 contentType，帮助 Compose 复用节点
+                            contentType = { 1 }
                         ) { index ->
                             LogLineItem(
                                 line = viewModel.getLineContent(index),
@@ -513,7 +519,7 @@ fun LogViewerScreen(
                         modifier = Modifier.align(Alignment.Center),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        CircularProgressIndicator()
+                        DelayedLoadingIndicator()
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
                             "Searching...",
@@ -527,16 +533,14 @@ fun LogViewerScreen(
 
 
     }
-    // ✨ 挂载通用确认弹窗
     CommonAlertDialog(
         showDialog = showClearDialog,
         onDismissRequest = { showClearDialog = false },
         onConfirm = {
-            // 🔥 确认后，执行清空逻辑
             viewModel.clearLogFile(context)
         },
-        title = "⚠️ 警告",
-        text = "🤔 确认清空当前日志文件？此操作无法撤销。",
+        title = "清空日志",
+        text = "确认清空当前日志文件？此操作无法撤销。",
         icon = Icons.Default.CleaningServices,
         iconTint = MaterialTheme.colorScheme.error,
         confirmText = "确认清空",
@@ -551,7 +555,6 @@ fun LogLineItem(line: String, searchQuery: String, fontSize: TextUnit, textColor
     val highlightColor = MaterialTheme.colorScheme.tertiary
     val onHighlightColor = MaterialTheme.colorScheme.onTertiary
 
-    // 🔥 优化点：使用 remember 缓存计算结果
     // 只有当 line 或 searchQuery 变化时，才会重新执行 block 里的计算逻辑
     val annotatedString = remember(line, searchQuery, highlightColor, onHighlightColor) {
         if (searchQuery.isNotEmpty()) {
@@ -638,7 +641,7 @@ fun DraggableScrollbar(listState: LazyListState, totalItems: Int, modifier: Modi
     Box(
         modifier = modifier
             .fillMaxHeight()
-            .width(30.dp)
+            .width(48.dp)
             .alpha(alpha)
             .onGloballyPositioned { trackHeightPx = it.size.height.toFloat() }
             .draggable(

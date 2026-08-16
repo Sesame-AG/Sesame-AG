@@ -1,13 +1,11 @@
 package io.github.aoguai.sesameag.ui.viewmodel
 
-import android.app.Application
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.widget.Toast
-import androidx.core.net.toUri
-import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.json.JsonMapper
@@ -15,7 +13,6 @@ import io.github.aoguai.sesameag.data.General
 import io.github.aoguai.sesameag.entity.RpcDebugEntity
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.ui.repository.RpcDebugConfigStore
-import io.github.aoguai.sesameag.ui.LogViewerActivity
 import io.github.aoguai.sesameag.util.Files
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.LogChannel
@@ -44,7 +41,7 @@ sealed class RpcDialogState {
 
 }
 
-class RpcDebugViewModel(application: Application) : AndroidViewModel(application) {
+class RpcDebugViewModel : ViewModel() {
 
 
     data class RpcDebugItemRaw(val name: String, val method: String, val requestData: Any?, val description: String)
@@ -199,7 +196,7 @@ class RpcDebugViewModel(application: Application) : AndroidViewModel(application
         dismissDialog()
     }
 
-    fun runRpcItem(item: RpcDebugEntity, activityContext: Context) {
+    fun runRpcItem(item: RpcDebugEntity, context: Context, onLogReady: (String) -> Unit) {
         viewModelScope.launch {
             try {
                 val logFile = Files.getLogFile(LogChannel.DEBUG)
@@ -210,7 +207,7 @@ class RpcDebugViewModel(application: Application) : AndroidViewModel(application
                     putExtra("data", item.getRequestDataString())
                     putExtra("type", "Rpc")
                 }
-                activityContext.sendBroadcast(intent)
+                context.sendBroadcast(intent)
                 ToastUtil.makeText("已发送到目标应用 Hook 进程: ${item.getDisplayName()}", Toast.LENGTH_SHORT).show()
                 // 轮询等待日志写入（Logback 是异步写入的，需要等待）
                 var waitCount = 0
@@ -224,15 +221,7 @@ class RpcDebugViewModel(application: Application) : AndroidViewModel(application
                     }
                     waitCount++
                 }
-                // 跳转日志
-                try {
-                    val logIntent = Intent(activityContext, LogViewerActivity::class.java).apply {
-                        data = logFile.toUri()
-                    }
-                    activityContext.startActivity(logIntent)
-                } catch (_: Exception) {
-                    ToastUtil.makeText("无法打开日志", Toast.LENGTH_SHORT).show()
-                }
+                onLogReady(logFile.absolutePath)
             } catch (e: Exception) {
                 ToastUtil.makeText("执行失败: ${e.message}", Toast.LENGTH_SHORT).show()
             }

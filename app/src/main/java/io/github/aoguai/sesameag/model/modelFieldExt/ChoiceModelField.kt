@@ -1,15 +1,11 @@
 package io.github.aoguai.sesameag.model.modelFieldExt
 
-import android.content.Context
-import android.view.Gravity
-import android.view.View
-import android.view.ViewGroup
-import android.widget.Button
-import android.widget.LinearLayout
-import androidx.core.content.ContextCompat
-import io.github.aoguai.sesameag.R
 import io.github.aoguai.sesameag.model.ModelField
-import io.github.aoguai.sesameag.ui.ChoiceDialog
+
+data class ChoiceSwitchMeta(
+    val offIndex: Int = 0,
+    val onIndex: Int = 1,
+)
 
 /**
  * 选择型字段，用于在多个选项中选择一个
@@ -17,6 +13,7 @@ import io.github.aoguai.sesameag.ui.ChoiceDialog
 class ChoiceModelField : ModelField<Int> {
     
     private var choiceArray: Array<out String?>? = null
+    private var switchMeta: ChoiceSwitchMeta? = null
 
     constructor(code: String, name: String, value: Int) : super(code, name, value) {
         valueType = Int::class.java
@@ -40,6 +37,14 @@ class ChoiceModelField : ModelField<Int> {
     override fun getType(): String = "CHOICE"
 
     override fun getExpandKey(): Array<out String?>? = choiceArray
+
+    fun asSwitch(offIndex: Int = 0, onIndex: Int = 1): ChoiceModelField = apply {
+        require(choiceArray?.getOrNull(offIndex) != null) { "Switch off option is missing for $code" }
+        require(choiceArray?.getOrNull(onIndex) != null) { "Switch on option is missing for $code" }
+        switchMeta = ChoiceSwitchMeta(offIndex = offIndex, onIndex = onIndex)
+    }
+
+    override fun getEditorMeta(): Any? = switchMeta
 
     private fun parseChoiceValue(objectValue: Any?): Int? {
         return when (objectValue) {
@@ -75,24 +80,5 @@ class ChoiceModelField : ModelField<Int> {
      */
     override fun getConfigValue(): String? = value?.toString()
 
-    override fun getView(context: Context): View {
-        return Button(context).apply {
-            text = name
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-            setTextColor(ContextCompat.getColor(context, R.color.selection_color))
-            background = ContextCompat.getDrawable(context, R.drawable.dialog_list_button)
-            gravity = Gravity.START or Gravity.CENTER_VERTICAL
-            minHeight = 150
-            maxHeight = 180
-            setPaddingRelative(40, 0, 40, 0)
-            isAllCaps = false
-            setOnClickListener { v ->
-                ChoiceDialog.show(v.context, (v as Button).text, this@ChoiceModelField)
-            }
-        }
-    }
 }
 

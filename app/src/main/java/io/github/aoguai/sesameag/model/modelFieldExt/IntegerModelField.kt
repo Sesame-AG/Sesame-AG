@@ -1,16 +1,6 @@
 package io.github.aoguai.sesameag.model.modelFieldExt
 
-import android.content.Context
-import android.view.Gravity
-import android.view.View
-import android.view.ViewGroup
-import android.widget.Button
-import android.widget.LinearLayout
-import androidx.core.content.ContextCompat
-import io.github.aoguai.sesameag.R
 import io.github.aoguai.sesameag.model.ModelField
-import io.github.aoguai.sesameag.ui.StringDialog
-import io.github.aoguai.sesameag.util.Log
 
 /**
  * Integer 类型字段类，继承自 ModelField<Int>
@@ -98,32 +88,6 @@ open class IntegerModelField : ModelField<Int> {
             return
         }
         setObjectValue(configValue)
-    }
-
-    /**
-     * 获取视图（返回一个 Button，点击后弹出编辑框）
-     *
-     * @param context 上下文
-     * @return 按钮视图
-     */
-    override fun getView(context: Context): View {
-        return Button(context).apply {
-            text = name
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-            setTextColor(ContextCompat.getColor(context, R.color.selection_color))
-            background = ContextCompat.getDrawable(context, R.drawable.dialog_list_button)
-            gravity = Gravity.START or Gravity.CENTER_VERTICAL
-            minHeight = 150
-            maxHeight = 180
-            setPaddingRelative(40, 0, 40, 0)
-            isAllCaps = false
-            setOnClickListener { v ->
-                StringDialog.showEditDialog(v.context, (v as Button).text, this@IntegerModelField)
-            }
-        }
     }
 
     /**

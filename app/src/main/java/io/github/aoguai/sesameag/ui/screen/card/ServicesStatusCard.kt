@@ -4,8 +4,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -18,49 +17,56 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import io.github.aoguai.sesameag.hook.keepalive.PersistentLaunchPolicy
 import io.github.aoguai.sesameag.ui.permissions.PermissionHealthItem
 import io.github.aoguai.sesameag.ui.permissions.PermissionHealthSnapshot
 import io.github.aoguai.sesameag.ui.permissions.PermissionPolicy
 import io.github.aoguai.sesameag.ui.permissions.PermissionStatus
+import io.github.aoguai.sesameag.ui.screen.components.DelayedLoadingIndicator
 import io.github.aoguai.sesameag.util.CommandUtil.ServiceStatus
 import io.github.aoguai.sesameag.util.maps.UserMap
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
-@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ServicesStatusCard(
     status: ServiceStatus, // 使用新定义的状态
     permissionHealth: PermissionHealthSnapshot,
     expanded: Boolean,
     onClick: () -> Unit,
-    onDoubleClick: (() -> Unit)? = null,
 ) {
     val hasPermissionIssue = permissionHealth.attentionCount > 0 || permissionHealth.hasCriticalIssue
     val shellReady = status is ServiceStatus.Active
     val loading = status is ServiceStatus.Loading || permissionHealth.totalCount == 0
-    val persistentForegroundLaunchEnabled =
-        PersistentLaunchPolicy.isForegroundLaunchEnabled(UserMap.currentUid)
+    val ownerUserId = UserMap.currentUid
+    var persistentForegroundLaunchEnabled by remember(ownerUserId) { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(ownerUserId) {
+        persistentForegroundLaunchEnabled = withContext(Dispatchers.IO) {
+            PersistentLaunchPolicy.isForegroundLaunchEnabled(ownerUserId)
+        }
+    }
     ElevatedCard(
         modifier =
             Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 8.dp, vertical = 4.dp)
-                .combinedClickable(
-                    onClick = onClick,
-                    onDoubleClick = { onDoubleClick?.invoke() },
-                ),
+                .clickable(onClick = onClick),
         colors =
             CardDefaults.elevatedCardColors(
                 containerColor =
@@ -85,7 +91,7 @@ fun ServicesStatusCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 if (loading) {
-                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                    DelayedLoadingIndicator(modifier = Modifier.size(24.dp))
                 } else if (hasPermissionIssue || !shellReady) {
                     Icon(Icons.Outlined.Warning, "权限待处理")
                 } else {
@@ -111,15 +117,15 @@ fun ServicesStatusCard(
                         text =
                             when {
                                 permissionHealth.hasRequestableIssue -> {
-                                    "单击卡片按顺序检查并申请可处理项，双击查看排查说明"
+                                    "点击卡片按顺序检查并申请可处理项"
                                 }
 
                                 hasPermissionIssue -> {
-                                    "仍有需要手动处理的项目，双击查看排查说明"
+                                    "点击卡片查看需要手动处理的项目"
                                 }
 
                                 !shellReady -> {
-                                    "Root/Shizuku 仅影响诊断类能力，双击可查看详细状态"
+                                    "Root/Shizuku 仅影响诊断类能力，点击可查看详细状态"
                                 }
 
                                 else -> {
@@ -130,12 +136,11 @@ fun ServicesStatusCard(
                     )
                 }
             }
-            if (!loading && !persistentForegroundLaunchEnabled) {
+            if (!loading && persistentForegroundLaunchEnabled == false) {
                 Spacer(Modifier.height(12.dp))
                 Text(
                     text = "系统持久调度前台拉起已关闭：轮询、定时唤醒、预唤醒和森林/庄园/新村/运动持久任务到点后不再主动弹出目标应用；强时效任务改为仅进程存活时等待，或需手动打开目标应用后恢复。",
                     style = MaterialTheme.typography.bodySmall,
-                    lineHeight = 18.sp,
                     color =
                         when {
                             hasPermissionIssue -> MaterialTheme.colorScheme.onErrorContainer
@@ -152,13 +157,12 @@ fun ServicesStatusCard(
                 exit = shrinkVertically(animationSpec = tween(300)),
             ) {
                 Column(modifier = Modifier.padding(top = 16.dp)) {
-                    Text(text = "运行权限", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    Text(text = "运行权限", style = MaterialTheme.typography.titleMedium)
                     Spacer(modifier = Modifier.height(8.dp))
                     if (permissionHealth.items.isEmpty()) {
                         Text(
                             text = "权限快照尚未生成。请先完成文件权限授权，稍等片刻后再次点击检查。",
                             style = MaterialTheme.typography.bodyMedium,
-                            lineHeight = 20.sp,
                         )
                     } else {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -167,12 +171,11 @@ fun ServicesStatusCard(
                             }
                         }
                     }
-                    if (!persistentForegroundLaunchEnabled) {
+                    if (persistentForegroundLaunchEnabled == false) {
                         Spacer(modifier = Modifier.height(12.dp))
                         Text(
                             text = "说明：这里只禁止系统持久调度主动前台拉起目标应用，不影响你手动打开目标应用后的主流程闭环；若系统仍偶发弹出，优先检查厂商自启动、后台弹出或后台活动启动权限。",
                             style = MaterialTheme.typography.bodySmall,
-                            lineHeight = 18.sp,
                         )
                     }
                 }
@@ -202,7 +205,6 @@ private fun PermissionHealthRow(item: PermissionHealthItem) {
         Text(
             text = item.description,
             style = MaterialTheme.typography.bodySmall,
-            lineHeight = 18.sp,
         )
     }
 }
