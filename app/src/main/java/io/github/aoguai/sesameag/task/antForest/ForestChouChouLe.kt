@@ -3,6 +3,7 @@ package io.github.aoguai.sesameag.task.antForest
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.task.TaskStatus
+import io.github.aoguai.sesameag.task.common.DeferredReason
 import io.github.aoguai.sesameag.task.common.TaskFlowAction
 import io.github.aoguai.sesameag.task.common.TaskFlowActionResult
 import io.github.aoguai.sesameag.task.common.TaskFlowAdapter
@@ -32,8 +33,6 @@ class ForestChouChouLe {
         // 场景代码常量
         private const val SCENE_NORMAL = "ANTFOREST_NORMAL_DRAW"
         private const val SCENE_ACTIVITY = "ANTFOREST_ACTIVITY_DRAW"
-        private const val DEFAULT_NORMAL_ACTIVITY_ID = "2026051801"
-        private const val DEFAULT_ACTIVITY_DRAW_ACTIVITY_ID = "20260607"
         private const val TASK_AWARD_ALREADY_FINISHED_CODE = "400000030"
         private const val TASK_ALREADY_FINISHED_CODE = "2600000016"
         private const val TASK_RIGHTS_LIMIT_CODE = "400000012"
@@ -56,6 +55,11 @@ class ForestChouChouLe {
             NO_ACTIONABLE,
             UNKNOWN,
         }
+
+        private data class SceneState(
+            val check: CompletionFlagCheck,
+            val fingerprint: String = "",
+        )
 
         // 扩展函数：简化 JSON 解析和检查
         private fun String.toJson(): JSONObject? = runCatching { JSONObject(this) }.getOrNull()
@@ -95,42 +99,33 @@ class ForestChouChouLe {
                 .ifBlank { fallback }
 
         // 动态获取抽奖场景配置
-        private fun getScenes(): List<Scene> {
-            val defaultScenes =
-                listOf(
-                    Scene(DEFAULT_NORMAL_ACTIVITY_ID, SCENE_NORMAL, "森林抽抽乐普通版", StatusFlags.FLAG_ANTFOREST_CHOUCHOULE_NORMAL_COMPLETED),
-                    Scene(
-                        DEFAULT_ACTIVITY_DRAW_ACTIVITY_ID,
-                        SCENE_ACTIVITY,
-                        "森林抽抽乐活动版",
-                        StatusFlags.FLAG_ANTFOREST_CHOUCHOULE_ACTIVITY_COMPLETED,
-                    ),
-                )
-
-            return runCatching {
+        private fun getScenes(): List<Scene> =
+            runCatching {
                 val scenes = mutableListOf<Scene>()
-                // 使用普通场景查询
                 val response =
-                    AntForestRpcCall.enterDrawActivityopengreen("", SCENE_NORMAL, SOURCE).toJson() ?: return@runCatching defaultScenes
+                    AntForestRpcCall.enterDrawActivityopengreen("", SCENE_NORMAL, SOURCE).toJson()
+                        ?: run {
+                            Log.error(TAG, "森林抽抽乐场景发现响应为空或非法")
+                            return@runCatching emptyList()
+                        }
 
                 if (!response.optBoolean("success", false)) {
-                    return@runCatching defaultScenes
+                    Log.error(TAG, "森林抽抽乐场景发现失败")
+                    return@runCatching emptyList()
                 }
-                val drawSceneGroups = response.optJSONArray("drawSceneGroups") ?: return@runCatching emptyList()
+                val drawSceneGroups = response.optJSONArray("drawSceneGroups")
+                    ?: run {
+                        Log.error(TAG, "森林抽抽乐场景发现缺少 drawSceneGroups")
+                        return@runCatching emptyList()
+                    }
 
                 for (i in 0 until drawSceneGroups.length()) {
                     val sceneGroup = drawSceneGroups.optJSONObject(i) ?: continue
                     val drawActivity = sceneGroup.optJSONObject("drawActivity") ?: continue
 
                     val sceneCode = drawActivity.optString("sceneCode")
-                    if (sceneCode.isBlank()) {
-                        continue
-                    }
-                    val activityId =
-                        drawActivity
-                            .optString("activityId")
-                            .ifBlank { fallbackActivityId(sceneCode) }
-                    if (activityId.isBlank()) {
+                    val activityId = drawActivity.optString("activityId")
+                    if (sceneCode.isBlank() || activityId.isBlank()) {
                         continue
                     }
                     val name = sceneGroup.optString("name", "未知活动")
@@ -147,25 +142,19 @@ class ForestChouChouLe {
 
                             else -> {
                                 StatusFlags.FLAG_ANTFOREST_CHOUCHOULE_COMPLETED_PREFIX +
-                                    sceneCode.lowercase(Locale.getDefault()) +
+                                    sceneCode.lowercase(Locale.ROOT) +
                                     StatusFlags.FLAG_ANTFOREST_CHOUCHOULE_COMPLETED_SUFFIX
                             }
                         }
                     scenes.add(Scene(activityId, sceneCode, name, flag))
                 }
-                // 发现成功时仅处理服务端当前声明的场景；默认场景只作为发现请求失败时的兼容兜底。
+                if (scenes.isEmpty()) {
+                    Log.error(TAG, "森林抽抽乐场景发现成功但没有有效场景")
+                }
                 scenes.distinctBy { scene -> "${scene.code}#${scene.id}" }
             }.getOrElse {
-                Log.printStackTrace(TAG, "获取抽奖场景配置失败, 使用默认配置", it)
-                defaultScenes
-            }
-        }
-
-        private fun fallbackActivityId(sceneCode: String): String =
-            when (sceneCode) {
-                SCENE_NORMAL -> DEFAULT_NORMAL_ACTIVITY_ID
-                SCENE_ACTIVITY -> DEFAULT_ACTIVITY_DRAW_ACTIVITY_ID
-                else -> ""
+                Log.printStackTrace(TAG, "获取抽奖场景配置失败，本轮不处理", it)
+                emptyList()
             }
 
         private fun normalizeTaskInfoList(response: JSONObject): JSONObject {
@@ -202,7 +191,7 @@ class ForestChouChouLe {
     private fun processScene(s: Scene) =
         runCatching {
             if (Status.hasFlagToday(s.flag)) {
-                when (hasActionableTaskAfterCompletionFlag(s)) {
+                when (inspectSceneState(s).check) {
                     CompletionFlagCheck.NO_ACTIONABLE -> {
                         Log.forest("⏭️ ${s.name} 今天已完成, 跳过")
                         return@runCatching
@@ -223,7 +212,14 @@ class ForestChouChouLe {
 
             // 1. 检查活动有效期
             val enterResp = AntForestRpcCall.enterDrawActivityopengreen(s.id, s.code, SOURCE).toJson()
-            if (enterResp == null || !enterResp.check()) return@runCatching
+            if (enterResp == null) {
+                Log.error(TAG, "${s.name} 抽抽乐入口响应为空或非法")
+                return@runCatching
+            }
+            if (!enterResp.check()) {
+                Log.error(TAG, "${s.name} 抽抽乐入口响应失败")
+                return@runCatching
+            }
 
             val drawActivity = enterResp.optJSONObject("drawActivity")
             if (drawActivity != null) {
@@ -236,17 +232,58 @@ class ForestChouChouLe {
                 }
             }
 
-            // 2. 查询、完成与领奖统一交给公共任务闭环处理。
-            val taskResult = TaskFlowEngine(ChouChouLeTaskFlowAdapter(s), roundSleepMs = 500L).run()
+            // 2. 任务流和抽奖余额是独立闭环；仅统一离线中断可以阻止后续 RPC。
+            val seenStateFingerprints = mutableSetOf<String>()
+            while (true) {
+                val stateBefore = inspectSceneState(s)
+                if (stateBefore.check == CompletionFlagCheck.ACTIONABLE &&
+                    !seenStateFingerprints.add(stateBefore.fingerprint)
+                ) {
+                    Status.removeFlag(s.flag)
+                    Log.forest("${s.name} 抽抽乐状态未收敛，停止重复请求并保留后续重试")
+                    return@runCatching
+                }
 
-            // 3. 先消化服务端已发放的抽奖次数；外部手动任务未完成时不能阻断已确认余额。
-            val lotteryHandled = !taskResult.stopped && processLottery(s)
-            val completionCheck = if (lotteryHandled) hasActionableTaskAfterCompletionFlag(s) else CompletionFlagCheck.UNKNOWN
-            if (lotteryHandled && completionCheck == CompletionFlagCheck.NO_ACTIONABLE) {
-                Status.setFlagToday(s.flag)
-            } else {
-                Status.removeFlag(s.flag)
-                Log.forest("${s.name} 仍有待确认任务或抽奖次数，保留后续重试")
+                val taskResult = TaskFlowEngine(ChouChouLeTaskFlowAdapter(s), roundSleepMs = 500L).run()
+                val lotteryHandled =
+                    if (taskResult.interrupted) {
+                        Log.forest("${s.name} 任务流因离线中断，跳过本轮抽奖")
+                        false
+                    } else {
+                        if (taskResult.stopped) {
+                            Log.forest("${s.name} 任务流停止但非离线，继续复核已确认抽奖余额")
+                        }
+                        processLottery(s)
+                    }
+
+                if (!lotteryHandled) {
+                    Status.removeFlag(s.flag)
+                    Log.forest("${s.name} 抽奖闭环未完成，保留后续重试")
+                    return@runCatching
+                }
+
+                val sceneState = inspectSceneState(s)
+                when (sceneState.check) {
+                    CompletionFlagCheck.NO_ACTIONABLE -> {
+                        Status.setFlagToday(s.flag)
+                        return@runCatching
+                    }
+
+                    CompletionFlagCheck.UNKNOWN -> {
+                        Status.removeFlag(s.flag)
+                        Log.forest("${s.name} 抽奖后状态复核失败，保留后续重试")
+                        return@runCatching
+                    }
+
+                    CompletionFlagCheck.ACTIONABLE -> {
+                        if (sceneState.fingerprint in seenStateFingerprints) {
+                            Status.removeFlag(s.flag)
+                            Log.forest("${s.name} 抽抽乐状态未收敛，停止重复请求并保留后续重试")
+                            return@runCatching
+                        }
+                        Log.forest("${s.name} 抽奖后仍有可执行状态，重新进入任务流")
+                    }
+                }
             }
         }.onFailure { Log.printStackTrace(TAG, "${s.name} 处理异常", it) }
 
@@ -260,37 +297,65 @@ class ForestChouChouLe {
             .toJson()
             ?.let { normalizeTaskInfoList(it) }
 
-    private fun hasActionableTaskAfterCompletionFlag(s: Scene): CompletionFlagCheck {
-        val resp = fetchFreshTaskList(s) ?: return CompletionFlagCheck.UNKNOWN
-        if (!resp.check()) return CompletionFlagCheck.UNKNOWN
+    private fun inspectSceneState(s: Scene): SceneState {
+        val resp = fetchFreshTaskList(s) ?: return SceneState(CompletionFlagCheck.UNKNOWN)
+        if (!resp.check()) return SceneState(CompletionFlagCheck.UNKNOWN)
 
-        val taskList = resp.optJSONArray("taskInfoList") ?: return CompletionFlagCheck.UNKNOWN
+        val taskList = resp.optJSONArray("taskInfoList") ?: return SceneState(CompletionFlagCheck.UNKNOWN)
+        val stateParts = mutableListOf<String>()
+        var actionableTask = false
         for (i in 0 until taskList.length()) {
             val task = taskList.optJSONObject(i) ?: continue
             val baseInfo = task.optJSONObject("taskBaseInfo") ?: continue
             val taskType = baseInfo.optString("taskType")
+            if (taskType.isBlank()) continue
             val taskStatus = baseInfo.optString("taskStatus").uppercase(Locale.ROOT)
-            if (taskStatus !in setOf(TaskStatus.TODO.name, TaskStatus.FINISHED.name, "COMPLETE", "WAIT_RECEIVE", "TO_RECEIVE")) {
+            if (taskStatus !in setOf(
+                    TaskStatus.TODO.name,
+                    TaskStatus.FINISHED.name,
+                    "COMPLETE",
+                    "WAIT_COMPLETE",
+                    "WAIT_RECEIVE",
+                    "TO_RECEIVE",
+                )
+            ) {
                 continue
             }
-            if (isBlockedTask(taskType)) {
-                continue
-            }
-            if (taskStatus in setOf(TaskStatus.FINISHED.name, "COMPLETE", "WAIT_RECEIVE", "TO_RECEIVE") ||
-                isAutomatableDrawTask(baseInfo)
+
+            val taskRights = task.optJSONObject("taskRights") ?: JSONObject()
+            val rightsTimes = taskRights.optInt("rightsTimes", 0)
+            val rightsTimesLimit = taskRights.optInt("rightsTimesLimit", 0)
+            stateParts += "$taskType:$taskStatus:$rightsTimes:$rightsTimesLimit"
+            if (!isBlockedTask(taskType) &&
+                (taskStatus in setOf("FINISHED", "COMPLETE", "WAIT_RECEIVE", "TO_RECEIVE") || isAutomatableDrawTask(baseInfo))
             ) {
                 val bizInfo = baseInfo.optString("bizInfo").toJson() ?: JSONObject()
-                val taskName = extractTaskName(bizInfo, taskType.ifBlank { "未知任务" })
+                val taskName = extractTaskName(bizInfo, taskType)
                 Log.forest("${s.name} 发现待处理任务: $taskName [$taskStatus]")
-                return CompletionFlagCheck.ACTIONABLE
+                actionableTask = true
             }
         }
-        val activityResponse =
-            AntForestRpcCall.enterDrawActivityopengreen(s.id, s.code, SOURCE).toJson()
-                ?: return CompletionFlagCheck.UNKNOWN
-        if (!activityResponse.check()) return CompletionFlagCheck.UNKNOWN
-        val drawBalance = activityResponse.optJSONObject("drawAsset")?.optInt("blance", -1) ?: return CompletionFlagCheck.UNKNOWN
-        return if (drawBalance > 0) CompletionFlagCheck.ACTIONABLE else CompletionFlagCheck.NO_ACTIONABLE
+
+        val activityResponse = AntForestRpcCall.enterDrawActivityopengreen(s.id, s.code, SOURCE).toJson()
+        if (activityResponse == null) {
+            Log.error(TAG, "${s.name} 状态复核入口响应为空或非法")
+            return SceneState(CompletionFlagCheck.UNKNOWN)
+        }
+        if (!activityResponse.check()) {
+            Log.error(TAG, "${s.name} 状态复核入口响应失败")
+            return SceneState(CompletionFlagCheck.UNKNOWN)
+        }
+        val drawBalance = drawBalance(activityResponse)
+        if (drawBalance == null) {
+            Log.error(TAG, "${s.name} 状态复核缺少 drawAsset.blance")
+            return SceneState(CompletionFlagCheck.UNKNOWN)
+        }
+        stateParts += "drawBalance=$drawBalance"
+        val fingerprint = stateParts.sorted().joinToString("|")
+        return SceneState(
+            check = if (actionableTask || drawBalance > 0) CompletionFlagCheck.ACTIONABLE else CompletionFlagCheck.NO_ACTIONABLE,
+            fingerprint = fingerprint,
+        )
     }
 
     private fun isAutomatableDrawTask(taskBaseInfo: JSONObject): Boolean {
@@ -319,17 +384,35 @@ class ForestChouChouLe {
             ?.optString("categorizationSecondLevel") != "Game"
     }
 
+    private fun drawBalance(response: JSONObject): Int? =
+        response.optJSONObject("drawAsset")
+            ?.takeIf { it.has("blance") }
+            ?.optInt("blance")
+
     /**
      * 执行抽奖逻辑
      */
     private fun processLottery(s: Scene): Boolean {
-        val currentUid = UserMap.currentUid ?: return false
-        val enterResp = AntForestRpcCall.enterDrawActivityopengreen(s.id, s.code, SOURCE).toJson() ?: return false
-        if (!enterResp.check()) return false
+        val currentUid =
+            UserMap.currentUid ?: run {
+                Log.error(TAG, "${s.name} 抽奖跳过: 当前会话 UID 缺失")
+                return false
+            }
+        val enterResp = AntForestRpcCall.enterDrawActivityopengreen(s.id, s.code, SOURCE).toJson()
+        if (enterResp == null) {
+            Log.error(TAG, "${s.name} 抽奖入口响应为空或非法")
+            return false
+        }
+        if (!enterResp.check()) {
+            Log.error(TAG, "${s.name} 抽奖入口响应失败")
+            return false
+        }
 
-        val drawAsset = enterResp.optJSONObject("drawAsset") ?: return false
-        var balance = drawAsset.optInt("blance", 0)
-        val total = drawAsset.optInt("totalTimes", 0)
+        var balance = drawBalance(enterResp) ?: run {
+            Log.error(TAG, "${s.name} 抽奖入口缺少 drawAsset.blance")
+            return false
+        }
+        val total = enterResp.optJSONObject("drawAsset")?.optInt("totalTimes", 0) ?: 0
         val batchDrawEnabled =
             enterResp
                 .optJSONObject("drawScene")
@@ -339,11 +422,19 @@ class ForestChouChouLe {
         Log.forest("${s.name} 剩余抽奖次数: $balance / $total")
 
         if (balance > 0 && batchDrawEnabled) {
-            val batchResp =
-                AntForestRpcCall.batchDrawopengreen(s.id, s.code, SOURCE, balance, currentUid).toJson()
-                    ?: return false
-            if (!batchResp.check()) return false
-            balance = batchResp.optJSONObject("drawAsset")?.optInt("blance", -1) ?: return false
+            val batchResp = AntForestRpcCall.batchDrawopengreen(s.id, s.code, SOURCE, balance, currentUid).toJson()
+            if (batchResp == null) {
+                Log.error(TAG, "${s.name} 批量抽奖响应为空或非法")
+                return false
+            }
+            if (!batchResp.check()) {
+                Log.error(TAG, "${s.name} 批量抽奖响应失败")
+                return false
+            }
+            balance = drawBalance(batchResp) ?: run {
+                Log.error(TAG, "${s.name} 批量抽奖响应缺少 drawAsset.blance")
+                return false
+            }
             logBatchDrawResults(s, batchResp.optJSONArray("drawResultList"), balance)
         } else {
             var retry = 0
@@ -353,11 +444,19 @@ class ForestChouChouLe {
                 Log.forest("${s.name} 第 $retry 次抽奖")
 
                 val drawResp = AntForestRpcCall.drawopengreen(s.id, s.code, SOURCE, currentUid).toJson()
-                if (drawResp == null || !drawResp.check()) {
+                if (drawResp == null) {
+                    Log.error(TAG, "${s.name} 单次抽奖响应为空或非法")
+                    return false
+                }
+                if (!drawResp.check()) {
+                    Log.error(TAG, "${s.name} 单次抽奖响应失败")
                     return false
                 }
 
-                balance = drawResp.optJSONObject("drawAsset")?.optInt("blance", 0) ?: 0
+                balance = drawBalance(drawResp) ?: run {
+                    Log.error(TAG, "${s.name} 单次抽奖响应缺少 drawAsset.blance")
+                    return false
+                }
                 val prize = drawResp.optJSONObject("prizeVO")
                 if (prize != null) {
                     val name = prize.optString("prizeName", "未知奖品")
@@ -367,12 +466,31 @@ class ForestChouChouLe {
 
                 if (balance > 0) sleepCompat(500L)
             }
+            if (balance > 0) {
+                Log.error(TAG, "${s.name} 单次抽奖达到轮次上限，剩余次数: $balance")
+                return false
+            }
         }
 
-        val refreshed = AntForestRpcCall.enterDrawActivityopengreen(s.id, s.code, SOURCE).toJson() ?: return false
-        if (!refreshed.check()) return false
-        val remainingBalance = refreshed.optJSONObject("drawAsset")?.optInt("blance", -1) ?: return false
-        return remainingBalance == 0
+        val refreshed = AntForestRpcCall.enterDrawActivityopengreen(s.id, s.code, SOURCE).toJson()
+        if (refreshed == null) {
+            Log.error(TAG, "${s.name} 抽奖后余额回查响应为空或非法")
+            return false
+        }
+        if (!refreshed.check()) {
+            Log.error(TAG, "${s.name} 抽奖后余额回查失败")
+            return false
+        }
+        val remainingBalance = drawBalance(refreshed)
+        if (remainingBalance == null) {
+            Log.error(TAG, "${s.name} 抽奖后余额回查缺少 drawAsset.blance")
+            return false
+        }
+        if (remainingBalance != 0) {
+            Log.error(TAG, "${s.name} 抽奖后余额未清零，剩余次数: $remainingBalance")
+            return false
+        }
+        return true
     }
 
     private fun logBatchDrawResults(
@@ -580,10 +698,13 @@ class ForestChouChouLe {
                 }
 
                 response.isTaskRightsLimitReached() -> {
-                    return TaskFlowActionResult.failure(
-                        failureType = TaskRpcFailureType.BUSINESS_LIMIT,
-                        code = response.taskResultCode(),
-                        message = response.taskResultDesc(),
+                    val message = response.taskResultDesc().ifBlank { "任务权益次数已达上限" }
+                    Log.forest(
+                        "${scene.name} ${item.title} 权益次数已达上限，延后当前任务[code=${response.taskResultCode()}]",
+                    )
+                    return TaskFlowActionResult.defer(
+                        deferredReason = DeferredReason.CAPACITY_LIMIT,
+                        message = "$message [code=${response.taskResultCode()}]",
                         rpc = rpc,
                         raw = response.toString(),
                         detail = actionDetail(item, action),
@@ -605,18 +726,6 @@ class ForestChouChouLe {
                     val actionName = if (action == TaskFlowAction.RECEIVE) "奖励领取成功" else "任务已提交"
                     Log.forest("${scene.name} $actionName: ${item.title}")
                     return TaskFlowActionResult.success(refreshAfterAction = true)
-                }
-
-                (response.has("retriable") && !response.optBoolean("retriable")) ||
-                    (response.has("retryable") && !response.optBoolean("retryable")) -> {
-                    return TaskFlowActionResult.failure(
-                        failureType = TaskRpcFailureType.NON_RETRYABLE_INVALID,
-                        code = response.taskResultCode(),
-                        message = response.taskResultDesc(),
-                        rpc = rpc,
-                        raw = response.toString(),
-                        detail = actionDetail(item, action),
-                    )
                 }
 
                 response.optBoolean("retriable") || response.optBoolean("retryable") -> {

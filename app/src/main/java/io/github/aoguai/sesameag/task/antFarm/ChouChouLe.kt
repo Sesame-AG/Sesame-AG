@@ -3,6 +3,7 @@ package io.github.aoguai.sesameag.task.antFarm
 import android.net.Uri
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
+import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.hook.ExchangeOptionsRefreshBridge
 import io.github.aoguai.sesameag.task.TaskStatus
 import io.github.aoguai.sesameag.task.exchange.ExchangeCost
@@ -249,7 +250,12 @@ class ChouChouLe {
             }
             do {
                 doubleCheck = false
-                val tasks = queryChouchouleTasks(drawType) ?: return false
+                val tasks = queryChouchouleTasks(drawType)
+                if (tasks == null) {
+                    val taskName = if (drawType == "ipDraw") "IP抽抽乐" else "日常抽抽乐"
+                    Log.error(TAG, "${taskName}任务流状态未确认，保留任务重试，继续独立抽奖余额处理")
+                    break
+                }
 
                 for (task in tasks) {
                     if (TaskStatus.FINISHED.name == task.taskStatus) {
@@ -294,7 +300,14 @@ class ChouChouLe {
                 }
             } while (doubleCheck)
         } catch (t: Throwable) {
+            val taskName = if (drawType == "ipDraw") "IP抽抽乐" else "日常抽抽乐"
             Log.printStackTrace("doChouchoule err:", t)
+            Log.error(TAG, "${taskName}任务流处理异常，保留任务重试，继续独立抽奖余额处理")
+        }
+
+        if (ApplicationHookConstants.isOffline()) {
+            val taskName = if (drawType == "ipDraw") "IP抽抽乐" else "日常抽抽乐"
+            Log.farm("${taskName}任务流后检测到离线，跳过抽奖并保留后续重试")
             return false
         }
 
