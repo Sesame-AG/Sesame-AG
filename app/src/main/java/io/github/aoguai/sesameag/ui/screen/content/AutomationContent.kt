@@ -79,7 +79,7 @@ fun AutomationContent(
                     style = MaterialTheme.typography.bodyLarge,
                 )
             }
-            items(accountSlots.legacyCandidates, key = { it }) { userId ->
+            items(accountSlots.legacyCandidates, key = { userId -> "legacy-slot-$userId" }) { userId ->
                 val selected = userId in selectedLegacySlots
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -127,7 +127,7 @@ fun AutomationContent(
             itemsIndexed(
                 items = userList,
                 key = { index, user ->
-                    user.userId?.trim()?.takeIf(String::isNotEmpty) ?: "account-$index"
+                    "account-${user.userId?.trim()?.takeIf(String::isNotEmpty) ?: "unknown"}-$index"
                 },
             ) { _, user ->
                 val userId = user.userId?.trim().orEmpty()
