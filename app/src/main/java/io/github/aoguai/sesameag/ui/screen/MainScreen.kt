@@ -378,17 +378,11 @@ fun MainScreen(
             }
         },
     ) { modifier ->
-        if (isTopLevelRoute) {
-            Box(modifier.fillMaxSize()) {
-                selectedEntries.last().Content()
-            }
-        } else {
-            NavDisplay(
-                entries = selectedEntries,
-                modifier = modifier.fillMaxSize(),
-                onBack = { currentStack.removeLastOrNull() },
-            )
-        }
+        NavDisplay(
+            entries = selectedEntries,
+            modifier = modifier.fillMaxSize(),
+            onBack = { currentStack.removeLastOrNull() },
+        )
     }
 
     CommonAlertDialog(
