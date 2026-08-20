@@ -27,11 +27,21 @@ object ModuleStatus {
     }
 
     fun classifyFrameworkName(frameworkName: String?): FrameworkCategory {
-        return if (frameworkName?.trim() == "LSPosed") {
-            FrameworkCategory.LSPOSED
-        } else {
-            FrameworkCategory.UNSUPPORTED
-        }
+        val name = frameworkName?.trim().orEmpty()
+        if (name.isEmpty()) return FrameworkCategory.UNSUPPORTED
+
+        val lower = name.lowercase()
+        // LSPatch / NPatch remain out of scope: they are in-APK patch loaders, not a system framework.
+        if ("lspatch" in lower || "npatch" in lower) return FrameworkCategory.UNSUPPORTED
+
+        // Official LSPosed name, plus JingMatrix Vector (the LSPosed repo rename / successor).
+        // Vector 2.x may report "Vector", "JingMatrix-Vector", or "<id>-JingMatrix-Vector".
+        if (name == "LSPosed") return FrameworkCategory.LSPOSED
+        if (name.equals("Vector", ignoreCase = true)) return FrameworkCategory.LSPOSED
+        if (name.contains("JingMatrix-Vector", ignoreCase = true)) return FrameworkCategory.LSPOSED
+        if (lower.endsWith("-vector") || lower.endsWith(" vector")) return FrameworkCategory.LSPOSED
+
+        return FrameworkCategory.UNSUPPORTED
     }
 
     fun isSupportedLsposedFramework(frameworkName: String?, apiVersion: Int): Boolean {
