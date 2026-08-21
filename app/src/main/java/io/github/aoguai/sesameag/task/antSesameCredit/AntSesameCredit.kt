@@ -3587,8 +3587,12 @@ class AntSesameCredit : ModelTask() {
                     .ifBlank { responseObj.optString("errorMessage") }
                     .ifBlank { finishRes }
             val failureType =
-                when (code) {
-                    "20020012", "TASK_ID_INVALID", "ILLEGAL_ARGUMENT", "PROMISE_TEMPLATE_NOT_EXIST" -> {
+                when {
+                    code == "20020012" && explicitZhimaTreeRetryable(responseObj) == false -> {
+                        TaskRpcFailureType.NON_RETRYABLE_INVALID
+                    }
+
+                    code in setOf("TASK_ID_INVALID", "ILLEGAL_ARGUMENT", "PROMISE_TEMPLATE_NOT_EXIST") -> {
                         TaskRpcFailureType.NON_RETRYABLE_INVALID
                     }
 
@@ -4156,6 +4160,10 @@ class AntSesameCredit : ModelTask() {
 
             else -> {
                 when {
+                    code == "20020012" && explicitZhimaTreeRetryable(response) == false -> {
+                        TaskRpcFailureType.NON_RETRYABLE_INVALID
+                    }
+
                     code == "400000040" -> {
                         TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE
                     }
@@ -4985,7 +4993,8 @@ class AntSesameCredit : ModelTask() {
                     TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE
                 }
 
-                code in setOf("20020012", "TASK_ID_INVALID", "ILLEGAL_ARGUMENT", "PROMISE_TEMPLATE_NOT_EXIST") ||
+                code in setOf("TASK_ID_INVALID", "ILLEGAL_ARGUMENT", "PROMISE_TEMPLATE_NOT_EXIST") ||
+                    (code == "20020012" && explicitSesameTaskRetryable(response) == false) ||
                     (isExplicitSesameTaskFailure(response) &&
                         explicitSesameTaskRetryable(response) == false) -> {
                     TaskRpcFailureType.NON_RETRYABLE_INVALID

@@ -780,11 +780,14 @@ class TaskFlowEngine(
 
             candidates.add(TaskFlowActionCandidate(index, item, action))
         }
-        // 候选动作按领奖优先排序；黑名单仅拦截主动推进，待领奖任务继续放行。
-        return candidates.sortedWith(
-            compareBy<TaskFlowActionCandidate> { actionPriority(it.initialAction) }
-                .thenBy { it.index },
-        )
+        // 候选动作按领奖优先排序；同一快照的相同稳定动作只执行一次。
+        return candidates
+            .sortedWith(
+                compareBy<TaskFlowActionCandidate> { actionPriority(it.initialAction) }
+                    .thenBy { it.index },
+            ).distinctBy { candidate ->
+                adapter.actionKey(candidate.item, candidate.initialAction)
+            }
     }
 
     private fun shouldSkipItem(item: TaskFlowItem): Boolean {
@@ -968,7 +971,7 @@ class TaskFlowEngine(
                     completed -> append("[本轮完成]")
                     noProgressSuccess && !progressed -> append("[本轮成功但未确认进展]")
                     !interrupted && failureCount == 0 -> append("[本轮明确延后]")
-                    else -> append("[本轮真实失败]")
+                    else -> append("[本轮动作失败(含可重试)]")
                 }
                 append("[轮次:")
                 append(rounds)
@@ -985,7 +988,7 @@ class TaskFlowEngine(
                 append("[明确延后:")
                 append(describeDeferredReasonCounts(deferredReasonCounts))
                 append("]")
-                append("[真实失败:")
+                append("[动作失败(含可重试):")
                 append(failureCount)
                 append("]")
                 if (stopped) {

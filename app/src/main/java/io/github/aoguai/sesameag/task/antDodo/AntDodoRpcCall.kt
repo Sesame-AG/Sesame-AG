@@ -78,14 +78,6 @@ object AntDodoRpcCall {
         return response
     }
 
-    @JvmStatic
-    fun clickGame(appId: String?): String {
-        return RequestManager.requestString(
-            "com.alipay.charitygamecenter.clickGame",
-            ("[{\"appId\":\"" + appId + "\",\"bizType\":\"ANTFOREST\",\"requestType\":\"RPC\",\"sceneCode\":\"ANTFOREST\",\"source\":\"ANTFOREST\"}]")
-        )
-    }
-
     /**
      * 生成唯一ID
      */

@@ -1,11 +1,13 @@
 package io.github.aoguai.sesameag.task.antForest
 
+import android.net.Uri
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.hook.Toast
 import io.github.aoguai.sesameag.util.GameTask
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.ResChecker
+import io.github.aoguai.sesameag.util.TaskBlacklist
 import io.github.aoguai.sesameag.util.friend.FriendRepository
 import io.github.aoguai.sesameag.util.maps.UserMap
 import kotlinx.coroutines.delay
@@ -20,9 +22,9 @@ import kotlin.random.Random
  */
 object EnergyRainCoroutine {
     private const val TAG = "EnergyRain"
+    private const val FOREST_TASK_BLACKLIST_MODULE = "蚂蚁森林"
     private const val FOREST_SLJYD_TASK_TYPE = "GAME_DONE_SLJYD"
     private const val ENERGY_RAIN_GAME_SCENE_CODE = "ANTFOREST_ENERGY_RAIN_TASK"
-    private val APP_ID_QUERY_REGEX = Regex("""(?:^|[?&])appId=([0-9]+)""")
     private val ENERGY_RAIN_ACTIONABLE_STATUSES = setOf("TODO", "NOT_TRIGGER")
     private val ENERGY_RAIN_TERMINAL_STATUSES = setOf("FINISHED", "DONE", "RECEIVED", "SUCCESS", "COMPLETED")
     private val ENERGY_RAIN_DRIVE_TASK_MAPPING =
@@ -472,8 +474,18 @@ object EnergyRainCoroutine {
             val actionableCandidates = candidates.filter { it.taskStatus in ENERGY_RAIN_ACTIONABLE_STATUSES }
             if (actionableCandidates.isNotEmpty()) {
                 var attemptedCandidate = false
+                var blacklistedCandidate = false
                 var unknownFailureSeen = false
                 for (candidate in actionableCandidates) {
+                    if (TaskBlacklist.isTaskInBlacklist(FOREST_TASK_BLACKLIST_MODULE, candidate.taskType)) {
+                        blacklistedCandidate = true
+                        Log.forest(
+                            "能量雨机会任务[${candidate.taskTitle}][${candidate.taskType}] " +
+                                "scene=${candidate.sceneCode} appId=${candidate.appId.orEmpty()} " +
+                                "命中森林黑名单，因无稳定闭环跳过",
+                        )
+                        continue
+                    }
                     if (!attemptedGameTaskKeys.add(candidate.attemptKey)) {
                         Log.forest("能量雨机会任务[${candidate.taskTitle}]本轮已尝试，跳过重复执行")
                         continue
@@ -514,7 +526,11 @@ object EnergyRainCoroutine {
                     }
                 }
                 if (!attemptedCandidate) {
-                    Log.forest("能量雨机会任务候选本轮均已尝试，等待服务端状态刷新")
+                    if (blacklistedCandidate) {
+                        Log.forest("能量雨机会任务候选均已按森林黑名单跳过，不写入完成标记")
+                    } else {
+                        Log.forest("能量雨机会任务候选本轮均已尝试，等待服务端状态刷新")
+                    }
                 }
                 return if (unknownFailureSeen) TaskResult.UNKNOWN_FAILURE else TaskResult.NOT_FOUND
             }
@@ -599,9 +615,7 @@ object EnergyRainCoroutine {
         }
 
     private fun extractEnergyRainTaskAppId(url: String): String? =
-        APP_ID_QUERY_REGEX.find(url)?.groupValues?.getOrNull(1)?.takeIf {
-            it.isNotBlank()
-        }
+        Uri.parse(url).getQueryParameter("appId")?.takeIf { it.isNotBlank() }
 
     private fun isForestSljydCandidate(candidate: EnergyRainGameTaskCandidate): Boolean =
         candidate.taskType == FOREST_SLJYD_TASK_TYPE ||

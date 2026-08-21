@@ -377,6 +377,7 @@ private val goldTicketDefaultBlacklist = emptySet<String>()
 private val dodoDefaultBlacklist =
     setOf(
         "SGBHSD_QDRW", // 三国冰河时代类任务前缀，缺少稳定完成闭环
+        "GAME_CSGZJX_202502", // 2026-08-17 外部游戏任务无稳定完成/领奖RPC闭环
         "widget_202604|惊喜任务：添加森林组件", // 缺少稳定完成RPC闭环
     )
 

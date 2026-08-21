@@ -452,8 +452,19 @@ class AntDodo : ModelTask() {
                     detail = dodoActionDetail(item, "reDecisionTaskOpenGreen")
                 )
             }
-            val bizInfo = raw.optJSONObject("bizInfo") ?: JSONObject()
-            val response = finishTodoTask(taskBaseInfo, bizInfo, item.sceneCode, item.type)
+            val unsupportedGameDetail = unsupportedGameTaskDetail(taskBaseInfo)
+            if (unsupportedGameDetail != null) {
+                val detail = dodoActionDetail(item, "finishTask") + " $unsupportedGameDetail"
+                Log.error(TAG, "神奇物种外部游戏任务缺少稳定完成RPC闭环，跳过伪完成: $detail")
+                return TaskFlowActionResult.failure(
+                    failureType = TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE,
+                    code = "UNSUPPORTED_GAMEPLAY_TASK",
+                    message = "外部游戏任务缺少稳定完成RPC闭环",
+                    rpc = "DodoTaskFlowAdapter.finishTask",
+                    detail = detail,
+                )
+            }
+            val response = AntDodoRpcCall.finishTask(item.sceneCode, item.type)
             if (response.isNullOrEmpty()) {
                 return emptyActionResponse("AntDodoRpcCall.finishTask", item, "finishTask")
             }
@@ -698,31 +709,22 @@ class AntDodo : ModelTask() {
         return result
     }
 
-    private fun finishTodoTask(
-        taskBaseInfo: JSONObject,
-        bizInfo: JSONObject,
-        sceneCode: String,
-        taskType: String
-    ): String {
-        if (taskType.startsWith("GAME_") || taskType.contains("WZDAOLIU")) {
-            extractDodoGameAppId(taskBaseInfo, bizInfo)?.let { appId ->
-                AntDodoRpcCall.clickGame(appId)
-            }
-        }
-        return AntDodoRpcCall.finishTask(sceneCode, taskType)
-    }
-
-    private fun extractDodoGameAppId(taskBaseInfo: JSONObject, bizInfo: JSONObject): String? {
-        val taskJumpUrl = bizInfo.optString("taskJumpUrl")
-        val appIdFromUrl = Regex("appId=(\\d+)").find(taskJumpUrl)?.groupValues?.getOrNull(1)
-        if (!appIdFromUrl.isNullOrBlank()) {
-            return appIdFromUrl
-        }
-        return JSONObject(taskBaseInfo.optString("prodPlayParam", "{}"))
-            .optJSONObject("taskCategorization")
-            ?.optJSONObject("categorizationParamModel")
+    private fun unsupportedGameTaskDetail(taskBaseInfo: JSONObject): String? {
+        val prodPlayParam = parseDodoBizInfo(taskBaseInfo.opt("prodPlayParam"))
+        val taskCategorization = prodPlayParam.optJSONObject("taskCategorization") ?: return null
+        val categorizationSecondLevel = taskCategorization.optString("categorizationSecondLevel").trim()
+        val gameId = taskCategorization
+            .optJSONObject("categorizationParamModel")
             ?.optString("game_id")
+            ?.trim()
             ?.takeIf { it.isNotBlank() }
+            ?: return null
+        if (!categorizationSecondLevel.equals("Game", ignoreCase = true)) {
+            return null
+        }
+        val taskProdPlayType = taskBaseInfo.optString("taskProdPlayType").trim()
+        return "categorizationSecondLevel=$categorizationSecondLevel " +
+            "taskProdPlayType=${taskProdPlayType.ifBlank { "UNKNOWN" }} gameId=$gameId"
     }
 
     private fun propList(allowReplenish: Boolean = true) {
