@@ -318,7 +318,9 @@ object Log {
 
     @JvmStatic
     fun capture(msg: String) {
-        write(LogChannel.CAPTURE, Severity.INFO, msg)
+        // capture.log is shared by processes; keep every legacy capture record on one physical line.
+        val singleLineMessage = msg.replace("\r", "\\r").replace("\n", "\\n")
+        write(LogChannel.CAPTURE, Severity.INFO, singleLineMessage)
     }
 
     @JvmStatic

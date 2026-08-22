@@ -155,7 +155,12 @@ class ApplicationHook {
         // 1. 初始化配置读取
         remotePreferences = loadRemotePreferences(framework)
 
-        // 2. 进程检查
+        // 2. 进程检查。Lite 子进程只安装自然 RPC 抓包，不得进入任务运行时。
+        if (shouldHookCaptureOnlyProcess()) {
+            installCaptureOnlyHooks(activeLoader)
+            hookCaptureOnlyProcessAttach()
+            return
+        }
         if (!shouldHookProcess()) return
 
         init(Files.CONFIG_DIR)
@@ -193,11 +198,11 @@ class ApplicationHook {
         }.getOrNull()
     }
 
-    private fun shouldHookProcess(): Boolean {
-        val isMainProcess = General.PACKAGE_NAME == finalProcessName
-        return isMainProcess && RuntimeIdentityGuard.isPackageReady()
-//            record(TAG, "跳过辅助进程: $finalProcessName")
-    }
+    private fun shouldHookProcess(): Boolean =
+        RuntimeIdentityGuard.isMainProcess() && RuntimeIdentityGuard.isPackageReady()
+
+    private fun shouldHookCaptureOnlyProcess(): Boolean =
+        RuntimeIdentityGuard.isCaptureOnlyProcess() && RuntimeIdentityGuard.isPackageReady()
 
     private fun initReflection(loader: ClassLoader) {
         try {
@@ -213,6 +218,45 @@ class ApplicationHook {
             deoptimizeClass(loadedApkClass)
         } catch (_: Throwable) {
             // ignore
+        }
+    }
+
+    private fun installCaptureOnlyHooks(activeLoader: ClassLoader) {
+        val installed = RpcTrafficCapture.installForCaptureOnlyProcess(activeLoader)
+        val application = runCatching {
+            val activityThread = Class.forName("android.app.ActivityThread")
+            activityThread.getDeclaredMethod("currentApplication").invoke(null) as? Application
+        }.getOrNull()
+        application?.let { Log.init(it) }
+        Log.runtime(
+            TAG,
+            "capture_only_hook_install: process=$finalProcessName installed=$installed applicationReady=${application != null}",
+        )
+    }
+
+    private fun hookCaptureOnlyProcessAttach() {
+        try {
+            val attachMethod = findMethod(Application::class.java, "attach", Context::class.java)
+            requireXposedInterface().hook(attachMethod).intercept { chain ->
+                val result = chain.proceed()
+                val context = chain.args[0] as? Context ?: return@intercept result
+                val identityDecision = RuntimeIdentityGuard.verifyApplicationAttach(context)
+                if (!identityDecision.accepted || !RuntimeIdentityGuard.isCaptureOnlyProcess()) {
+                    android.util.Log.w(TAG, "capture_instance_rejected: ${identityDecision.reasonCode}")
+                    return@intercept result
+                }
+                XposedEnv.runtimeIdentity = RuntimeIdentityGuard.trustedIdentity()
+                Log.init(context)
+                val activeLoader = classLoader ?: return@intercept result
+                val installed = RpcTrafficCapture.installForCaptureOnlyProcess(activeLoader)
+                Log.runtime(
+                    TAG,
+                    "capture_only_hook_ready: process=$finalProcessName installed=$installed",
+                )
+                result
+            }
+        } catch (e: Exception) {
+            Log.printStackTrace(TAG, "Capture-only attach hook failed", e)
         }
     }
 

@@ -360,12 +360,15 @@ class AriverRpcBridge : RpcBridge {
         var localBridgeCallbackClazzArray = bridgeCallbackClazzArray
         val captureMethodName = rpcEntity.requestMethod
         val captureModuleTraffic = BaseModel.debugMode.value == true && !captureMethodName.isNullOrBlank()
+        val captureRequestId = if (captureModuleTraffic) RpcTrafficCapture.newRequestId() else null
         val captureStartedAtMs = if (captureModuleTraffic) System.currentTimeMillis() else 0L
         var captureSucceeded = false
         var captureNote: String? = null
+        var captureAttemptId: String? = null
+        var captureAttemptResponseRecorded = false
 
         if (captureModuleTraffic) {
-            RpcTrafficCapture.recordModuleRequest(captureMethodName, rpcEntity.requestData)
+            RpcTrafficCapture.recordModuleRequest(captureMethodName, rpcEntity.requestData, captureRequestId!!)
         }
 
         if (io.github.aoguai.sesameag.hook.ApplicationHookConstants
@@ -416,6 +419,18 @@ class AriverRpcBridge : RpcBridge {
                             Log.error(TAG, "requestMethod为null")
                             return null
                         }
+                    val attemptStartedAtMs = if (captureModuleTraffic) System.currentTimeMillis() else 0L
+                    val attemptId = if (captureModuleTraffic) RpcTrafficCapture.newAttemptId() else null
+                    captureAttemptId = attemptId
+                    if (captureModuleTraffic) {
+                        RpcTrafficCapture.recordModuleAttempt(
+                            captureMethodName,
+                            rpcEntity.requestData,
+                            captureRequestId!!,
+                            attemptId!!,
+                            count,
+                        )
+                    }
                     RpcIntervalLimit.enterIntervalLimit(requestMethod)
                     val finalLocalBridgeCallbackClazzArray = localBridgeCallbackClazzArray
                     localRpcCallMethod.invoke(
@@ -456,25 +471,34 @@ class AriverRpcBridge : RpcBridge {
                                     if (args != null && args.isNotEmpty()) {
                                         try {
                                             val obj = args[0]
-                                            // 获取JSON字符串，失败时重试一次
-                                            var jsonString: String? = null
-                                            try {
-                                                jsonString = callMethod(obj, "toJSONString") as String
-                                            } catch (e: Exception) {
-                                                // 第一次失败，尝试重试
+                                            // 获取JSON字符串，失败时重试一次。
+                                            val jsonString =
                                                 try {
-                                                    GlobalThreadPools.sleepCompat(100L)
-                                                    jsonString = callMethod(obj, "toJSONString") as String
-                                                } catch (retryException: Exception) {
-                                                    // 重试后仍失败，记录日志并标记错误，触发外层RPC重试
-                                                    Log.runtime(TAG, "toJSONString 重试后仍然失败，将触发整个 RPC 请求重试: ${retryException.message}")
-                                                    rpcEntity.setResponseObject(obj, null)
-                                                    rpcEntity.setError()
-                                                    return@newProxyInstance null
+                                                    callMethod(obj, "toJSONString") as String
+                                                } catch (e: Exception) {
+                                                    try {
+                                                        GlobalThreadPools.sleepCompat(100L)
+                                                        callMethod(obj, "toJSONString") as String
+                                                    } catch (retryException: Exception) {
+                                                        // 重试后仍失败，记录日志并标记错误，触发外层RPC重试
+                                                        Log.runtime(TAG, "toJSONString 重试后仍然失败，将触发整个 RPC 请求重试: ${retryException.message}")
+                                                        rpcEntity.setResponseObject(obj, null)
+                                                        rpcEntity.setError()
+                                                        return@newProxyInstance null
+                                                    }
                                                 }
-                                            }
 
                                             rpcEntity.setResponseObject(obj, jsonString)
+                                            if (captureModuleTraffic) {
+                                                RpcTrafficCapture.recordModuleResponse(
+                                                    captureMethodName,
+                                                    jsonString,
+                                                    System.currentTimeMillis() - attemptStartedAtMs,
+                                                    captureRequestId,
+                                                    attemptId,
+                                                )
+                                                captureAttemptResponseRecorded = true
+                                            }
                                             if (!(callMethod(obj, "containsKey", "success") as Boolean) &&
                                                 !(callMethod(obj, "containsKey", "isSuccess") as Boolean)
                                             ) {
@@ -663,14 +687,22 @@ class AriverRpcBridge : RpcBridge {
                     } else {
                         -1L
                     }
-                if (captureSucceeded && !rpcEntity.hasError) {
-                    RpcTrafficCapture.recordModuleResponse(captureMethodName, rpcEntity.responseString, elapsedMs)
+                if (captureSucceeded && !rpcEntity.hasError && !captureAttemptResponseRecorded) {
+                    RpcTrafficCapture.recordModuleResponse(
+                        captureMethodName,
+                        rpcEntity.responseString,
+                        elapsedMs,
+                        captureRequestId,
+                        captureAttemptId,
+                    )
                 } else {
                     RpcTrafficCapture.recordModuleError(
                         captureMethodName,
                         rpcEntity.responseString,
                         elapsedMs,
                         captureNote ?: if (rpcEntity.hasError) "rpc_entity_error" else "request_returned_null",
+                        captureRequestId,
+                        captureAttemptId,
                     )
                 }
             }

@@ -13,6 +13,7 @@ import io.github.aoguai.sesameag.entity.UserEntity
 import io.github.aoguai.sesameag.hook.AccountSlotRegistry
 import io.github.aoguai.sesameag.hook.AccountSlotSnapshot
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
+import io.github.aoguai.sesameag.hook.rpc.capture.RpcTrafficCapture
 import io.github.aoguai.sesameag.service.ConnectionState
 import io.github.aoguai.sesameag.service.LsposedServiceManager
 import io.github.aoguai.sesameag.ui.permissions.PermissionHealthSnapshot
@@ -422,6 +423,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val failedCount = logFiles.count { file ->
                 file.exists() && !Files.clearFile(file)
             }
+            RpcTrafficCapture.resetCaptureSession()
 
             withContext(Dispatchers.Main) {
                 ToastUtil.showUiToast(
