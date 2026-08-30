@@ -4,6 +4,7 @@ import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.task.TaskStatus
 import io.github.aoguai.sesameag.task.common.DeferredReason
+import io.github.aoguai.sesameag.task.common.GameCenterPlayRpcCall
 import io.github.aoguai.sesameag.task.common.TaskFlowAction
 import io.github.aoguai.sesameag.task.common.TaskFlowActionResult
 import io.github.aoguai.sesameag.task.common.TaskFlowAdapter
@@ -358,6 +359,19 @@ class ForestChouChouLe {
         )
     }
 
+    private fun isStructuredGameTask(
+        taskBaseInfo: JSONObject,
+        bizInfo: JSONObject,
+        prodPlayParam: JSONObject,
+    ): Boolean =
+        sequenceOf(
+            prodPlayParam.optJSONObject("taskCategorization"),
+            taskBaseInfo.optJSONObject("taskCategorization"),
+            bizInfo.optJSONObject("taskCategorization"),
+        ).filterNotNull().any {
+            it.optString("categorizationSecondLevel").equals("Game", ignoreCase = true)
+        }
+
     private fun isAutomatableDrawTask(taskBaseInfo: JSONObject): Boolean {
         val taskStatus = taskBaseInfo.optString("taskStatus").uppercase(Locale.ROOT)
         if (taskStatus !in setOf(TaskStatus.TODO.name, "WAIT_COMPLETE")) {
@@ -369,6 +383,11 @@ class ForestChouChouLe {
             bizInfo.optJSONObject("exchangeAssetsInfo") != null &&
             prodPlayParam.optString("acwSceneCode") == "VITALITY_EXCHANGE_DRAW"
         if (exchangeTask) {
+            return true
+        }
+        if (isStructuredGameTask(taskBaseInfo, bizInfo, prodPlayParam) &&
+            GameCenterPlayRpcCall.resolveContract(taskBaseInfo, bizInfo) != null
+        ) {
             return true
         }
         if (taskBaseInfo.optString("taskProdPlayType") in setOf("VISIT_FLOAT_BALL", "CALL_APP_OUT_TASK")) {
@@ -588,6 +607,28 @@ class ForestChouChouLe {
 
         override fun complete(item: TaskFlowItem): TaskFlowActionResult {
             val taskBaseInfo = taskBaseInfo(item) ?: return missingTaskData(item, "complete")
+            forestGamePlayContract(item)?.let { contract ->
+                val ack = GameCenterPlayRpcCall.submitForAck(contract)
+                val response = ack.response
+                    ?: return TaskFlowActionResult.failure(
+                        failureType = ack.failureType,
+                        message = "时长动作响应无法解析",
+                        rpc = "GameCenterPlayRpcCall.submit",
+                        raw = ack.raw,
+                        detail = actionDetail(item, TaskFlowAction.COMPLETE),
+                    )
+                if (!ack.accepted) {
+                    return TaskFlowActionResult.failure(
+                        failureType = ack.failureType,
+                        code = response.optString("resultCode"),
+                        message = response.optString("resultDesc", response.optString("desc", ack.raw)),
+                        rpc = "GameCenterPlayRpcCall.submit",
+                        raw = ack.raw,
+                        detail = actionDetail(item, TaskFlowAction.COMPLETE),
+                    )
+                }
+                Log.forest("${scene.name} 时长上报已接受: ${item.title}，继续原任务完成闭环")
+            }
             val exchangeDrawTask = isExchangeDrawTask(item)
             val response =
                 if (exchangeDrawTask) {
@@ -646,8 +687,18 @@ class ForestChouChouLe {
             action: TaskFlowAction,
             result: TaskFlowActionResult,
         ) {
-            if (action == TaskFlowAction.RECEIVE ||
-                (action == TaskFlowAction.COMPLETE && isExchangeDrawTask(item))
+            if (shouldSyncDrawAsset(item, action)) {
+                syncDrawAssetAfterTaskAward(scene)
+            }
+        }
+
+        override fun afterDeferred(
+            item: TaskFlowItem,
+            action: TaskFlowAction,
+            result: TaskFlowActionResult,
+        ) {
+            if (result.deferredReason == DeferredReason.STATE_CONFIRMATION &&
+                shouldSyncDrawAsset(item, action)
             ) {
                 syncDrawAssetAfterTaskAward(scene)
             }
@@ -723,9 +774,16 @@ class ForestChouChouLe {
                 }
 
                 response.check() -> {
-                    val actionName = if (action == TaskFlowAction.RECEIVE) "奖励领取成功" else "任务已提交"
-                    Log.forest("${scene.name} $actionName: ${item.title}")
-                    return TaskFlowActionResult.success(refreshAfterAction = true)
+                    val actionName = if (action == TaskFlowAction.RECEIVE) "奖励领取请求已受理" else "任务提交请求已受理"
+                    Log.forest("${scene.name} $actionName: ${item.title}，等待任务列表确认")
+                    return TaskFlowActionResult.defer(
+                        deferredReason = DeferredReason.STATE_CONFIRMATION,
+                        message = "${action.logName}已返回成功，等待${scene.name}任务列表确认",
+                        rpc = rpc,
+                        raw = response.toString(),
+                        detail = actionDetail(item, action),
+                        refreshAfterAction = true,
+                    )
                 }
 
                 response.optBoolean("retriable") || response.optBoolean("retryable") -> {
@@ -759,13 +817,32 @@ class ForestChouChouLe {
             item.raw?.optJSONObject("bizInfo") ?: JSONObject()
 
         private fun taskProdPlayParam(item: TaskFlowItem): JSONObject =
-            taskBaseInfo(item)?.optString("prodPlayParam")?.toJson() ?: JSONObject()
+            when (val value = taskBaseInfo(item)?.opt("prodPlayParam")) {
+                is JSONObject -> value
+                is String -> value.toJson()
+                else -> null
+            } ?: JSONObject()
 
         private fun isExchangeDrawTask(item: TaskFlowItem): Boolean {
             val taskBaseInfo = taskBaseInfo(item) ?: return false
-            return taskBaseInfo.optString("taskProdPlayType") == "EXCHANGE_ASSET" &&
-                taskBizInfo(item).optJSONObject("exchangeAssetsInfo") != null &&
-                taskProdPlayParam(item).optString("acwSceneCode") == "VITALITY_EXCHANGE_DRAW"
+            val prodPlayParam = taskProdPlayParam(item)
+            val bizInfo = taskBizInfo(item)
+            val isExchangeAsset = sequenceOf(
+                taskBaseInfo.optString("taskProdPlayType"),
+                prodPlayParam.optString("taskProdPlayType"),
+                bizInfo.optString("taskProdPlayType"),
+            ).any { it == "EXCHANGE_ASSET" }
+            val exchangeAssetsInfo = sequenceOf(
+                bizInfo.optJSONObject("exchangeAssetsInfo"),
+                taskBaseInfo.optJSONObject("exchangeAssetsInfo"),
+                prodPlayParam.optJSONObject("exchangeAssetsInfo"),
+            ).firstOrNull { it != null }
+            val vitalityScene = sequenceOf(
+                prodPlayParam.optString("acwSceneCode"),
+                taskBaseInfo.optString("acwSceneCode"),
+                bizInfo.optString("acwSceneCode"),
+            ).any { it == "VITALITY_EXCHANGE_DRAW" }
+            return isExchangeAsset && exchangeAssetsInfo != null && vitalityScene
         }
 
         /**
@@ -773,6 +850,9 @@ class ForestChouChouLe {
          */
         private fun requiresExternalBusinessAction(item: TaskFlowItem): Boolean {
             if (isExchangeDrawTask(item)) {
+                return false
+            }
+            if (forestGamePlayContract(item) != null) {
                 return false
             }
             val taskBaseInfo = taskBaseInfo(item) ?: return false
@@ -791,6 +871,22 @@ class ForestChouChouLe {
                 ?.optString("categorizationSecondLevel") == "Game"
         }
 
+        private fun forestGamePlayContract(item: TaskFlowItem): GameCenterPlayRpcCall.Contract? {
+            val taskBaseInfo = taskBaseInfo(item) ?: return null
+            val prodPlayParam = taskProdPlayParam(item)
+            val bizInfo = taskBizInfo(item)
+            if (!isStructuredGameTask(taskBaseInfo, bizInfo, prodPlayParam)) return null
+
+            val contract = GameCenterPlayRpcCall.resolveContract(taskBaseInfo, bizInfo) ?: return null
+            // 客户端抓包显示任务要求时长上报时增加一秒，再提交普通任务完成动作。
+            val reportTime = contract.playTime.toLong() + 1L
+            if (reportTime > Int.MAX_VALUE) {
+                Log.error(TAG, "${scene.name} 森林游戏任务[${item.title}]时长超出上报范围: ${contract.playTime}")
+                return null
+            }
+            return contract.copy(playTime = reportTime.toInt())
+        }
+
         private fun missingTaskData(
             item: TaskFlowItem,
             action: String,
@@ -801,6 +897,13 @@ class ForestChouChouLe {
                 rpc = "ChouChouLeTaskFlowAdapter.$action",
                 detail = actionDetail(item, null),
             )
+
+        private fun shouldSyncDrawAsset(
+            item: TaskFlowItem,
+            action: TaskFlowAction,
+        ): Boolean =
+            action == TaskFlowAction.RECEIVE ||
+                (action == TaskFlowAction.COMPLETE && isExchangeDrawTask(item))
 
         private fun actionDetail(
             item: TaskFlowItem,
