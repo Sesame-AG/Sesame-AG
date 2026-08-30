@@ -28,6 +28,7 @@ import io.github.aoguai.sesameag.task.common.TaskFlowActionResult
 import io.github.aoguai.sesameag.task.common.TaskFlowAdapter
 import io.github.aoguai.sesameag.task.common.TaskFlowDecision
 import io.github.aoguai.sesameag.task.common.TaskFlowEngine
+import io.github.aoguai.sesameag.task.common.TaskFlowExecutionState
 import io.github.aoguai.sesameag.task.common.TaskFlowItem
 import io.github.aoguai.sesameag.task.common.TaskFlowPhase
 import io.github.aoguai.sesameag.task.common.TaskFlowSnapshot
@@ -509,6 +510,7 @@ class AntStall : ModelTask() {
         }
 
     override fun runJava() {
+        val taskFlowExecutionState = TaskFlowExecutionState()
         try {
             val tc = TimeCounter(TAG)
             Log.stall("执行开始-${getName()}")
@@ -574,11 +576,18 @@ class AntStall : ModelTask() {
                     Status.hasFlagToday(StatusFlags.FLAG_ANTSTALL_TASKS_DONE) &&
                         !stallTasksDoneInvalidatedThisRun
                 if (!taskHandledToday) {
-                    val firstTaskRefreshMarkedDone = taskList(allowMarkDone = true)
+                    val firstTaskRefreshMarkedDone =
+                        taskList(
+                            allowMarkDone = true,
+                            executionState = taskFlowExecutionState,
+                        )
                     tc.countDebug("自动任务第一次")
                     if (!firstTaskRefreshMarkedDone) {
                         GlobalThreadPools.sleepCompat(500)
-                        taskList(allowMarkDone = true)
+                        taskList(
+                            allowMarkDone = true,
+                            executionState = taskFlowExecutionState,
+                        )
                         tc.countDebug("自动任务第二次")
                     }
                 }
@@ -611,7 +620,11 @@ class AntStall : ModelTask() {
             if (stallAutoTask.value == true &&
                 (stallTasksDoneInvalidatedThisRun || !Status.hasFlagToday(StatusFlags.FLAG_ANTSTALL_TASKS_DONE))
             ) {
-                taskList(skipIfHandledToday = false, allowMarkDone = true)
+                taskList(
+                    skipIfHandledToday = false,
+                    allowMarkDone = true,
+                    executionState = taskFlowExecutionState,
+                )
                 tc.countDebug("自动任务最终刷新")
             }
 
@@ -1361,10 +1374,16 @@ class AntStall : ModelTask() {
     private fun taskList(
         skipIfHandledToday: Boolean = true,
         allowMarkDone: Boolean = true,
+        executionState: TaskFlowExecutionState = TaskFlowExecutionState(),
     ): Boolean {
         try {
             val adapter = StallTaskFlowAdapter(skipIfHandledToday)
-            val result = TaskFlowEngine(adapter, roundSleepMs = 500L).run()
+            val result =
+                TaskFlowEngine(
+                    adapter = adapter,
+                    roundSleepMs = 500L,
+                    executionState = executionState,
+                ).run()
             if (allowMarkDone && !result.stopped && adapter.canMarkTasksDone()) {
                 Status.setFlagToday(StatusFlags.FLAG_ANTSTALL_TASKS_DONE)
                 stallTasksDoneInvalidatedThisRun = false
