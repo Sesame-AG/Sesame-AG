@@ -20,6 +20,7 @@ object AntOceanRpcCall {
     private const val SOURCE_AI_FISH = "ANT_OCEAN"
     private const val SOURCE_FOREST = "ANT_FOREST"
     private const val SOURCE_OCEAN = "ANTFOCEAN"
+    private const val SOURCE_TASK_FINISH_H5 = "ANTOCEAN"
     private const val SOURCE_REPLICA = "senlinzuoshangjiao"
     private const val SOURCE_SEA_AREA_LIST = "seaAreaList"
     
@@ -59,6 +60,14 @@ object AntOceanRpcCall {
             "${taskType}_${RandomUtil.nextDouble()}"
         }
     }
+
+    private fun buildGameFinishTaskPayload(sceneCode: String, taskType: String): JSONObject =
+        JSONObject()
+            .put("outBizNo", buildTaskOutBizNo(taskType))
+            .put("requestType", "H5")
+            .put("sceneCode", sceneCode)
+            .put("source", SOURCE_TASK_FINISH_H5)
+            .put("taskType", taskType)
     
     @JvmStatic
     fun queryOceanStatus(): String {
@@ -189,6 +198,15 @@ object AntOceanRpcCall {
         return RequestManager.requestString(
             "com.alipay.antiep.finishTask",
             "[${buildFinishTaskPayload(sceneCode, taskType)}]"
+        )
+    }
+
+    /** Captured H5 completion contract for game tasks returned by ANTOCEAN_TASK. */
+    @JvmStatic
+    fun finishGameTask(sceneCode: String, taskType: String): String {
+        return RequestManager.requestString(
+            "com.alipay.antiep.finishTask",
+            "[${buildGameFinishTaskPayload(sceneCode, taskType)}]"
         )
     }
     

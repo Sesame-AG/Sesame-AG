@@ -107,7 +107,7 @@ class AntFishPond : ModelTask() {
                     var latestTaskListDone = initialTaskListDone
                     while (true) {
                         handleSubplots()
-                        latestTaskListDone = handleTaskList(skipIfHandledToday = false, allowMarkDone = false)
+                        latestTaskListDone = handleTaskList(allowMarkDone = false)
                         val followUpIndex = queryIndex()
                         if (followUpIndex == null || extractRodCount(followUpIndex) <= 0) {
                             break
@@ -125,7 +125,7 @@ class AntFishPond : ModelTask() {
                     }
                 } else if (subplotChanged) {
                     Log.fishpond("本轮未实际钓鱼，但鱼池子活动有进展，补刷新任务状态")
-                    handleTaskList(skipIfHandledToday = false, allowMarkDone = true)
+                    handleTaskList(allowMarkDone = true)
                 } else {
                     if (initialTaskListDone) {
                         Status.setFlagToday(StatusFlags.FLAG_ANTFISHPOND_TASKS_DONE)
@@ -279,21 +279,21 @@ class AntFishPond : ModelTask() {
     }
 
     private fun handleTaskList(
-        skipIfHandledToday: Boolean = true,
         allowMarkDone: Boolean = true,
     ): Boolean {
         try {
-            if (skipIfHandledToday &&
-                Status.hasFlagToday(StatusFlags.FLAG_ANTFISHPOND_TASKS_DONE) &&
-                Status.hasFlagToday(StatusFlags.FLAG_ANTFISHPOND_SIGN_DONE)
-            ) {
-                Log.fishpond("福气鱼池任务[今日已处理，跳过]")
+            if (Status.hasFlagToday(StatusFlags.FLAG_ANTFISHPOND_TASKS_DONE)) {
+                if (!Status.hasFlagToday(StatusFlags.FLAG_ANTFISHPOND_SIGN_DONE)) {
+                    val listJson = queryTaskList() ?: return false
+                    handleSign(listJson)
+                }
+                Log.fishpond("福气鱼池任务[今日已处理，跳过任务流]")
                 return true
             }
             val listJson = queryTaskList() ?: return false
             handleSign(listJson)
 
-            val taskFlowAdapter = FishPondTaskFlowAdapter(skipIfHandledToday, listJson)
+            val taskFlowAdapter = FishPondTaskFlowAdapter(listJson)
             val result =
                 TaskFlowEngine(
                     taskFlowAdapter,
@@ -363,7 +363,6 @@ class AntFishPond : ModelTask() {
     }
 
     private inner class FishPondTaskFlowAdapter(
-        private val skipIfHandledToday: Boolean,
         initialResponse: JSONObject,
     ) : TaskFlowAdapter {
         private var firstResponse: JSONObject? = initialResponse
@@ -377,7 +376,7 @@ class AntFishPond : ModelTask() {
         override val flowName: String = "福气鱼池任务"
 
         override fun isFlowHandledToday(): Boolean =
-            skipIfHandledToday && Status.hasFlagToday(StatusFlags.FLAG_ANTFISHPOND_TASKS_DONE)
+            Status.hasFlagToday(StatusFlags.FLAG_ANTFISHPOND_TASKS_DONE)
 
         override fun query(): JSONObject {
             firstResponse?.let { response ->
@@ -546,6 +545,9 @@ class AntFishPond : ModelTask() {
             return blacklisted
         }
 
+        override fun isUnresolvedWhenSkipped(item: TaskFlowItem): Boolean =
+            mapPhase(item) != TaskFlowPhase.TERMINAL && !super<TaskFlowAdapter>.isBlacklisted(item)
+
         override fun receive(item: TaskFlowItem): TaskFlowActionResult {
             return claimTaskAward(item)
         }
@@ -655,19 +657,26 @@ class AntFishPond : ModelTask() {
                 if (super<TaskFlowAdapter>.isBlacklisted(item)) {
                     continue
                 }
-                val phase = mapPhase(item)
-                if (phase == TaskFlowPhase.UNKNOWN) {
-                    return false
-                }
-                if (phase == TaskFlowPhase.REWARD_READY &&
-                    !handledTaskAwards.contains(buildFishPondAwardKey(item))
-                ) {
-                    return false
-                }
-                if (phase == TaskFlowPhase.READY_TO_COMPLETE &&
-                    !handledVisitFinishes.contains(buildFishPondVisitKey(item))
-                ) {
-                    return false
+                when (val phase = mapPhase(item)) {
+                    TaskFlowPhase.TERMINAL -> Unit
+                    TaskFlowPhase.REWARD_READY -> {
+                        if (!handledTaskAwards.contains(buildFishPondAwardKey(item))) {
+                            return false
+                        }
+                    }
+
+                    TaskFlowPhase.READY_TO_COMPLETE -> {
+                        if (!handledVisitFinishes.contains(buildFishPondVisitKey(item))) {
+                            return false
+                        }
+                    }
+
+                    TaskFlowPhase.BUSINESS_ACTION,
+                    TaskFlowPhase.UNSUPPORTED,
+                    TaskFlowPhase.UNKNOWN,
+                    TaskFlowPhase.SIGNUP_REQUIRED,
+                    TaskFlowPhase.SIGNUP_COMPLETE,
+                    -> return false
                 }
             }
             return true
