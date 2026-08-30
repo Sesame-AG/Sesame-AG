@@ -7,84 +7,35 @@ package io.github.aoguai.sesameag.util
 private val sesameCreditDefaultBlacklist =
     setOf(
         // 芝麻信用 / 芝麻粒
-        "每日施肥领水果", // 需要淘宝操作
-        "坚持种水果", // 需要淘宝操作
-        "坚持去玩休闲小游戏", // 需要游戏操作
-        "去AQapp提问", // 需要下载APP
-        "去AQ提问", // 需要下载APP
-        "坚持看直播领福利", // 需要淘宝直播
-        "去淘金币逛一逛", // 需要淘宝操作
         "zml_zijie_toutiaozhuduan_sanfang", // 今日头条唤端任务，缺少稳定完成RPC闭环
-        "实时看热点", // 今日头条唤端任务：promiseActivityExtCheck参数错误
-        "头条刷热点领现金", // 同一template标题变体，避免领取后再次触发频控
-        "坚持攒保障金", // 参数错误：promiseActivityExtCheck
-        "芝麻租赁下单得芝麻粒", // 需要租赁操作
-        "去玩小游戏", // 参数错误：promiseActivityExtCheck
-        "玩小游戏30秒", // 参数错误：promiseActivityExtCheck
-        "浏览租赁商家小程序", // 需要小程序操作
-        "订阅小组件", // 参数错误：promiseActivityExtCheck
-        "订阅芝麻粒签到提醒", // 模板失效：PROMISE_TEMPLATE_NOT_EXIST
-        "租1笔图书", // 参数错误：promiseActivityExtCheck
-        "去订阅芝麻小组件", // 参数错误：promiseActivityExtCheck
-        "坚持攒保障", // 参数错误：promiseActivityExtCheck（与"坚持攒保障金"类似，防止匹配遗漏）
-        "逛逛淘金币", // 参数错误：promiseActivityExtCheck
-        "0.01元/日起", // 参数错误：promiseActivityExtCheck / ILLEGAL_ARGUMENT
-        "0.1元起租会员攒粒", // 参数错误：ILLEGAL_ARGUMENT
-        "完成旧衣回收得现金", // 参数错误：ILLEGAL_ARGUMENT
-        "完成任务逛逛天猫领红包", // 参数错误：ILLEGAL_ARGUMENT
-        "完成任务坚持逛裹酱领福利", // 参数错误：ILLEGAL_ARGUMENT
-        "完成任务去玩一局斗地主", // 参数错误：ILLEGAL_ARGUMENT
-        "完成任务添加桌面小组件", // 参数错误：ILLEGAL_ARGUMENT
-        "领取任务将芝麻信用添加到首页", // 服务端模板不存在：PROMISE_TEMPLATE_NOT_EXIST
-        "领取任务去开通信用额度", // 服务端模板不存在：PROMISE_TEMPLATE_NOT_EXIST
-        "去租赁下单", // 参数错误：promiseActivityExtCheck
-        "zml_xiangjiangshikaipao_renwu", // 参数错误：promiseActivityExtCheck
-        "去玩向僵尸开炮", // 参数错误：promiseActivityExtCheck
-        "AP17345296|芝麻树-蚂蚁阿福逛一逛唤活任务", // 芝麻树 NONE_SIGNUP 未知状态
-        "zml_diantao_renwu_sanfang|去点淘逛一逛", // pushActivity 参数错误：promiseActivityExtCheck
-        "zml_longjizhicheng_renwu|去玩龙迹之城", // 参数错误：promiseActivityExtCheck
-        "zml_jihewangguo_renwu|去玩几何王国", // 参数错误：promiseActivityExtCheck
-        "zml_langmancanting_renwu|去玩浪漫餐厅", // 参数错误：promiseActivityExtCheck；taskFeedback成功不代表pushActivity闭环成功
-        "zml_tbqd_qiandao_sanfang|逛淘宝签到", // 参数错误：promiseActivityExtCheck
-        "zml_eduka_renwu|去点击先用后付商品", // 参数错误：promiseActivityExtCheck
-        "zml_tbxiaoxiaole_renwu_sanfang|去逛一逛消消乐", // 参数错误：promiseActivityExtCheck
-        "zml_fengkuangshuishijie_renwu|去玩疯狂水世界", // 参数错误：promiseActivityExtCheck
-        "zml_baoweixiangrikui_renwu|去玩保卫向日葵", // 参数错误：promiseActivityExtCheck
-        "zml_sanguobingheshidai_renwu|去玩三国冰河时代", // 参数错误：promiseActivityExtCheck
-        "zml_zfbfeizhu_xiadan_sanfang|去飞猪订酒店", // 参数错误：promiseActivityExtCheck，固定跳过
-        "zml_renyi30s_7dacu", // promiseActivityExtCheck 返回 ILLEGAL_ARGUMENT，无稳定游戏完成闭环
-        "zml_zhuanhua_7dacu", // promiseActivityExtCheck 返回 ILLEGAL_ARGUMENT，无稳定游戏完成闭环
-        "zml_dageluosi_zhuanhua", // promiseActivityExtCheck 返回 ILLEGAL_ARGUMENT，无稳定游戏完成闭环
-        "zml_nuolegejian_zhuanhua", // promiseActivityExtCheck 返回 ILLEGAL_ARGUMENT，无稳定游戏完成闭环
-        "zml_doupocangqiong_renwu|去玩斗破苍穹", // pushActivity 返回 ILLEGAL_ARGUMENT，无稳定游戏完成闭环
-        "zml_lieyanjuexing_renwu|去玩烈焰觉醒", // pushActivity 返回 ILLEGAL_ARGUMENT，无稳定游戏完成闭环
+        "AP17345296", // 芝麻树 NONE_SIGNUP 未知状态
+        "zml_diantao_renwu_sanfang",
+        "zml_eduka_renwu",
+        "zml_zfbfeizhu_xiadan_sanfang",
         // 芝麻树 SIGNUP_SEND 游戏/导流任务
-        "AP11327686|秒杀浏览",
-        "AP18365439|去天天秒杀下1单", // rentGreenTaskFinish 返回 20020012，任务完成失败
-        "AP18344041|去玩我的***世界",
-        "AP15358968|去玩斗破苍穹",
-        "AP14359058|去玩青云诀之伏魔",
-        "AP18344357|去玩梦幻消除战",
-        "AP13358931|去玩寻道大千",
-        "AP16358982|去玩时光杂货店",
-        "AP13358969|去玩烈焰觉醒",
-        "AP17344131|去玩生存33天",
-        "AP17359071|去玩灵画师",
-        "AP11313161|首次订阅养老金动态及福利", // 成长锦囊新任务中心 NORMAL_TASK，需真实订阅/社保业务
-        "AP13350341|去查看我的借呗额度", // 成长锦囊新任务中心 NORMAL_TASK，借贷业务
-        "AP11327894|完成1笔借呗支用", // 成长锦囊新任务中心 NORMAL_TASK，借贷支用
-        "AP19361153|去借呗借一笔", // 成长锦囊新任务中心 NORMAL_TASK，借贷业务
-        "AP11287911|充话费最高立减1元", // 成长锦囊新任务中心 NORMAL_TASK，真实充值
-        "zml_mybx_xiadan_erfang|上蚂蚁保购入保险", // 参数错误：promiseActivityExtCheck
+        "AP11327686",
+        "AP18365439",
+        "AP18344041",
+        "AP15358968",
+        "AP14359058",
+        "AP18344357",
+        "AP13358931",
+        "AP16358982",
+        "AP13358969",
+        "AP17344131",
+        "AP17359071",
+        "AP11313161",
+        "AP13350341",
+        "AP11327894",
+        "AP19361153",
+        "AP11287911",
+        "zml_mybx_xiadan_erfang",
         "zml_check_in_subscribe_task", // joinActivity 返回 PROMISE_TEMPLATE_NOT_EXIST
         "zml_set_home_task", // joinActivity 返回 PROMISE_TEMPLATE_NOT_EXIST
         "zml_zmzl_xdrw_erfang", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实租赁下单
         "zml_tbbbnc_shifei_sanfang", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实淘宝行为
-        "zml_zfbyouxi_erfang", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实游戏行为
         "zmxy_zml_wannengxiaozujian", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实桌面组件行为
         "zml_cainiao_guojiang_sanfang", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实菜鸟行为
-        "zml_tbdoudizhu_renwu_sanfang", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实游戏行为
-        "zml_qingyunjuezhifumo_renwu", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实游戏行为
         // 芝麻树 RENT 游戏
         "AP19359169",
         "AP10359017",
@@ -98,52 +49,22 @@ private val sesameCreditDefaultBlacklist =
 private val sesameAlchemyDefaultBlacklist =
     setOf(
         // 芝麻炼金
-        "每日施肥",
-        "芝麻租赁",
-        "休闲小游戏",
-        "AQApp",
-        "订阅炼金",
-        "逛一逛蚂蚁阿福",
-        "租游戏账号",
-        "坚持签到",
-        "玩游戏完成10个订单",
-        "玩任意游戏30秒", // 缺少 promiseActivityExtCheck 闭环：ILLEGAL_ARGUMENT
-        "坚持去玩休闲小游戏", // 参数错误：ILLEGAL_ARGUMENT
-        "租游戏账号得芝麻粒", // 参数错误：ILLEGAL_ARGUMENT
-        "去玩浪漫餐厅", // 参数错误：promiseActivityExtCheck
-        "hjwf_langmancanting_renwu|去玩浪漫餐厅", // 参数错误：promiseActivityExtCheck / ILLEGAL_ARGUMENT
-        "去玩疯狂水世界", // 参数错误：promiseActivityExtCheck
-        "去玩时光杂货店", // 参数错误：promiseActivityExtCheck
-        "去玩斗破苍穹", // 参数错误：promiseActivityExtCheck
-        "hjwf_baoweixiangrikui_renwu|去玩保卫向日葵", // 参数错误：promiseActivityExtCheck
-        "hjwf_eduka_renwu|去点击先用后付商品", // 参数错误：promiseActivityExtCheck
-        "hjwf_youxi_renwu_sanfang|去玩我的***世界", // 参数错误：promiseActivityExtCheck
-        "hjwf_xiangjiangshikaipao_renwu|去玩向僵尸开炮", // 参数错误：promiseActivityExtCheck
-        "hjwf_sanguobingheshidai_renwu|去玩三国冰河时代", // 参数错误：promiseActivityExtCheck
-        "hjwf_xundaodaqian_renwu|去玩寻道大千", // 参数错误：promiseActivityExtCheck
-        "hjwf_jihewangguo_renwu|去玩几何王国", // 参数错误：promiseActivityExtCheck
-        "hjwf_linghuashi_renwu|去玩灵画师", // 参数错误：promiseActivityExtCheck / ILLEGAL_ARGUMENT
-        "hjwf_zh_7dacu_leyuan", // promiseActivityExtCheck 返回 ILLEGAL_ARGUMENT，无稳定游戏完成闭环
-        "hjwf_longjizhicheng_renwu|去玩龙迹之城", // 参数错误：promiseActivityExtCheck
+        "hjwf_zcylt_zhuanhua",
+        "hjwf_eduka_renwu",
         "alchemy_check_in_subscribe_task", // joinActivity 返回 PROMISE_TEMPLATE_NOT_EXIST
-        "hjwf_tbqd_qiandao_sanfang", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实淘宝行为
-        "hjwf_tbbbnc_shifei_sanfang", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实淘宝行为
-        "hjwf_tbxiaoxiaole_renwu_sanfang", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实游戏行为
-        "hjwf_fengkuangshuishijie_renwu", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实游戏行为
-        "hjwf_wanxiaoyouxi30s_renwu", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实游戏行为
+        "hjwf_tbqd_qiandao_sanfang",
+        "hjwf_tbbbnc_shifei_sanfang",
     )
 
 private val orchardDefaultBlacklist =
     setOf(
         // 芭芭农场
         "ORCHARD_NORMAL_ZADAN10_3000", // finishTask 返回 400000040，不支持rpc调用
-        "ANTFARM_ORCHARD_NORMAL_GONGGEFANGWEN", // finishTask 返回 400000040，不支持rpc调用
         "ORCHARD_NORMAL_KUAISHOU_MAX", // 逛一逛快手
         "ORCHARD_NORMAL_DIAOYU1", // 钓鱼1次
         "ZHUFANG3IN1", // 添加农场小组件并访问
         "70000|逛好物最高得1500肥料", // XLight广告流量风控，缺少稳定自动闭环
         "12173", // 买好货
-        "44797|逛助农好货得肥料", // finishTask 返回 400000001：任务全局配置不存在
         "TOUTIAO|逛一逛今日头条", // 精确匹配旧今日头条任务，避免误伤趣头条任务
         "ORCHARD_NORMAL_JIUYIHUISHOU_VISIT", // 旧衣服回收
         "ORCHARD_NORMAL_SHOUJISHUMAHUISHOU", // 数码回收
@@ -153,16 +74,18 @@ private val orchardDefaultBlacklist =
         "ncflzhrw51", // 去游戏中心抢金条：不支持rpc调用
         "babafarm_cjmk_xdujdd15", // 去游戏中心玩游戏：不支持rpc调用
         "LINGHUOTIAOKONG", // 逛一逛新浪微博
-        "ORCHARD_NORMAL_XIANYU_DUAN", // 逛一逛闲鱼
         "ANTFARM_ORCHARD_NORMAL_YITAO", // 逛一逛一淘
-        "ORCHARD_NCLY_GAME_multiple|继续玩消消瓜果园", // finishTask 返回 400000040，不支持rpc调用
+        "ANTFARM_ORCHARD_NORMAL_GONGGEFANGWEN", // 首页访问农场依赖真实入口行为
+        "ORCHARD_NORMAL_XIANYU_DUAN", // 闲鱼任务依赖真实外跳行为
+        "ANTFARM_ORCHARD_NORMAL_CAINIAO_DUAN", // 菜鸟任务 finishTask 返回 400000040
+        "ORCHARD_NORMAL_TAOBAOQIANDAO", // 淘宝签到依赖真实外跳行为
+        "ORCHARD_NCLY_ZH_MSQYJ_V3", // 美食趣味记依赖真实游戏事件
+        "ORCHARD_NCLY_ZH_DDPLY_V3", // 对对碰乐园依赖真实游戏事件
         "ORCHARD_NCLY_GAME_CHARGE0|任意充值得100000肥", // finishTask 返回 400000040，不支持rpc调用
-        "ANTFARM_ORCHARD_NORMAL_CAINIAO_DUAN|逛一逛菜鸟领好礼", // finishTask 返回 400000040，不支持rpc调用
         "ORCHARD_NORMAL_GAODE_VISIT|去高德发表真实评价", // finishTask 返回 400000040，不支持rpc调用
         "ORCHARD_NORMAL_SHANGOUMIANDAN|逛一逛淘宝闪购", // finishTask 返回 400000040，不支持rpc调用
         "ORCHARD_NORMAL_TAOBAOTAOLIPAI_VISIT|逛一逛淘宝拍照", // 不支持rpc调用
         "ORCHARD_NORMAL_TAOBAO26_618|去淘金币赢20亿", // 不支持rpc调用，缺少稳定完成RPC闭环
-        "TAOBAO|逛一逛签到领现金", // 不支持rpc调用，缺少稳定完成RPC闭环
         "ORCHARD_NORMAL_WAIMAIMIANDAN", // 逛一逛闪购外卖
         "ORCHARD_NORMAL_BAIDU_DUO", // 去百度浏览资讯
         "ORCHARD_NORMAL_XIANXIAZHIFU100", // 到店支付1笔得100肥
@@ -180,6 +103,16 @@ private val orchardDefaultBlacklist =
         "去游戏中心抢金条",
     )
 
+private val goldenBeanDefaultBlacklist =
+    setOf(
+        "GOLDEN_BEAN_MASTER_TASK:TEST_PUSH_SUBSCRIBE", // 订阅依赖真实用户确认
+        "GOLDEN_BEAN_MASTER_TASK:GOLDEN_BEAN_TASK_XIANSHANGZHIFU", // 线上支付
+        "GOLDEN_BEAN_MASTER_TASK:GOLDEN_BEAN_TASK_XIANXIAZHIFU", // 线下支付
+        "GOLDEN_BEAN_MASTER_TASK:GOLDEN_BEAN_TASK_YUEBAO", // 余额宝真实业务动作
+        "GOLDEN_BEAN_MASTER_TASK:GOLDENBEAN_GAME_ZH0_XDDQ", // 无现有精确游戏上报合同
+        "GOLDEN_BEAN_MASTER_TASK:GOLDENBEAN_GAME_ZH0_MSQYJ_V31", // 无现有精确游戏上报合同
+    )
+
 private val farmDefaultBlacklist =
     setOf(
         // 蚂蚁庄园
@@ -195,8 +128,6 @@ private val farmDefaultBlacklist =
         "OFFLINE_PAY", // 到店付款
         "ONLINE_PAY", // 线上支付
         "HUABEI_MAP_180", // 用花呗完成一笔支付
-        "【限时】玩游戏得新机会", // 庄园装扮抽抽乐等活动中可能出现
-        "限时玩游戏得新机会", // 同上（部分任务标题不带【】）
         "茉莉雪梨卷任务",
         "爱心捐赠（每天2次）",
         "逛闪购外卖1元起吃",
@@ -204,30 +135,7 @@ private val farmDefaultBlacklist =
         "线上支付",
     )
 
-private val oceanDefaultBlacklist =
-    setOf(
-        // 神奇海洋
-        "玩一玩生存33天",
-        "LHS_QDRW_HAIYANG", // finishTask 返回 400000040，不支持rpc调用
-        "YXZY_QDRW_HAIYANG", // finishTask 返回 400000040，不支持rpc调用
-        "SYH_XCHY_shichang202607", // 2026-07-23 finishTask 返回 400000040，无稳定完成RPC闭环
-        "SYH_XCMY_shichang202607", // 2026-07-23 aiFishFinishTask 返回 400000040，无稳定完成RPC闭环
-        "SYH_XCMY_zhuanhua202607", // 2026-07-23 aiFishFinishTask 返回 400000040，无稳定完成RPC闭环
-        "XWDSH_QDRW_HAIYANG_new", // 玩一玩向往的生活：finishTask 返回 400000040，不支持rpc调用
-        "AIFISH_ZHUANHUA_XJSKP|玩一玩向僵尸开炮", // finishTask 返回 400000040，不支持rpc调用
-        "AIFISH_ZHUANHUA_BWXRK", // finishTask 返回 400000040，不支持rpc调用，缺少稳定完成闭环
-        "AIFISH_ZHUANHUA_SGBHSD_new", // finishTask 返回 400000040，不支持rpc调用，缺少稳定完成闭环
-        "AIFISH_ZHUANHUA_CNXDY", // 无稳定完成 RPC 闭环
-        "DAOLIU_SCSST_GAME_NEW",
-        "LMCT_QDRW_HAIYANG", // finishTask 返回 400000040，不支持rpc调用
-        "CNXDY_QDRW_HAIYANG|随机任务：玩一玩超能下蛋鸭", // finishTask 返回 400000040，不支持rpc调用
-        "LJZC_QDRW_HAIYANG|随机任务：玩一玩龙迹之城", // finishTask 返回 400000040，不支持rpc调用
-        "mokuai_senlin_hydrw|随机任务：玩一玩得拼图", // finishTask 返回 400000040，不支持rpc调用
-        "MHXCZ_QDRW_HAIYANG|随机任务：玩一玩梦幻消除战", // finishTask 返回 400000040，不支持rpc调用
-        "QYJZFM_QDRW_HAIYANG|随机任务：玩一玩青云诀之伏魔", // finishTask 返回 400000040，不支持rpc调用
-        "随机任务：玩一玩浪漫餐厅", // finishTask 返回 400000040，不支持rpc调用
-        "FKSSJ_QDRWCG_HAIYANG|随机任务：玩一玩疯狂水世界", // finishTask 返回 400000040，不支持rpc调用
-    )
+private val oceanDefaultBlacklist = emptySet<String>()
 
 private val forestDefaultBlacklist =
     setOf(
@@ -293,17 +201,10 @@ private val forestDefaultBlacklist =
         "FOREST_ACTIVITY_DRAW_ZHXF_ZHWUFU", // finishTaskopengreen 返回 400000040
         "FOREST_NORMAL_DRAW_SHARE", // 森林抽抽乐分享任务
         "FOREST_ACTIVITY_DRAW_SHARE", // 森林抽抽乐活动分享任务
-        "FOREST_ACTIVITY_DRAW_SGBHSD", // 森林抽抽乐游戏任务
-        "FOREST_ACTIVITY_DRAW_XS", // 森林抽抽乐玩游戏得新机会
-        "FOREST_ACTIVITY_DRAW_LHY_ZHWUFU", // 玩游戏得2次机会：finishTaskopengreen 返回 400000040
-        "FOREST_ACTIVITY_DRAW_LJZC_ZHWUFU", // 玩游戏得2次机会：finishTaskopengreen 返回 400000040
-        "WDHYSJ_QDRW_NORMAL", // 【限时】玩游戏得2次机会：finishTaskopengreen 返回 400000040
-        "FOREST_NORMAL_DRAW_BWXRK_ZH", // 【限时】玩游戏得2次机会：finishTaskopengreen 返回 400000040
         "ZHRW_HUIYUANjiaoshui_202608", // 每日浇水免费拿绿植：finishTask 返回 400000040
         "MHXCZ_RYCZ_HDCCL|玩梦幻消除战充值任意金额", // 森林抽抽乐充值任务，缺少稳定完成RPC闭环
         "RYCZ", // 森林抽抽乐充值类任务前缀，缺少稳定完成RPC闭环
         "SYH_51HLZ_zhuanhua202604", // 【抢金条】完成游戏任务：不支持rpc调用
-        "SYH_51HLZ_shichang202604", // 玩任意游戏30s：不支持rpc调用
         "FKSSJ_QDRW_HUOLI", // 水世界捡海面物资1次：不支持rpc调用
         "FKSSJ_LJRW_HUOLI", // 水世界捡海面物资5次：不支持rpc调用
         "FKSSJ_LJRWtanxian_HUOLI|玩水世界探险船闯5关", // 不支持rpc调用，缺少稳定完成RPC闭环
@@ -317,15 +218,11 @@ private val forestDefaultBlacklist =
         "GYG_taobaoqiandao_202603", // TODO 完成闭环未证实；不附带标题以免误挡已验证的 TBQD
         "FOREST_ACTIVITY_DRAW_SQYT_1|去神奇鱼塘投喂动物", // 抽抽乐外部鱼塘任务，缺少稳定完成RPC闭环
         "去神奇鱼塘投喂动物", // 抽抽乐标题兜底，缺少稳定完成RPC闭环
-        "玩游戏得", // 森林抽抽乐游戏类任务暂无稳定RPC闭环
         "开宝箱", // 森林抽抽乐宝箱类任务不在本流程处理
-        "疯狂水世界", // 森林抽抽乐游戏类任务暂无稳定RPC闭环
-        "玩任意游戏", // 森林抽抽乐游戏类任务暂无稳定RPC闭环
         "抢金条", // 森林抽抽乐游戏类任务暂无稳定RPC闭环
         "去会员抢演唱会门票", // 活动已完结
         "FOREST_PLAYGROUND_RECHARGE", // 森林乐园充值类任务，缺少稳定完成闭环
         "FOREST_PLAYGROUND_GAME_PASS", // 森林乐园通关类任务，缺少稳定完成闭环
-        "IAP",
         "充值任意金额",
         "通过5关",
     )
@@ -346,9 +243,6 @@ private val fishPondDefaultBlacklist =
 private val stallDefaultBlacklist =
     setOf(
         // 蚂蚁新村
-        "ANTSTALL_XLIGHT_VARIABLE_AWARD", // 空 Ariver 上下文稳定触发广告反作弊，暂无安全的真实页面上下文闭环
-        "ANTSTALL_TASK_XCXYX", // 新村小游戏任务前缀，避免按游戏标题无限补黑名单
-        "ANTSTALL_TASK_nongchangleyuan", // 农场乐园/解压小游戏任务
         "玩生存33天电台招募10次", // 新村小游戏任务，缺少稳定完成RPC闭环
         "玩保卫向日葵通关1次", // 新村小游戏任务，缺少稳定完成RPC闭环
         "【限时】去玩超级解压馆", // 新村小游戏任务，缺少稳定完成RPC闭环
@@ -416,7 +310,6 @@ private val memberDefaultBlacklist =
         "SYH_RTB_SHOW_TASK_INDEX_2|去签名设计", // 304/TASK_NOT_FINISHED
         "SYH_RTB_SHOW_TASK_INDEX_3|玩游戏通过1次游戏", // 001，系统异常
         "AP15353904|玩猪了个猪",
-        "GAME_TRAN_TASK", // 游戏中心 P2E 真实游戏通关/订单任务
         "2060170000365923#lmct_game_order_every_1#20|玩浪漫餐厅",
         "2021004163668677#wdhysj_game_zhuxian_every_1#12|玩我的世界",
         "2060170000365575#ddxbt_game_pass_every_1#5|玩点点消不停",
@@ -482,6 +375,7 @@ val DEFAULT_BLACKLIST: Map<String, Set<String>> =
         "芝麻信用" to sesameCreditDefaultBlacklist,
         "芝麻炼金" to sesameAlchemyDefaultBlacklist,
         "芭芭农场" to orchardDefaultBlacklist,
+        "金豆夺宝" to goldenBeanDefaultBlacklist,
         "蚂蚁庄园" to farmDefaultBlacklist,
         "神奇海洋" to oceanDefaultBlacklist,
         "蚂蚁森林" to forestDefaultBlacklist,

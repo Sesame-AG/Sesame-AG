@@ -169,57 +169,6 @@ object TaskBlacklist {
     }
 
     /**
-     * 从指定模块的黑名单中移除任务
-     */
-    fun removeFromBlacklist(
-        moduleName: String?,
-        taskId: String,
-        taskTitle: String = "",
-    ) {
-        if (moduleName.isNullOrBlank() || taskId.isBlank()) return
-
-        val blacklistItem = if (taskTitle.isNotBlank() && taskId != taskTitle) "$taskId|$taskTitle" else taskId
-        val canonicalName = canonicalModuleName(moduleName)
-        val allBlacklists = getAllBlacklists().toMutableMap()
-        val moduleSet = collectModuleBlacklist(allBlacklists, canonicalName).toMutableSet()
-        if (moduleSet.isEmpty()) return
-
-        if (moduleSet.remove(blacklistItem)) {
-            relatedModuleNames(canonicalName).forEach { allBlacklists.remove(it) }
-            if (moduleSet.isNotEmpty()) {
-                allBlacklists[canonicalName] = moduleSet
-            }
-            saveAllBlacklists(allBlacklists)
-            Log.record(TAG, "模块[$canonicalName]的任务[$blacklistItem]已从黑名单移除")
-        }
-    }
-
-    /**
-     * 清空指定模块的黑名单
-     */
-    fun clearBlacklist(moduleName: String?) {
-        if (moduleName.isNullOrBlank()) return
-        val canonicalName = canonicalModuleName(moduleName)
-        val allBlacklists = getAllBlacklists().toMutableMap()
-        val removed =
-            relatedModuleNames(canonicalName).fold(false) { acc, name ->
-                allBlacklists.remove(name) != null || acc
-            }
-        if (removed) {
-            saveAllBlacklists(allBlacklists)
-            Log.record(TAG, "模块[$canonicalName]的黑名单已清空")
-        }
-    }
-
-    /**
-     * 清空所有模块的黑名单
-     */
-    fun clearAllBlacklists() {
-        saveAllBlacklists(emptyMap())
-        Log.record(TAG, "所有任务黑名单已清空")
-    }
-
-    /**
      * 自动添加任务到模块黑名单。
      *
      * 调用方必须已经把失败分类为“无稳定完成闭环”或“稳定非重试参数错误”。
