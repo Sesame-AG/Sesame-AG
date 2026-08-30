@@ -34,6 +34,7 @@ object AntForestRpcCall {
     private const val PROP_LIST_VERSION = "20250108"
     private const val WHACK_MOLE_VERSION = "20230824"
     const val OPEN_GREEN_RIGHTS_SOURCE = HOME_TASK_SOURCE
+    internal const val FOREST_TASK_ACTION_SOURCE = DEFAULT_SOURCE
     internal const val BACK_FROM_ENERGY_RAIN_SOURCE = "backFromEnergyRain"
     private var VERSION = "20250818"
     private var HOME_PAGE_VERSION = "20250818"
@@ -1749,15 +1750,18 @@ object AntForestRpcCall {
         )
 
     /**
-     * 当 H5 主页任务列表为空时，使用同一主页上下文查询 OpenGreen 任务快照。
-     * 请求仅保留抓包已证明的场景、请求类型与 source，避免伪造客户端扩展字段。
+     * 查询 H5 主页使用的 OpenGreen 任务快照，包含累计任务及其可推进任务。
+     * 请求字段与当前页面抓包一致，避免使用不完整的主页任务列表。
      */
     @JvmStatic
     @Throws(JSONException::class)
-    fun queryOpenGreenHomeTaskList(): String {
-        val context = resolveSceneContext(ForestRpcScene.HOME_TASK_LIST)
-        return listTaskopengreen("ANTFOREST_VITALITY_TASK", context.source)
-    }
+    fun queryOpenGreenHomeTaskList(): String =
+        listTaskopengreen(
+            sceneCode = "ANTFOREST_VITALITY_TASK",
+            source = DEFAULT_SOURCE,
+            extend = createTaskListExtend(JSONObject().put("businessSource", "ANTFOREST-home_task_list")),
+            headers = forestHeaders(DEFAULT_SOURCE),
+        )
 
     @JvmStatic
     @Throws(JSONException::class)
