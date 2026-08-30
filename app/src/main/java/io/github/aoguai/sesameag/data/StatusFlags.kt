@@ -334,12 +334,16 @@ object StatusFlags {
     /** 摇钱树：今日施肥次数 */
     const val FLAG_ANTORCHARD_SPREAD_MANURE_COUNT_YEB = "ANTORCHARD_SPREAD_MANURE_COUNT_YEB"
 
+    // ============================================================
+    // 金豆夺宝
+    // ============================================================
+
     /** 金豆夺宝：今日自动换豆消耗的肥料 */
-    const val FLAG_ANTORCHARD_GOLDEN_BEAN_MANURE_EXCHANGE_AMOUNT =
-        "ANTORCHARD_GOLDEN_BEAN_MANURE_EXCHANGE_AMOUNT"
+    const val FLAG_GOLDEN_BEAN_MANURE_EXCHANGE_AMOUNT =
+        "GOLDEN_BEAN_MANURE_EXCHANGE_AMOUNT"
 
     /** 金豆夺宝：今日任务列表已确认无可执行项 */
-    const val FLAG_ANTORCHARD_GOLDEN_BEAN_TASKS_DONE = "AntOrchard::goldenBeanTasksDone"
+    const val FLAG_GOLDEN_BEAN_TASKS_DONE = "GoldenBeanTreasure::tasksDone"
 
     /** 摇钱树：今日是否已收取金币树奖励 */
     const val FLAG_ANTORCHARD_MONEY_TREE_COLLECTED = "ANTORCHARD_MONEY_TREE_COLLECTED"

@@ -10,6 +10,7 @@ import io.github.aoguai.sesameag.util.Files
 import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.maps.UserMap
+import java.util.LinkedHashSet
 
 /**
  * 自定义设置管理类
@@ -41,6 +42,7 @@ object CustomSettings {
             SimpleEntity("antFarm", "蚂蚁庄园"),
             SimpleEntity("antOcean", "海洋"),
             SimpleEntity("antOrchard", "农场"),
+            SimpleEntity("goldenBeanTreasure", "金豆夺宝"),
             SimpleEntity("antStall", "新村"),
             SimpleEntity("antDodo", "神奇物种"),
             SimpleEntity("antFishPond", "福气鱼池"),
@@ -135,6 +137,7 @@ object CustomSettings {
             taskInfo.contains("蚂蚁庄园") || taskInfo.contains("antFarm") -> "antFarm"
             taskInfo.contains("海洋") || taskInfo.contains("antOcean") -> "antOcean"
             taskInfo.contains("农场") || taskInfo.contains("antOrchard") -> "antOrchard"
+            taskInfo == "金豆夺宝" || taskInfo == "goldenBeanTreasure" -> "goldenBeanTreasure"
             taskInfo.contains("新村") || taskInfo.contains("antStall") -> "antStall"
             taskInfo.contains("神奇物种") || taskInfo.contains("antDodo") -> "antDodo"
             taskInfo.contains("福气鱼池") || taskInfo.contains("antFishPond") -> "antFishPond"

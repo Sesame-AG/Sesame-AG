@@ -120,6 +120,7 @@ abstract class ModelTask : Model() {
         when (getName()) {
             "蚂蚁森林", "蚂蚁森林合种", "保护地", "生态保护" -> Log.forest(msg)
             "农场", "芭芭农场" -> Log.orchard(msg)
+            "金豆夺宝" -> Log.goldenBean(msg)
             "蚂蚁庄园" -> Log.farm(msg)
             "新村", "蚂蚁新村" -> Log.stall(msg)
             "海洋", "神奇海洋" -> Log.ocean(msg)
@@ -132,6 +133,7 @@ abstract class ModelTask : Model() {
             else -> when (getGroup()) {
                 ModelGroup.FOREST -> Log.forest(msg)
                 ModelGroup.ORCHARD -> Log.orchard(msg)
+                ModelGroup.GOLDEN_BEAN -> Log.goldenBean(msg)
                 ModelGroup.FARM -> Log.farm(msg)
                 ModelGroup.STALL -> Log.stall(msg)
                 ModelGroup.DODO -> Log.dodo(msg)

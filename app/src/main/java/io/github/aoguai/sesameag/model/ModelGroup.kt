@@ -24,6 +24,8 @@ enum class ModelGroup(
     STALL("STALL", "新村", "svg/group/stall.svg"),
     /** 农场 */
     ORCHARD("ORCHARD", "农场", "svg/group/orchard.svg"),
+    /** 金豆夺宝 */
+    GOLDEN_BEAN("GOLDEN_BEAN", "金豆夺宝", "svg/group/golden_bean.svg"),
     /** 福气鱼池 */
     FISHPOND("FISHPOND", "福气鱼池", "svg/group/orchard.svg"),
     /** 运动 */

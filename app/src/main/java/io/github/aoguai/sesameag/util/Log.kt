@@ -241,6 +241,16 @@ object Log {
     }
 
     @JvmStatic
+    fun goldenBean(msg: String) {
+        business(LogChannel.GOLDEN_BEAN, msg)
+    }
+
+    @JvmStatic
+    fun goldenBean(tag: String, msg: String) {
+        goldenBean(formatTaggedMessage(tag, msg))
+    }
+
+    @JvmStatic
     @JvmOverloads
     fun farm(msg: String, type: Int = 1) {
         business(LogChannel.FARM, msg, type)

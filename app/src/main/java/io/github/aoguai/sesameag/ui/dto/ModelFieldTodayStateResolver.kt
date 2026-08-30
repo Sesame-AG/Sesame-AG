@@ -336,6 +336,18 @@ object ModelFieldTodayStateResolver {
                 )
             }
 
+            "GoldenBeanTreasure.goldenBeanTreasure" -> {
+                flag(StatusFlags.FLAG_GOLDEN_BEAN_TASKS_DONE, "今日金豆夺宝任务已处理")
+            }
+
+            "GoldenBeanTreasure.goldenBeanManureExchangeDailyReserveAmount" -> {
+                limitReached(
+                    current = Status.getIntFlagToday(StatusFlags.FLAG_GOLDEN_BEAN_MANURE_EXCHANGE_AMOUNT),
+                    limit = intValue(modelField),
+                    reason = "今日肥料换豆额度已达上限",
+                )
+            }
+
             "AntFishPond.fishPondTask" -> {
                 allFlags(
                     StatusFlags.FLAG_ANTFISHPOND_SIGN_DONE,

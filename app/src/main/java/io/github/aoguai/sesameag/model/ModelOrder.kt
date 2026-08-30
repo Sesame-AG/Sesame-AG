@@ -10,6 +10,7 @@ import io.github.aoguai.sesameag.task.antForest.AntForest
 import io.github.aoguai.sesameag.task.antMember.AntMember
 import io.github.aoguai.sesameag.task.antOcean.AntOcean
 import io.github.aoguai.sesameag.task.antOrchard.AntOrchard
+import io.github.aoguai.sesameag.task.goldenBean.GoldenBeanTreasure
 import io.github.aoguai.sesameag.task.antSesameCredit.AntSesameCredit
 import io.github.aoguai.sesameag.task.antSports.AntSports
 import io.github.aoguai.sesameag.task.antStall.AntStall
@@ -32,6 +33,7 @@ object ModelOrder {
         AntMember::class.java,     // 会员
         YouthPrivilege::class.java, // 青春特权
         AntSesameCredit::class.java, // 芝麻信用
+        GoldenBeanTreasure::class.java, // 金豆夺宝
         AntOrchard::class.java,    // 农场
         AntFishPond::class.java,   // 福气鱼池
         AntSports::class.java,       // 运动

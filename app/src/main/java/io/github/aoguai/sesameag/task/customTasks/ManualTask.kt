@@ -13,6 +13,7 @@ import io.github.aoguai.sesameag.task.antForest.AntForest
 import io.github.aoguai.sesameag.task.antMember.AntMember
 import io.github.aoguai.sesameag.task.antOcean.AntOcean
 import io.github.aoguai.sesameag.task.antOrchard.AntOrchard
+import io.github.aoguai.sesameag.task.goldenBean.GoldenBeanTreasure
 import io.github.aoguai.sesameag.task.antSesameCredit.AntSesameCredit
 import io.github.aoguai.sesameag.task.antSports.AntSports
 import io.github.aoguai.sesameag.task.antStall.AntStall
@@ -138,6 +139,7 @@ object ManualTask {
                             CustomTask.ANT_MEMBER -> runModuleTask(AntMember::class.java)
                             CustomTask.ANT_SESAME_CREDIT -> runModuleTask(AntSesameCredit::class.java)
                             CustomTask.ANT_ORCHARD -> runModuleTask(AntOrchard::class.java)
+                            CustomTask.GOLDEN_BEAN_TREASURE -> runModuleTask(GoldenBeanTreasure::class.java)
                             CustomTask.ANT_FISH_POND -> runModuleTask(AntFishPond::class.java)
                             CustomTask.ANT_SPORTS -> runModuleTask(AntSports::class.java)
                             CustomTask.YOUTH_PRIVILEGE -> runModuleTask(YouthPrivilege::class.java)

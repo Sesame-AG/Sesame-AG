@@ -1,4 +1,4 @@
-package io.github.aoguai.sesameag.task.antOrchard
+package io.github.aoguai.sesameag.task.goldenBean
 
 import io.github.aoguai.sesameag.hook.RequestManager
 import org.json.JSONArray
@@ -12,7 +12,7 @@ import org.json.JSONObject
 internal object GoldenBeanRpcCall {
     internal const val TASK_SCENE_CODE = "GOLDEN_BEAN_MASTER_TASK"
     internal const val TASK_SOURCE = "babafarm"
-    internal const val VERSION = "20260723.01"
+    internal const val VERSION = "20260803.01"
     internal const val MINER_SOURCE =
         "ch_url-https://render.alipay.com/p/yuyan/180020010001291350/index.html"
     internal const val GAME_SCENE_CODE = "GOLDENBEAN"

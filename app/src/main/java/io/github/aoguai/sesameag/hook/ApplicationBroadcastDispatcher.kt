@@ -693,6 +693,7 @@ internal object ApplicationBroadcastDispatcher {
                         CustomTask.ANT_MEMBER,
                         CustomTask.ANT_SESAME_CREDIT,
                         CustomTask.ANT_ORCHARD,
+                        CustomTask.GOLDEN_BEAN_TREASURE,
                         CustomTask.ANT_FISH_POND,
                         CustomTask.ANT_SPORTS,
                         CustomTask.YOUTH_PRIVILEGE,

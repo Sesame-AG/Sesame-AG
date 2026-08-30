@@ -4,6 +4,7 @@ enum class LogModuleDomain(val displayName: String) {
     COMMON("通用"),
     FOREST("蚂蚁森林"),
     ORCHARD("芭芭农场"),
+    GOLDEN_BEAN("金豆夺宝"),
     FARM("蚂蚁庄园"),
     STALL("蚂蚁新村"),
     OCEAN("神奇海洋"),
@@ -108,6 +109,17 @@ enum class LogChannel(
         mirrorToRecord = true,
         visibleInViewer = true,
         logTag = "农场"
+    ),
+    GOLDEN_BEAN(
+        loggerName = "golden_bean",
+        displayName = "金豆夺宝日志",
+        moduleDomain = LogModuleDomain.GOLDEN_BEAN,
+        techKind = LogTechKind.BUSINESS,
+        description = "金豆夺宝签到、任务、金猫矿工、金豆乐园与肥料换豆日志",
+        viewerGroup = LogViewerGroup.MODULES,
+        mirrorToRecord = true,
+        visibleInViewer = true,
+        logTag = "金豆夺宝"
     ),
     FARM(
         loggerName = "farm",
@@ -314,6 +326,14 @@ object LogCatalog {
         LogChannel.ORCHARD to setOf(
             "AntOrchard",
             "XLightRpcCall"
+        ),
+        LogChannel.GOLDEN_BEAN to setOf(
+            "GoldenBeanTreasure",
+            "GoldenBeanWorkflow",
+            "GoldenBeanTreasureSupport",
+            "GoldenBeanRpcCall",
+            "GoldenBean",
+            "金豆夺宝"
         ),
         LogChannel.FARM to setOf(
             "AntFarm",

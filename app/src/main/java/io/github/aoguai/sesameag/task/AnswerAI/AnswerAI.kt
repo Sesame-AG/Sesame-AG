@@ -187,6 +187,7 @@ class AnswerAI : Model() {
                 LogChannel.COMMON,
                 LogChannel.FOREST,
                 LogChannel.ORCHARD,
+                LogChannel.GOLDEN_BEAN,
                 LogChannel.FARM,
                 LogChannel.STALL,
                 LogChannel.OCEAN,
