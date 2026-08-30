@@ -71,7 +71,6 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
@@ -144,15 +143,14 @@ fun LogViewerScreen(
     val focusRequester = remember { FocusRequester() }
     var showClearDialog by rememberSaveable(filePath) { mutableStateOf(false) }
 
-    // 拦截返回键
+    // 仅在搜索模式下消费返回；页面返回交给 NavDisplay，以保留预测性返回手势动画。
     BackHandler(enabled = isSearchActive) {
         isSearchActive = false
         viewModel.search("")
     }
 
-    DisposableEffect(filePath, viewModel) {
+    LaunchedEffect(filePath, viewModel) {
         viewModel.loadLogs(filePath)
-        onDispose { viewModel.stopLoading() }
     }
 
     // 自动滚动逻辑
