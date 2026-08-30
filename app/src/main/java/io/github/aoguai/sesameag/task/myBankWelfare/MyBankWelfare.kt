@@ -883,6 +883,9 @@ class MyBankWelfare : ModelTask() {
             return false
         }
 
+        override fun isUnresolvedWhenSkipped(item: TaskFlowItem): Boolean =
+            mapPhase(item) != TaskFlowPhase.TERMINAL && !super<TaskFlowAdapter>.isBlacklisted(item)
+
         override fun receive(item: TaskFlowItem): TaskFlowActionResult =
             TaskFlowActionResult.failure(
                 failureType = TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE,

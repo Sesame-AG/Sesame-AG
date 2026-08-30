@@ -35,7 +35,7 @@ class EcoProtection : ModelTask() {
         val modelFields = ModelFields()
         modelFields.addField(
             BooleanModelField("ancientTreeOnlyWeek", "古树保护 | 仅周一三五", false).withDesc(
-                "开启后仅在周一、周三、周五执行古树保护；关闭后早上 8 点后每天都会尝试执行。"
+                "开启后在周一、周三、周五执行古树保护；关闭后早上 8 点后每天都会尝试执行。"
             ).also { ancientTreeOnlyWeek = it }
         )
         modelFields.addField(

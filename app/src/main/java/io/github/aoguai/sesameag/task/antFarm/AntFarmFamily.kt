@@ -12,6 +12,7 @@ import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.RandomUtil
 import io.github.aoguai.sesameag.util.ResChecker
+import io.github.aoguai.sesameag.util.friend.FriendRepository
 import io.github.aoguai.sesameag.util.friend.FriendSelectionResolver
 import io.github.aoguai.sesameag.util.maps.UserMap
 import org.json.JSONArray
@@ -1247,10 +1248,17 @@ data object AntFarmFamily {
             }
 
             val familyValue = notInviteList.resolvedIds()
-            val allUser = FriendSelectionResolver.availableFriendOptions()
+            var allUser = FriendSelectionResolver.availableFriendOptions()
 
             if (allUser.isEmpty()) {
-                Log.error(TAG, "allUser is empty")
+                FriendRepository.mergeFromUserMap()
+                allUser = FriendSelectionResolver.availableFriendOptions()
+            }
+            if (allUser.isEmpty()) {
+                Log.farm(
+                    "家庭任务🏠分享好友延后: NO_AVAILABLE_MUTUAL_FRIENDS " +
+                        "familyMemberCount=${familyUserIds.size} excludedCount=${familyValue.size}",
+                )
                 return
             }
 
@@ -1268,7 +1276,10 @@ data object AntFarmFamily {
             }
 
             if (inviteList.length() == 0) {
-                Log.error(TAG, "没有符合分享条件的好友")
+                Log.farm(
+                    "家庭任务🏠分享好友延后: NO_ELIGIBLE_FAMILY_FRIENDS " +
+                        "familyMemberCount=${familyUserIds.size} excludedCount=${familyValue.size}",
+                )
                 return
             }
 

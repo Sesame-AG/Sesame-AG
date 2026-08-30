@@ -606,6 +606,9 @@ class GreenFinance : ModelTask() {
                 }
             }
 
+            override fun isUnresolvedWhenSkipped(item: TaskFlowItem): Boolean =
+                mapPhase(item) != TaskFlowPhase.TERMINAL && !super<TaskFlowAdapter>.isBlacklisted(item)
+
             override fun receive(item: TaskFlowItem): TaskFlowActionResult {
                 return triggerTaskStage(item, "receive", TaskFlowAction.RECEIVE)
             }

@@ -405,7 +405,7 @@ class AntSports : ModelTask() {
         )
         modelFields.addField(
             BooleanModelField("walkThemeLoop", "行走路线 | 主题循环", false).withDesc(
-                "开启后仅在当前主题的用户已走路线中循环；路线循环开启时优先路线循环。"
+                "开启后在当前主题的用户已走路线中循环；路线循环开启时优先路线循环。"
             ).also { walkThemeLoop = it }
         )
         modelFields.addField(
@@ -1695,7 +1695,6 @@ class AntSports : ModelTask() {
         override val moduleName: String = SPORTS_TASK_BLACKLIST_MODULE
         override val flowName: String = "运动任务面板"
         private val unsupportedLoggedKeys = mutableSetOf<String>()
-        private val signedUpTaskIds = mutableSetOf<String>()
 
         override fun query(): JSONObject {
             return JSONObject(AntSportsRpcCall.queryCoinTaskPanel())
@@ -1741,7 +1740,7 @@ class AntSports : ModelTask() {
             return when (item.status) {
                 "HAS_RECEIVED" -> TaskFlowPhase.TERMINAL
                 "WAIT_RECEIVE" -> TaskFlowPhase.REWARD_READY
-                "WAIT_COMPLETE" -> if (item.raw?.optBoolean("needSignUp", false) == true && item.id !in signedUpTaskIds) {
+                "WAIT_COMPLETE" -> if (item.raw?.optBoolean("needSignUp", false) == true) {
                     TaskFlowPhase.SIGNUP_REQUIRED
                 } else {
                     TaskFlowPhase.READY_TO_COMPLETE
@@ -1766,6 +1765,9 @@ class AntSports : ModelTask() {
             }
             return true
         }
+
+        override fun isUnresolvedWhenSkipped(item: TaskFlowItem): Boolean =
+            mapPhase(item) != TaskFlowPhase.TERMINAL && !super<TaskFlowAdapter>.isBlacklisted(item)
 
         override fun receive(item: TaskFlowItem): TaskFlowActionResult {
             val taskDetail = item.raw ?: return missingRawResult(item, "receive")
@@ -1842,11 +1844,7 @@ class AntSports : ModelTask() {
                 return
             }
             val pendingTasks = extractItems(verifyResponse)
-                .filter { item ->
-                    !isBlacklisted(item) &&
-                        !shouldSkip(item) &&
-                        mapPhase(item) != TaskFlowPhase.TERMINAL
-                }
+                .filter { item -> mapPhase(item) != TaskFlowPhase.TERMINAL }
             if (pendingTasks.isNotEmpty()) {
                 val pendingText = pendingTasks
                     .take(6)
@@ -1893,11 +1891,6 @@ class AntSports : ModelTask() {
             )
         }
 
-        override fun afterSuccess(item: TaskFlowItem, action: TaskFlowAction, result: TaskFlowActionResult) {
-            if (action == TaskFlowAction.SIGNUP) {
-                signedUpTaskIds.add(item.id)
-            }
-        }
     }
 
     private fun motionDailyQuiz() {
@@ -4833,7 +4826,9 @@ class AntSports : ModelTask() {
                     if (charityCoinCount < donateAmount) break
                     val basicModel = ja.getJSONObject(i).getJSONObject("basicModel")
                     if ("DONATE_COMPLETED" == basicModel.getString("footballFieldStatus")) break
-                    donate(donateAmount, basicModel.getString("projectId"), basicModel.getString("title"))
+                    if (!donate(donateAmount, basicModel.getString("projectId"), basicModel.getString("title"))) {
+                        return
+                    }
                     Status.donateCharityCoin()
                     charityCoinCount -= donateAmount
                     if (donateCharityCoinType.value == DonateCharityCoinType.ONE) break
@@ -4849,17 +4844,20 @@ class AntSports : ModelTask() {
     /**
      * @brief 执行一次慈善捐赠
      */
-    private fun donate(donateCharityCoin: Int, projectId: String, title: String) {
-        try {
+    private fun donate(donateCharityCoin: Int, projectId: String, title: String): Boolean {
+        return try {
             val s = AntSportsRpcCall.donate(donateCharityCoin, projectId)
             val jo = JSONObject(s)
             if (ResChecker.checkRes(TAG, jo)) {
                 Log.sports("捐赠活动❤️[$title][$donateCharityCoin 能量🎈]")
+                true
             } else {
-                Log.sports(jo.getString("resultDesc"))
+                Log.error(TAG, "捐赠活动失败:${jo.optString("resultDesc", jo.toString())}")
+                false
             }
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "donate err:", t)
+            false
         }
     }
 
