@@ -30,6 +30,11 @@ object PermissionUtil {
         Manifest.permission.WRITE_EXTERNAL_STORAGE
     )
 
+    /**
+     * 检查指定应用是否可被模块侧看到。
+     *
+     * 返回 false 也可能是应用列表隐藏类模块拦截了包管理器查询。
+     */
     fun isPackageInstalled(context: Context, packageName: String): Boolean {
         if (packageName.isBlank()) return false
         return runCatching {

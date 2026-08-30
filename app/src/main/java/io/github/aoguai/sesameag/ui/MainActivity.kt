@@ -800,7 +800,11 @@ class MainActivity : ComponentActivity() {
                 status = lsposedScopeStatus(targetInstalled, requesting),
                 policy = PermissionPolicy.AUTO_CRITICAL,
                 title = "LSPosed 目标应用作用域",
-                description = "仅LSPosed 支持自动申请与校验作用域；首次使用请把目标应用加入作用域后重新打开目标应用或返回本页复查",
+                description = if (targetInstalled) {
+                    "仅LSPosed 支持自动申请与校验作用域；首次使用请把目标应用加入作用域后重新打开目标应用或返回本页复查"
+                } else {
+                    "模块无法看到目标应用，请检查是否安装目标应用或对应用列表进行了隐藏相关设置"
+                },
                 actionLabel = if (targetInstalled) "申请作用域" else null
             ),
             PermissionHealthItem(
