@@ -4,14 +4,44 @@ import io.github.aoguai.sesameag.hook.RequestManager
 import org.json.JSONArray
 import org.json.JSONObject
 
+internal enum class GoldenBeanExchangeKind {
+    MANURE,
+    SESAME_GRAIN,
+}
+
 /**
- * Golden Bean Treasure uses a separate protocol domain from the legacy orchard
- * and orchard game-center calls. Keep its stable request fields isolated here
- * so a version change in one domain cannot silently affect the other.
+ * Server-verified Golden Bean entry parameters. The two entry types share
+ * rewards, but their task scenes and exchange units are independent.
+ */
+internal data class GoldenBeanEntry(
+    val bizType: String,
+    val source: String,
+    val taskSceneCode: String,
+    val exchangeKind: GoldenBeanExchangeKind,
+)
+
+/**
+ * Golden Bean Treasure has distinct entry contracts for Babafarm and Sesame
+ * Alchemy. Keep those request fields together so a call cannot mix entrances.
  */
 internal object GoldenBeanRpcCall {
+    internal val MASTER_ENTRY =
+        GoldenBeanEntry(
+            bizType = "MASTER",
+            source = "babafarm",
+            taskSceneCode = "GOLDEN_BEAN_MASTER_TASK",
+            exchangeKind = GoldenBeanExchangeKind.MANURE,
+        )
+    internal val ZHIMA_ENTRY =
+        GoldenBeanEntry(
+            bizType = "ZHIMA",
+            source = "lianjin",
+            taskSceneCode = "GOLDEN_BEAN_ZHIMA_LIST",
+            exchangeKind = GoldenBeanExchangeKind.SESAME_GRAIN,
+        )
+    internal val ENTRIES = listOf(MASTER_ENTRY, ZHIMA_ENTRY)
+
     internal const val TASK_SCENE_CODE = "GOLDEN_BEAN_MASTER_TASK"
-    internal const val TASK_SOURCE = "babafarm"
     internal const val VERSION = "20260803.01"
     internal const val MINER_SOURCE =
         "ch_url-https://render.alipay.com/p/yuyan/180020010001291350/index.html"
@@ -23,49 +53,56 @@ internal object GoldenBeanRpcCall {
     internal const val WAKUANG_ACTION_TYPE = "TRIGGER"
     internal const val JINDOULEYUAN_ACTION_TYPE = "GAMECENTER_TRIGGER"
 
-    fun index(): String =
+    fun index(entry: GoldenBeanEntry = MASTER_ENTRY): String =
         request(
             "com.alipay.goldenbean.index",
             JSONObject().apply {
-                put("bizType", "MASTER")
+                put("bizType", entry.bizType)
                 put("darwinSceneList", JSONArray())
-                put("source", TASK_SOURCE)
+                put("source", entry.source)
                 put("version", VERSION)
             },
         )
 
     fun sync(
         syncTypeList: List<String>,
-        source: String = TASK_SOURCE,
+        entry: GoldenBeanEntry = MASTER_ENTRY,
+        sourceOverride: String? = null,
     ): String =
         request(
             "com.alipay.goldenbean.sync",
             JSONObject().apply {
-                put("bizType", "MASTER")
-                put("source", source)
+                put("bizType", entry.bizType)
+                put("source", sourceOverride ?: entry.source)
                 put("syncTypeList", JSONArray(syncTypeList))
                 put("version", VERSION)
             },
         )
 
-    fun sign(signKey: String): String =
+    fun sign(
+        signKey: String,
+        entry: GoldenBeanEntry = MASTER_ENTRY,
+    ): String =
         request(
             "com.alipay.goldenbean.sign",
             JSONObject().apply {
-                put("bizType", "MASTER")
+                put("bizType", entry.bizType)
                 put("signKey", signKey)
-                put("source", TASK_SOURCE)
+                put("source", entry.source)
                 put("version", VERSION)
             },
         )
 
-    fun manureExchange(exchangeBeanAmount: Int): String =
+    fun manureExchange(
+        exchangeBeanAmount: Int,
+        entry: GoldenBeanEntry = MASTER_ENTRY,
+    ): String =
         request(
             "com.alipay.goldenbean.manureExchange",
             JSONObject().apply {
-                put("bizType", "MASTER")
+                put("bizType", entry.bizType)
                 put("exchangeBeanAmount", exchangeBeanAmount)
-                put("source", TASK_SOURCE)
+                put("source", entry.source)
                 put("version", VERSION)
             },
         )
@@ -73,41 +110,48 @@ internal object GoldenBeanRpcCall {
     fun trigger(
         taskId: String,
         triggerType: String,
+        entry: GoldenBeanEntry = MASTER_ENTRY,
     ): String =
         request(
             "com.alipay.goldenbean.trigger",
             JSONObject().apply {
-                put("bizType", "MASTER")
-                put("source", TASK_SOURCE)
+                put("bizType", entry.bizType)
+                put("source", entry.source)
                 put("taskId", taskId)
                 put("triggerType", triggerType)
                 put("version", VERSION)
             },
         )
 
-    fun finishTask(taskType: String): String =
+    fun finishTask(
+        taskType: String,
+        entry: GoldenBeanEntry = MASTER_ENTRY,
+    ): String =
         request(
             "com.alipay.antieptask.finishTaskantorchard",
             JSONObject().apply {
-                put("bizType", "MASTER")
-                put("finishBusinessInfo", JSONObject().put("bizType", "MASTER"))
+                put("bizType", entry.bizType)
+                put("finishBusinessInfo", JSONObject().put("bizType", entry.bizType))
                 put("outBizNo", System.currentTimeMillis().toString())
-                put("sceneCode", TASK_SCENE_CODE)
-                put("source", TASK_SOURCE)
+                put("sceneCode", entry.taskSceneCode)
+                put("source", entry.source)
                 put("taskType", taskType)
                 put("version", VERSION)
             },
         )
 
-    fun receiveTaskAward(taskType: String): String =
+    fun receiveTaskAward(
+        taskType: String,
+        entry: GoldenBeanEntry = MASTER_ENTRY,
+    ): String =
         request(
             "com.alipay.antieptask.receiveTaskAwardantorchard",
             JSONObject().apply {
-                put("bizInfo", JSONObject().put("bizType", "MASTER"))
-                put("bizType", "MASTER")
+                put("bizInfo", JSONObject().put("bizType", entry.bizType))
+                put("bizType", entry.bizType)
                 put("ignoreLimit", true)
-                put("sceneCode", TASK_SCENE_CODE)
-                put("source", TASK_SOURCE)
+                put("sceneCode", entry.taskSceneCode)
+                put("source", entry.source)
                 put("taskType", taskType)
                 put("version", VERSION)
             },
@@ -117,7 +161,7 @@ internal object GoldenBeanRpcCall {
         request(
             "com.alipay.goldenbean.miner.index",
             JSONObject().apply {
-                put("bizType", "MASTER")
+                put("bizType", MASTER_ENTRY.bizType)
                 put("source", MINER_SOURCE)
                 put("version", VERSION)
             },
@@ -130,7 +174,7 @@ internal object GoldenBeanRpcCall {
         request(
             "com.alipay.goldenbean.miner.grab",
             JSONObject().apply {
-                put("bizType", "MASTER")
+                put("bizType", MASTER_ENTRY.bizType)
                 put("grabId", java.util.UUID.randomUUID().toString())
                 put("grabResult", grabResult)
                 if (itemId.isNotBlank()) {
@@ -156,7 +200,7 @@ internal object GoldenBeanRpcCall {
                 )
                 put("requestType", "RPC")
                 put("sceneCode", GAME_SCENE_CODE)
-                put("source", TASK_SOURCE)
+                put("source", MASTER_ENTRY.source)
                 put("version", GAME_QUERY_VERSION)
             },
         )
@@ -169,7 +213,7 @@ internal object GoldenBeanRpcCall {
                 put("bizType", "GOLDENBEAN")
                 put("requestType", "RPC")
                 put("sceneCode", GAME_SCENE_CODE)
-                put("source", TASK_SOURCE)
+                put("source", MASTER_ENTRY.source)
                 put("version", VERSION)
             },
         )
@@ -178,12 +222,12 @@ internal object GoldenBeanRpcCall {
         request(
             "com.alipay.antiep.listTopItemsByScene",
             JSONObject().apply {
-                put("bizType", "MASTER")
+                put("bizType", MASTER_ENTRY.bizType)
                 put("itemSceneList", JSONArray().put("OPERATION_STRATEGY"))
                 put("requestType", "RPC")
                 put("sceneCode", "ANTORCHARD_JINDOU_MALL")
-                put("source", "MASTER")
-                put("subChannel", TASK_SOURCE)
+                put("source", MASTER_ENTRY.bizType)
+                put("subChannel", MASTER_ENTRY.source)
                 put("version", VERSION)
             },
         )
@@ -195,11 +239,11 @@ internal object GoldenBeanRpcCall {
         request(
             "com.alipay.antiep.itemList",
             JSONObject().apply {
-                put("bizType", "MASTER")
+                put("bizType", MASTER_ENTRY.bizType)
                 put("pageSize", pageSize)
                 put("requestType", "RPC")
                 put("sceneCode", "ANTORCHARD_JINDOU_MALL")
-                put("source", "MASTER")
+                put("source", MASTER_ENTRY.bizType)
                 put("startIndex", startIndex)
                 put("version", VERSION)
             },

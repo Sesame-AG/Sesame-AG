@@ -324,23 +324,23 @@ class CoroutineTaskRunner(allModels: List<Model>) {
                 .takeIf { it.isNotEmpty() }
                 ?.let(::add)
 
-            // 6) 金豆夺宝后跑：使用农场完成后的最新肥料余额进行换豆。
-            takeBatch { it is GoldenBeanTreasure }
-                .takeIf { it.isNotEmpty() }
-                ?.let(::add)
-
-            // 7) 福气鱼池放在金豆夺宝之后，保持独立玩法批次。
+            // 6) 福气鱼池保持独立玩法批次。
             takeBatch { it is AntFishPond }
                 .takeIf { it.isNotEmpty() }
                 ?.let(::add)
 
-            // 8) 庄园尽量承接前面模块已完成的联动任务状态，减少碎片奖励漏领。
+            // 7) 庄园尽量承接前面模块已完成的联动任务状态，减少碎片奖励漏领。
             takeBatch { it is AntFarm }
                 .takeIf { it.isNotEmpty() }
                 ?.let(::add)
 
-            // 9) 会员与芝麻信用放在联动行为之后。
+            // 8) 会员与芝麻信用放在联动行为之后。
             takeBatch { it is AntMember || it is AntSesameCredit }
+                .takeIf { it.isNotEmpty() }
+                ?.let(::add)
+
+            // 9) 金豆夺宝最后处理农场肥料和芝麻炼金已确认的最新余额。
+            takeBatch { it is GoldenBeanTreasure }
                 .takeIf { it.isNotEmpty() }
                 ?.let(::add)
 

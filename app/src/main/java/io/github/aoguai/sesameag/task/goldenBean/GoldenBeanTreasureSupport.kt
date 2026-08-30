@@ -15,6 +15,12 @@ internal data class GoldenBeanManureExchangePlan(
     val reservedManure: Int,
     val exchangedToday: Int,
 )
+
+internal data class GoldenBeanSesameExchangePlan(
+    val exchangeBeanAmount: Int,
+    val exchangedToday: Int,
+)
+
 private data class GoldenBeanGameCandidate(
     val appId: String,
     val taskId: String,
@@ -51,6 +57,103 @@ internal object GoldenBeanTreasureSupport {
         }
         return response.optString("resultCode") in setOf("100", "SUCCESS") ||
             response.optString("code") == "100000000"
+    }
+
+    internal fun planSesameExchange(
+        indexResponse: JSONObject,
+        configuredDailyBeanAmount: Int,
+    ): GoldenBeanSesameExchangePlan? {
+        if (configuredDailyBeanAmount == 0) {
+            return null
+        }
+
+        val exchangeInfo = requireSesameExchangeInfo(indexResponse, "计划") ?: return null
+        val beanReward = exchangeInfo.optInt("beanReward", 0)
+        val currentManure = exchangeInfo.optInt("currentManure", 0)
+        val effectiveExchangeManure = exchangeInfo.optInt("effectiveExchangeManure", 0)
+        val minExchangeAmount = exchangeInfo.optInt("minExchangeAmount", 0)
+        val remainQuota = exchangeInfo.optInt("remainQuota", 0)
+        val exchangedToday =
+            Status.getIntFlagToday(StatusFlags.FLAG_GOLDEN_BEAN_ZHIMA_EXCHANGE_BEAN_AMOUNT) ?: 0
+        val configuredRemaining =
+            if (configuredDailyBeanAmount > 0) configuredDailyBeanAmount - exchangedToday else Int.MAX_VALUE
+        val availableBeans = minOf(
+            remainQuota.toLong(),
+            currentManure.toLong() * beanReward.toLong(),
+            effectiveExchangeManure.toLong() * beanReward.toLong(),
+            configuredRemaining.toLong(),
+        ).coerceAtLeast(0L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+
+        Log.goldenBean(
+            "金豆夺宝芝麻粒换豆资格 pageOpened=${exchangeInfo.optBoolean("pageOpened")} " +
+                "currentSesameGrain=$currentManure effectiveSesameGrain=$effectiveExchangeManure " +
+                "beanReward=$beanReward minExchangeAmount=$minExchangeAmount remainQuota=$remainQuota " +
+                "configuredDailyBeanAmount=$configuredDailyBeanAmount exchangedToday=$exchangedToday " +
+                "availableBeans=$availableBeans",
+        )
+        if (!exchangeInfo.optBoolean("pageOpened") || beanReward <= 0 || minExchangeAmount <= 0) {
+            Log.goldenBean("金豆夺宝芝麻粒换豆[BUSINESS_LIMIT] 服务端资格未满足")
+            return null
+        }
+        if (availableBeans < minExchangeAmount) {
+            Log.goldenBean("金豆夺宝芝麻粒换豆[BUSINESS_LIMIT] 可兑换金豆不足最低兑换量")
+            return null
+        }
+        return GoldenBeanSesameExchangePlan(availableBeans, exchangedToday)
+    }
+
+    internal fun exchangePlannedSesame(
+        indexResponse: JSONObject,
+        plan: GoldenBeanSesameExchangePlan,
+    ): Boolean {
+        requireSesameExchangeInfo(indexResponse, "执行") ?: return false
+        val exchangeResponse =
+            parseResponse(GoldenBeanRpcCall.manureExchange(plan.exchangeBeanAmount, GoldenBeanRpcCall.ZHIMA_ENTRY))
+        if (exchangeResponse == null || !isSuccess(exchangeResponse)) {
+            logManureExchangeFailure("zhimaManureExchange", exchangeResponse)
+            return false
+        }
+        val beanDelta = exchangeResponse.optInt("beanDelta", 0)
+        if (beanDelta <= 0) {
+            Log.error(
+                GOLDEN_BEAN_BLACKLIST_MODULE,
+                "金豆夺宝芝麻粒换豆 classification=UNKNOWN_NEEDS_REVIEW 响应缺少有效beanDelta raw=$exchangeResponse",
+            )
+            return false
+        }
+
+        val syncResponse =
+            parseResponse(
+                GoldenBeanRpcCall.sync(
+                    listOf("JAR_INFO", "EXCHANGE_MANURE", "TASK_LIST"),
+                    GoldenBeanRpcCall.ZHIMA_ENTRY,
+                ),
+            )
+        if (syncResponse == null || !isSuccess(syncResponse)) {
+            logManureExchangeFailure("zhimaSync", syncResponse)
+            return false
+        }
+        if (!hasSesameExchangeProgress(indexResponse, syncResponse)) {
+            Log.error(
+                GOLDEN_BEAN_BLACKLIST_MODULE,
+                "金豆夺宝芝麻粒换豆 classification=UNKNOWN_NEEDS_REVIEW " +
+                    "请求成功但同步未确认芝麻粒、配额、金豆罐或任务状态推进 raw=$syncResponse",
+            )
+            return false
+        }
+
+        Status.setIntFlagToday(
+            StatusFlags.FLAG_GOLDEN_BEAN_ZHIMA_EXCHANGE_BEAN_AMOUNT,
+            plan.exchangedToday + beanDelta,
+        )
+        val afterInfo = syncResponse.optJSONObject("manureExchangeInfo")
+        Log.goldenBean(
+            "金豆夺宝芝麻粒兑换成功并完成服务端回查 requested=${plan.exchangeBeanAmount} " +
+                "beanDelta=$beanDelta sesameCost=${exchangeResponse.optInt("manureCost", -1)} " +
+                "remainSesameGrain=${afterInfo?.optInt("currentManure", -1)} " +
+                "remainQuota=${afterInfo?.optInt("remainQuota", -1)}",
+        )
+        return true
     }
 
     internal fun planManureExchange(
@@ -141,9 +244,9 @@ internal object GoldenBeanTreasureSupport {
     internal fun exchangePlannedManure(
         indexResponse: JSONObject,
         plan: GoldenBeanManureExchangePlan,
-    ) {
+    ): Boolean {
         val exchangeInfo = requireManureExchangeInfo(indexResponse, "最终兑换")
-            ?: return
+            ?: return false
         val farmOpened = exchangeInfo.optBoolean("farmOpened")
         val pageOpened = exchangeInfo.optBoolean("pageOpened")
         val taobaoBinding = exchangeInfo.optBoolean("taobaoBinding")
@@ -154,14 +257,14 @@ internal object GoldenBeanTreasureSupport {
 
         if (!farmOpened || !pageOpened || !taobaoBinding) {
             Log.goldenBean("金豆夺宝肥料换豆[BUSINESS_LIMIT] 最终回查资格未满足")
-            return
+            return false
         }
         if (minExchangeAmount <= 0) {
             Log.error(
                 GOLDEN_BEAN_BLACKLIST_MODULE,
                 "金豆夺宝肥料换豆 classification=UNKNOWN_NEEDS_REVIEW 最终回查最低兑换量无效=$minExchangeAmount",
             )
-            return
+            return false
         }
         if (plan.reservedManure < minExchangeAmount ||
             currentManure < plan.reservedManure ||
@@ -171,24 +274,25 @@ internal object GoldenBeanTreasureSupport {
             Log.goldenBean(
                 "金豆夺宝肥料换豆[BUSINESS_LIMIT] 最终回查无法满足预留${plan.reservedManure}，不发送兑换请求",
             )
-            return
+            return false
         }
 
         val exchangeResponse = parseResponse(GoldenBeanRpcCall.manureExchange(plan.reservedManure))
         if (exchangeResponse == null || !isSuccess(exchangeResponse)) {
             logManureExchangeFailure("manureExchange", exchangeResponse)
-            return
+            return false
         }
 
         val syncResponse =
             parseResponse(
                 GoldenBeanRpcCall.sync(
                     listOf("JAR_INFO", "EXCHANGE_MANURE", "TASK_LIST"),
+                    GoldenBeanRpcCall.MASTER_ENTRY,
                 ),
             )
         if (syncResponse == null || !isSuccess(syncResponse)) {
             logManureExchangeFailure("sync", syncResponse)
-            return
+            return false
         }
 
         if (hasManureExchangeProgress(indexResponse, syncResponse)) {
@@ -205,6 +309,7 @@ internal object GoldenBeanTreasureSupport {
                     "金豆夺宝肥料兑换 classification=UNKNOWN_NEEDS_REVIEW " +
                         "服务端已确认状态推进但缺少可计量肥料消耗 raw=$syncResponse",
                 )
+                return false
             }
             Log.goldenBean(
                 "金豆夺宝肥料兑换成功并完成服务端回查 amount=${plan.reservedManure} " +
@@ -213,6 +318,7 @@ internal object GoldenBeanTreasureSupport {
                     "remainQuota=${afterInfo?.optInt("remainQuota", -1)} " +
                     "taskStatus=${findManureExchangeTaskStatus(syncResponse) ?: "UNKNOWN"}",
             )
+            return true
         } else {
             Log.error(
                 GOLDEN_BEAN_BLACKLIST_MODULE,
@@ -221,6 +327,61 @@ internal object GoldenBeanTreasureSupport {
                     "amount=${plan.reservedManure} raw=$syncResponse",
             )
         }
+        return false
+    }
+
+    private fun requireSesameExchangeInfo(
+        indexResponse: JSONObject,
+        phase: String,
+    ): JSONObject? {
+        val exchangeInfo = indexResponse.optJSONObject("manureExchangeInfo")
+        if (exchangeInfo == null) {
+            Log.error(
+                GOLDEN_BEAN_BLACKLIST_MODULE,
+                "金豆夺宝芝麻粒换豆 classification=UNKNOWN_NEEDS_REVIEW $phase 缺少manureExchangeInfo raw=$indexResponse",
+            )
+            return null
+        }
+        val requiredFields = listOf(
+            "pageOpened",
+            "currentManure",
+            "effectiveExchangeManure",
+            "beanReward",
+            "minExchangeAmount",
+            "remainQuota",
+        )
+        val missingField = requiredFields.firstOrNull { !exchangeInfo.has(it) }
+        if (missingField != null) {
+            Log.error(
+                GOLDEN_BEAN_BLACKLIST_MODULE,
+                "金豆夺宝芝麻粒换豆 classification=UNKNOWN_NEEDS_REVIEW $phase 缺少字段=$missingField raw=$exchangeInfo",
+            )
+            return null
+        }
+        return exchangeInfo
+    }
+
+    private fun hasSesameExchangeProgress(
+        beforeResponse: JSONObject,
+        afterResponse: JSONObject,
+    ): Boolean {
+        val beforeInfo = beforeResponse.optJSONObject("manureExchangeInfo") ?: return false
+        val afterInfo = afterResponse.optJSONObject("manureExchangeInfo") ?: return false
+        val grainProgressed = listOf("currentManure", "effectiveExchangeManure", "remainQuota").any { field ->
+            afterInfo.optInt(field, Int.MAX_VALUE) < beforeInfo.optInt(field, Int.MIN_VALUE)
+        }
+        if (grainProgressed) {
+            return true
+        }
+        val beforeJar = beforeResponse.optJSONObject("jarInfo")?.optInt("currentProgress", -1) ?: -1
+        val afterJar = afterResponse.optJSONObject("jarInfo")?.optInt("currentProgress", -1) ?: -1
+        if (beforeJar >= 0 && afterJar > beforeJar) {
+            return true
+        }
+        val beforeStatus = findManureExchangeTaskStatus(beforeResponse)
+        val afterStatus = findManureExchangeTaskStatus(afterResponse)
+        return beforeStatus != null && afterStatus != null && beforeStatus != afterStatus &&
+            afterStatus in setOf("FINISHED", "TO_RECEIVE", "RECEIVED", "DONE")
     }
 
     private fun requireManureExchangeInfo(
@@ -350,7 +511,10 @@ internal object GoldenBeanTreasureSupport {
         )
     }
 
-    internal fun handleDailySign(indexResponse: JSONObject): JSONObject? {
+    internal fun handleDailySign(
+        indexResponse: JSONObject,
+        entry: GoldenBeanEntry = GoldenBeanRpcCall.MASTER_ENTRY,
+    ): JSONObject? {
         val signList = indexResponse.optJSONObject("signInfo")?.optJSONArray("signList") ?: return null
         for (index in 0 until signList.length()) {
             val sign = signList.optJSONObject(index) ?: continue
@@ -363,13 +527,16 @@ internal object GoldenBeanTreasureSupport {
                 return null
             }
 
-            val signResponse = parseResponse(GoldenBeanRpcCall.sign(signKey))
+            val signResponse = parseResponse(GoldenBeanRpcCall.sign(signKey, entry))
             if (signResponse == null || !isSuccess(signResponse)) {
                 Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "金豆夺宝签到失败 raw=${signResponse ?: "EMPTY"}")
                 return null
             }
             val syncResponse = parseResponse(
-                GoldenBeanRpcCall.sync(listOf("JAR_INFO", "SIGN", "MARKETING_POPUP", "TASK_LIST")),
+                GoldenBeanRpcCall.sync(
+                    listOf("JAR_INFO", "SIGN", "MARKETING_POPUP", "TASK_LIST"),
+                    entry,
+                ),
             )
             if (isTodaySigned(syncResponse)) {
                 Log.goldenBean("金豆夺宝签到成功 signKey=$signKey")
@@ -381,7 +548,10 @@ internal object GoldenBeanTreasureSupport {
         return null
     }
 
-    internal fun handleMarketingPopup(indexResponse: JSONObject) {
+    internal fun handleMarketingPopup(
+        indexResponse: JSONObject,
+        entry: GoldenBeanEntry = GoldenBeanRpcCall.MASTER_ENTRY,
+    ) {
         val marketingTask = indexResponse.optJSONObject("marketingPopupTask") ?: return
         val taskId = marketingTask.optString("taskId").trim()
         val triggerType = marketingTask.optString("triggerType").trim().ifBlank { MARKETING_POPUP_CLICKED }
@@ -393,12 +563,12 @@ internal object GoldenBeanTreasureSupport {
             return
         }
 
-        val triggerResponse = parseResponse(GoldenBeanRpcCall.trigger(taskId, triggerType))
+        val triggerResponse = parseResponse(GoldenBeanRpcCall.trigger(taskId, triggerType, entry))
         if (triggerResponse == null || !isSuccess(triggerResponse)) {
             Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "金豆夺宝营销弹窗触发失败 taskId=$taskId raw=${triggerResponse ?: "EMPTY"}")
             return
         }
-        val syncResponse = parseResponse(GoldenBeanRpcCall.sync(listOf("MARKETING_POPUP")))
+        val syncResponse = parseResponse(GoldenBeanRpcCall.sync(listOf("MARKETING_POPUP"), entry))
         if (syncResponse == null || !isSuccess(syncResponse)) {
             Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "金豆夺宝营销弹窗回查失败 taskId=$taskId raw=${syncResponse ?: "EMPTY"}")
         }
@@ -722,7 +892,10 @@ internal object GoldenBeanTreasureSupport {
                 return
             }
 
-            val syncResponse = parseResponse(GoldenBeanRpcCall.sync(listOf("JAR_INFO"), GoldenBeanRpcCall.MINER_SOURCE))
+            val syncResponse = parseResponse(GoldenBeanRpcCall.sync(
+                    listOf("JAR_INFO"),
+                    sourceOverride = GoldenBeanRpcCall.MINER_SOURCE,
+                ))
             if (syncResponse == null || !isSuccess(syncResponse)) {
                 Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "金猫矿工抓取后金豆罐回查失败 raw=${syncResponse ?: "EMPTY"}")
                 return

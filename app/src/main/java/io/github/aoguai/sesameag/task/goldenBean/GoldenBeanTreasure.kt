@@ -15,6 +15,7 @@ class GoldenBeanTreasure : ModelTask() {
     private lateinit var executeInterval: IntegerModelField
     internal lateinit var goldenBeanTreasure: BooleanModelField
     internal lateinit var goldenBeanManureExchangeDailyReserveAmount: IntegerModelField
+    internal lateinit var goldenBeanSesameExchangeDailyBeanAmount: IntegerModelField
 
     override fun getName(): String = "金豆夺宝"
 
@@ -47,6 +48,19 @@ class GoldenBeanTreasure : ModelTask() {
                 )
                 .also { goldenBeanManureExchangeDailyReserveAmount = it },
         )
+        modelFields.addField(
+            IntegerModelField(
+                "goldenBeanSesameExchangeDailyBeanAmount",
+                "芝麻粒换豆每日金豆额度",
+                0,
+                -1,
+                10000,
+            )
+                .withDesc(
+                    "0 不自动兑换；正数为当天目标金豆量；-1 按芝麻炼金入口服务端可兑换额度处理。不会自动消耗芝麻粒。",
+                )
+                .also { goldenBeanSesameExchangeDailyBeanAmount = it },
+        )
         return modelFields
     }
 
@@ -59,7 +73,10 @@ class GoldenBeanTreasure : ModelTask() {
             } else {
                 Log.goldenBean("${getName()}主流程未开启，本轮跳过签到、任务、矿工与乐园奖励")
             }
-            runGoldenBeanManureExchangeIfNeeded()
+            if (goldenBeanTreasure.value != true) {
+                runGoldenBeanManureExchangeIfNeeded()
+                runGoldenBeanSesameExchangeIfNeeded()
+            }
         } catch (t: Throwable) {
             Log.printStackTrace("GoldenBeanTreasure", "start.run err:", t)
         } finally {
@@ -67,31 +84,46 @@ class GoldenBeanTreasure : ModelTask() {
         }
     }
 
-    private fun runGoldenBeanManureExchangeIfNeeded() {
+    internal fun runGoldenBeanSesameExchangeIfNeeded(): Boolean {
+        val configuredBeanAmount = goldenBeanSesameExchangeDailyBeanAmount.value ?: 0
+        if (configuredBeanAmount == 0) {
+            return false
+        }
+        val indexResponse =
+            GoldenBeanTreasureSupport.parseResponse(GoldenBeanRpcCall.index(GoldenBeanRpcCall.ZHIMA_ENTRY))
+        if (indexResponse == null || !GoldenBeanTreasureSupport.isSuccess(indexResponse)) {
+            Log.error("GoldenBeanTreasure", "金豆夺宝芝麻粒换豆资格查询失败 raw=${indexResponse ?: "EMPTY"}")
+            return false
+        }
+        val plan = GoldenBeanTreasureSupport.planSesameExchange(indexResponse, configuredBeanAmount) ?: return false
+        return GoldenBeanTreasureSupport.exchangePlannedSesame(indexResponse, plan)
+    }
+
+    internal fun runGoldenBeanManureExchangeIfNeeded(): Boolean {
         val configuredReserveAmount = goldenBeanManureExchangeDailyReserveAmount.value ?: 0
         if (configuredReserveAmount == 0) {
-            return
+            return false
         }
         val indexResponse =
             try {
                 GoldenBeanTreasureSupport.parseResponse(GoldenBeanRpcCall.index())
             } catch (error: Exception) {
                 Log.printStackTrace("GoldenBeanTreasure", "肥料换豆资格查询异常:", error)
-                return
+                return false
             }
         if (indexResponse == null || !GoldenBeanTreasureSupport.isSuccess(indexResponse)) {
             Log.error("金豆夺宝", "金豆夺宝肥料换豆资格查询失败 raw=${indexResponse ?: "EMPTY"}")
-            return
+            return false
         }
         val plan = GoldenBeanTreasureSupport.planManureExchange(
             indexResponse,
             configuredReserveAmount,
-        ) ?: return
+        ) ?: return false
         val finalIndexResponse = GoldenBeanTreasureSupport.parseResponse(GoldenBeanRpcCall.index())
         if (finalIndexResponse == null || !GoldenBeanTreasureSupport.isSuccess(finalIndexResponse)) {
             Log.error("金豆夺宝", "金豆夺宝肥料兑换最终查询失败 raw=${finalIndexResponse ?: "EMPTY"}")
-            return
+            return false
         }
-        GoldenBeanTreasureSupport.exchangePlannedManure(finalIndexResponse, plan)
+        return GoldenBeanTreasureSupport.exchangePlannedManure(finalIndexResponse, plan)
     }
 }

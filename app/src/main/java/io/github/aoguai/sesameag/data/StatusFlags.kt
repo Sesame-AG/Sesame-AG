@@ -342,6 +342,10 @@ object StatusFlags {
     const val FLAG_GOLDEN_BEAN_MANURE_EXCHANGE_AMOUNT =
         "GOLDEN_BEAN_MANURE_EXCHANGE_AMOUNT"
 
+    /** 金豆夺宝：今日芝麻粒换豆已确认获得的金豆 */
+    const val FLAG_GOLDEN_BEAN_ZHIMA_EXCHANGE_BEAN_AMOUNT =
+        "GOLDEN_BEAN_ZHIMA_EXCHANGE_BEAN_AMOUNT"
+
     /** 金豆夺宝：今日任务列表已确认无可执行项 */
     const val FLAG_GOLDEN_BEAN_TASKS_DONE = "GoldenBeanTreasure::tasksDone"
 
