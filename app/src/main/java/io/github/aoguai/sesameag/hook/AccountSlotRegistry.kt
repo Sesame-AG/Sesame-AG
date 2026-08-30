@@ -23,7 +23,6 @@ enum class AccountSlotMigrationState {
 }
 
 data class AccountSlotRecord(
-    val schemaVersion: Int = 1,
     val migrationState: AccountSlotMigrationState = AccountSlotMigrationState.READY,
     val activeUserIds: List<String> = emptyList(),
 )
@@ -31,7 +30,8 @@ data class AccountSlotRecord(
 data class AccountSlotSnapshot(
     val migrationState: AccountSlotMigrationState,
     val activeUserIds: List<String>,
-    val legacyCandidates: List<String>,
+    val candidateUserIds: List<String>,
+    val orphanedActiveUserIds: List<String> = emptyList(),
     val errorCode: String? = null,
 ) {
     val isReady: Boolean
@@ -57,13 +57,14 @@ sealed interface AccountSlotExecutionCheck {
     data object RegistryUnavailable : AccountSlotExecutionCheck
 }
 
-data class AccountSlotRemoval(
-    val removed: Boolean,
+data class AccountSlotReplacement(
+    val replaced: Boolean,
     val reasonCode: String? = null,
+    val removedUserIds: List<String> = emptyList(),
 )
 
 /**
- * Separates locally stored account data from the two accounts allowed to execute target-app work.
+ * Separates locally stored account data from the accounts allowed to execute target-app work.
  * Registry writes are serialized across the module UI and injected target process with a stable lock
  * file; a lock or persistence failure deliberately denies business execution.
  */
@@ -71,7 +72,6 @@ object AccountSlotRegistry {
     private const val TAG = "AccountSlotRegistry"
     private const val RECORD_FILE_NAME = "account-slots.json"
     private const val LOCK_FILE_NAME = ".account-slots.lock"
-    private const val SCHEMA_VERSION = 1
     private const val MAX_USER_ID_LENGTH = 128
     private const val REGISTRY_UNAVAILABLE_LOG_INTERVAL_MS = 60_000L
 
@@ -96,7 +96,8 @@ object AccountSlotRegistry {
         } ?: AccountSlotSnapshot(
             migrationState = AccountSlotMigrationState.SELECTION_REQUIRED,
             activeUserIds = emptyList(),
-            legacyCandidates = emptyList(),
+            candidateUserIds = emptyList(),
+            orphanedActiveUserIds = emptyList(),
             errorCode = "registry_unavailable",
         )
 
@@ -105,20 +106,31 @@ object AccountSlotRegistry {
             ?: return AccountSlotAdmission.Denied("invalid_user_id")
         return withLockedRecord { loaded ->
             val record = loaded.record
-            when {
-                record.migrationState != AccountSlotMigrationState.READY -> {
+            when (record.migrationState) {
+                AccountSlotMigrationState.READY -> {
+                    when {
+                        userId in record.activeUserIds -> {
+                            LockedResult(AccountSlotAdmission.Allowed(userId, addedToSlot = false))
+                        }
+
+                        record.activeUserIds.isEmpty() && configuredUserIds().isEmpty() -> {
+                            LockedResult(
+                                AccountSlotAdmission.Allowed(userId, addedToSlot = true),
+                                record.copy(activeUserIds = listOf(userId)),
+                            )
+                        }
+
+                        else -> LockedResult(AccountSlotAdmission.Denied("account_slot_not_selected"))
+                    }
+                }
+
+                AccountSlotMigrationState.SELECTION_REQUIRED -> {
                     LockedResult(AccountSlotAdmission.Denied("account_slot_migration_required"))
                 }
-                userId in record.activeUserIds -> {
-                    LockedResult(AccountSlotAdmission.Allowed(userId, addedToSlot = false))
-                }
-                record.activeUserIds.size >= MAX_EXECUTABLE_ACCOUNT_SLOTS -> {
-                    LockedResult(AccountSlotAdmission.Denied("account_slot_full"))
-                }
-                else -> {
-                    val updated = record.copy(activeUserIds = record.activeUserIds + userId)
-                    LockedResult(AccountSlotAdmission.Allowed(userId, addedToSlot = true), updated)
-                }
+            }
+        }?.also { admission ->
+            if (admission is AccountSlotAdmission.Allowed && admission.addedToSlot) {
+                Log.record(TAG, "account_slot_initial_provisioned: account=${shortHash(userId)}")
             }
         } ?: AccountSlotAdmission.Denied("registry_unavailable")
     }
@@ -139,56 +151,73 @@ object AccountSlotRegistry {
     fun isExecutableUser(rawUserId: String?): Boolean =
         checkExecutableUser(rawUserId) is AccountSlotExecutionCheck.Allowed
 
-    fun selectLegacySlots(rawUserIds: Collection<String?>): AccountSlotRemoval {
-        val selected = rawUserIds.mapNotNull(::normalizeUserId).distinct()
-        if (selected.size != MAX_EXECUTABLE_ACCOUNT_SLOTS) {
-            return AccountSlotRemoval(false, "exactly_two_accounts_required")
-        }
-        return withLockedRecord { loaded ->
+    fun addExecutableSlot(
+        context: android.content.Context?,
+        rawUserId: String?,
+    ): AccountSlotReplacement = mutateExecutableSlot(context, rawUserId, makeExecutable = true)
+
+    fun removeExecutableSlot(
+        context: android.content.Context?,
+        rawUserId: String?,
+    ): AccountSlotReplacement = mutateExecutableSlot(context, rawUserId, makeExecutable = false)
+
+    private fun mutateExecutableSlot(
+        context: android.content.Context?,
+        rawUserId: String?,
+        makeExecutable: Boolean,
+    ): AccountSlotReplacement {
+        val userId = normalizeUserId(rawUserId)
+            ?: return AccountSlotReplacement(false, "invalid_user_id")
+        val result = withLockedRecord { loaded ->
             val record = loaded.record
-            val candidates = legacyCandidates()
+            val candidates = selectableUserIds()
             when {
-                record.migrationState != AccountSlotMigrationState.SELECTION_REQUIRED -> {
-                    LockedResult(AccountSlotRemoval(false, "migration_not_required"))
+                userId !in candidates -> {
+                    LockedResult(AccountSlotReplacement(false, "unknown_slot_candidate"))
                 }
-                !candidates.containsAll(selected) -> {
-                    LockedResult(AccountSlotRemoval(false, "invalid_legacy_selection"))
+
+                makeExecutable && userId in record.activeUserIds -> {
+                    LockedResult(AccountSlotReplacement(false, "account_slot_already_active"))
                 }
+
+                makeExecutable && record.activeUserIds.size >= MAX_EXECUTABLE_ACCOUNT_SLOTS -> {
+                    LockedResult(AccountSlotReplacement(false, "account_slot_full"))
+                }
+
+                !makeExecutable && userId !in record.activeUserIds -> {
+                    LockedResult(AccountSlotReplacement(false, "account_slot_not_active"))
+                }
+
                 else -> {
+                    val activeUserIds = if (makeExecutable) {
+                        record.activeUserIds + userId
+                    } else {
+                        record.activeUserIds - userId
+                    }
                     LockedResult(
-                        AccountSlotRemoval(true),
-                        AccountSlotRecord(
-                            schemaVersion = SCHEMA_VERSION,
+                        AccountSlotReplacement(
+                            replaced = true,
+                            removedUserIds = if (makeExecutable) emptyList() else listOf(userId),
+                        ),
+                        record.copy(
                             migrationState = AccountSlotMigrationState.READY,
-                            activeUserIds = selected,
+                            activeUserIds = activeUserIds,
                         ),
                     )
                 }
             }
-        } ?: AccountSlotRemoval(false, "registry_unavailable")
-    }
+        } ?: return AccountSlotReplacement(false, "registry_unavailable")
 
-    fun removeExecutableSlot(context: android.content.Context?, rawUserId: String?): AccountSlotRemoval {
-        val userId = normalizeUserId(rawUserId)
-            ?: return AccountSlotRemoval(false, "invalid_user_id")
-        val removal = withLockedRecord { loaded ->
-            val record = loaded.record
-            if (userId !in record.activeUserIds) {
-                LockedResult(AccountSlotRemoval(false, "account_slot_not_active"))
-            } else {
-                LockedResult(
-                    AccountSlotRemoval(true),
-                    record.copy(activeUserIds = record.activeUserIds - userId),
-                )
-            }
-        } ?: return AccountSlotRemoval(false, "registry_unavailable")
-
-        if (removal.removed) {
-            PersistentScheduleRegistry.cancelByOwner(context, userId)
-            UserDataStoreManager.releaseInstance(userId)
-            Log.record(TAG, "account_slot_revoked: account=${shortHash(userId)}")
+        if (result.replaced && result.removedUserIds.isNotEmpty()) {
+            cleanupRemovedSlots(context, result.removedUserIds)
         }
-        return removal
+        if (result.replaced) {
+            Log.record(
+                TAG,
+                "account_slot_${if (makeExecutable) "enabled" else "disabled"}: account=${shortHash(userId)}",
+            )
+        }
+        return result
     }
 
     fun normalizeUserId(rawUserId: String?): String? {
@@ -208,22 +237,31 @@ object AccountSlotRegistry {
         return userId
     }
 
-    private fun snapshotFor(record: AccountSlotRecord): AccountSlotSnapshot =
-        AccountSlotSnapshot(
-            migrationState = record.migrationState,
-            activeUserIds = record.activeUserIds,
-            legacyCandidates = if (record.migrationState == AccountSlotMigrationState.SELECTION_REQUIRED) {
-                legacyCandidates()
-            } else {
-                emptyList()
-            },
-        )
+    private fun cleanupRemovedSlots(context: android.content.Context?, removedUserIds: Collection<String>) {
+        removedUserIds.forEach { userId ->
+            PersistentScheduleRegistry.cancelByOwner(context, userId)
+            UserDataStoreManager.releaseInstance(userId)
+        }
+    }
 
-    private fun legacyCandidates(): List<String> =
+    private fun snapshotFor(record: AccountSlotRecord): AccountSlotSnapshot {
+        val configuredUserIds = configuredUserIds()
+        val configuredUserIdSet = configuredUserIds.toSet()
+        return AccountSlotSnapshot(
+            migrationState = record.migrationState,
+            activeUserIds = record.activeUserIds.filter { it in configuredUserIdSet },
+            candidateUserIds = configuredUserIds,
+            orphanedActiveUserIds = record.activeUserIds.filter { it !in configuredUserIdSet },
+        )
+    }
+
+    private fun selectableUserIds(): List<String> = configuredUserIds()
+
+    private fun configuredUserIds(): List<String> =
         Files.listExistingUserConfigIds()
             .asSequence()
             .map { userId -> File(Files.CONFIG_DIR, userId) }
-            .mapNotNull { directory -> verifiedDirectoryUserId(directory) }
+            .mapNotNull(::verifiedDirectoryUserId)
             .distinct()
             .sorted()
             .toList()
@@ -242,23 +280,47 @@ object AccountSlotRegistry {
     }
 
     private fun bootstrapRecord(): AccountSlotRecord {
-        val candidates = legacyCandidates()
+        val candidates = configuredUserIds()
         return when {
             candidates.size <= MAX_EXECUTABLE_ACCOUNT_SLOTS -> AccountSlotRecord(
-                schemaVersion = SCHEMA_VERSION,
                 migrationState = AccountSlotMigrationState.READY,
                 activeUserIds = candidates,
             )
+
             else -> AccountSlotRecord(
-                schemaVersion = SCHEMA_VERSION,
                 migrationState = AccountSlotMigrationState.SELECTION_REQUIRED,
-                activeUserIds = emptyList(),
             )
         }
     }
 
+    private fun recoverRecord(record: AccountSlotRecord): AccountSlotRecord {
+        val candidates = configuredUserIds()
+        val recovered = when {
+            record.migrationState == AccountSlotMigrationState.SELECTION_REQUIRED &&
+                candidates.size <= MAX_EXECUTABLE_ACCOUNT_SLOTS -> {
+                record.copy(
+                    migrationState = AccountSlotMigrationState.READY,
+                    activeUserIds = candidates,
+                )
+            }
+
+            record.migrationState == AccountSlotMigrationState.READY -> {
+                record.copy(activeUserIds = record.activeUserIds.filter { it in candidates })
+            }
+
+            else -> record
+        }
+        if (recovered != record) {
+            Log.record(
+                TAG,
+                "account_slot_record_recovered: from=${record.migrationState} " +
+                    "to=${recovered.migrationState} candidates=${candidates.size}",
+            )
+        }
+        return recovered
+    }
+
     private fun validateRecord(record: AccountSlotRecord): AccountSlotRecord? {
-        if (record.schemaVersion != SCHEMA_VERSION) return null
         val activeUserIds = record.activeUserIds.mapNotNull(::normalizeUserId)
         if (activeUserIds.size != record.activeUserIds.size || activeUserIds.distinct().size != activeUserIds.size) {
             return null
@@ -311,10 +373,12 @@ object AccountSlotRegistry {
         if (!recordFile.exists()) {
             return LoadedRecord(bootstrapRecord(), needsWrite = true)
         }
-        val record = runCatching {
+        val parsedRecord = runCatching {
             JsonUtil.parseObject(Files.readFromFile(recordFile), AccountSlotRecord::class.java)
         }.getOrNull() ?: return null
-        return validateRecord(record)?.let { LoadedRecord(it, needsWrite = false) }
+        val validatedRecord = validateRecord(parsedRecord) ?: return null
+        val recoveredRecord = recoverRecord(validatedRecord)
+        return LoadedRecord(recoveredRecord, needsWrite = recoveredRecord != validatedRecord)
     }
 
     private fun writeLockedRecord(configDir: File, record: AccountSlotRecord): Boolean {

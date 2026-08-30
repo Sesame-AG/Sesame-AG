@@ -331,16 +331,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun removeExecutableAccountSlot(userId: String?) {
+    fun setExecutableAccountSlot(userId: String?, enabled: Boolean) {
         viewModelScope.launch(Dispatchers.IO) {
-            AccountSlotRegistry.removeExecutableSlot(getApplication<Application>(), userId)
-            refreshUserConfigs()
-        }
-    }
-
-    fun selectLegacyAccountSlots(userIds: Collection<String?>) {
-        viewModelScope.launch(Dispatchers.IO) {
-            AccountSlotRegistry.selectLegacySlots(userIds)
+            val result = if (enabled) {
+                AccountSlotRegistry.addExecutableSlot(getApplication<Application>(), userId)
+            } else {
+                AccountSlotRegistry.removeExecutableSlot(getApplication<Application>(), userId)
+            }
+            if (!result.replaced) {
+                val message = when (result.reasonCode) {
+                    "registry_unavailable" -> "可执行账号配置暂不可读取，请稍后重试"
+                    "account_slot_full" -> "可执行槽位已满"
+                    "unknown_slot_candidate" -> "账号配置已变化，请刷新后重试"
+                    else -> "可执行账号操作失败，请稍后重试"
+                }
+                ToastUtil.showUiToast(getApplication(), message)
+            }
             refreshUserConfigs()
         }
     }

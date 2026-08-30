@@ -191,8 +191,7 @@ fun MainScreen(
                 onOpenFriendCenter = { user ->
                     openForUser(user) { id, name -> AppRoute.FriendCenter(id, name) }
                 },
-                onRemoveExecutableSlot = viewModel::removeExecutableAccountSlot,
-                onSelectLegacySlots = viewModel::selectLegacyAccountSlots,
+                onSetExecutableSlot = viewModel::setExecutableAccountSlot,
             )
         }
         entry<AppRoute.Logs> {
