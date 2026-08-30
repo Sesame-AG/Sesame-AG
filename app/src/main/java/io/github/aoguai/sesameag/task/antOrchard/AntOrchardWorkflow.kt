@@ -5,7 +5,6 @@ import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.util.CoroutineUtils
 import io.github.aoguai.sesameag.util.GameTask
 import io.github.aoguai.sesameag.util.Log
-import kotlinx.coroutines.CancellationException
 import org.json.JSONObject
 
 internal suspend fun AntOrchard.runOrchardRewardWorkflow(indexJson: JSONObject, userId: String) {
@@ -58,16 +57,6 @@ internal suspend fun AntOrchard.runOrchardRewardWorkflow(indexJson: JSONObject, 
         receiveLeyuanDailyTaskAwards()
     }
 
-    if (goldenBeanTreasure.value == true) {
-        try {
-            runGoldenBeanTreasure()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.printStackTrace("GoldenBeanTreasure", "run err:", e)
-        }
-    }
-
     receiveMoneyTreeReward()
 
     if (!Status.hasFlagToday(StatusFlags.FLAG_ANTORCHARD_WIDGET_DAILY_AWARD)) {
@@ -78,8 +67,6 @@ internal suspend fun AntOrchard.runOrchardRewardWorkflow(indexJson: JSONObject, 
 }
 
 internal fun AntOrchard.runOrchardCultivationWorkflow() {
-    prepareGoldenBeanManureExchangePlan()
-
     if ((orchardSpreadManureCountMain.value ?: 0) != 0 || (orchardSpreadManureCountYeb.value ?: 0) != 0) {
         CoroutineUtils.sleepCompat(200)
         orchardSpreadManure()
