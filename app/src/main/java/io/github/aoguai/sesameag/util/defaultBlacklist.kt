@@ -140,7 +140,10 @@ private val farmDefaultBlacklist =
         "线上支付",
     )
 
-private val oceanDefaultBlacklist = emptySet<String>()
+private val oceanDefaultBlacklist =
+    setOf(
+        "BWXRK_QDRW_HAIYANG",
+    )
 
 private val forestDefaultBlacklist =
     setOf(

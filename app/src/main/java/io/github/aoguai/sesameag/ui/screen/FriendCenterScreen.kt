@@ -89,6 +89,8 @@ fun FriendCenterScreen(
     viewModel: FriendCenterViewModel = viewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val refreshState by viewModel.refreshState.collectAsStateWithLifecycle()
+    val displayMessage = state.message.ifBlank { refreshState.lastRefreshMessage }
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var newGroupName by rememberSaveable(userId) { mutableStateOf("") }
@@ -140,8 +142,6 @@ fun FriendCenterScreen(
                         resultUserId = intent.getStringExtra("userId").orEmpty(),
                         ready = intent.getBooleanExtra("ready", false),
                         message = intent.getStringExtra("message").orEmpty(),
-                        currentUserId = intent.getStringExtra("currentUserId").orEmpty(),
-                        timestamp = intent.getLongExtra("timestamp", 0L)
                     )
 
                     ApplicationHookConstants.BroadcastActions.REFRESH_FRIENDS_RESULT -> viewModel.handleRefreshResult(
@@ -150,7 +150,6 @@ fun FriendCenterScreen(
                         message = intent.getStringExtra("message").orEmpty(),
                         profiles = intent.getIntExtra("profiles", 0),
                         groups = intent.getIntExtra("groups", 0),
-                        timestamp = intent.getLongExtra("timestamp", 0L)
                     )
                 }
             }
@@ -228,13 +227,13 @@ fun FriendCenterScreen(
                         IconButton(onClick = { batchMode = true }) {
                             Icon(Icons.Outlined.Checklist, contentDescription = "批量选择好友")
                         }
-                        val refreshEnabled = state.refreshAvailable &&
-                            !state.checkingRefreshAvailability &&
-                            !state.refreshing
+                        val refreshEnabled = refreshState.refreshAvailable &&
+                            !refreshState.checkingRefreshAvailability &&
+                            !refreshState.refreshing
                         val refreshDescription = when {
-                            state.refreshing -> "正在刷新好友"
-                            state.checkingRefreshAvailability -> "正在检测目标应用"
-                            !state.refreshAvailable -> "请先打开目标应用并回到模块，再刷新好友列表"
+                            refreshState.refreshing -> "正在刷新好友"
+                            refreshState.checkingRefreshAvailability -> "正在检测目标应用"
+                            !refreshState.refreshAvailable -> "请先打开目标应用并回到模块，再刷新好友列表"
                             else -> "刷新好友"
                         }
                         IconButton(
@@ -285,9 +284,9 @@ fun FriendCenterScreen(
             ) {
             item {
                 Spacer(Modifier.height(4.dp))
-                if (state.message.isNotBlank()) {
+                if (displayMessage.isNotBlank()) {
                     Text(
-                        text = state.message,
+                        text = displayMessage,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.error
                     )

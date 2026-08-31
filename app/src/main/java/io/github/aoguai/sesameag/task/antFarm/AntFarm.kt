@@ -306,7 +306,8 @@ class AntFarm : ModelTask() {
     internal var family: BooleanModelField? = null
     internal var familyOptions: SelectModelField? = null
     internal var familyAssignStrategy: ChoiceModelField? = null
-    internal var notInviteList: FriendSelectionModelField? = null
+    internal var familyShareMode: ChoiceModelField? = null
+    internal var familyShareList: FriendSelectionModelField? = null
     internal var paradiseCoinExchangeBenefit: BooleanModelField? = null
     private var paradiseCoinExchangeBenefitList: SelectModelField? = null
 
@@ -869,11 +870,20 @@ class AntFarm : ModelTask() {
                 familyAssignStrategy = it
             })
         modelFields.addField(
+            ChoiceModelField(
+                "familyShareMode",
+                "家庭 | 好友分享动作",
+                FamilyShareMode.INVITE_SELECTED,
+                FamilyShareMode.nickNames,
+            ).withDesc("决定好友分享名单是仅邀请选中好友，还是从全部好友中排除选中好友。").also {
+                familyShareMode = it
+            })
+        modelFields.addField(
             FriendSelectionModelField(
-                "notInviteList",
-                "家庭 | 好友分享排除列表"
-            ).withDesc("家庭分享或邀请时排除这些好友。").also {
-                notInviteList = it
+                "familyShareList",
+                "家庭 | 好友分享名单"
+            ).withDesc("配置好友分享规则作用的好友名单；支持显式选择、全部好友、分组和排除规则。").also {
+                familyShareList = it
             })
         modelFields.addField(
             BooleanModelField(
@@ -8193,6 +8203,14 @@ class AntFarm : ModelTask() {
             const val RANDOM: Int = 0
             const val LOWEST_TODAY_INTIMACY: Int = 1
             val nickNames: Array<String?> = arrayOf<String?>("随机安排", "优先今日亲密值最低")
+        }
+    }
+
+    interface FamilyShareMode {
+        companion object {
+            const val INVITE_SELECTED: Int = 0
+            const val DONT_INVITE_SELECTED: Int = 1
+            val nickNames: Array<String?> = arrayOf<String?>("选中邀请", "选中不邀请")
         }
     }
 

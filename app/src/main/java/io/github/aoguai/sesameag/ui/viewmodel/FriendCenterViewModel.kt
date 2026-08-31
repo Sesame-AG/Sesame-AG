@@ -1,7 +1,6 @@
 package io.github.aoguai.sesameag.ui.viewmodel
 
 import android.content.Context
-import android.content.Intent
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -11,11 +10,9 @@ import io.github.aoguai.sesameag.entity.friend.FriendModuleCapability
 import io.github.aoguai.sesameag.entity.friend.FriendGroup
 import io.github.aoguai.sesameag.entity.friend.FriendProfile
 import io.github.aoguai.sesameag.entity.friend.FriendRelation
-import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.util.friend.FriendRepository
 import io.github.aoguai.sesameag.util.maps.UserMap
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -69,10 +66,6 @@ data class FriendCenterUiState(
     val stats: FriendCenterStats = FriendCenterStats(),
     val searchQuery: String = "",
     val filter: FriendCenterFilter = FriendCenterFilter.ALL,
-    val refreshAvailable: Boolean = false,
-    val checkingRefreshAvailability: Boolean = false,
-    val refreshing: Boolean = false,
-    val lastRefreshMessage: String = "",
     val message: String = ""
 ) {
     val selectedGroup: FriendGroupUiItem?
@@ -90,18 +83,17 @@ class FriendCenterViewModel(private val savedStateHandle: SavedStateHandle) : Vi
         )
     )
     val uiState: StateFlow<FriendCenterUiState> = _uiState.asStateFlow()
-    private var refreshAvailabilityToken: Long = 0L
-    private var showRefreshAvailabilityMessage: Boolean = false
-    private var refreshRequestToken: Long = 0L
+    private val friendRefreshCoordinator = FriendRefreshCoordinator(viewModelScope)
+    val refreshState: StateFlow<FriendRefreshUiState> = friendRefreshCoordinator.state
 
     companion object {
-        private const val REFRESH_UNAVAILABLE_MESSAGE = "请先打开目标应用并回到模块，再刷新好友列表"
         private const val STATE_SEARCH_QUERY = "friend_center_search_query"
         private const val STATE_FILTER = "friend_center_filter"
         private const val STATE_SELECTED_GROUP = "friend_center_selected_group"
     }
 
     suspend fun load(userId: String) {
+        friendRefreshCoordinator.bindUser(userId)
         if (userId.isBlank()) {
             _uiState.value = FriendCenterUiState(message = "当前账号尚未载入，请先打开目标应用并返回模块")
             return
@@ -110,225 +102,55 @@ class FriendCenterViewModel(private val savedStateHandle: SavedStateHandle) : Vi
         val loadedState = loadStateFromStorage(
             userId = userId,
             previousState = previousState,
-            refreshAvailable = false,
-            checkingRefreshAvailability = false,
-            refreshing = previousState.refreshing,
-            lastRefreshMessage = "",
         )
         _uiState.value = loadedState
         savedStateHandle[STATE_SELECTED_GROUP] = loadedState.selectedGroupId
     }
 
     fun requestRefreshAvailability(context: Context, showUnavailableMessage: Boolean = false) {
-        val state = _uiState.value
-        val currentUserId = state.userId.trim()
-        if (currentUserId.isEmpty()) {
-            refreshAvailabilityToken = 0L
-            showRefreshAvailabilityMessage = false
-            _uiState.value = state.copy(
-                refreshAvailable = false,
-                checkingRefreshAvailability = false
-            )
-            return
-        }
-
-        val token = System.currentTimeMillis()
-        refreshAvailabilityToken = token
-        showRefreshAvailabilityMessage = showUnavailableMessage
-        _uiState.value = state.copy(
-            refreshAvailable = false,
-            checkingRefreshAvailability = true
-        )
-
-        try {
-            context.applicationContext.sendBroadcast(Intent(ApplicationHookConstants.BroadcastActions.HOOK_READY).apply {
-                putExtra("userId", currentUserId)
-            })
-        } catch (t: Throwable) {
-            refreshAvailabilityToken = 0L
-            showRefreshAvailabilityMessage = false
-            val errorMessage = "检测目标应用状态失败：${t.message ?: t.javaClass.simpleName}"
-            _uiState.value = _uiState.value.copy(
-                refreshAvailable = false,
-                checkingRefreshAvailability = false,
-                lastRefreshMessage = if (showUnavailableMessage) errorMessage else _uiState.value.lastRefreshMessage,
-                message = if (showUnavailableMessage) errorMessage else _uiState.value.message
-            )
-            return
-        }
-
-        viewModelScope.launch {
-            delay(2_000L)
-            val latest = _uiState.value
-            if (
-                refreshAvailabilityToken != token ||
-                latest.userId != currentUserId ||
-                !latest.checkingRefreshAvailability
-            ) {
-                return@launch
-            }
-            refreshAvailabilityToken = 0L
-            val shouldShowMessage = showRefreshAvailabilityMessage
-            showRefreshAvailabilityMessage = false
-            _uiState.value = latest.copy(
-                refreshAvailable = false,
-                checkingRefreshAvailability = false,
-                lastRefreshMessage = if (shouldShowMessage) REFRESH_UNAVAILABLE_MESSAGE else latest.lastRefreshMessage,
-                message = if (shouldShowMessage) REFRESH_UNAVAILABLE_MESSAGE else latest.message
-            )
-        }
+        friendRefreshCoordinator.requestRefreshAvailability(context, showUnavailableMessage)
     }
 
-    @Suppress("UNUSED_PARAMETER")
     fun handleRefreshAvailabilityResult(
         resultUserId: String,
         ready: Boolean,
         message: String,
-        currentUserId: String,
-        timestamp: Long
     ) {
-        val state = _uiState.value
-        val pageUserId = state.userId.trim()
-        val normalizedResultUserId = resultUserId.trim()
-        if (pageUserId.isNotEmpty() && normalizedResultUserId.isNotEmpty() && pageUserId != normalizedResultUserId) {
-            return
-        }
-
-        refreshAvailabilityToken = 0L
-        val shouldShowMessage = showRefreshAvailabilityMessage
-        showRefreshAvailabilityMessage = false
-        val normalizedMessage = message.ifBlank {
-            if (ready) "" else REFRESH_UNAVAILABLE_MESSAGE
-        }
-        _uiState.value = state.copy(
-            refreshAvailable = ready,
-            checkingRefreshAvailability = false,
-            lastRefreshMessage = if (!ready && shouldShowMessage) normalizedMessage else state.lastRefreshMessage,
-            message = when {
-                ready && state.message == REFRESH_UNAVAILABLE_MESSAGE -> ""
-                ready -> state.message
-                shouldShowMessage -> normalizedMessage
-                else -> state.message
-            }
-        )
+        friendRefreshCoordinator.handleRefreshAvailabilityResult(resultUserId, ready, message)
     }
 
     fun requestRefreshFromAlipay(context: Context) {
-        val state = _uiState.value
-        val currentUserId = state.userId.trim()
-        if (currentUserId.isEmpty()) {
-            _uiState.value = state.copy(message = "当前账号尚未载入，请先打开目标应用并返回模块")
-            return
-        }
-        if (!state.refreshAvailable) {
-            _uiState.value = state.copy(
-                lastRefreshMessage = REFRESH_UNAVAILABLE_MESSAGE,
-                message = REFRESH_UNAVAILABLE_MESSAGE
-            )
-            requestRefreshAvailability(context, showUnavailableMessage = true)
-            return
-        }
-        if (state.refreshing) return
-
-        val token = System.currentTimeMillis()
-        refreshRequestToken = token
-        _uiState.value = state.copy(
-            refreshing = true,
-            lastRefreshMessage = "正在刷新好友...",
-            message = "正在刷新好友..."
-        )
-
-        try {
-            context.applicationContext.sendBroadcast(Intent(ApplicationHookConstants.BroadcastActions.REFRESH_FRIENDS).apply {
-                putExtra("userId", currentUserId)
-                putExtra("manual", true)
-            })
-        } catch (t: Throwable) {
-            refreshRequestToken = 0L
-            _uiState.value = _uiState.value.copy(
-                refreshing = false,
-                lastRefreshMessage = "发送刷新指令失败：${t.message ?: t.javaClass.simpleName}",
-                message = "发送刷新指令失败：${t.message ?: t.javaClass.simpleName}"
-            )
-            return
-        }
-
-        viewModelScope.launch {
-            delay(10_000L)
-            val latest = _uiState.value
-            if (!latest.refreshing || refreshRequestToken != token || latest.userId != currentUserId) {
-                return@launch
-            }
-            refreshRequestToken = 0L
-            val fallbackMessage = "已发送刷新指令，未收到完成回执"
-            val loadedState = loadStateFromStorage(
-                userId = currentUserId,
-                previousState = latest,
-                refreshAvailable = latest.refreshAvailable,
-                checkingRefreshAvailability = latest.checkingRefreshAvailability,
-                refreshing = false,
-                lastRefreshMessage = fallbackMessage,
-                message = fallbackMessage,
-            )
-            _uiState.value = loadedState
-            savedStateHandle[STATE_SELECTED_GROUP] = loadedState.selectedGroupId
-        }
+        friendRefreshCoordinator.requestRefresh(context)
     }
 
-    @Suppress("UNUSED_PARAMETER")
     fun handleRefreshResult(
         resultUserId: String,
         success: Boolean,
         message: String,
         profiles: Int,
         groups: Int,
-        timestamp: Long
     ) {
-        val state = _uiState.value
-        val currentUserId = state.userId.trim()
-        val normalizedResultUserId = resultUserId.trim()
-        if (currentUserId.isNotEmpty() && normalizedResultUserId.isNotEmpty() && currentUserId != normalizedResultUserId) {
-            return
-        }
+        val completion = friendRefreshCoordinator.handleRefreshResult(
+            resultUserId = resultUserId,
+            success = success,
+            message = message,
+            profiles = profiles,
+            groups = groups,
+        ) ?: return
+        if (!completion.success || completion.userId.isEmpty()) return
 
-        val targetUserId = normalizedResultUserId.ifEmpty { currentUserId }
-        if (targetUserId.isEmpty()) {
-            _uiState.value = state.copy(
-                refreshing = false,
-                lastRefreshMessage = message.ifBlank { "刷新好友失败：账号为空" },
-                message = message.ifBlank { "刷新好友失败：账号为空" }
-            )
-            return
-        }
-
-        refreshRequestToken = 0L
-        val normalizedMessage = message.ifBlank {
-            if (success) {
-                "好友刷新完成: profiles=$profiles, groups=$groups"
-            } else {
-                "好友刷新失败"
+        viewModelScope.launch {
+            val currentState = _uiState.value
+            if (currentState.userId.isNotEmpty() && currentState.userId != completion.userId) {
+                return@launch
             }
-        }
-        if (success) {
-            viewModelScope.launch {
-                val loadedState = loadStateFromStorage(
-                    userId = targetUserId,
-                    previousState = state,
-                    refreshAvailable = state.refreshAvailable,
-                    checkingRefreshAvailability = state.checkingRefreshAvailability,
-                    refreshing = false,
-                    lastRefreshMessage = normalizedMessage,
-                    message = normalizedMessage,
-                )
-                _uiState.value = loadedState
-                savedStateHandle[STATE_SELECTED_GROUP] = loadedState.selectedGroupId
-            }
-        } else {
-            _uiState.value = state.copy(
-                refreshing = false,
-                lastRefreshMessage = normalizedMessage,
-                message = normalizedMessage
+            val loadedState = loadStateFromStorage(
+                userId = completion.userId,
+                previousState = currentState,
+                message = completion.message,
             )
+            _uiState.value = loadedState
+            savedStateHandle[STATE_SELECTED_GROUP] = loadedState.selectedGroupId
         }
     }
 
@@ -519,10 +341,6 @@ class FriendCenterViewModel(private val savedStateHandle: SavedStateHandle) : Vi
     private suspend fun loadStateFromStorage(
         userId: String,
         previousState: FriendCenterUiState,
-        refreshAvailable: Boolean,
-        checkingRefreshAvailability: Boolean,
-        refreshing: Boolean,
-        lastRefreshMessage: String,
         message: String = "",
     ): FriendCenterUiState = withContext(Dispatchers.IO) {
         UserMap.setCurrentUserId(userId)
@@ -535,10 +353,6 @@ class FriendCenterViewModel(private val savedStateHandle: SavedStateHandle) : Vi
             config = FriendRepository.current(userId),
             searchQuery = previousState.searchQuery,
             filter = previousState.filter,
-            refreshAvailable = refreshAvailable,
-            checkingRefreshAvailability = checkingRefreshAvailability,
-            refreshing = refreshing,
-            lastRefreshMessage = lastRefreshMessage,
             message = message,
         )
     }
@@ -548,10 +362,6 @@ class FriendCenterViewModel(private val savedStateHandle: SavedStateHandle) : Vi
         preferredGroupId: String? = null,
         searchQuery: String = _uiState.value.searchQuery,
         filter: FriendCenterFilter = _uiState.value.filter,
-        refreshAvailable: Boolean = _uiState.value.refreshAvailable,
-        checkingRefreshAvailability: Boolean = _uiState.value.checkingRefreshAvailability,
-        refreshing: Boolean = _uiState.value.refreshing,
-        lastRefreshMessage: String = _uiState.value.lastRefreshMessage,
         message: String = ""
     ) {
         if (userId.isBlank()) return
@@ -561,10 +371,6 @@ class FriendCenterViewModel(private val savedStateHandle: SavedStateHandle) : Vi
             config = FriendRepository.current(userId),
             searchQuery = searchQuery,
             filter = filter,
-            refreshAvailable = refreshAvailable,
-            checkingRefreshAvailability = checkingRefreshAvailability,
-            refreshing = refreshing,
-            lastRefreshMessage = lastRefreshMessage,
             message = message
         )
         savedStateHandle[STATE_SELECTED_GROUP] = _uiState.value.selectedGroupId
@@ -576,10 +382,6 @@ class FriendCenterViewModel(private val savedStateHandle: SavedStateHandle) : Vi
         config: FriendCenterConfig,
         searchQuery: String,
         filter: FriendCenterFilter,
-        refreshAvailable: Boolean = _uiState.value.refreshAvailable,
-        checkingRefreshAvailability: Boolean = _uiState.value.checkingRefreshAvailability,
-        refreshing: Boolean = _uiState.value.refreshing,
-        lastRefreshMessage: String = _uiState.value.lastRefreshMessage,
         message: String = ""
     ): FriendCenterUiState {
         val groupNamesByUser = linkedMapOf<String, MutableList<String>>()
@@ -664,10 +466,6 @@ class FriendCenterViewModel(private val savedStateHandle: SavedStateHandle) : Vi
             ),
             searchQuery = searchQuery,
             filter = filter,
-            refreshAvailable = refreshAvailable,
-            checkingRefreshAvailability = checkingRefreshAvailability,
-            refreshing = refreshing,
-            lastRefreshMessage = lastRefreshMessage,
             message = message
         )
     }

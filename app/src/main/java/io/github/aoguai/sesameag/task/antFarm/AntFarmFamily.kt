@@ -7,6 +7,7 @@ import io.github.aoguai.sesameag.model.modelFieldExt.SelectModelField
 import io.github.aoguai.sesameag.task.antFarm.AntFarm.AnimalFeedStatus
 import io.github.aoguai.sesameag.task.antFarm.AntFarm.AnimalInteractStatus
 import io.github.aoguai.sesameag.task.antFarm.AntFarm.FamilyAssignStrategy
+import io.github.aoguai.sesameag.task.antFarm.AntFarm.FamilyShareMode
 import io.github.aoguai.sesameag.task.antSports.AntSportsRpcCall
 import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.Log
@@ -25,6 +26,7 @@ import kotlin.math.min
 data object AntFarmFamily {
     private const val TAG = "AntFarmFamily"
     private const val DAILY_DONATE_TASK_ID = "DAILY_DONATE"
+    private const val FAMILY_MEMBER_LIMIT = 6
 
     private data class DecorationExchangeConfirmation(
         val confirmed: Boolean,
@@ -370,11 +372,12 @@ data object AntFarmFamily {
 
     fun run(
         familyOptions: SelectModelField,
-        notInviteList: FriendSelectionModelField,
+        familyShareList: FriendSelectionModelField,
+        familyShareMode: Int = FamilyShareMode.INVITE_SELECTED,
         familyAssignStrategy: Int = FamilyAssignStrategy.RANDOM,
     ) {
         try {
-            enterFamily(familyOptions, notInviteList, familyAssignStrategy)
+            enterFamily(familyOptions, familyShareList, familyShareMode, familyAssignStrategy)
         } catch (e: Exception) {
             Log.printStackTrace(TAG, e)
         }
@@ -385,7 +388,8 @@ data object AntFarmFamily {
      */
     fun enterFamily(
         familyOptions: SelectModelField,
-        notInviteList: FriendSelectionModelField,
+        familyShareList: FriendSelectionModelField,
+        familyShareMode: Int = FamilyShareMode.INVITE_SELECTED,
         familyAssignStrategy: Int = FamilyAssignStrategy.RANDOM,
     ) {
         try {
@@ -467,7 +471,7 @@ data object AntFarmFamily {
                 }
 
                 if (hasFamilyOption(familyOptions, "shareToFriends", "inviteFriendVisitFamily")) {
-                    familyShareToFriends(familyUserIds.toMutableList(), notInviteList)
+                    familyShareToFriends(familyUserIds.toMutableList(), familyShareList, familyShareMode)
                 }
                 if (hasFamilyOption(familyOptions, "ExchangeFamilyDecoration")) {
                     autoExchangeFamilyDecoration()
@@ -1235,55 +1239,92 @@ data object AntFarmFamily {
 
     /**
      * 好友分享家庭
-     * @param familyUserIds 好友列表
-     * @param notInviteList 不邀请列表
+     * @param familyUserIds 当前家庭成员列表
+     * @param familyShareList 好友分享规则
+     * @param familyShareMode 规则解析结果的动作模式
      */
     private fun familyShareToFriends(
         familyUserIds: MutableList<String>,
-        notInviteList: FriendSelectionModelField,
+        familyShareList: FriendSelectionModelField,
+        familyShareMode: Int,
     ) {
         try {
             if (Status.hasFlagToday(StatusFlags.FLAG_FARM_FAMILY_SHARE_TO_FRIENDS)) {
                 return
             }
-
-            val familyValue = notInviteList.resolvedIds()
-            var allUser = FriendSelectionResolver.availableFriendOptions()
-
-            if (allUser.isEmpty()) {
-                FriendRepository.mergeFromUserMap()
-                allUser = FriendSelectionResolver.availableFriendOptions()
-            }
-            if (allUser.isEmpty()) {
+            if (familyUserIds.size >= FAMILY_MEMBER_LIMIT) {
                 Log.farm(
-                    "家庭任务🏠分享好友延后: NO_AVAILABLE_MUTUAL_FRIENDS " +
-                        "familyMemberCount=${familyUserIds.size} excludedCount=${familyValue.size}",
+                    "家庭任务🏠分享好友跳过: FAMILY_MEMBER_LIMIT_REACHED " +
+                        "familyMemberCount=${familyUserIds.size}",
                 )
                 return
             }
 
-            // 打乱顺序，实现随机选取
-            val shuffledUsers = allUser.shuffled()
-
-            val inviteList = JSONArray()
-            for (u in shuffledUsers) {
-                if (!familyUserIds.contains(u.id) && !familyValue.contains(u.id)) {
-                    inviteList.put(u.id)
-                    if (inviteList.length() >= 6) {
-                        break
-                    }
+            val configuredIds = familyShareList.resolvedIds()
+            val normalizedMode =
+                if (familyShareMode == FamilyShareMode.DONT_INVITE_SELECTED) {
+                    FamilyShareMode.DONT_INVITE_SELECTED
+                } else {
+                    FamilyShareMode.INVITE_SELECTED
                 }
-            }
+            val modeName =
+                if (normalizedMode == FamilyShareMode.DONT_INVITE_SELECTED) {
+                    "选中不邀请"
+                } else {
+                    "选中邀请"
+                }
+            val candidateIds =
+                if (normalizedMode == FamilyShareMode.INVITE_SELECTED) {
+                    if (configuredIds.isEmpty()) {
+                        Log.farm("家庭任务🏠分享好友跳过: NO_CONFIGURED_INVITE_FRIENDS mode=$modeName")
+                        return
+                    }
+                    configuredIds.toList()
+                } else {
+                    var allUsers = FriendSelectionResolver.availableFriendOptions()
+                    if (allUsers.isEmpty()) {
+                        FriendRepository.mergeFromUserMap()
+                        allUsers = FriendSelectionResolver.availableFriendOptions()
+                    }
+                    if (allUsers.isEmpty()) {
+                        Log.farm(
+                            "家庭任务🏠分享好友延后: NO_AVAILABLE_MUTUAL_FRIENDS " +
+                                "mode=$modeName familyMemberCount=${familyUserIds.size} excludedCount=${configuredIds.size}",
+                        )
+                        return
+                    }
+                    allUsers.map { it.id }.filterNot(configuredIds::contains)
+                }
+            val familyMemberIds =
+                familyUserIds
+                    .mapNotNull { it.trim().takeIf { userId -> userId.isNotEmpty() } }
+                    .toSet()
+            val inviteUserIds =
+                candidateIds
+                    .asSequence()
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                    .filterNot(familyMemberIds::contains)
+                    .distinct()
+                    .toList()
+                    .shuffled()
+                    .take(6)
 
-            if (inviteList.length() == 0) {
+            if (inviteUserIds.isEmpty()) {
                 Log.farm(
                     "家庭任务🏠分享好友延后: NO_ELIGIBLE_FAMILY_FRIENDS " +
-                        "familyMemberCount=${familyUserIds.size} excludedCount=${familyValue.size}",
+                        "mode=$modeName configuredCount=${configuredIds.size} " +
+                        "candidateCount=${candidateIds.size} familyMemberCount=${familyMemberIds.size}",
                 )
                 return
             }
 
-            Log.farm("inviteList: $inviteList")
+            val inviteList = JSONArray()
+            inviteUserIds.forEach(inviteList::put)
+            Log.farm(
+                "家庭任务🏠分享好友提交: mode=$modeName configuredCount=${configuredIds.size} " +
+                    "inviteCount=${inviteList.length()}",
+            )
 
             val jo = JSONObject(AntFarmRpcCall.inviteFriendVisitFamily(inviteList))
             when (AntFarmRpcCall.confirmFamilyInviteVisitOutcome(jo)) {
