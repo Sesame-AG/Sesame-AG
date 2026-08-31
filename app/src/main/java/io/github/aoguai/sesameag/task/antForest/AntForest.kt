@@ -1278,13 +1278,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 val wateringBubble = wateringBubbles.getJSONObject(i)
                 when (val bizType = wateringBubble.getString("bizType")) {
                     "jiaoshui" -> {
-                        if (!forestWateringEnabled) {
-                            if (!wateringBubbleSkipLogged) {
-                                Log.forest("浇水总开关关闭，跳过浇水金球收取")
-                                wateringBubbleSkipLogged = true
-                            }
-                            continue
-                        }
                         collectWater(wateringBubble)
                     }
                     "fuhuo" -> collectRebornEnergy()
