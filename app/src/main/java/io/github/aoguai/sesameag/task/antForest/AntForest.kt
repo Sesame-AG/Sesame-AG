@@ -691,7 +691,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 "wateringEnabled",
                 "浇水 | 开启",
                 false
-            ).withDesc("开启后统一控制普通浇水、随机浇水任务、回浇和浇水金球/保护回赠收取；关闭后不影响复活金球与任务领奖。").also {
+            ).withDesc("开启后统一控制普通浇水、随机浇水任务和回浇；关闭后不影响浇水金球、保护回赠和复活金球收取及任务领奖。").also {
                 wateringEnabled = it
             })
         modelFields.addField(
@@ -1270,34 +1270,15 @@ class AntForest : ModelTask(), EnergyCollectCallback {
      * @param wateringBubbles 包含不同类型金球的对象数组
      */
     private fun collectWateringBubbles(wateringBubbles: JSONArray) {
-        val forestWateringEnabled = isForestWateringEnabled()
-        var wateringBubbleSkipLogged = false
-        var returnEnergySkipLogged = false
         for (i in 0..<wateringBubbles.length()) {
             try {
                 val wateringBubble = wateringBubbles.getJSONObject(i)
                 when (val bizType = wateringBubble.getString("bizType")) {
                     "jiaoshui" -> {
-                        if (!forestWateringEnabled) {
-                            if (!wateringBubbleSkipLogged) {
-                                Log.forest("浇水总开关关闭，跳过浇水金球收取")
-                                wateringBubbleSkipLogged = true
-                            }
-                            continue
-                        }
                         collectWater(wateringBubble)
                     }
                     "fuhuo" -> collectRebornEnergy()
-                    "baohuhuizeng" -> {
-                        if (!forestWateringEnabled) {
-                            if (!returnEnergySkipLogged) {
-                                Log.forest("浇水总开关关闭，跳过保护回赠收取")
-                                returnEnergySkipLogged = true
-                            }
-                            continue
-                        }
-                        collectReturnEnergy(wateringBubble)
-                    }
+                    "baohuhuizeng" -> collectReturnEnergy(wateringBubble)
                     else -> {
                         Log.forest("未知bizType: $bizType")
                         continue
