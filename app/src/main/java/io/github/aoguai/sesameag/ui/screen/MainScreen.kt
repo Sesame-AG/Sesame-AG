@@ -192,6 +192,7 @@ fun MainScreen(
                     openForUser(user) { id, name -> AppRoute.FriendCenter(id, name) }
                 },
                 onSetExecutableSlot = viewModel::setExecutableAccountSlot,
+                onClearAllTodayFlags = viewModel::clearAllTodayFlags,
             )
         }
         entry<AppRoute.Logs> {

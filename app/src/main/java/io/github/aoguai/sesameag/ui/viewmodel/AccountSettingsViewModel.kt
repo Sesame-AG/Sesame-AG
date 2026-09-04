@@ -13,6 +13,8 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import io.github.aoguai.sesameag.data.Config
 import io.github.aoguai.sesameag.data.Status
+import io.github.aoguai.sesameag.data.TodayFlagClearResult
+import io.github.aoguai.sesameag.data.TodayFlagKey
 import io.github.aoguai.sesameag.entity.MapperEntity
 import io.github.aoguai.sesameag.entity.friend.FriendSelectionCountSpec
 import io.github.aoguai.sesameag.entity.friend.FriendSelectionSpec
@@ -20,12 +22,14 @@ import io.github.aoguai.sesameag.hook.AccountSlotRegistry
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.model.Model
 import io.github.aoguai.sesameag.model.ModelField
+import io.github.aoguai.sesameag.model.ModelFields
 import io.github.aoguai.sesameag.model.ModelGroup
 import io.github.aoguai.sesameag.model.modelFieldExt.EmptyModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.TimeFieldMeta
 import io.github.aoguai.sesameag.task.AnswerAI.AnswerAI
 import io.github.aoguai.sesameag.task.customTasks.ManualTaskModel
 import io.github.aoguai.sesameag.ui.dto.ModelFieldShowDto
+import io.github.aoguai.sesameag.ui.dto.ModelFieldTodayStateResolver
 import io.github.aoguai.sesameag.util.Files
 import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.LocaleSettingsApplier
@@ -78,6 +82,7 @@ data class FieldEditorUiModel(
     val editorMeta: Any? = null,
     val todayInactive: Boolean = false,
     val todayInactiveReason: String = "",
+    val todayClearableFlagKeys: List<TodayFlagKey> = emptyList(),
     val hasAction: Boolean = false,
     val audit: SettingsFieldAudit? = null,
 )
@@ -122,6 +127,7 @@ class AccountSettingsViewModel(
     val uiState: StateFlow<AccountSettingsUiState> = _uiState.asStateFlow()
 
     private val fields = linkedMapOf<FieldKey, ModelField<*>>()
+    private val modelFieldsByCode = linkedMapOf<String, ModelFields>()
 
     init {
         reload()
@@ -320,6 +326,70 @@ class AccountSettingsViewModel(
 
     fun currentField(key: FieldKey): ModelField<*>? = fields[key]
 
+    suspend fun clearModuleTodayFlags(context: Context, modelCode: String): Result<String> =
+        clearTodayFlags(context) {
+            Status.clearModuleTodayFlagsForUser(userId, modelCode)
+        }
+
+    suspend fun clearFieldTodayFlags(context: Context, key: FieldKey): Result<String> =
+        clearTodayFlags(context) {
+            Status.clearFieldTodayFlagsForUser(userId, key.modelCode, key.fieldCode)
+        }
+
+    private suspend fun clearTodayFlags(
+        context: Context,
+        clear: () -> TodayFlagClearResult,
+    ): Result<String> = withContext(Dispatchers.IO) {
+        val result = clear()
+        if (!result.isSuccess) {
+            return@withContext Result.failure(IllegalStateException(result.errorMessage ?: "每日标识清除失败"))
+        }
+        if (!result.written) {
+            return@withContext Result.success("没有可删除的每日标识")
+        }
+        runCatching {
+            context.sendBroadcast(
+                Intent(ApplicationHookConstants.BroadcastActions.RESTART).apply {
+                    putExtra("userId", result.userId)
+                },
+            )
+        }.onFailure { throwable ->
+            Log.printStackTrace(TAG, "Failed to send status reload broadcast", throwable)
+        }
+        refreshTodayStates()
+        Result.success("已删除 ${result.removedCount} 个每日标识")
+    }
+
+    private fun refreshTodayStates() {
+        Status.load(userId, false)
+        _uiState.update { state ->
+            state.copy(
+                groups = state.groups.map { group ->
+                    group.copy(
+                        models = group.models.map { model ->
+                            val modelFields = modelFieldsByCode[model.code] ?: return@map model
+                            model.copy(
+                                fields = model.fields.map { field ->
+                                    val sourceField = fields[field.key] ?: return@map field
+                                    val todayState = ModelFieldTodayStateResolver.resolve(
+                                        modelCode = model.code,
+                                        modelFields = modelFields,
+                                        modelField = sourceField,
+                                    )
+                                    field.copy(
+                                        todayInactive = todayState.inactive,
+                                        todayInactiveReason = todayState.reason,
+                                        todayClearableFlagKeys = todayState.clearableFlagKeys.toList(),
+                                    )
+                                },
+                            )
+                        },
+                    )
+                },
+            )
+        }
+    }
+
     private fun loadAccount(): AccountSettingsUiState {
         val normalizedUserId = AccountSlotRegistry.normalizeUserId(userId)
         require(normalizedUserId != null && normalizedUserId in Files.listExistingUserConfigIds()) {
@@ -333,10 +403,12 @@ class AccountSettingsViewModel(
         Config.load(normalizedUserId)
 
         fields.clear()
+        modelFieldsByCode.clear()
         val drafts = linkedMapOf<FieldKey, String>()
         val groups = ModelGroup.entries.mapNotNull { group ->
             val models = Model.getGroupModelConfig(group).values.mapNotNull { modelConfig ->
                 if (modelConfig.code == ManualTaskModel::class.java.simpleName) return@mapNotNull null
+                modelFieldsByCode[modelConfig.code] = modelConfig.fields
                 val editorFields = modelConfig.fields.values.map { modelField ->
                     val key = FieldKey(modelConfig.code, modelField.code)
                     val dto = ModelFieldShowDto.toShowDto(modelConfig.code, modelConfig.fields, modelField)
@@ -352,6 +424,7 @@ class AccountSettingsViewModel(
                         editorMeta = dto.editorMeta,
                         todayInactive = dto.todayInactive,
                         todayInactiveReason = dto.todayInactiveReason,
+                        todayClearableFlagKeys = dto.todayClearableFlagKeys,
                         hasAction = modelField is EmptyModelField && (
                             modelField.hasAction() || isAnswerAiTestAction(key)
                         ),

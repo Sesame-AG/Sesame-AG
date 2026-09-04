@@ -4,7 +4,9 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -33,12 +35,16 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import io.github.aoguai.sesameag.entity.UserEntity
 import io.github.aoguai.sesameag.hook.AccountSlotSnapshot
@@ -51,9 +57,11 @@ fun AutomationContent(
     onOpenSettings: (UserEntity) -> Unit,
     onOpenFriendCenter: (UserEntity) -> Unit,
     onSetExecutableSlot: (String?, Boolean) -> Unit,
+    onClearAllTodayFlags: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var pendingSlotRemoval by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingTodayFlagRemoval by rememberSaveable { mutableStateOf<String?>(null) }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -63,7 +71,7 @@ fun AutomationContent(
         item {
             SectionTitle(
                 title = "账号与可执行槽位",
-                supportingText = "账号配置按当前同步结果展示，移出槽位不会删除账号数据。",
+                supportingText = "您可以自行选择账号移入/移出可执行槽位，移出槽位不会删除账号数据与配置。",
             )
         }
 
@@ -95,6 +103,9 @@ fun AutomationContent(
                             pendingSlotRemoval = userId
                         }
                     },
+                    onClearAllTodayFlags = {
+                        if (userId.isNotBlank()) pendingTodayFlagRemoval = userId
+                    },
                 )
             }
         }
@@ -118,6 +129,23 @@ fun AutomationContent(
             confirmButtonColor = MaterialTheme.colorScheme.error,
         )
     }
+
+    pendingTodayFlagRemoval?.let { userId ->
+        CommonAlertDialog(
+            showDialog = true,
+            onDismissRequest = { pendingTodayFlagRemoval = null },
+            onConfirm = {
+                onClearAllTodayFlags(userId)
+                pendingTodayFlagRemoval = null
+            },
+            title = "删除全部每日标识",
+            text = "将删除该账号的每日完成标识、当日上限和计数。",
+            icon = Icons.Outlined.DeleteOutline,
+            iconTint = MaterialTheme.colorScheme.error,
+            confirmText = "删除",
+            confirmButtonColor = MaterialTheme.colorScheme.error,
+        )
+    }
 }
 
 @Composable
@@ -127,12 +155,35 @@ private fun AccountCard(
     onOpenSettings: () -> Unit,
     onOpenFriendCenter: () -> Unit,
     onSetExecutableSlot: (Boolean) -> Unit,
+    onClearAllTodayFlags: () -> Unit,
 ) {
     val context = LocalContext.current
+    val density = LocalDensity.current
     val userId = user.userId?.trim().orEmpty()
     val displayName = user.showName.ifBlank { user.account ?: userId.ifBlank { "未知账号" } }
     var menuExpanded by rememberSaveable { mutableStateOf(false) }
+    var longPressMenuOffset by remember { mutableStateOf<DpOffset?>(null) }
 
+    fun closeMenus() {
+        menuExpanded = false
+        longPressMenuOffset = null
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .pointerInput(userId) {
+                detectTapGestures(
+                    onTap = { onOpenSettings() },
+                    onLongPress = { offset ->
+                        menuExpanded = false
+                        longPressMenuOffset = with(density) {
+                            DpOffset(offset.x.toDp(), offset.y.toDp())
+                        }
+                    },
+                )
+            },
+    ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
     ) {
@@ -168,55 +219,113 @@ private fun AccountCard(
             IconButton(onClick = onOpenSettings) {
                 Icon(Icons.Outlined.Settings, contentDescription = "$displayName 配置")
             }
-            IconButton(onClick = { menuExpanded = true }) {
+            IconButton(onClick = {
+                longPressMenuOffset = null
+                menuExpanded = true
+            }) {
                 Icon(Icons.Outlined.MoreVert, contentDescription = "$displayName 更多操作")
             }
             DropdownMenu(
                 expanded = menuExpanded,
-                onDismissRequest = { menuExpanded = false },
+                onDismissRequest = ::closeMenus,
             ) {
-                DropdownMenuItem(
-                    text = { Text("配置") },
-                    leadingIcon = { Icon(Icons.Outlined.Settings, contentDescription = null) },
-                    onClick = {
-                        menuExpanded = false
-                        onOpenSettings()
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text("好友中心") },
-                    leadingIcon = { Icon(Icons.Outlined.Groups, contentDescription = null) },
-                    onClick = {
-                        menuExpanded = false
-                        onOpenFriendCenter()
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text(if (isExecutable) "移出槽位" else "移入槽位") },
-                    leadingIcon = {
-                        Icon(
-                            if (isExecutable) Icons.Outlined.DeleteOutline else Icons.Outlined.Add,
-                            contentDescription = null,
-                            tint = if (isExecutable) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-                        )
-                    },
-                    onClick = {
-                        menuExpanded = false
-                        onSetExecutableSlot(!isExecutable)
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text("复制账号 ID") },
-                    leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
-                    enabled = userId.isNotBlank(),
-                    onClick = {
-                        menuExpanded = false
-                        copyAccountId(context, userId)
-                    },
+                AccountActionMenuItems(
+                    isExecutable = isExecutable,
+                    userId = userId,
+                    onDismiss = ::closeMenus,
+                    onOpenSettings = onOpenSettings,
+                    onOpenFriendCenter = onOpenFriendCenter,
+                    onSetExecutableSlot = onSetExecutableSlot,
+                    onClearAllTodayFlags = onClearAllTodayFlags,
+                    onCopyAccountId = { copyAccountId(context, userId) },
                 )
             }
         }
     }
+    DropdownMenu(
+        expanded = longPressMenuOffset != null,
+        offset = longPressMenuOffset ?: DpOffset.Zero,
+        onDismissRequest = ::closeMenus,
+    ) {
+        AccountActionMenuItems(
+            isExecutable = isExecutable,
+            userId = userId,
+            onDismiss = ::closeMenus,
+            onOpenSettings = onOpenSettings,
+            onOpenFriendCenter = onOpenFriendCenter,
+            onSetExecutableSlot = onSetExecutableSlot,
+            onClearAllTodayFlags = onClearAllTodayFlags,
+            onCopyAccountId = { copyAccountId(context, userId) },
+        )
+    }
+}
+}
+
+@Composable
+private fun AccountActionMenuItems(
+    isExecutable: Boolean,
+    userId: String,
+    onDismiss: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenFriendCenter: () -> Unit,
+    onSetExecutableSlot: (Boolean) -> Unit,
+    onClearAllTodayFlags: () -> Unit,
+    onCopyAccountId: () -> Unit,
+) {
+    DropdownMenuItem(
+        text = { Text("配置") },
+        leadingIcon = { Icon(Icons.Outlined.Settings, contentDescription = null) },
+        onClick = {
+            onDismiss()
+            onOpenSettings()
+        },
+    )
+    DropdownMenuItem(
+        text = { Text("好友中心") },
+        leadingIcon = { Icon(Icons.Outlined.Groups, contentDescription = null) },
+        onClick = {
+            onDismiss()
+            onOpenFriendCenter()
+        },
+    )
+    DropdownMenuItem(
+        text = { Text(if (isExecutable) "移出槽位" else "移入槽位") },
+        leadingIcon = {
+            Icon(
+                if (isExecutable) Icons.Outlined.DeleteOutline else Icons.Outlined.Add,
+                contentDescription = null,
+                tint = if (isExecutable) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+            )
+        },
+        onClick = {
+            onDismiss()
+            onSetExecutableSlot(!isExecutable)
+        },
+    )
+    DropdownMenuItem(
+        text = { Text("复制账号 ID") },
+        leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
+        enabled = userId.isNotBlank(),
+        onClick = {
+            onDismiss()
+            onCopyAccountId()
+        },
+    )
+    DropdownMenuItem(
+        text = { Text("删除全部每日标识", color = MaterialTheme.colorScheme.error) },
+        leadingIcon = {
+            Icon(
+                Icons.Outlined.DeleteOutline,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.error,
+            )
+        },
+        enabled = userId.isNotBlank(),
+        onClick = {
+            onDismiss()
+            onClearAllTodayFlags()
+        },
+    )
 }
 
 @Composable

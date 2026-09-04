@@ -20,6 +20,16 @@ import kotlin.collections.component2
 import kotlin.collections.get
 import kotlin.collections.set
 
+data class TodayFlagClearResult(
+    val userId: String,
+    val removedCount: Int = 0,
+    val written: Boolean = false,
+    val errorMessage: String? = null,
+) {
+    val isSuccess: Boolean
+        get() = errorMessage == null
+}
+
 class Status {
 
     /**
@@ -834,6 +844,97 @@ class Status {
             if (changed) {
                 save()
             }
+        }
+
+        /**
+         * Clears the general daily flag stores for [userId] without changing the active account.
+         * It intentionally preserves all non-flag runtime collections in status.json.
+         */
+        @Synchronized
+        @JvmStatic
+        fun clearAllTodayFlagsForUser(userId: String): TodayFlagClearResult =
+            mutateTodayFlagsForUser(userId) { status ->
+                val removedCount = status.moduleFlags.values.sumOf { it.size } + status.intFlagMap.size
+                if (removedCount > 0) {
+                    status.moduleFlags.clear()
+                    status.intFlagMap.clear()
+                }
+                removedCount
+            }
+
+        /** Clears every registered daily flag that belongs to the given configuration module. */
+        @Synchronized
+        @JvmStatic
+        fun clearModuleTodayFlagsForUser(userId: String, modelCode: String): TodayFlagClearResult =
+            mutateTodayFlagsForUser(userId) { status ->
+                removeTodayFlagKeys(status, TodayFlagRegistry.moduleKeys(status, modelCode))
+            }
+
+        /** Clears only the concrete daily flags currently associated with one configuration field. */
+        @Synchronized
+        @JvmStatic
+        fun clearFieldTodayFlagsForUser(
+            userId: String,
+            modelCode: String,
+            fieldCode: String,
+        ): TodayFlagClearResult =
+            mutateTodayFlagsForUser(userId) { status ->
+                removeTodayFlagKeys(status, TodayFlagRegistry.fieldKeys(status, modelCode, fieldCode))
+            }
+
+        private fun mutateTodayFlagsForUser(
+            userId: String,
+            mutation: (Status) -> Int,
+        ): TodayFlagClearResult {
+            val targetUserId = userId.trim()
+            if (targetUserId.isEmpty()) {
+                return TodayFlagClearResult(userId = userId, errorMessage = "账号标识无效")
+            }
+            val statusFile = Files.getStatusFile(targetUserId)
+                ?: return TodayFlagClearResult(userId = targetUserId, errorMessage = "无法定位账号每日状态文件")
+            if (!statusFile.exists()) {
+                return TodayFlagClearResult(userId = targetUserId, errorMessage = "账号每日状态文件不存在")
+            }
+
+            return try {
+                val raw = Files.readFromFile(statusFile)
+                if (raw.isBlank()) {
+                    TodayFlagClearResult(userId = targetUserId, errorMessage = "账号每日状态文件为空")
+                } else {
+                    val detachedStatus = JsonUtil.copyMapper().readValue(raw, Status::class.java)
+                    val removedCount = mutation(detachedStatus)
+                    if (removedCount <= 0) {
+                        TodayFlagClearResult(userId = targetUserId)
+                    } else if (!Files.write2File(JsonUtil.formatJson(detachedStatus), statusFile)) {
+                        TodayFlagClearResult(userId = targetUserId, errorMessage = "每日状态文件写入失败")
+                    } else {
+                        // The active in-memory Status may refer to this account, so force its next load to read disk.
+                        lastModifiedTime = 0L
+                        lastUid = null
+                        TodayFlagClearResult(
+                            userId = targetUserId,
+                            removedCount = removedCount,
+                            written = true,
+                        )
+                    }
+                }
+            } catch (t: Throwable) {
+                Log.printStackTrace(TAG, "清除账号[$targetUserId]每日标识失败", t)
+                TodayFlagClearResult(
+                    userId = targetUserId,
+                    errorMessage = t.message ?: "每日状态文件格式有误",
+                )
+            }
+        }
+
+        private fun removeTodayFlagKeys(status: Status, keys: Set<TodayFlagKey>): Int {
+            var removedCount = 0
+            keys.forEach { key ->
+                val flags = status.moduleFlags[key.module] ?: return@forEach
+                if (flags.remove(key.name) != null) removedCount++
+                if (flags.isEmpty()) status.moduleFlags.remove(key.module)
+            }
+            return removedCount
         }
 
         @JvmStatic

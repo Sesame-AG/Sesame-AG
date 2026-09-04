@@ -9,6 +9,7 @@ import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.aoguai.sesameag.data.Config
+import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.entity.UserEntity
 import io.github.aoguai.sesameag.hook.AccountSlotRegistry
 import io.github.aoguai.sesameag.hook.AccountSlotSnapshot
@@ -328,6 +329,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             Log.e(TAG, "Unregister account context receiver failed", e)
         } finally {
             accountContextReceiverRegistered = false
+        }
+    }
+
+    fun clearAllTodayFlags(userId: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = Status.clearAllTodayFlagsForUser(userId)
+            if (result.isSuccess && result.written) {
+                getApplication<Application>().sendBroadcast(
+                    Intent(ApplicationHookConstants.BroadcastActions.RESTART).apply {
+                        putExtra("userId", result.userId)
+                    },
+                )
+            }
+            val message = when {
+                !result.isSuccess -> result.errorMessage ?: "每日标识清除失败"
+                !result.written -> "没有可删除的每日标识"
+                else -> "已删除 ${result.removedCount} 个每日标识"
+            }
+            withContext(Dispatchers.Main) {
+                ToastUtil.showUiToast(getApplication(), message)
+            }
         }
     }
 

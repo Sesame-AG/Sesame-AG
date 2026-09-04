@@ -2,6 +2,8 @@ package io.github.aoguai.sesameag.ui.dto
 
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
+import io.github.aoguai.sesameag.data.TodayFlagKey
+import io.github.aoguai.sesameag.data.TodayFlagRegistry
 import io.github.aoguai.sesameag.model.ModelField
 import io.github.aoguai.sesameag.model.ModelFields
 import io.github.aoguai.sesameag.model.modelFieldExt.FriendSelectionCountModelField
@@ -16,6 +18,7 @@ import io.github.aoguai.sesameag.util.maps.UserMap
 data class ModelFieldTodayState(
     val inactive: Boolean = false,
     val reason: String = "",
+    val clearableFlagKeys: Set<TodayFlagKey> = emptySet(),
 )
 
 /**
@@ -62,8 +65,8 @@ object ModelFieldTodayStateResolver {
         modelCode: String,
         modelFields: ModelFields,
         modelField: ModelField<*>,
-    ): ModelFieldTodayState =
-        when ("$modelCode.${modelField.code}") {
+    ): ModelFieldTodayState {
+        val state = when ("$modelCode.${modelField.code}") {
             "AntForest.pkEnergy" -> {
                 flag(StatusFlags.FLAG_ANTFOREST_PK_SKIP_TODAY, "今日 PK 榜无需处理")
             }
@@ -463,6 +466,18 @@ object ModelFieldTodayStateResolver {
                 ModelFieldTodayState()
             }
         }
+        return if (state.inactive) {
+            state.copy(
+                clearableFlagKeys = TodayFlagRegistry.fieldKeys(
+                    status = Status.INSTANCE,
+                    modelCode = modelCode,
+                    fieldCode = modelField.code,
+                ),
+            )
+        } else {
+            state
+        }
+    }
 
     private fun flag(
         flag: String,

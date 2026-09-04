@@ -11,6 +11,8 @@ import android.content.IntentFilter
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -53,6 +55,7 @@ import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Groups
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Remove
 import androidx.compose.material.icons.outlined.Search
@@ -150,7 +153,14 @@ private data object AccountModelListRoute : NavKey
 @Serializable
 private data class AccountModelDetailRoute(val modelCode: String) : NavKey
 
-private enum class AccountDialog { EXIT, IMPORT_OVERWRITE, EXPORT_MODE, DELETE_CONFIG }
+private enum class AccountDialog {
+    EXIT,
+    IMPORT_OVERWRITE,
+    EXPORT_MODE,
+    DELETE_CONFIG,
+    CLEAR_MODULE_TODAY_FLAGS,
+    CLEAR_FIELD_TODAY_FLAGS,
+}
 
 private data class SelectionRequest(
     val field: FieldEditorUiModel,
@@ -188,6 +198,8 @@ fun AccountSettingsScreen(
     var selectionFieldCode by rememberSaveable(userId) { mutableStateOf<String?>(null) }
     var friendModelCode by rememberSaveable(userId) { mutableStateOf<String?>(null) }
     var friendFieldCode by rememberSaveable(userId) { mutableStateOf<String?>(null) }
+    var pendingTodayFlagModuleCode by rememberSaveable(userId) { mutableStateOf<String?>(null) }
+    var pendingTodayFlagFieldCode by rememberSaveable(userId) { mutableStateOf<String?>(null) }
     var localMessage by rememberSaveable(userId) { mutableStateOf<String?>(null) }
 
     val selectionRequest = state.findField(selectionModelCode, selectionFieldCode)?.let(::selectionRequestFor)
@@ -439,6 +451,10 @@ fun AccountSettingsScreen(
                                     onSelectModel = {
                                         if (selectedModelCode != it) modelBackStack.add(AccountModelDetailRoute(it))
                                     },
+                                    onClearTodayFlags = { modelCode ->
+                                        pendingTodayFlagModuleCode = modelCode
+                                        activeDialog = AccountDialog.CLEAR_MODULE_TODAY_FLAGS
+                                    },
                                     modifier = Modifier.fillMaxSize(),
                                 )
                             }
@@ -463,6 +479,11 @@ fun AccountSettingsScreen(
                                             friendFieldCode = it.key.fieldCode
                                         },
                                         onClearAudit = accountViewModel::clearFieldAudit,
+                                        onClearTodayFlags = { key ->
+                                            pendingTodayFlagModuleCode = key.modelCode
+                                            pendingTodayFlagFieldCode = key.fieldCode
+                                            activeDialog = AccountDialog.CLEAR_FIELD_TODAY_FLAGS
+                                        },
                                         onMessage = { localMessage = it },
                                         modifier = Modifier.fillMaxSize(),
                                     )
@@ -546,6 +567,48 @@ fun AccountSettingsScreen(
                 }
             },
         )
+        AccountDialog.CLEAR_MODULE_TODAY_FLAGS -> {
+            val model = pendingTodayFlagModuleCode?.let(state::findModel)
+            if (model != null) {
+                ConfirmDialog(
+                    title = "删除模块每日标识",
+                    message = "将删除“${model.name}”的全部每日标识和当日计数。",
+                    confirmText = "删除",
+                    danger = true,
+                    onDismiss = { activeDialog = null },
+                    onConfirm = {
+                        activeDialog = null
+                        scope.launch {
+                            localMessage = accountViewModel.clearModuleTodayFlags(context, model.code).fold(
+                                onSuccess = { it },
+                                onFailure = { it.message ?: "每日标识清除失败" },
+                            )
+                        }
+                    },
+                )
+            }
+        }
+        AccountDialog.CLEAR_FIELD_TODAY_FLAGS -> {
+            val field = state.findField(pendingTodayFlagModuleCode, pendingTodayFlagFieldCode)
+            if (field != null) {
+                ConfirmDialog(
+                    title = "删除字段每日标识",
+                    message = "将删除“${field.name}”当前显示的每日标识。",
+                    confirmText = "删除",
+                    danger = true,
+                    onDismiss = { activeDialog = null },
+                    onConfirm = {
+                        activeDialog = null
+                        scope.launch {
+                            localMessage = accountViewModel.clearFieldTodayFlags(context, field.key).fold(
+                                onSuccess = { it },
+                                onFailure = { it.message ?: "每日标识清除失败" },
+                            )
+                        }
+                    },
+                )
+            }
+        }
         null -> Unit
     }
 
@@ -568,12 +631,14 @@ fun AccountSettingsScreen(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ModelList(
     state: AccountSettingsUiState,
     listState: LazyListState,
     selectedModelCode: String?,
     onSelectModel: (String) -> Unit,
+    onClearTodayFlags: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
@@ -615,7 +680,10 @@ private fun ModelList(
                             Text("已修改", color = MaterialTheme.colorScheme.primary)
                         }
                     },
-                    modifier = Modifier.clickable { onSelectModel(model.code) },
+                    modifier = Modifier.combinedClickable(
+                        onClick = { onSelectModel(model.code) },
+                        onLongClick = { onClearTodayFlags(model.code) },
+                    ),
                     colors = androidx.compose.material3.ListItemDefaults.colors(
                         containerColor = if (model.code == selectedModelCode) {
                             MaterialTheme.colorScheme.secondaryContainer
@@ -640,6 +708,7 @@ private fun ModelFields(
     onOpenSelection: (SelectionRequest) -> Unit,
     onOpenFriendSelection: (FieldEditorUiModel) -> Unit,
     onClearAudit: (FieldKey) -> Unit,
+    onClearTodayFlags: (FieldKey) -> Unit,
     onMessage: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -665,6 +734,7 @@ private fun ModelFields(
                 onOpenFriendSelection = { onOpenFriendSelection(field) },
                 auditClearPending = field.key in state.pendingAuditClearKeys,
                 onClearAudit = { onClearAudit(field.key) },
+                onClearTodayFlags = { onClearTodayFlags(field.key) },
                 onRunAction = {
                     scope.launch {
                         onMessage(
@@ -681,6 +751,7 @@ private fun ModelFields(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FieldEditor(
     field: FieldEditorUiModel,
@@ -691,10 +762,33 @@ private fun FieldEditor(
     onOpenFriendSelection: () -> Unit,
     auditClearPending: Boolean,
     onClearAudit: () -> Unit,
+    onClearTodayFlags: () -> Unit,
     onRunAction: () -> Unit,
 ) {
+    val hasTodayFlag = field.todayClearableFlagKeys.isNotEmpty()
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(field.name, style = MaterialTheme.typography.titleMedium)
+        Row(
+            modifier = if (hasTodayFlag) {
+                Modifier.combinedClickable(
+                    onClick = {},
+                    onLongClick = onClearTodayFlags,
+                )
+            } else {
+                Modifier
+            },
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(field.name, style = MaterialTheme.typography.titleMedium)
+            if (hasTodayFlag) {
+                Icon(
+                    imageVector = Icons.Outlined.History,
+                    contentDescription = "长按删除${field.name}的每日标识",
+                    tint = MaterialTheme.colorScheme.outline,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
         if (field.desc.isNotBlank()) {
             Text(field.desc, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }

@@ -1,5 +1,6 @@
 package io.github.aoguai.sesameag.ui.dto
 
+import io.github.aoguai.sesameag.data.TodayFlagKey
 import io.github.aoguai.sesameag.model.ModelField
 import io.github.aoguai.sesameag.model.ModelFields
 import java.io.Serializable
@@ -26,10 +27,11 @@ data class ModelFieldShowDto(
     var configValue: String = "",
     var desc: String = "",
     var todayInactive: Boolean = false,
-    var todayInactiveReason: String = ""
+    var todayInactiveReason: String = "",
+    var todayClearableFlagKeys: List<TodayFlagKey> = emptyList(),
 ) : Serializable {
 
-    constructor() : this("", "", "", null, null, "", "", false, "")
+    constructor() : this("", "", "", null, null, "", "", false, "", emptyList())
 
     companion object {
         /**
@@ -53,7 +55,8 @@ data class ModelFieldShowDto(
                 configValue = modelField.getConfigValue() ?: "",
                 desc = modelField.desc,
                 todayInactive = todayState.inactive,
-                todayInactiveReason = todayState.reason
+                todayInactiveReason = todayState.reason,
+                todayClearableFlagKeys = todayState.clearableFlagKeys.toList(),
             )
         }
     }
