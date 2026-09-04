@@ -242,7 +242,11 @@ class ApplicationHook {
                 val context = chain.args[0] as? Context ?: return@intercept result
                 val identityDecision = RuntimeIdentityGuard.verifyApplicationAttach(context)
                 if (!identityDecision.accepted || !RuntimeIdentityGuard.isCaptureOnlyProcess()) {
-                    android.util.Log.w(TAG, "capture_instance_rejected: ${identityDecision.reasonCode}")
+                    val reasonCode = identityDecision.reasonCode ?: "identity_not_verified"
+                    val message =
+                        "capture_instance_rejected: $reasonCode process=$processName process_role=capture_only"
+                    logFrameworkWarning(message)
+                    android.util.Log.w(TAG, message)
                     return@intercept result
                 }
                 XposedEnv.runtimeIdentity = RuntimeIdentityGuard.trustedIdentity()
@@ -269,7 +273,10 @@ class ApplicationHook {
                 val application = chain.getThisObject() as? Application
                 val identityDecision = RuntimeIdentityGuard.verifyApplicationAttach(context)
                 if (!identityDecision.accepted) {
-                    android.util.Log.w(TAG, "instance_rejected: ${identityDecision.reasonCode}")
+                    val reasonCode = identityDecision.reasonCode ?: "identity_not_verified"
+                    val message = "instance_rejected: $reasonCode process=$processName process_role=main"
+                    logFrameworkWarning(message)
+                    android.util.Log.w(TAG, message)
                     return@intercept result
                 }
                 XposedEnv.runtimeIdentity = RuntimeIdentityGuard.trustedIdentity()

@@ -80,11 +80,24 @@ internal class LibXposedRuntime(
             processName = targetProcessName,
         )
         if (!identityDecision.accepted) {
-            module.log(Log.ERROR, TAG, "instance_rejected: ${identityDecision.reasonCode}")
+            val reasonCode = identityDecision.reasonCode ?: "unknown"
+            val priority = if (reasonCode == "target_unsupported_process") Log.INFO else Log.ERROR
+            module.log(
+                priority,
+                TAG,
+                "instance_rejected: $reasonCode process=$targetProcessName " +
+                    "process_role=${if (targetProcessName == General.PACKAGE_NAME) "main" else "auxiliary"}",
+            )
             module.detach()
             return
         }
         packageReady = true
+        module.log(
+            Log.INFO,
+            TAG,
+            "instance_accepted: process=$targetProcessName " +
+                "process_role=${if (targetProcessName == General.PACKAGE_NAME) "main" else "capture_only"}",
+        )
 
         try {
             XposedEnv.classLoader = param.classLoader
