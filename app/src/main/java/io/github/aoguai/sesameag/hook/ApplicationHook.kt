@@ -1152,14 +1152,14 @@ class ApplicationHook {
                     userId,
                     allowPersistedReuse = allowPersistedSessionReuse,
                 )
-                when (val admission = AccountSlotRegistry.admitRuntimeUser(userId)) {
+                val admission = when (val result = AccountSlotRegistry.admitRuntimeUser(userId)) {
                     is AccountSlotAdmission.Denied -> {
-                        record(TAG, "execution_gate_denied: ${admission.reasonCode}")
-                        destroyHandlerInternal("account_slot_${admission.reasonCode}", invalidateSession = true)
+                        record(TAG, "execution_gate_denied: ${result.reasonCode} process_role=main")
+                        destroyHandlerInternal("account_slot_${result.reasonCode}", invalidateSession = true)
                         return false
                     }
 
-                    is AccountSlotAdmission.Allowed -> Unit
+                    is AccountSlotAdmission.Allowed -> result
                 }
                 if (init) {
                     if (shouldCaptureReloadState(reason)) {
@@ -1185,11 +1185,9 @@ class ApplicationHook {
                     // ignore
                 }
 
-                ensureScheduler()
+                // Model metadata is required by Config.load(), but session work waits for a stable slot.
                 Model.initAllModel()
 
-                pendingInit = false
-                pendingInitReason = null
                 UserMap.setCurrentUserId(userId)
                 load(userId)
                 // 冷启动期目标应用社交库(AliAccountDaoOp)可能尚未加载完，过早 getAllFriends() 会拿到
@@ -1199,26 +1197,52 @@ class ApplicationHook {
                 runCatching { UserMap.load(userId) }.onFailure {
                     printStackTrace(TAG, "初始化加载本地好友快照失败", it)
                 }
-                scheduleDeferredFriendCenterSync(userId, reason)
                 record(TAG, "Sesame-AG 开始初始化...")
 
                 Config.load(userId)
                 LocaleSettingsApplier.apply(appContext)
                 Logback.reloadFileLogging(enableCaptureAppender = true)
                 val activeUserSnapshot = AccountSessionCoordinator.ensureActiveUserSnapshot(userId, activeClassLoader)
-                val legalAccepted = Config.isLoaded() && Config.isLegalAcceptedForCurrentVersion()
-                val workflowAllowed =
-                    RuntimeIdentityGuard.isTrustedForExecution() &&
-                        AccountSlotRegistry.isExecutableUser(userId) &&
-                        WorkflowRootGuard.hasGrantedRoot() &&
-                        legalAccepted &&
-                        !ApplicationHookConstants.isOffline()
+                if (admission.requiresConfirmation) {
+                    when (val confirmation = AccountSlotRegistry.confirmRuntimeUser(userId)) {
+                        AccountSlotRuntimeConfirmation.Confirmed -> Unit
+                        AccountSlotRuntimeConfirmation.PendingPersistence,
+                        AccountSlotRuntimeConfirmation.Expired,
+                        AccountSlotRuntimeConfirmation.RegistryUnavailable -> {
+                            val reasonCode = when (confirmation) {
+                                AccountSlotRuntimeConfirmation.PendingPersistence ->
+                                    "account_slot_provision_unconfirmed"
+                                AccountSlotRuntimeConfirmation.Expired -> "account_slot_provision_expired"
+                                AccountSlotRuntimeConfirmation.RegistryUnavailable ->
+                                    "account_slot_registry_unavailable"
+                                AccountSlotRuntimeConfirmation.Confirmed -> error("unreachable")
+                            }
+                            record(TAG, "execution_gate_denied: $reasonCode process_role=main")
+                            destroyHandlerInternal("account_slot_$reasonCode", invalidateSession = true)
+                            return false
+                        }
+                    }
+                }
                 val executionCheck = AccountSlotRegistry.checkExecutableUser(userId)
                 if (executionCheck !is AccountSlotExecutionCheck.Allowed) {
-                    record(TAG, "execution_gate_rejected_before_apply: $executionCheck")
+                    val reasonCode = when (executionCheck) {
+                        is AccountSlotExecutionCheck.Inactive -> "account_slot_inactive"
+                        AccountSlotExecutionCheck.InvalidUserId -> "account_slot_invalid_user_id"
+                        AccountSlotExecutionCheck.RegistryUnavailable -> "account_slot_registry_unavailable"
+                        is AccountSlotExecutionCheck.Allowed -> error("unreachable")
+                    }
+                    record(TAG, "execution_gate_rejected_before_apply: $reasonCode process_role=main")
                     destroyHandlerInternal("account_slot_recheck", invalidateSession = true)
                     return false
                 }
+
+                ensureScheduler()
+                val legalAccepted = Config.isLoaded() && Config.isLegalAcceptedForCurrentVersion()
+                val workflowAllowed =
+                    RuntimeIdentityGuard.isTrustedForExecution() &&
+                        WorkflowRootGuard.hasGrantedRoot() &&
+                        legalAccepted &&
+                        !ApplicationHookConstants.isOffline()
                 AccountSessionCoordinator.applySession(
                     context = appContext,
                     userId = userId,
@@ -1228,6 +1252,9 @@ class ApplicationHook {
                     reason = reason,
                 )
                 sessionApplied = true
+                pendingInit = false
+                pendingInitReason = null
+                scheduleDeferredFriendCenterSync(userId, reason)
 
                 if (!Config.isLoaded()) return false
                 if (!ensureRootAccessForWorkflow(reason)) {

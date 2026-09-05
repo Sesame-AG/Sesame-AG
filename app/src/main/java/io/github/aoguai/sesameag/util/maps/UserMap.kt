@@ -286,10 +286,10 @@ object UserMap {
      */
     @JvmStatic
     @Synchronized
-    fun saveSelf(userEntity: UserEntity?) {
-        val entity = userEntity ?: return
+    fun saveSelf(userEntity: UserEntity?): Boolean {
+        val entity = userEntity ?: return false
         val safeUserId = entity.userId?.trim().orEmpty()
-        if (safeUserId.isEmpty()) return
+        if (safeUserId.isEmpty()) return false
         val existing = mergeUserEntity(
             safeUserId,
             userMap[safeUserId],
@@ -298,7 +298,11 @@ object UserMap {
         val mergedEntity = mergeUserEntity(safeUserId, entity, existing)
         updateActiveUser(mergedEntity)
         val body = JsonUtil.formatJson(mergedEntity)
-        Files.write2File(body, Files.getSelfIdFile(safeUserId)!!)
+        val saved = Files.write2File(body, Files.getSelfIdFile(safeUserId)!!)
+        if (!saved) {
+            Log.record(TAG, "self_snapshot_write_failed")
+        }
+        return saved
     }
 
     @JvmStatic
