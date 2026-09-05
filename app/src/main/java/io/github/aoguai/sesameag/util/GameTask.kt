@@ -71,6 +71,11 @@ enum class GameTask(
         3,
     );
 
+    companion object {
+        fun fromAppId(appId: String): GameTask? =
+            values().firstOrNull { gameTask -> gameTask.appId == appId }
+    }
+
     private var cachedToken: String? = null
 
     private fun logTask(message: String) {

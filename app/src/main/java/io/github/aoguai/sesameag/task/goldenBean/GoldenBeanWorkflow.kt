@@ -49,6 +49,7 @@ internal suspend fun GoldenBeanTreasure.runGoldenBeanTreasure() {
     }
     val masterRun = entryRuns.firstOrNull { it.entry == GoldenBeanRpcCall.MASTER_ENTRY }
     masterRun?.let { GoldenBeanTreasureSupport.queryMallItems() }
+    val attemptedGameSnapshots = mutableSetOf<String>()
     var convergenceRound = 1
     var taskResults = entryRuns.associateWith { it.runTaskFlow(executeIntervalInt) }
     var reachedConvergenceLimit = false
@@ -56,19 +57,24 @@ internal suspend fun GoldenBeanTreasure.runGoldenBeanTreasure() {
         if (masterRun == null) {
             GoldenBeanGameFlowResult(completed = false, progressed = false, blocked = true)
         } else {
-            GoldenBeanTreasureSupport.runGameCenterOpportunityFlow()
+            GoldenBeanTreasureSupport.runGameCenterOpportunityFlow(attemptedGameSnapshots)
         }
-    while (!gameResult.blocked &&
-        (taskResults.values.any { it.progressed } || gameResult.progressed) &&
-        convergenceRound < GOLDEN_BEAN_CONVERGENCE_LIMIT
-    ) {
+    var needsTaskRefresh =
+        taskResults.values.any { it.progressed } || gameResult.progressed || gameResult.taskRefreshRequested
+    while (!gameResult.blocked && needsTaskRefresh && convergenceRound < GOLDEN_BEAN_CONVERGENCE_LIMIT) {
         convergenceRound++
         taskResults = entryRuns.associateWith { it.runTaskFlow(executeIntervalInt) }
-        gameResult = GoldenBeanTreasureSupport.runGameCenterOpportunityFlow()
+        val shouldRunGameCenter = taskResults.values.any { it.progressed } || gameResult.progressed
+        gameResult =
+            if (masterRun != null && shouldRunGameCenter) {
+                GoldenBeanTreasureSupport.runGameCenterOpportunityFlow(attemptedGameSnapshots)
+            } else {
+                gameResult.copy(taskRefreshRequested = false)
+            }
+        needsTaskRefresh =
+            taskResults.values.any { it.progressed } || gameResult.progressed || gameResult.taskRefreshRequested
     }
-    if (convergenceRound >= GOLDEN_BEAN_CONVERGENCE_LIMIT &&
-        (taskResults.values.any { it.progressed } || gameResult.progressed)
-    ) {
+    if (convergenceRound >= GOLDEN_BEAN_CONVERGENCE_LIMIT && needsTaskRefresh) {
         reachedConvergenceLimit = true
         Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "金豆夺宝达到收敛轮次上限$GOLDEN_BEAN_CONVERGENCE_LIMIT")
     }

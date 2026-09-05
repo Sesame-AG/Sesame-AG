@@ -3,6 +3,7 @@ package io.github.aoguai.sesameag.task.antFarm
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.task.TaskStatus
+import io.github.aoguai.sesameag.task.common.GameCenterPlayRpcCall
 import io.github.aoguai.sesameag.util.GameTask
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.ResChecker
@@ -456,6 +457,7 @@ object FarmGame {
 
     internal suspend fun drawGameCenterAward() {
         var totalParadiseCoins = 0 // 🚀 统计总共获得的乐园币
+        val attemptedCandidates = mutableSetOf<String>()
         try {
             runCatching {
                 val warmup = JSONObject(AntFarmRpcCall.refinedOperation("ENTERSELFWITHOUTPOP"))
@@ -482,69 +484,67 @@ object FarmGame {
                     break
                 }
 
-                // 1. 处理当前可开的宝箱 (对应你说的 canUse)
-                var quotaCanUse =
+                // Draw at most one server-bounded batch, then re-read authoritative rights.
+                val quotaCanUse =
                     currentRights.optInt(
                         "quotaCanUse",
                         currentRights.optInt("canUseTimes", currentRights.optInt("drawRightsTimes", 0)),
                     )
                 if (quotaCanUse > 0) {
-                    Log.farm("当前有 $quotaCanUse 个宝箱待开启...")
-                    while (quotaCanUse > 0) {
-                        val batchDrawCount = quotaCanUse.coerceAtMost(10)
-                        val drawResponse = JSONObject(AntFarmRpcCall.drawGameCenterAward(batchDrawCount))
-                        val drawRes = drawResponse.optJSONObject("resData") ?: drawResponse
-                        if (drawRes.optBoolean("success", drawResponse.optBoolean("success"))) {
-                            quotaCanUse = (quotaCanUse - batchDrawCount).coerceAtLeast(0)
-
-                            val awardList =
-                                findFirstArrayByKey(drawRes, "gameCenterDrawAwardList")
-                                    ?: findFirstArrayByKey(drawRes, "drawAwardList")
-                            val awardStrings = mutableListOf<String>()
-                            if (awardList != null) {
-                                for (i in 0 until awardList.length()) {
-                                    val item = awardList.getJSONObject(i)
-                                    val awardName = item.optString("awardName")
-                                    val awardCount = item.optInt("awardCount")
-                                    awardStrings.add("$awardName*$awardCount")
-                                    if (awardName.contains("乐园币")) {
-                                        totalParadiseCoins += awardCount
-                                    }
+                    val batchDrawCount = quotaCanUse.coerceAtMost(10)
+                    Log.farm("当前有 $quotaCanUse 个宝箱待开启，本次提交 $batchDrawCount 个")
+                    val drawResponse = JSONObject(AntFarmRpcCall.drawGameCenterAward(batchDrawCount))
+                    val drawRes = drawResponse.optJSONObject("resData") ?: drawResponse
+                    if (drawRes.optBoolean("success", drawResponse.optBoolean("success"))) {
+                        val awardList =
+                            findFirstArrayByKey(drawRes, "gameCenterDrawAwardList")
+                                ?: findFirstArrayByKey(drawRes, "drawAwardList")
+                        val awardStrings = mutableListOf<String>()
+                        if (awardList != null) {
+                            for (i in 0 until awardList.length()) {
+                                val item = awardList.getJSONObject(i)
+                                val awardName = item.optString("awardName")
+                                val awardCount = item.optInt("awardCount")
+                                awardStrings.add("$awardName*$awardCount")
+                                if (awardName.contains("乐园币")) {
+                                    totalParadiseCoins += awardCount
                                 }
                             }
-                            Log.farm("庄园小鸡🎁[获得奖品: ${awardStrings.joinToString(",")}]")
-                        } else {
-                            val desc =
-                                drawRes
-                                    .optString("desc")
-                                    .ifBlank { drawRes.optString("resultDesc") }
-                                    .ifBlank { drawResponse.optString("desc") }
-                            if (isDrawQuotaExhausted(desc)) {
-                                Log.farm("开宝箱权益已用完，停止本轮开箱: $desc")
-                            } else {
-                                Log.farm("开启宝箱失败: $desc")
-                            }
-                            return
                         }
+                        Log.farm("庄园小鸡🎁[获得奖品: ${awardStrings.joinToString(",")}]")
+                        continue
                     }
-                    continue
-                }
-
-                // 2. 处理剩余任务 (判断是否需要去刷任务)
-                val limit = currentRights.optInt("quotaLimit", currentRights.optInt("limit")) // 总上限，比如 10
-                val used = currentRights.optInt("usedQuota", currentRights.optInt("usedTimes")) // 今日已获得的总数，比如 2
-
-                // 计算逻辑：如果 已获得 < 总上限，且当前没机会了，就去刷
-                val remainToTask = limit - used
-                if (remainToTask > 0 && quotaCanUse == 0) {
-                    // Log.farm("宝箱进度: $used/$limit，开始自动刷任务补齐...")
-                    // 根据游戏类型选择上报任务
-                    GameTask.Farm_ddply.report(remainToTask)
-                    continue
-                } else if (remainToTask <= 0) {
-                    Log.farm("今日 $limit 个金蛋任务已全部满额")
+                    val desc =
+                        drawRes
+                            .optString("desc")
+                            .ifBlank { drawRes.optString("resultDesc") }
+                            .ifBlank { drawResponse.optString("desc") }
+                    if (isDrawQuotaExhausted(desc)) {
+                        Log.farm("开宝箱权益已用完，停止本轮开箱: $desc")
+                    } else {
+                        Log.farm("开启宝箱失败: $desc")
+                    }
                     break
                 }
+
+                // Game rewards are independent from draw quota. A full draw quota only ends draw.
+                val limit = currentRights.optInt("quotaLimit", currentRights.optInt("limit"))
+                val used = currentRights.optInt("usedQuota", currentRights.optInt("usedTimes"))
+                val candidates = buildFarmGameCenterCandidates(jo)
+                var actionSubmitted = false
+                while (advanceFarmGameCenterCandidate(candidates, attemptedCandidates)) {
+                    actionSubmitted = true
+                }
+                if (actionSubmitted) {
+                    continue
+                }
+
+                if (limit > 0 && used >= limit) {
+                    Log.farm("庄园乐园今日 $limit 个宝箱已满额，独立游戏无可验证动作")
+                } else {
+                    Log.farm("庄园乐园当前无可验证的补任务动作，保留后续快照重试")
+                }
+                break
             }
             receiveLeyuanLimitedBenefitAwards()
         } catch (e: CancellationException) {
@@ -555,6 +555,72 @@ object FarmGame {
             if (totalParadiseCoins > 0) {
                 Log.farm("庄园小鸡🎁[本次任务总计获得乐园币: $totalParadiseCoins]")
             }
+        }
+    }
+
+    private fun buildFarmGameCenterCandidates(
+        queryResponse: JSONObject,
+    ): List<GameCenterPlayRpcCall.DeliveryBenefitCandidate> =
+        GameCenterPlayRpcCall.collectDeliveryBenefitCandidates(queryResponse)
+            .filter { it.hasPendingReward }
+
+    private fun farmGameCenterDecision(
+        candidate: GameCenterPlayRpcCall.DeliveryBenefitCandidate,
+    ): GameCenterPlayRpcCall.TaskActionDecision =
+        if (GameTask.fromAppId(candidate.appId) != null) {
+            GameCenterPlayRpcCall.legacyExternalReportDecision("verified GameTask mapping")
+        } else {
+            GameCenterPlayRpcCall.decideDurationAction(false, candidate.rawBenefit, candidate.rawGame)
+        }
+
+    private suspend fun advanceFarmGameCenterCandidate(
+        candidates: List<GameCenterPlayRpcCall.DeliveryBenefitCandidate>,
+        attemptedCandidates: MutableSet<String>,
+    ): Boolean {
+        val candidate = candidates.firstOrNull { item ->
+            item.snapshotKey !in attemptedCandidates &&
+                farmGameCenterDecision(item).action != GameCenterPlayRpcCall.TaskAction.DEFERRED
+        } ?: return false
+        attemptedCandidates += candidate.snapshotKey
+        val decision = farmGameCenterDecision(candidate)
+        Log.farm(
+            "庄园乐园候选[${candidate.title}] " +
+                GameCenterPlayRpcCall.auditDetail(
+                    decision,
+                    candidate.taskId,
+                    candidate.appId,
+                    "ANTFARM",
+                    candidate.rightTimes,
+                    candidate.rightTimesLimit,
+                ),
+        )
+        return when (decision.action) {
+            GameCenterPlayRpcCall.TaskAction.LEGACY_EXTERNAL_REPORT -> {
+                val gameTask = GameTask.fromAppId(candidate.appId) ?: return false
+                val result =
+                    gameTask.reportDetailed(
+                        candidate.remainingRewards,
+                        actionFinishChannel = GameTask.Farm_ddply.channel,
+                    )
+                if (!result.completed) {
+                    Log.farm("庄园乐园旧外部上报未确认成功，等待后续快照: ${result.failureMessage}")
+                }
+                result.completed
+            }
+
+            GameCenterPlayRpcCall.TaskAction.DURATION_ONLY -> {
+                val contract = decision.contract ?: return false
+                val acknowledgement = GameCenterPlayRpcCall.submitForAck(contract)
+                if (!acknowledgement.accepted) {
+                    Log.farm("庄园乐园时长上报未接受，等待后续快照")
+                }
+                acknowledgement.accepted
+            }
+
+            GameCenterPlayRpcCall.TaskAction.DIRECT_FINISH,
+            GameCenterPlayRpcCall.TaskAction.CLICK_THEN_DURATION,
+            GameCenterPlayRpcCall.TaskAction.OWNER_BUSINESS,
+            GameCenterPlayRpcCall.TaskAction.DEFERRED -> false
         }
     }
 
