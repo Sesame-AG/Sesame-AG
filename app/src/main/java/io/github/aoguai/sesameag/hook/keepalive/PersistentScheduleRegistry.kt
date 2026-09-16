@@ -206,6 +206,9 @@ object PersistentScheduleRegistry {
         return removed.size
     }
 
+    /** Read acknowledgement across processes, bypassing the file watcher's debounce/cache. */
+    fun getFresh(id: String): PersistentSchedule? = withRegistryLock { get(id) }
+
     fun get(id: String): PersistentSchedule? {
         if (id.isBlank()) return null
         if (!ensureStorage()) return null

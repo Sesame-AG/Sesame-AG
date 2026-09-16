@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Process
 import io.github.aoguai.sesameag.data.General
+import io.github.aoguai.sesameag.util.CommandUtil
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.PermissionUtil
 import io.github.aoguai.sesameag.util.TimeUtil
@@ -53,17 +54,27 @@ object SystemWakeScheduler {
                 cancelPlanner(context, silent = true)
                 return true
             }
-        val alarmContexts = resolveAlarmContexts(context)
-        if (alarmContexts.isEmpty()) return false
-        alarmContexts.forEachIndexed { index, alarmContext ->
-            if (schedulePlanOnContext(alarmContext, plan, silent)) {
-                return true
-            }
-            if (index == 0 && alarmContexts.size > 1) {
-                Log.runtime(TAG, "模块系统闹钟注册失败，尝试目标应用拉起调度[${schedule.name}]")
-            }
+        if (context.packageName == General.PACKAGE_NAME) {
+            val registered = CommandUtil.scheduleWakeup(
+                plan.primary.id, plan.triggerAtMs,
+                plan.precisionPolicy,
+                plan.primary.toleranceMs,
+            )
+            if (registered) cancelPlanner(context, silent = true, cancelModule = false)
+            return registered
         }
-        return false
+        return schedulePlanOnContext(context, plan, silent)
+    }
+
+    // Binder entry: parameters only, no registry reads while the caller holds its file lock.
+    fun scheduleModuleWakeup(context: Context, id: String, at: Long, precisionPolicy: String, tolerance: Long): Boolean {
+        require(context.packageName == General.MODULE_PACKAGE_NAME)
+        if (id.isEmpty()) {
+            cancelPlanner(context, silent = true)
+            return true
+        }
+        val primary = PersistentSchedule(id = id, name = id, triggerAtMs = at, toleranceMs = tolerance)
+        return schedulePlanOnContext(context, AlarmPlan(primary, at, precisionPolicy), silent = true)
     }
 
     private fun selectPlan(schedules: List<PersistentSchedule>): AlarmPlan? {
@@ -95,14 +106,27 @@ object SystemWakeScheduler {
                     ?: return false
             if (PersistentSchedulePrecisionPolicy.isStrict(plan.precisionPolicy, plan.primary.kind)) {
                 if (PermissionUtil.checkAlarmPermissions(alarmContext)) {
-                    scheduleExact(alarmManager, plan.triggerAtMs, pendingIntent)
+                    if (plan.precisionPolicy == PersistentSchedulePrecisionPolicy.USER_EXACT) {
+                        // User-selected wake times must remain exact on OEM builds that widen ordinary alarms.
+                        val showIntent = PendingIntent.getActivity(
+                            alarmContext, 0,
+                            Intent(alarmContext, io.github.aoguai.sesameag.ui.MainActivity::class.java),
+                            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                        )
+                        alarmManager.setAlarmClock(AlarmManager.AlarmClockInfo(plan.triggerAtMs, showIntent), pendingIntent)
+                    } else {
+                        scheduleExact(alarmManager, plan.triggerAtMs, pendingIntent)
+                    }
                 } else {
                     scheduleStrictFallback(alarmManager, plan.triggerAtMs, pendingIntent)
                 }
             } else {
                 scheduleFlexible(alarmManager, plan.triggerAtMs, plan.primary.toleranceMs, pendingIntent)
             }
-            updatePlannerLaunchConfirmationTimeout(alarmContext, plan.primary, plan.triggerAtMs)
+            // Receiver delivery starts recovery; an inexact alarm must not time out before it fires.
+            if (alarmContext.packageName != General.MODULE_PACKAGE_NAME) {
+                updatePlannerLaunchConfirmationTimeout(alarmContext, plan.primary, plan.triggerAtMs)
+            }
             if (!silent) {
                 Log.runtime(
                     TAG,
@@ -154,7 +178,11 @@ object SystemWakeScheduler {
     private fun cancelPlanner(
         context: Context,
         silent: Boolean,
+        cancelModule: Boolean = true,
     ) {
+        if (cancelModule && context.packageName == General.PACKAGE_NAME) {
+            CommandUtil.scheduleWakeup("", 0L, PersistentSchedulePrecisionPolicy.FLEXIBLE_POLL, 0L)
+        }
         clearPlannerLaunchConfirmationTimeout()
         val marker = PersistentSchedule(id = "persistent-alarm-plan")
         resolveAlarmContexts(context).forEach { alarmContext ->

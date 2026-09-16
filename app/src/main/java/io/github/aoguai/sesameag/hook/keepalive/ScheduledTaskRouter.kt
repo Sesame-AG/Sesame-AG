@@ -215,8 +215,8 @@ object ScheduledTaskRouter {
             return requestExecutionInCurrentProcess(schedule, source, wakenAtTime, wakenTime)
         }
 
-        maybeLaunchTarget(context, schedule, source)
         sendTargetBroadcast(context, intent, schedule, source)
+        io.github.aoguai.sesameag.util.CommandUtil.recoverScheduledTask(context, schedule.id)
         return true
     }
 
@@ -247,8 +247,8 @@ object ScheduledTaskRouter {
             )
         }
 
-        maybeLaunchTarget(context, schedule, source)
         sendTargetBroadcast(context, intent, schedule, source)
+        io.github.aoguai.sesameag.util.CommandUtil.recoverScheduledTask(context, schedule.id)
         return true
     }
 
@@ -500,43 +500,6 @@ object ScheduledTaskRouter {
                 sessionEpoch = schedule.sessionEpoch,
             ),
         )
-    }
-
-    private fun maybeLaunchTarget(
-        context: Context,
-        schedule: PersistentSchedule,
-        source: String,
-    ): Boolean {
-        if (PersistentLaunchPolicy.payloadRequestsTargetLaunch(schedule.payloadJson) && !shouldLaunchTarget(schedule)) {
-            clearLaunchFailures(schedule)
-            Log.record(TAG, "持久任务前台拉起已关闭，跳过拉起目标应用[${schedule.name}]")
-            return false
-        }
-        if (!shouldLaunchTarget(schedule)) {
-            return false
-        }
-        if (ApplicationResumeCoordinator.isHostAppForeground()) {
-            clearLaunchFailures(schedule)
-            Log.record(TAG, "目标应用已在前台，跳过重复拉起[${schedule.name}]")
-            return false
-        }
-        if (!consumeLaunchQuota(schedule)) {
-            Log.record(TAG, "持久任务拉起目标应用被频控[${schedule.name}]")
-            return false
-        }
-        val launched =
-            SystemWakeScheduler.launchTargetNow(
-                context,
-                schedule,
-                allowBackgroundAlways = source == "alarm",
-            )
-        if (launched) {
-            // PendingIntent.send() 只代表请求已发出；只有 Activity 消费 launch extra 后才能确认拉起成功。
-            Log.record(TAG, "持久任务已请求拉起目标应用，等待 Activity 确认[${schedule.name}]")
-            return true
-        }
-        recordLaunchFailure(schedule, RuntimeException("pending_intent_launch_failed"))
-        return false
     }
 
     fun confirmTargetLaunch(scheduleId: String) {

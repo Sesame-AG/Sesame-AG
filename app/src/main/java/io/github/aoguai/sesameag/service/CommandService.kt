@@ -7,6 +7,8 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.os.Binder
+import android.os.PowerManager
 import android.os.IBinder
 import android.os.RemoteCallbackList
 import android.os.RemoteException
@@ -25,6 +27,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.CancellationException
+import io.github.aoguai.sesameag.hook.keepalive.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
@@ -172,6 +177,76 @@ class CommandService : Service() {
             listeners.unregister(listener)
         }
 
+        private fun checkSchedulerCaller() {
+            val packages = packageManager.getPackagesForUid(Binder.getCallingUid()).orEmpty()
+            check(packages.any { it == General.MODULE_PACKAGE_NAME || it == General.PACKAGE_NAME }) {
+                "Untrusted scheduler caller"
+            }
+        }
+
+        override fun scheduleWakeup(id: String, at: Long, precisionPolicy: String, tolerance: Long): Boolean {
+            checkSchedulerCaller()
+            require(id.isEmpty() || id.matches(Regex("[A-Za-z0-9_-]{1,128}")))
+            require(at >= 0 && tolerance >= 0)
+            require(precisionPolicy in setOf(PersistentSchedulePrecisionPolicy.USER_EXACT,
+                PersistentSchedulePrecisionPolicy.HARD_DEADLINE_CHILD, PersistentSchedulePrecisionPolicy.FLEXIBLE_POLL))
+            return SystemWakeScheduler.scheduleModuleWakeup(this@CommandService, id, at, precisionPolicy, tolerance)
+        }
+
+        override fun recoverScheduledTask(id: String) {
+            checkSchedulerCaller()
+            require(id.matches(Regex("[A-Za-z0-9_-]{1,128}")))
+            if (!recovering.add(id)) return
+            pendingCommandCount.incrementAndGet()
+            serviceScope.launch {
+                val wakeLock = (getSystemService(POWER_SERVICE) as PowerManager)
+                    .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "sesameag:scheduled-recovery")
+                try {
+                    wakeLock.acquire(45_000L)
+                    // The live host gets first chance to consume the broadcast without opening UI.
+                    delay(1500L)
+                    val schedule = pendingSchedule(id) ?: return@launch
+                    if (System.currentTimeMillis() - schedule.triggerAtMs > schedule.toleranceMs) {
+                        PersistentScheduleRegistry.markExpired(this@CommandService, id, source = "recovery")
+                        return@launch
+                    }
+                    ensureShellManager()
+                    if (!isExecutionAllowed(schedule.ownerUserId) || !PersistentLaunchPolicy.shouldLaunchTarget(schedule)) {
+                        PersistentScheduleRegistry.rescheduleDeferred(this@CommandService, id, "recovery_not_allowed")
+                        return@launch
+                    }
+                    val result = commandMutex.withLock {
+                        withTimeout(COMMAND_TIMEOUT_MS) {
+                            shellManager!!.exec("am start -n ${General.PACKAGE_NAME}/${General.CURRENT_USING_ACTIVITY} " +
+                                "--es schedule_id $id --ez persistent_alarm_launch true")
+                        }
+                    }
+                    Log.record(TAG, "持久任务恢复请求[$id] exit=${result.exitCode}")
+                    if (result.isSuccess) {
+                        repeat(15) {
+                            delay(1000L)
+                            if (pendingSchedule(id) == null) {
+                                Log.record(TAG, "持久任务已离开待投递状态[$id]")
+                                return@launch
+                            }
+                        }
+                    }
+                    if (pendingSchedule(id) != null) {
+                        PersistentScheduleRegistry.rescheduleDeferred(this@CommandService, id, "recovery_unconfirmed")
+                    }
+                } catch (e: Exception) {
+                    if (e is CancellationException && e !is kotlinx.coroutines.TimeoutCancellationException) throw e
+                    Log.e(TAG, "持久任务恢复失败[$id]", e)
+                    PersistentScheduleRegistry.rescheduleDeferred(this@CommandService, id, "recovery_error")
+                } finally {
+                    if (wakeLock.isHeld) wakeLock.release()
+                    recovering.remove(id)
+                    pendingCommandCount.decrementAndGet()
+                    stopSelfIfIdle()
+                }
+            }
+        }
+
         override fun isExecutionAllowed(userId: String?): Boolean {
             val activeUserId = userId?.trim()?.takeIf { it.isNotEmpty() } ?: return false
             val manager = shellManager ?: return false
@@ -184,6 +259,13 @@ class CommandService : Service() {
             }.getOrDefault(false)
         }
     }
+
+    private val recovering = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    private fun pendingSchedule(id: String): PersistentSchedule? =
+        PersistentScheduleRegistry.getFresh(id)?.takeIf {
+            it.state == PersistentScheduleState.SCHEDULED && it.triggerAtMs <= System.currentTimeMillis()
+        }
 
     @SuppressLint("ForegroundServiceType")
     override fun onCreate() {

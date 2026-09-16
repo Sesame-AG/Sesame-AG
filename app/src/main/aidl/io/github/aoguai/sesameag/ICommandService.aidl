@@ -8,5 +8,7 @@ interface ICommandService {
     void registerListener(IStatusListener listener);
     void unregisterListener(IStatusListener listener);
     boolean isExecutionAllowed(String userId);
+    boolean scheduleWakeup(String scheduleId, long triggerAtMs, String precisionPolicy, long toleranceMs);
+    void recoverScheduledTask(String scheduleId);
 }
 

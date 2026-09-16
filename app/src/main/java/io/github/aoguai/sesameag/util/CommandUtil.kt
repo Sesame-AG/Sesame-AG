@@ -53,6 +53,7 @@ object CommandUtil {
     // AIDL 接口实例
     @Volatile
     private var commandService: ICommandService? = null
+    private val recoveryRequests = java.util.concurrent.atomic.AtomicInteger(0)
 
     // 连接状态管理
     private val bindMutex = Mutex()
@@ -304,6 +305,33 @@ object CommandUtil {
         }
     }
 
+    // Called while the registry file lock is held: never bind or read the registry here.
+    fun scheduleWakeup(id: String, triggerAtMs: Long, precisionPolicy: String, toleranceMs: Long): Boolean =
+        try {
+            commandService?.scheduleWakeup(id, triggerAtMs, precisionPolicy, toleranceMs) == true
+        } catch (e: Exception) {
+            Log.e(TAG, "模块闹钟注册失败", e)
+            false
+        }
+
+    fun recoverScheduledTask(context: Context, id: String) {
+        recoveryRequests.incrementAndGet()
+        scope.launch {
+            try {
+                check(ensureServiceBound(context)) { "Recovery service unavailable" }
+                checkNotNull(commandService).recoverScheduledTask(id)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "调度恢复请求失败", e)
+                io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleRegistry.rescheduleDeferred(
+                    context, id, "recovery_bind_failed")
+            } finally {
+                if (recoveryRequests.decrementAndGet() == 0 && !bindRequested) unbind(context)
+            }
+        }
+    }
+
     fun isExecutionAllowed(userId: String): Boolean {
         val service = commandService ?: return false
         return try {
@@ -344,6 +372,8 @@ object CommandUtil {
      */
     fun unbind(context: Context) {
         bindRequested = false
+        // A receiver-owned request must reach the service before UI-driven unbinding can stop it.
+        if (recoveryRequests.get() > 0) return
         val appContext = context.applicationContext
         boundContext = appContext
         if (isBound.compareAndSet(true, false)) {
