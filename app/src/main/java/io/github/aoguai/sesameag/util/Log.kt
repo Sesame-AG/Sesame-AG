@@ -244,6 +244,11 @@ object Log {
     }
 
     @JvmStatic
+    fun forestPatrol(msg: String) {
+        business(LogChannel.FOREST_PATROL, msg)
+    }
+
+    @JvmStatic
     fun orchard(msg: String) {
         business(LogChannel.ORCHARD, msg)
     }

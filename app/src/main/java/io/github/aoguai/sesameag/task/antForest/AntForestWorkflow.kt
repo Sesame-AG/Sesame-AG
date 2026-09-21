@@ -159,31 +159,11 @@ internal suspend fun AntForest.runForestHomeFollowUpWorkflow(
         givenProps(processObj)
         tc.countDebug("收取道具")
     }
-    if (userPatrol?.value == true) {
-        queryUserPatrol()
-        tc.countDebug("动物巡护任务")
-    }
-
-    handleUserProps(selfHomeObj)
-    tc.countDebug("收取动物派遣能量")
-
     handleEnergyPvpChallenge()
     tc.countDebug("1V1能量挑战赛")
 
     collectEnergyBomb(selfHomeObj)
     tc.countDebug("收取炸弹卡能量")
-
-    if (combineAnimalPiece?.value == true) {
-        queryAnimalAndPiece()
-        tc.countDebug("合成动物碎片")
-    }
-
-    if (canRunConsumeAnimalPropWorkflow()) {
-        queryAndConsumeAnimal()
-        tc.countDebug("森林巡护")
-    } else {
-        Log.forest("已经有动物伙伴在巡护森林~")
-    }
 
     if (receiveForestTaskAward?.value == true) {
         receiveTaskAward()

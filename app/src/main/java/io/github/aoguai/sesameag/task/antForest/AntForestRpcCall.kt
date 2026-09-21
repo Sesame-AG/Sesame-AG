@@ -33,9 +33,7 @@ object AntForestRpcCall {
     private const val FOREST_LEYUAN_DAILY_TASK_SCENE_CODE = "ANTFOREST_LEYUAN_DAILY_TASK"
     private const val PROTECT_BUBBLE_SOURCE = HOME_TASK_SOURCE
     private const val PROTECT_BUBBLE_VERSION = "20230501"
-    private const val PATROL_SOURCE = "ant_forest"
     private const val PATROL_TIMEZONE = "Asia/Shanghai"
-    private const val PATROL_GO_VERSION = "20231123"
     private const val VITALITY_PROP_SOURCE = "vitality"
     private const val VITALITY_PROP_VERSION = "20250813"
     private const val ONE_CLICK_WATERING_SCENE_CODE = "ONE_CLICK_WATERING_V1"
@@ -59,7 +57,6 @@ object AntForestRpcCall {
     private enum class ForestRpcScene {
         HOME_TASK_LIST,
         TAKE_LOOK_END_TASK_LIST,
-        PATROL,
         VITALITY_PROP_CONSUME,
         ONE_CLICK_WATERING,
     }
@@ -80,7 +77,7 @@ object AntForestRpcCall {
 
     internal data class PropConsumeContext(
         val source: String,
-        val version: String,
+        val version: String = VERSION,
         val headers: Map<String, String>? = forestHeaders(source),
         val propGroup: String? = null,
     )
@@ -199,13 +196,6 @@ object AntForestRpcCall {
                 )
             }
 
-            ForestRpcScene.PATROL -> {
-                ForestRpcSceneContext(
-                    source = PATROL_SOURCE,
-                    headers = forestHeaders(PATROL_SOURCE),
-                )
-            }
-
             ForestRpcScene.VITALITY_PROP_CONSUME -> {
                 ForestRpcSceneContext(
                     source = VITALITY_PROP_SOURCE,
@@ -222,27 +212,6 @@ object AntForestRpcCall {
                 )
             }
         }
-
-    private fun buildPatrolPayload(block: JSONObject.() -> Unit = {}): JSONObject =
-        JSONObject().apply {
-            put("source", PATROL_SOURCE)
-            put("timezoneId", PATROL_TIMEZONE)
-            block()
-        }
-
-    private fun requestPatrol(
-        method: String,
-        payload: JSONObject,
-    ): String {
-        val context = resolveSceneContext(ForestRpcScene.PATROL)
-        return RequestManager.requestString(
-            RpcEntity(
-                method,
-                JSONArray().put(payload).toString(),
-                headers = context.headers,
-            ),
-        )
-    }
 
     private fun queryTaskListRequest(
         fromAct: String,
@@ -264,16 +233,6 @@ object AntForestRpcCall {
                 JSONArray().put(jo).toString(),
                 headers = headers,
             ),
-        )
-    }
-
-    internal fun patrolPropConsumeContext(propGroup: String = ""): PropConsumeContext {
-        val sceneContext = resolveSceneContext(ForestRpcScene.PATROL)
-        return PropConsumeContext(
-            source = sceneContext.source,
-            version = VERSION,
-            headers = sceneContext.headers,
-            propGroup = propGroup.takeIf { it.isNotBlank() },
         )
     }
 
@@ -1262,16 +1221,6 @@ object AntForestRpcCall {
 
     @JvmStatic
     @Throws(JSONException::class)
-    fun queryAnimalPropList(): String {
-        val jo =
-            JSONObject().apply {
-                put("source", "chInfo_ch_appcenter__chsub_9patch")
-            }
-        return RequestManager.requestString("alipay.antforest.forest.h5.queryAnimalPropList", JSONArray().put(jo).toString())
-    }
-
-    @JvmStatic
-    @Throws(JSONException::class)
     internal fun consumeProp(
         propGroup: String,
         propId: String,
@@ -1356,112 +1305,6 @@ object AntForestRpcCall {
         RequestManager.requestString(
             "alipay.antforest.forest.h5.consumeProp",
             "[{\"propId\":\"$propId\",\"propType\":\"$propType\",\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"timezoneId\":\"Asia/Shanghai\",\"version\":\"$VERSION\"}]",
-        )
-
-    @JvmStatic
-    @Throws(JSONException::class)
-    fun queryUserPatrol(): String = requestPatrol("alipay.antforest.forest.h5.queryUserPatrol", buildPatrolPayload())
-
-    @JvmStatic
-    @Throws(JSONException::class)
-    fun queryMyPatrolRecord(): String = requestPatrol("alipay.antforest.forest.h5.queryMyPatrolRecord", buildPatrolPayload())
-
-    @JvmStatic
-    @Throws(JSONException::class)
-    fun switchUserPatrol(targetPatrolId: String): String {
-        val jo =
-            buildPatrolPayload {
-                put("targetPatrolId", targetPatrolId)
-            }
-        return requestPatrol("alipay.antforest.forest.h5.switchUserPatrol", jo)
-    }
-
-    @JvmStatic
-    fun patrolGo(
-        nodeIndex: Int,
-        patrolId: Int,
-    ): String =
-        requestPatrol(
-            "alipay.antforest.forest.h5.patrolGo",
-            buildPatrolPayload {
-                put("nodeIndex", nodeIndex)
-                put("patrolId", patrolId)
-                put("version", PATROL_GO_VERSION)
-            },
-        )
-
-    @JvmStatic
-    fun patrolKeepGoing(
-        nodeIndex: Int,
-        patrolId: Int,
-        eventType: String,
-    ): String {
-        val reactParam =
-            when (eventType) {
-                "video" -> JSONObject().put("viewed", "Y")
-                "chase" -> JSONObject().put("sendChat", "Y")
-                "quiz" -> JSONObject().put("answer", "correct")
-                else -> JSONObject()
-            }
-        return requestPatrol(
-            "alipay.antforest.forest.h5.patrolKeepGoing",
-            buildPatrolPayload {
-                put("nodeIndex", nodeIndex)
-                put("patrolId", patrolId)
-                put("reactParam", reactParam)
-                put("version", PATROL_GO_VERSION)
-            },
-        )
-    }
-
-    @JvmStatic
-    fun exchangePatrolChance(costStep: Int): String =
-        requestPatrol(
-            "alipay.antforest.forest.h5.exchangePatrolChance",
-            buildPatrolPayload {
-                put("costStep", costStep)
-            },
-        )
-
-    @JvmStatic
-    fun queryAnimalAndPiece(
-        animalId: Int,
-        patrolId: Int = 0,
-    ): String {
-        val jo =
-            buildPatrolPayload {
-                when {
-                    patrolId > 0 -> {
-                        put("patrolId", patrolId)
-                        put("withDetail", "N")
-                    }
-
-                    animalId != 0 -> {
-                        put("animalId", animalId)
-                        // 最新巡护合成链路要求按动物定向查询时省略 withDetail，
-                        // 服务端才会返回稳定的 propIdList。
-                    }
-
-                    else -> {
-                        put("withDetail", "N")
-                        put("withGift", true)
-                    }
-                }
-            }
-        return requestPatrol("alipay.antforest.forest.h5.queryAnimalAndPiece", jo)
-    }
-
-    @JvmStatic
-    fun combineAnimalPiece(
-        animalId: Int,
-        piecePropIds: String,
-    ): String =
-        requestPatrol(
-            "alipay.antforest.forest.h5.combineAnimalPiece",
-            buildPatrolPayload {
-                put("animalId", animalId)
-                put("piecePropIds", JSONArray(piecePropIds))
-            },
         )
 
     @JvmStatic
@@ -1673,17 +1516,6 @@ object AntForestRpcCall {
         RequestManager.requestString(
             "alipay.antforest.forest.h5.collectRobExpandEnergy",
             "[{\"propId\":\"$propId\",\"propType\":\"$propType\",\"source\":\"$source\"}]",
-        )
-
-    @JvmStatic
-    fun collectAnimalRobEnergy(
-        propId: String,
-        propType: String,
-        shortDay: String,
-    ): String =
-        RequestManager.requestString(
-            "alipay.antforest.forest.h5.collectAnimalRobEnergy",
-            "[{\"propId\":\"$propId\",\"propType\":\"$propType\",\"shortDay\":\"$shortDay\",\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"version\":\"$VERSION\"}]",
         )
 
     @JvmStatic

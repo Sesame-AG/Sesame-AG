@@ -57,6 +57,7 @@ class YouthPrivilege : ModelTask() {
     private var checkIn: BooleanModelField? = null
     private var forestProps: BooleanModelField? = null
     private var youthTasks: BooleanModelField? = null
+    private var multiDraws: BooleanModelField? = null
 
     override fun getName(): String = "青春特权"
 
@@ -81,6 +82,11 @@ class YouthPrivilege : ModelTask() {
                     .withDesc("按服务端下发状态完成青春特权任务并在每步后回查。")
                     .also { youthTasks = it },
             )
+            addField(
+                BooleanModelField("youthPrivilegeMultiDraws", "青春特权 | 青春豆十连抽", false)
+                    .withDesc("消耗服务端显示的青春豆成本执行十连抽，受余额和每周额度限制。")
+                    .also { multiDraws = it },
+            )
         }
 
     override suspend fun runSuspend() {
@@ -97,10 +103,78 @@ class YouthPrivilege : ModelTask() {
                 claimTrialPrize()
                 TaskFlowEngine(MonthlyPrivilegeAdapter(), roundSleepMs = 0L).run()
             }
+            if (multiDraws?.value == true) {
+                handleMultiDraws()
+            }
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "青春特权执行异常", t)
         } finally {
             Log.youthPrivilege("青春特权执行结束")
+        }
+    }
+
+    private fun handleMultiDraws() {
+        val store = io.github.aoguai.sesameag.util.UserDataStoreManager.getCurrentInstance() ?: return
+        val pendingKey = "youthMultiDraws:2026-09-30:pending"
+        if (io.github.aoguai.sesameag.hook.ApplicationHookConstants.isOffline()) return
+        val index = JSONObject(YouthPrivilegeRpcCall.queryLotteryIndex())
+        if (!isYouthSuccess(index)) {
+            Log.error(TAG, "青春豆十连抽首页查询失败:$index")
+            return
+        }
+        val status = index.optString("multiDrawsLotteryStatus")
+        if (status == "LIMIT") {
+            store.removePersistentFlag(pendingKey)
+            Log.youthPrivilege("青春豆十连抽额度已用完，当前余额#${index.optString("totalAmount")}")
+            return
+        }
+        if (status != "DRAW") {
+            Log.youthPrivilege("青春豆十连抽当前不可执行#status=$status raw=$index")
+            return
+        }
+        if (store.hasPersistentFlag(pendingKey)) {
+            Log.youthPrivilege("青春豆十连抽已有请求待确认，仅回查额度，暂不再次消费")
+            return
+        }
+        val cost = index.optString("multiDrawsCost").toBigDecimalOrNull()
+        val balance = index.optString("totalAmount").toBigDecimalOrNull()
+        if (cost == null || balance == null || cost.signum() <= 0 || balance.signum() < 0) {
+            Log.error(TAG, "青春豆十连抽缺少有效成本或余额:$index")
+            return
+        }
+        if (balance < cost) {
+            Log.youthPrivilege("青春豆十连抽余额不足#余额=$balance 成本=$cost")
+            return
+        }
+        if (io.github.aoguai.sesameag.hook.ApplicationHookConstants.isOffline()) return
+        // 付费动作没有抓到幂等键；请求结果不确定时保留待确认，避免再次扣除青春豆。
+        store.setPersistentFlag(pendingKey, -1L)
+        val result = try {
+            JSONObject(YouthPrivilegeRpcCall.multiDrawsLottery())
+        } catch (t: Throwable) {
+            Log.printStackTrace(TAG, "青春豆十连抽响应异常，保留回查", t)
+            null
+        }
+        if (result != null && isYouthSuccess(result)) {
+            val prizes = result.optJSONArray("lotteryPrizeInfoList")
+            if (prizes == null) Log.error(TAG, "青春豆十连抽响应缺少实际奖励列表:$result")
+            for (indexInPrizes in 0 until (prizes?.length() ?: 0)) {
+                val prize = prizes?.optJSONObject(indexInPrizes) ?: continue
+                Log.youthPrivilege("青春豆十连抽🎁[${prize.optString("title")}] ${prize.optString("subTitle")}")
+            }
+        } else if (result != null) {
+            Log.error(TAG, "青春豆十连抽失败，不立即重试:$result")
+        }
+        val confirmed = JSONObject(YouthPrivilegeRpcCall.queryLotteryIndex())
+        if (!isYouthSuccess(confirmed)) {
+            Log.error(TAG, "青春豆十连抽回查失败，保留待确认:$confirmed")
+            return
+        }
+        if (confirmed.optString("multiDrawsLotteryStatus") == "LIMIT") {
+            store.removePersistentFlag(pendingKey)
+            Log.youthPrivilege("青春豆十连抽额度已确认消耗，剩余余额#${confirmed.optString("totalAmount")}")
+        } else {
+            Log.error(TAG, "青春豆十连抽额度尚未确认变化，不重复抽取:$confirmed")
         }
     }
 

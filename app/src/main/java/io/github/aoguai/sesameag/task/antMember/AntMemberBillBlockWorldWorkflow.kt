@@ -97,6 +97,10 @@ private class BillBlockWorldWorkflow {
                         "放置免费贴纸或腾出空间" to performPlace(snapshot)
                     }
 
+                    findSafeMergePair(snapshot) != null -> {
+                        "合并画布贴纸" to performMerge(snapshot)
+                    }
+
                     chapter != null && !isRewarded(chapter) -> {
                         chapter.targetType to performChapterAction(snapshot, chapter)
                     }
@@ -112,7 +116,7 @@ private class BillBlockWorldWorkflow {
                             return
                         }
                         Status.setFlagToday(StatusFlags.FLAG_ANTMEMBER_BILL_BLOCK_WORLD_DONE)
-                        Log.member("账单拼贴世界✅当前章节已领奖，本轮免费贴纸处理结束；腾位回收的贴纸保留在仓库")
+                        Log.member("账单拼贴世界✅当前章节已领奖，免费贴纸及画布合并处理结束；腾位回收的贴纸保留在仓库")
                         return
                     }
                 }

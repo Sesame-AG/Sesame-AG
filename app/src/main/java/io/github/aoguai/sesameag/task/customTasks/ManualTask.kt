@@ -10,6 +10,7 @@ import io.github.aoguai.sesameag.task.antDodo.AntDodo
 import io.github.aoguai.sesameag.task.antFarm.AntFarm
 import io.github.aoguai.sesameag.task.antFishPond.AntFishPond
 import io.github.aoguai.sesameag.task.antForest.AntForest
+import io.github.aoguai.sesameag.task.antForestPatrol.AntForestPatrol
 import io.github.aoguai.sesameag.task.antMember.AntMember
 import io.github.aoguai.sesameag.task.antOcean.AntOcean
 import io.github.aoguai.sesameag.task.antOrchard.AntOrchard
@@ -135,6 +136,7 @@ object ManualTask {
 
                             // 任务模块整体手动触发：跳过自动调度门控，但保留任务生命周期管理
                             CustomTask.ANT_FOREST -> runModuleTask(AntForest::class.java)
+                            CustomTask.ANT_FOREST_PATROL -> runModuleTask(AntForestPatrol::class.java)
                             CustomTask.ANT_FARM -> runModuleTask(AntFarm::class.java)
                             CustomTask.ANT_OCEAN -> runModuleTask(AntOcean::class.java)
                             CustomTask.ANT_STALL -> runModuleTask(AntStall::class.java)

@@ -1226,6 +1226,20 @@ object AntFarmRpcCall {
         }
 
     @JvmStatic
+    fun finishLeyuanTask(sceneCode: String, taskType: String): String = requestString(
+        "com.alipay.antieptask.finishTaskantfarm",
+        JSONArray().put(
+            JSONObject()
+                .put("outBizNo", taskType + System.currentTimeMillis())
+                .put("requestType", "NORMAL")
+                .put("sceneCode", sceneCode)
+                .put("source", "antfarm")
+                .put("taskType", taskType)
+                .put("version", GAME_CENTER_VERSION),
+        ).toString(),
+    )
+
+    @JvmStatic
     fun receiveTaskAwardAntFarm(
         sceneCode: String,
         taskType: String,

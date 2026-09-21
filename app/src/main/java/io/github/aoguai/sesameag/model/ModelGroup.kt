@@ -16,6 +16,8 @@ enum class ModelGroup(
     BASE("BASE", "基础", "svg/group/base.svg"),
     /** 森林 */
     FOREST("FOREST", "森林", "svg/group/forest.svg"),
+    /** 保护地巡护 */
+    FOREST_PATROL("FOREST_PATROL", "保护地巡护", "svg/group/forest.svg"),
     /** 神奇物种 */
     DODO("DODO", "神奇物种", "svg/group/forest.svg"),
     /** 庄园 */

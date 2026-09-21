@@ -39,6 +39,7 @@ object CustomSettings {
     private fun getModuleList(): List<MapperEntity> {
         return listOf(
             SimpleEntity("antForest", "蚂蚁森林"),
+            SimpleEntity("antForestPatrol", "保护地巡护"),
             SimpleEntity("antFarm", "蚂蚁庄园"),
             SimpleEntity("antOcean", "海洋"),
             SimpleEntity("antOrchard", "农场"),
@@ -132,6 +133,7 @@ object CustomSettings {
     fun getModuleId(taskInfo: String?): String? {
         if (taskInfo == null) return null
         return when {
+            taskInfo == "保护地巡护" || taskInfo == "antForestPatrol" || taskInfo == "AntForestPatrol" -> "antForestPatrol"
             taskInfo.contains("合种") || taskInfo.contains("antCooperate") -> "antCooperate"
             taskInfo.contains("蚂蚁森林") || taskInfo.contains("antForest") -> "antForest"
             taskInfo.contains("蚂蚁庄园") || taskInfo.contains("antFarm") -> "antFarm"

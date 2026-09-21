@@ -55,6 +55,18 @@ object YouthPrivilegeRpcCall {
     ): String = taskAction("taskComplete", taskCode, taskSource, taskType)
 
 
+    fun queryLotteryIndex(): String = RequestManager.requestString(
+        "alipay.membertangram.biz.rpc.student.queryLotteryIndex",
+        JSONArray().put(JSONObject().put("sceneCode", "STUDENT_MONEY_CHECK_IN")).toString(),
+    )
+
+    fun multiDrawsLottery(): String = RequestManager.requestString(
+        "alipay.membertangram.biz.rpc.student.multiDrawsLottery",
+        JSONArray().put(JSONObject()
+            .put("sceneCode", "STUDENT_MONEY_CHECK_IN")
+            .put("systemVersion", android.os.Build.VERSION.RELEASE)).toString(),
+    )
+
     fun triggerFeedsPrize(): String = RequestManager.requestString(
         "alipay.membertangram.biz.rpc.student.triggerPointPrize",
         JSONArray().put(JSONObject().put("bizId", "DO_FEEDS_TASK").put("sceneCode", "STUDENT_MONEY_CHECK_IN")).toString(),

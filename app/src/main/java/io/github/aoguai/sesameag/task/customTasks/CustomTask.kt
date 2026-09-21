@@ -13,6 +13,7 @@ enum class CustomTask(val displayName: String, val isModule: Boolean = false) {
     FARM_USE_TOOL("使用庄园道具"),
     // 任务模块整体手动触发
     ANT_FOREST("蚂蚁森林", isModule = true),
+    ANT_FOREST_PATROL("保护地巡护", isModule = true),
     ANT_FARM("蚂蚁庄园", isModule = true),
     ANT_OCEAN("海洋", isModule = true),
     ANT_STALL("新村", isModule = true),

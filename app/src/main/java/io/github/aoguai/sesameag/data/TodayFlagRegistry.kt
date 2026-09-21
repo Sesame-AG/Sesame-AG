@@ -63,7 +63,7 @@ object TodayFlagRegistry {
         binding("AntForest", "ecoLife", "ecoLifeOption", patterns = listOf(prefix("EcoLife::"))),
         binding("AntForest", "vitalityExchange", "vitalityExchangeList", patterns = listOf(prefix(StatusFlags.FLAG_ANTFOREST_VITALITY_EXCHANGE_LIMIT_PREFIX))),
         binding("AntForest", "forestChouChouLe", patterns = listOf(prefix(StatusFlags.FLAG_ANTFOREST_CHOUCHOULE_COMPLETED_PREFIX))),
-        binding("AntForest", "userPatrol", patterns = listOf(exact(StatusFlags.FLAG_ANTFOREST_PATROL_CHANCE_EXCHANGE_LIMIT))),
+        binding("AntForestPatrol", "legacyPatrol", patterns = listOf(exact(StatusFlags.FLAG_ANTFOREST_PATROL_CHANCE_EXCHANGE_LIMIT))),
         binding("YouthPrivilege", "youthPrivilegeForestProps", patterns = listOf(exact(StatusFlags.FLAG_YOUTH_PRIVILEGE_FOREST_PROPS_DONE))),
         binding("YouthPrivilege", "youthPrivilegeCheckIn", patterns = listOf(exact(StatusFlags.FLAG_YOUTH_PRIVILEGE_CHECK_IN_DONE))),
         binding("YouthPrivilege", "youthPrivilegeTasks", patterns = listOf(exact(StatusFlags.FLAG_YOUTH_PRIVILEGE_TASKS_DONE))),

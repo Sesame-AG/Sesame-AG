@@ -1554,6 +1554,86 @@ class AntMember : ModelTask() {
             val taskId = data.optString("memberSignTaskId")
             val amount = data.optInt("memberSignAmount", 0)
             val afterSign = data.optLong("memberAssetBalanceAfterSign", -1L)
+            TaskFlowEngine(object : TaskFlowAdapter {
+                override val moduleName = "AntMember"
+                override val flowName = "会员游戏乐园浏览奖励"
+                private var firstQuery = true
+
+                override fun query(): JSONObject {
+                    val response = if (firstQuery) {
+                        firstQuery = false
+                        home.response
+                    } else {
+                        GameCenterPlayRpcCall.queryExternalGameCenter(scene, "", "", source, "").response
+                    }
+                    return response ?: JSONObject().put("success", false)
+                }
+
+                override fun isQuerySuccess(response: JSONObject): Boolean =
+                    GameCenterPlayRpcCall.isAccepted(response) && response.optJSONObject("data") != null
+
+                override fun extractItems(response: JSONObject): List<TaskFlowItem> {
+                    val browse = response.optJSONObject("data")?.optJSONObject("browseTaskVO") ?: return emptyList()
+                    return listOf(TaskFlowItem(
+                        id = browse.optString("taskId"),
+                        title = browse.optString("taskTitle", "游戏浏览奖励"),
+                        status = "TODO",
+                        raw = browse,
+                    ))
+                }
+
+                override fun mapPhase(item: TaskFlowItem) = TaskFlowPhase.READY_TO_COMPLETE
+
+                override fun complete(item: TaskFlowItem): TaskFlowActionResult {
+                    val browse = item.raw ?: return TaskFlowActionResult.failure(
+                        TaskRpcFailureType.NON_RETRYABLE_INVALID, message = "缺少浏览任务内容",
+                    )
+                    val sceneExtInfo = browse.optString("sceneExtInfo")
+                    val appId = browse.optString("appId")
+                    val gameSource = android.net.Uri.parse(browse.optString("gameJumpUrl"))
+                        .getQueryParameter("chInfo").orEmpty()
+                    val seconds = browse.optJSONObject("floatingBallVO")?.optInt("timeSeconds", 0) ?: 0
+                    if (item.id.isBlank() || sceneExtInfo.isBlank() || appId.isBlank() || gameSource.isBlank() || seconds <= 0) {
+                        return TaskFlowActionResult.failure(
+                            TaskRpcFailureType.NON_RETRYABLE_INVALID,
+                            message = "浏览任务缺少任务标识、场景签名或游戏时长参数",
+                        )
+                    }
+                    var remaining = seconds.toLong() + 1L
+                    var firstChunk = true
+                    while (remaining > 0) {
+                        val chunk = minOf(if (firstChunk) 31L else 30L, remaining).toInt()
+                        GlobalThreadPools.sleepCompat(chunk * 1000L)
+                        if (ApplicationHookConstants.isOffline()) return TaskFlowActionResult.defer(
+                            DeferredReason.STATE_CONFIRMATION, message = "离线，保留浏览任务待续", stopCurrentRound = true,
+                        )
+                        val duration = GameCenterPlayRpcCall.submitForAck(
+                            GameCenterPlayRpcCall.Contract(appId, chunk, gameSource),
+                        )
+                        if (!duration.accepted) return TaskFlowActionResult.failure(
+                            duration.failureType, message = "会员游戏浏览时长上报失败", raw = duration.raw,
+                        )
+                        remaining -= chunk
+                        firstChunk = false
+                    }
+                    val result = GameCenterPlayRpcCall.completeExternalBrowseTask(scene, sceneExtInfo)
+                    return if (result.accepted) {
+                        Log.member("会员游戏乐园🎮[${item.title}]已提交，刷新任务和积分")
+                        TaskFlowActionResult.success()
+                    } else {
+                        TaskFlowActionResult.failure(
+                            result.failureType, message = "会员游戏浏览奖励提交失败", raw = result.raw,
+                        )
+                    }
+                }
+
+                override fun onQueryFailed(response: JSONObject) {
+                    Log.error(TAG, "会员游戏乐园浏览任务查询失败:$response")
+                }
+
+                override fun logInfo(message: String) = Log.member(message)
+                override fun logError(message: String) = Log.error(TAG, message)
+            }).run()
             val points = JSONObject(AntMemberRpcCall.queryPointCertV2(1, 20))
             if (!ResChecker.checkRes(TAG, points)) return
             if (taskId.isNotBlank() && amount > 0 && afterSign >= 0 && points.optLong("pointBalance", -1L) >= afterSign) {

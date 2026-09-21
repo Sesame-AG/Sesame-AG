@@ -3,6 +3,7 @@ package io.github.aoguai.sesameag.util
 enum class LogModuleDomain(val displayName: String) {
     COMMON("通用"),
     FOREST("蚂蚁森林"),
+    FOREST_PATROL("保护地巡护"),
     ORCHARD("芭芭农场"),
     GOLDEN_BEAN("金豆夺宝"),
     FARM("蚂蚁庄园"),
@@ -100,6 +101,17 @@ enum class LogChannel(
         mirrorToRecord = true,
         visibleInViewer = true,
         logTag = "森林"
+    ),
+    FOREST_PATROL(
+        loggerName = "forest_patrol",
+        displayName = "保护地巡护日志",
+        moduleDomain = LogModuleDomain.FOREST_PATROL,
+        techKind = LogTechKind.BUSINESS,
+        description = "新旧巡护、动物能量与派遣、保护证书日志",
+        viewerGroup = LogViewerGroup.MODULES,
+        mirrorToRecord = true,
+        visibleInViewer = true,
+        logTag = "保护地巡护"
     ),
     ORCHARD(
         loggerName = "orchard",
@@ -324,6 +336,13 @@ object LogCatalog {
             "UserEnergyPatternManager",
             "Vitality",
             "WhackMole"
+        ),
+        LogChannel.FOREST_PATROL to setOf(
+            "AntForestPatrol",
+            "AntForestPatrolRpcCall",
+            "LegacyPatrolWorkflow",
+            "MonopolyPatrolWorkflow",
+            "保护地巡护"
         ),
         LogChannel.ORCHARD to setOf(
             "AntOrchard",

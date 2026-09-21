@@ -1046,7 +1046,7 @@ class AntSesameCredit : ModelTask() {
             if (item.type == "AD_TASK") {
                 return handleSesameAdTaskResult(task, item.title, "芝麻信用💳", moduleName)
             }
-            return completeSesameLifeRecord(
+            val result = completeSesameLifeRecord(
                 task = task,
                 taskTitle = item.title,
                 spec = SesameLifeRecordCompletionSpec(
@@ -1058,6 +1058,20 @@ class AntSesameCredit : ModelTask() {
                 ),
                 actionDetail = sesameCreditActionDetail(item, "finish"),
             )
+            // 重复校验只限制当前记录，其他任务和已受理动作仍需完成批量回查。
+            return if (!result.success &&
+                result.failureType == TaskRpcFailureType.BUSINESS_LIMIT &&
+                result.code == "OP_REPEAT_CHECK" &&
+                !isSesameTaskFlowInterrupted()
+            ) {
+                result.copy(
+                    stopCurrentRound = false,
+                    continueCurrentRoundOnFailure = true,
+                    refreshAfterAction = true,
+                )
+            } else {
+                result
+            }
         }
 
         override fun afterSuccess(
@@ -3178,6 +3192,7 @@ class AntSesameCredit : ModelTask() {
         override val moduleName: String = sesameCreditTaskBlacklistModule
         override val flowName: String = "芝麻树任务"
 
+        private val sourceResults = JSONObject()
         private val handledAdBizIds = mutableSetOf<String>()
         private val handledReceiveTaskKeys = mutableSetOf<String>()
         private val pendingSentTaskRefs = linkedMapOf<String, ZhimaTreeTaskRef>()
@@ -3195,23 +3210,18 @@ class AntSesameCredit : ModelTask() {
                 pendingSentTaskRefs.isEmpty()
 
         override fun query(): JSONObject {
-            val result = JSONObject()
-            var hasConfirmedSource = false
+            val result = sourceResults
 
-            try {
+            if (!result.has("homeRaw") || result.optBoolean("homeConfirmed")) try {
+                result.put("homeRaw", "").put("homeConfirmed", false).remove("homeQueryResult")
                 val homeRes = AntSesameCreditRpcCall.zhimaTreeHomePage()
                 result.put("homeRaw", homeRes ?: "")
                 if (!homeRes.isNullOrBlank()) {
                     val homeJson = JSONObject(homeRes)
-                    if (ResChecker.checkRes(TAG, homeJson)) {
-                        hasConfirmedSource = true
+                    val homeData = homeJson.optJSONObject("extInfo")?.optJSONObject("zhimaTreeHomePageQueryResult")
+                    if (ResChecker.checkRes(TAG, homeJson) && homeData != null) {
                         result.put("homeConfirmed", true)
-                        result.put(
-                            "homeQueryResult",
-                            homeJson
-                                .optJSONObject("extInfo")
-                                ?.optJSONObject("zhimaTreeHomePageQueryResult") ?: JSONObject(),
-                        )
+                        result.put("homeQueryResult", homeData)
                     } else {
                         result.put("homeError", homeJson)
                     }
@@ -3220,20 +3230,16 @@ class AntSesameCredit : ModelTask() {
                 result.put("homeException", t.message.orEmpty())
             }
 
-            try {
+            if (!result.has("rentRaw") || result.optBoolean("rentConfirmed")) try {
+                result.put("rentRaw", "").put("rentConfirmed", false).remove("rentTaskDetailList")
                 val rentRes = AntSesameCreditRpcCall.queryRentGreenTaskList()
                 result.put("rentRaw", rentRes ?: "")
                 if (!rentRes.isNullOrBlank()) {
                     val rentJson = JSONObject(rentRes)
-                    if (ResChecker.checkRes(TAG, rentJson)) {
-                        hasConfirmedSource = true
+                    val rentData = rentJson.optJSONObject("extInfo")?.optJSONObject("taskDetailList")
+                    if (ResChecker.checkRes(TAG, rentJson) && rentData != null) {
                         result.put("rentConfirmed", true)
-                        result.put(
-                            "rentTaskDetailList",
-                            rentJson
-                                .optJSONObject("extInfo")
-                                ?.optJSONObject("taskDetailList") ?: JSONObject(),
-                        )
+                        result.put("rentTaskDetailList", rentData)
                     } else {
                         result.put("rentError", rentJson)
                     }
@@ -3242,12 +3248,20 @@ class AntSesameCredit : ModelTask() {
                 result.put("rentException", t.message.orEmpty())
             }
 
-            result.put("success", hasConfirmedSource)
-            lastQuerySucceeded = hasConfirmedSource
+            val homeConfirmed = result.optBoolean("homeConfirmed")
+            val rentConfirmed = result.optBoolean("rentConfirmed")
+            result.put("success", homeConfirmed || rentConfirmed)
+            lastQuerySucceeded = homeConfirmed && rentConfirmed
+            if (!lastQuerySucceeded) {
+                Log.error(TAG, "芝麻树🌳[部分任务来源未确认，保留有效来源执行] homeConfirmed=$homeConfirmed rentConfirmed=$rentConfirmed raw=$result")
+            }
             return result
         }
 
         override fun isQuerySuccess(response: JSONObject): Boolean = response.optBoolean("success", false)
+
+        override fun isQueryComplete(response: JSONObject): Boolean =
+            response.optBoolean("homeConfirmed") && response.optBoolean("rentConfirmed")
 
         override fun extractItems(response: JSONObject): List<TaskFlowItem> {
             val items = mutableListOf<TaskFlowItem>()
@@ -3292,7 +3306,7 @@ class AntSesameCredit : ModelTask() {
             }
 
             removeConfirmedPendingTasks(currentTaskRefs)
-            if (response.optBoolean("success", false)) {
+            if (isQueryComplete(response)) {
                 appendPendingReceiveFallbacks(items, currentTaskRefs, seenTaskKeys)
             }
             refreshZhimaTreeSnapshot(items)

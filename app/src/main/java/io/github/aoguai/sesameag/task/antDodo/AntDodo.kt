@@ -742,7 +742,6 @@ class AntDodo : ModelTask() {
                     }
                     var hasHistoryProp = false
                     var hasFriendProp = false
-                    var usedEnabledProp = false
                     for (i in 0 until propList.length()) {
                         val prop = propList.getJSONObject(i)
                         val propType = prop.optString("propType")
@@ -799,14 +798,11 @@ class AntDodo : ModelTask() {
                         } else {
                             Log.dodo("使用道具🎭[$propName]")
                         }
-                        usedEnabledProp = true
                         logPropRefreshState(propType, propName, consumeTarget, animal)
                         GlobalThreadPools.sleepCompat(300)
-                        if (holdsNum > 1) {
-                            continue@th
-                        }
+                        continue@th
                     }
-                    if (!usedEnabledProp && replenishDodoPropIfMissing(
+                    if (replenishDodoPropIfMissing(
                             allowReplenish = allowReplenish,
                             historyMissing = !hasHistoryProp,
                             friendMissing = !hasFriendProp

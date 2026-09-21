@@ -112,7 +112,7 @@ object ModelFieldTodayStateResolver {
                 )
             }
 
-            "AntForest.userPatrol" -> {
+            "AntForestPatrol.legacyPatrol" -> {
                 flag(StatusFlags.FLAG_ANTFOREST_PATROL_CHANCE_EXCHANGE_LIMIT, "今日保护地巡护机会兑换已达上限")
             }
 

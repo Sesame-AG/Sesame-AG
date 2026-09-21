@@ -693,6 +693,7 @@ internal object ApplicationBroadcastDispatcher {
 
                         // 任务模块整体手动触发，无需额外参数
                         CustomTask.ANT_FOREST,
+                        CustomTask.ANT_FOREST_PATROL,
                         CustomTask.ANT_FARM,
                         CustomTask.ANT_OCEAN,
                         CustomTask.ANT_STALL,

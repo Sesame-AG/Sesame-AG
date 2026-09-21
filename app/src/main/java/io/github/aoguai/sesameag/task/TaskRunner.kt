@@ -14,6 +14,7 @@ import io.github.aoguai.sesameag.model.Model
 import io.github.aoguai.sesameag.task.antFarm.AntFarm
 import io.github.aoguai.sesameag.task.antFishPond.AntFishPond
 import io.github.aoguai.sesameag.task.antForest.AntForest
+import io.github.aoguai.sesameag.task.antForestPatrol.AntForestPatrol
 import io.github.aoguai.sesameag.task.antMember.AntMember
 import io.github.aoguai.sesameag.task.antOcean.AntOcean
 import io.github.aoguai.sesameag.task.antOrchard.AntOrchard
@@ -311,6 +312,11 @@ class CoroutineTaskRunner(allModels: List<Model>) {
 
             // 3) 森林承接青春特权已确认的道具状态。
             takeBatch { it is AntForest }
+                .takeIf { it.isNotEmpty() }
+                ?.let(::add)
+
+            // 巡护独立于森林启用状态，承接森林完成后的实际能量和动物状态。
+            takeBatch { it is AntForestPatrol }
                 .takeIf { it.isNotEmpty() }
                 ?.let(::add)
 

@@ -79,8 +79,8 @@ class AntFishPond : ModelTask() {
             lastLoggedFishProgress = null
             rewardExchangeStoppedForCurrentRun = false
 
-            val indexJson = queryIndex(logProgress = true)
-            if (indexJson != null && exchangeRewardAndReloadIndex(indexJson, "首页") == null) {
+            val indexJson = queryIndex(logProgress = true) ?: return
+            if (exchangeRewardAndReloadIndex(indexJson, "首页") == null) {
                 return
             }
 
@@ -108,8 +108,8 @@ class AntFishPond : ModelTask() {
                     while (true) {
                         handleSubplots()
                         latestTaskListDone = handleTaskList(allowMarkDone = false)
-                        val followUpIndex = queryIndex()
-                        if (followUpIndex == null || extractRodCount(followUpIndex) <= 0) {
+                        val followUpIndex = queryIndex() ?: return
+                        if (extractRodCount(followUpIndex) <= 0) {
                             break
                         }
                         val followUpFishChanged = runAutoFish()
@@ -148,14 +148,14 @@ class AntFishPond : ModelTask() {
         }
         val jo = JSONObject(response)
         if (!isRpcSuccess(jo)) {
-            Log.fishpond("福气鱼池首页查询失败：${formatFailure(jo)}")
+            Log.error(TAG, "福气鱼池首页查询失败：${formatFailure(jo)} raw=$jo")
             return null
         }
 
         val payload = payloadOf(jo)
         if (!payload.optBoolean("open", true)) {
-            Log.fishpond("福气鱼池未开通，本轮跳过")
-            return jo
+            Log.fishpond("福气鱼池入口未开放，本轮停止")
+            return null
         }
         if (logProgress) {
             logFishProgress(jo)
@@ -874,7 +874,7 @@ class AntFishPond : ModelTask() {
         }
         Status.removeFlag(StatusFlags.FLAG_ANTFISHPOND_RISK_TOKEN_MISSING)
 
-        var indexJson = queryIndex(logProgress = true) ?: return false
+        var indexJson = queryIndex(logProgress = true) ?: return null
         indexJson = exchangeRewardAndReloadIndex(indexJson, "自动钓鱼首页") ?: return null
         if (isFishRoundTargetReached(indexJson)) {
             Log.fishpond("当前鱼池轮次已达目标，跳过自动钓鱼")
@@ -953,14 +953,10 @@ class AntFishPond : ModelTask() {
                 continue
             }
 
-            val syncJson = syncAfterFish()
-            if (syncJson != null) {
-                indexJson = exchangeRewardAndReloadIndex(syncJson, "钓鱼后刷新") ?: return null
-                rodCount = extractRodCount(indexJson)
-                logFishProgress(indexJson)
-            } else {
-                rodCount = extractRodCount(angleJson).takeIf { it >= 0 } ?: (rodCount - 1)
-            }
+            val syncJson = syncAfterFish() ?: return null
+            indexJson = exchangeRewardAndReloadIndex(syncJson, "钓鱼后刷新") ?: return null
+            rodCount = extractRodCount(indexJson)
+            logFishProgress(indexJson)
 
             GlobalThreadPools.sleepCompat(SHORT_INTERVAL_MS)
         }
@@ -1000,7 +996,11 @@ class AntFishPond : ModelTask() {
         }
         val jo = JSONObject(response)
         if (!isRpcSuccess(jo)) {
-            Log.fishpond("钓鱼后刷新失败：${formatFailure(jo)}")
+            Log.error(TAG, "钓鱼后刷新失败：${formatFailure(jo)} raw=$jo")
+            return null
+        }
+        if (!payloadOf(jo).optBoolean("open", true)) {
+            Log.fishpond("福气鱼池入口未开放，本轮停止")
             return null
         }
         return jo
@@ -1071,7 +1071,7 @@ class AntFishPond : ModelTask() {
         if (exchange.optBoolean("success", true) == false && exchange.optString("resultCode") == "C15") {
             rewardExchangeStoppedForCurrentRun = true
             Log.error(TAG, "鱼池红包兑换被服务端拒绝，本轮停止兑换并保留后续流程：${formatFailure(exchange)} source=$sourceLabel rpc=fishpondExchangeReward raw=$exchange")
-            return queryIndex(logProgress = true) ?: jo
+            return queryIndex(logProgress = true)
         }
         val failureType = classifyFishPondTaskFailure(exchange)
         when {

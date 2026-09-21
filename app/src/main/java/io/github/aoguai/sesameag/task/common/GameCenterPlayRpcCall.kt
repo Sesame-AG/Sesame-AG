@@ -983,6 +983,11 @@ object GameCenterPlayRpcCall {
             .put("unityDeviceLevel", "high"),
     )
 
+    fun completeExternalBrowseTask(sceneId: String, sceneExtInfo: String): FloatingBallAck = requestAck(
+        "com.alipay.gamecenteruprod.biz.rpc.external.gamecenter.completeBrowseTask",
+        JSONObject().put("sceneId", sceneId).put("sceneExtInfo", sceneExtInfo),
+    )
+
     fun queryExternalRecommendGames(sceneId: String, source: String): FloatingBallAck = requestAck(
         "com.alipay.gamecenteruprod.biz.rpc.external.gamecenter.queryRecommendGames",
         JSONObject()
@@ -993,6 +998,55 @@ object GameCenterPlayRpcCall {
             .put("topGameId", "")
             .put("deviceLevel", "high")
             .put("unityDeviceLevel", "high"),
+    )
+
+    fun queryGameCenterHome(source: String, trafficDriverId: String): FloatingBallAck = requestAck(
+        "com.alipay.gamecenterhome.biz.rpc.queryHomePage",
+        JSONObject()
+            .put("source", source)
+            .put("sourceTab", "index")
+            .put("trafficDriverId", trafficDriverId),
+    )
+
+    fun consultGameFloatingBall(
+        gameId: String,
+        gameModuleId: String,
+        source: String,
+        trafficDriverId: String,
+    ): FloatingBallConsultAck {
+        val raw = requestRaw(
+            "com.alipay.gamecenteruprod.biz.rpc.floatingball.consult",
+            JSONObject()
+                .put("gameId", gameId)
+                .put("gameModuleId", gameModuleId)
+                .put("source", source)
+                .put("trafficDriverId", trafficDriverId),
+        )
+        val response = runCatching { JSONObject(raw) }.getOrNull()
+        return FloatingBallConsultAck(
+            raw = raw,
+            response = response,
+            timeSeconds = response?.let(::extractTimeSeconds)?.takeIf { it > 0 },
+            accepted = response?.let(::isAccepted) == true,
+            failureType = classifyResponse(raw, response),
+        )
+    }
+
+    fun completeGameFloatingBall(
+        gameId: String,
+        gameModuleId: String,
+        source: String,
+        trafficDriverId: String,
+        floatingBallTypeList: JSONArray,
+    ): FloatingBallAck = requestAck(
+        "com.alipay.gamecenteruprod.biz.rpc.floatingball.complete",
+        JSONObject()
+            .put("gameId", gameId)
+            .put("gameModuleId", gameModuleId)
+            .put("source", source)
+            .put("oriChInfo", source)
+            .put("trafficDriverId", trafficDriverId)
+            .put("floatingBallTypeList", floatingBallTypeList),
     )
 
     fun consultFloatingBall(
@@ -1092,7 +1146,7 @@ object GameCenterPlayRpcCall {
             val response = JSONObject(raw)
             when {
                 response.optBoolean("success") || response.optBoolean("isSuccess") -> TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW
-                response.optString("resultCode") == "400000040" -> TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE
+                response.optString("resultCode") == "400000040" -> TaskRpcFailureType.NON_RETRYABLE_INVALID
                 response.optBoolean("retryable") || response.optBoolean("retriable") -> TaskRpcFailureType.RETRYABLE_RPC
                 response.optString("resultCode") == "OP_REPEAT_CHECK" -> TaskRpcFailureType.RETRYABLE_RPC
                 else -> TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW
