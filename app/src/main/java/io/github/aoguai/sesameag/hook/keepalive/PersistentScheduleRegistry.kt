@@ -247,8 +247,31 @@ object PersistentScheduleRegistry {
         source: String,
         now: Long = System.currentTimeMillis(),
     ): Int {
+        // Alarm delivery may race the other process's file watcher. Refresh under the
+        // registry lock, retire expired rows, then route outside the lock (Binder can re-enter).
+        val snapshot = withRegistryLock {
+            val schedules = loadMutable()
+            var expired = 0
+            val retained = schedules.map { schedule ->
+                if (schedule.state == PersistentScheduleState.SCHEDULED &&
+                    schedule.triggerAtMs <= now &&
+                    now - schedule.triggerAtMs > schedule.toleranceMs.coerceAtLeast(0L)
+                ) {
+                    expired++
+                    SystemWakeScheduler.cancelLaunchConfirmationTimeout(schedule.id)
+                    schedule.withScheduleState(PersistentScheduleState.EXPIRED, now)
+                } else {
+                    schedule
+                }
+            }
+            if (expired > 0) {
+                save(retained)
+                Log.record(TAG, "批量唤醒清理过期任务[count=$expired source=$source]")
+            }
+            retained
+        }
         val due =
-            list()
+            snapshot
                 .asSequence()
                 .filter { schedule ->
                     schedule.state == PersistentScheduleState.SCHEDULED &&
@@ -264,6 +287,12 @@ object PersistentScheduleRegistry {
                     }.thenBy { it.triggerAtMs },
                 ).toList()
         due.forEach { schedule -> ScheduledTaskRouter.fire(context, schedule, source) }
+        if (due.isEmpty()) {
+            // The one-shot alarm has been consumed. No routed task will rearm it.
+            withRegistryLock {
+                SystemWakeScheduler.schedule(context, PersistentSchedule(), silent = true)
+            }
+        }
         return due.size
     }
 

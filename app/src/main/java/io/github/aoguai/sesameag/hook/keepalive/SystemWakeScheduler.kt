@@ -78,7 +78,11 @@ object SystemWakeScheduler {
     }
 
     private fun selectPlan(schedules: List<PersistentSchedule>): AlarmPlan? {
-        val scheduled = schedules.filter { it.state == PersistentScheduleState.SCHEDULED }
+        val now = System.currentTimeMillis()
+        val scheduled = schedules.filter {
+            it.state == PersistentScheduleState.SCHEDULED &&
+                (it.triggerAtMs > now || now - it.triggerAtMs <= it.toleranceMs.coerceAtLeast(0L))
+        }
         if (scheduled.isEmpty()) return null
         val strict =
             scheduled
@@ -87,7 +91,7 @@ object SystemWakeScheduler {
         val primary = strict ?: scheduled.minByOrNull { it.triggerAtMs } ?: return null
         return AlarmPlan(
             primary = primary,
-            triggerAtMs = primary.triggerAtMs.coerceAtLeast(System.currentTimeMillis()),
+            triggerAtMs = primary.triggerAtMs.coerceAtLeast(now),
             precisionPolicy = primary.effectivePrecisionPolicy(),
         )
     }

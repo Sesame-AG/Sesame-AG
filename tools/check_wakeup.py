@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import subprocess
 import time
+import uuid
 
 HOST = 'com.eg.android.AlipayGphone'
 MODULE = 'io.github.aoguai.sesameag'
@@ -25,7 +26,9 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--kill-host', action='store_true')
     parser.add_argument('--skip-farm-tasks', action='store_true', help='Temporarily isolate the farm daily-task RPC; restore afterward')
+    parser.add_argument('--expire-first', action='store_true', help='With --kill-host, expire the armed task and require the following alarm to recover')
     args = parser.parse_args()
+    assert not args.expire_first or args.kill_host, '--expire-first requires --kill-host'
     args.output.mkdir(parents=True, exist_ok=True)
     paths = adb('shell', 'ls', f'{ROOT}/config/*/config_v2.json').splitlines()
     assert len(paths) == 1, 'Select one active account before testing'
@@ -70,9 +73,36 @@ def main():
         if args.kill_host:
             adb('shell', 'am', 'force-stop', HOST)
             assert subprocess.run(['adb', 'shell', 'pidof', HOST], capture_output=True).returncode == 1
+        if args.expire_first:
+            # Host is stopped; keep the already-armed one-shot alarm, but make its
+            # row expired. Its empty batch must arm this later, still-valid wakeup.
+            store_remote = f'{ROOT}/config/DataStore.json'
+            before = adb('shell', 'cat', store_remote)
+            store = json.loads(before)
+            old = next(x for x in store['persistentSchedules'] if x['id'] == schedule_id)
+            following = dict(old, id=str(uuid.uuid4()), triggerAtMs=(trigger + 70) * 1000,
+                             dedupeKey='expiry-regression:' + schedule_id)
+            old['triggerAtMs'] = (trigger - 1200) * 1000
+            store['persistentSchedules'].append(following)
+            local = args.output / 'expiry-store.json'
+            local.write_text(json.dumps(store, ensure_ascii=False, indent=2))
+            (args.output / 'store-before-injection.json').write_text(before)
+            assert adb('shell', 'cat', store_remote) == before, 'Registry changed during injection'
+            adb('push', str(local), store_remote + '.expiry-test')
+            adb('shell', 'mv', store_remote + '.expiry-test', store_remote)
+            schedule_id = following['id']
+            (args.output / 'following-schedule.json').write_text(json.dumps(following, indent=2))
+        expired_retired = False
         deadline = time.monotonic() + 600
         while time.monotonic() < deadline:
             time.sleep(5)
+            if args.expire_first and not expired_retired:
+                snapshot = json.loads(adb('shell', 'cat', store_remote))
+                expired_retired = any(x['id'] == old['id'] and x['state'] == 'EXPIRED'
+                                      for x in snapshot['persistentSchedules'])
+                if expired_retired:
+                    (args.output / 'expired-store.json').write_text(json.dumps(snapshot, indent=2))
+                    (args.output / 'rearmed-alarm.txt').write_text(adb('shell', 'dumpsys', 'alarm'))
             log = adb('shell', 'cat', f'{ROOT}/log/record.log')
             (args.output / 'record.log').write_text(log)
             if log.rfind('offline entered') > log.rfind('本次执行触发'):
@@ -88,6 +118,10 @@ def main():
                     assert 'ALARM_WAKEUP' in '\n'.join(matches), 'Wrong execution trigger'
                 (args.output / 'power.txt').write_text(adb('shell', 'dumpsys', 'power'))
                 (args.output / 'runtime.log').write_text(adb('shell', 'cat', f'{ROOT}/log/runtime.log'))
+                if args.expire_first:
+                    module_log = adb('shell', 'cat', f'{ROOT}/log/record-secondary.log')
+                    (args.output / 'module-record.log').write_text(module_log)
+                    assert expired_retired, 'No expired-task retirement evidence'
                 completed = True
                 print('PASS: scheduled task entered execution', flush=True)
                 return
