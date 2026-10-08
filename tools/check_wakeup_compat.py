@@ -4,12 +4,13 @@ Android constants are stubbed; device recovery is checked by check_wakeup.py.
 """
 from pathlib import Path
 import os
+import shutil
 import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / 'app/src/main/java/io/github/aoguai/sesameag/hook/keepalive'
-CACHE = Path.home() / '.gradle/caches/modules-2/files-2.1'
+CACHE = Path(os.environ.get('GRADLE_USER_HOME', Path.home() / '.gradle')) / 'caches/modules-2/files-2.1'
 
 scheduler = (SRC / 'SystemWakeScheduler.kt').read_text()
 command = 'val command = listOf(' + scheduler.split('val command = listOf(', 1)[1].split('return try {', 1)[0]
@@ -31,7 +32,9 @@ fun main() {
  println("PASS: Shizuku argv and unsafe-input rejection")
 }
 """
-compiler = sorted(CACHE.glob('org.jetbrains.kotlin/kotlin-compiler-embeddable/*/*/*.jar'))[-1]
+compilers = sorted(CACHE.glob('org.jetbrains.kotlin/kotlin-compiler-embeddable/*/*/*.jar'))
+assert compilers, 'Build the project once to populate the Gradle Kotlin compiler cache'
+compiler = compilers[-1]
 jars = [compiler]
 for group, artifact in [('org.jetbrains.kotlin','kotlin-stdlib'), ('org.jetbrains.kotlin','kotlin-script-runtime'),
                         ('org.jetbrains.kotlin','kotlin-reflect'), ('org.jetbrains.intellij.deps','trove4j'),
@@ -40,7 +43,8 @@ for group, artifact in [('org.jetbrains.kotlin','kotlin-stdlib'), ('org.jetbrain
     if matches:
         jars.append(matches[-1])
 classpath = os.pathsep.join(map(str, jars))
-java = str(Path(os.environ.get('JAVA_HOME', '/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home')) / 'bin/java')
+java = str(Path(os.environ['JAVA_HOME']) / 'bin/java') if os.environ.get('JAVA_HOME') else shutil.which('java')
+assert java, 'Set JAVA_HOME to JDK 17 or put java on PATH'
 with tempfile.TemporaryDirectory() as directory:
     source = Path(directory) / 'Check.kt'
     source.write_text(code)

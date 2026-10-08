@@ -4,7 +4,6 @@ Requires the module, framework and executor to be active. Restores the wake-time
 Usage: python3 tools/check_wakeup.py --output /absolute/evidence [--kill-host]
 """
 import argparse
-import datetime
 import json
 from pathlib import Path
 import subprocess
@@ -29,7 +28,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--kill-host', action='store_true')
-    parser.add_argument('--skip-farm-tasks', action='store_true', help='Temporarily isolate the farm daily-task RPC; restore afterward')
     parser.add_argument('--expire-first', action='store_true', help='With --kill-host, expire the armed task and require the following alarm to recover')
     args = parser.parse_args()
     assert not args.expire_first or args.kill_host, '--expire-first requires --kill-host'
@@ -49,16 +47,12 @@ def main():
     original = read()
     (args.output / 'original-config.json').write_text(json.dumps(original, ensure_ascii=False, indent=2))
     original_value = field(original)['value']
-    original_farm = original['modelFieldsMap']['AntFarm']['doFarmTask']['value']
-    if args.skip_farm_tasks:
-        original['modelFieldsMap']['AntFarm']['doFarmTask']['value'] = False
     trigger = int(adb('shell', 'date', '+%s').strip()) + 100
-    token = datetime.datetime.fromtimestamp(trigger).strftime('%H%M%S')
+    token = adb('shell', 'date', '-d', '@' + str(trigger), '+%H%M%S').strip()
     if token.endswith('00'):
         token = token[:4]
     field(original)['value'] = original_value + ',' + token
     (args.output / 'meta.json').write_text(json.dumps({'token': token, 'trigger': trigger, 'kill': args.kill_host}))
-    completed = False
     try:
         write(original)
         time.sleep(12)
@@ -128,21 +122,17 @@ def main():
                     module_log = adb('shell', 'cat', f'{ROOT}/log/record-secondary.log')
                     (args.output / 'module-record.log').write_text(module_log)
                     assert expired_retired, 'No expired-task retirement evidence'
-                completed = True
                 print('PASS: scheduled task entered execution', flush=True)
                 return
         raise AssertionError('No scheduled task execution before deadline')
     finally:
         current = read()
         field(current)['value'] = original_value
-        if args.skip_farm_tasks:
-            current['modelFieldsMap']['AntFarm']['doFarmTask']['value'] = original_farm
         log = adb('shell', 'cat', f'{ROOT}/log/record.log')
         paused = log.rfind('offline entered') > log.rfind('本次执行触发')
-        write(current, reload=not completed and not paused)
+        write(current, reload=not paused)
         restored = read()
         assert field(restored)['value'] == original_value
-        assert not args.skip_farm_tasks or restored['modelFieldsMap']['AntFarm']['doFarmTask']['value'] == original_farm
         print('Restored original wake times', flush=True)
 
 if __name__ == '__main__':
