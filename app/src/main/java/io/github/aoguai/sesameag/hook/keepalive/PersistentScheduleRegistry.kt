@@ -211,6 +211,9 @@ object PersistentScheduleRegistry {
         return loadMutable().firstOrNull { it.id == id }
     }
 
+    // Receiver delivery must not depend on a delayed cross-process FileObserver.
+    fun listFresh(): List<PersistentSchedule> = withRegistryLock { list() }
+
     fun list(): List<PersistentSchedule> {
         if (!ensureStorage()) return emptyList()
         return loadMutable().toList()
@@ -244,7 +247,7 @@ object PersistentScheduleRegistry {
         now: Long = System.currentTimeMillis(),
     ): Int {
         val due =
-            list()
+            listFresh()
                 .asSequence()
                 .filter { schedule ->
                     schedule.state == PersistentScheduleState.SCHEDULED &&

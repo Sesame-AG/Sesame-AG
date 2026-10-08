@@ -175,7 +175,7 @@ class CommandService : Service() {
             listeners.unregister(listener)
         }
 
-        override fun getPersistentScheduleAlarmIntent(lane: Int): PendingIntent {
+        override fun schedulePersistentAlarm(lane: Int, triggerAtMs: Long, windowMs: Long, userExact: Boolean): Boolean {
             val callerUid = Binder.getCallingUid()
             @Suppress("DEPRECATION")
             val targetUid = runCatching { packageManager.getPackageUid(General.PACKAGE_NAME, 0) }.getOrNull()
@@ -185,7 +185,7 @@ class CommandService : Service() {
             require(lane == SystemWakeScheduler.LANE_EXACT || lane == SystemWakeScheduler.LANE_FLEXIBLE)
             val identity = Binder.clearCallingIdentity()
             return try {
-                SystemWakeScheduler.createAlarmIntent(this@CommandService, lane)
+                SystemWakeScheduler.scheduleLane(this@CommandService, lane, triggerAtMs, windowMs, userExact)
             } finally {
                 Binder.restoreCallingIdentity(identity)
             }

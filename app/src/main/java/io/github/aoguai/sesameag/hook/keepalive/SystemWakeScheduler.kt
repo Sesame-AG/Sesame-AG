@@ -73,39 +73,22 @@ object SystemWakeScheduler {
             val snapshot = PersistentScheduleRegistry.list()
             val scheduled = snapshot.filter { it.state == PersistentScheduleState.SCHEDULED }
             val localScheduled = updateLocalTimer(appContext, scheduled)
-            val alarmManager = appContext.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
-            var systemScheduled = alarmManager != null
+            var systemScheduled = true
             for (lane in listOf(LANE_EXACT, LANE_FLEXIBLE)) {
                 val primary = scheduled.filter { laneFor(it) == lane }.minByOrNull { it.triggerAtMs }
-                val token = if (appContext.packageName == General.MODULE_PACKAGE_NAME) {
-                    runCatching { createAlarmIntent(appContext, lane) }.getOrNull()
-                } else {
-                    CommandUtil.getPersistentScheduleAlarmIntent(lane)
-                }
-                if (alarmManager == null || token == null) {
-                    systemScheduled = false
-                    continue
-                }
+                val triggerAt = primary?.triggerAtMs?.coerceAtLeast(System.currentTimeMillis()) ?: 0L
+                val window = primary?.toleranceMs?.coerceAtLeast(MIN_FLEXIBLE_WINDOW_MS) ?: MIN_FLEXIBLE_WINDOW_MS
+                val userExact = primary?.effectivePrecisionPolicy() == PersistentSchedulePrecisionPolicy.USER_EXACT
                 try {
-                    if (primary == null) {
-                        alarmManager.cancel(token)
-                        continue
-                    }
-                    val triggerAt = primary.triggerAtMs.coerceAtLeast(System.currentTimeMillis())
-                    if (lane == LANE_EXACT) {
-                        if (PermissionUtil.checkAlarmPermissions(appContext)) {
-                            alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, token)
-                        } else {
-                            alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, token)
-                            Log.record(TAG, "精确闹钟权限不可用，已降级投递[${primary.name}]")
-                        }
+                    // Register in the module UID: stopping Alipay must not cancel its recovery alarm.
+                    // Pass values only; the Binder service must not reenter the registry or planner lock.
+                    val armed = if (appContext.packageName == General.MODULE_PACKAGE_NAME) {
+                        scheduleLane(appContext, lane, triggerAt, window, userExact)
                     } else {
-                        alarmManager.setWindow(
-                            AlarmManager.RTC_WAKEUP, triggerAt,
-                            primary.toleranceMs.coerceAtLeast(MIN_FLEXIBLE_WINDOW_MS), token,
-                        )
+                        CommandUtil.schedulePersistentAlarm(lane, triggerAt, window, userExact)
                     }
-                    if (!silent) {
+                    if (!armed) systemScheduled = false
+                    if (armed && primary != null && !silent) {
                         Log.runtime(TAG, "已重排系统闹钟[${primary.name}] ${TimeUtil.getCommonDate(triggerAt)} lane=$lane")
                     }
                 } catch (t: Throwable) {
@@ -137,6 +120,33 @@ object SystemWakeScheduler {
             }
             systemScheduled || localScheduled
         }
+
+    /** Only touches AlarmManager; safe to call while the host holds its registry lock. */
+    fun scheduleLane(context: Context, lane: Int, triggerAtMs: Long, windowMs: Long, userExact: Boolean): Boolean {
+        require(context.packageName == General.MODULE_PACKAGE_NAME)
+        require(lane == LANE_EXACT || lane == LANE_FLEXIBLE)
+        require(triggerAtMs >= 0 && windowMs >= 0)
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return false
+        val token = createAlarmIntent(context, lane)
+        if (triggerAtMs == 0L) {
+            alarmManager.cancel(token)
+        } else if (lane == LANE_FLEXIBLE) {
+            alarmManager.setWindow(AlarmManager.RTC_WAKEUP, triggerAtMs, windowMs.coerceAtLeast(MIN_FLEXIBLE_WINDOW_MS), token)
+        } else if (!PermissionUtil.checkAlarmPermissions(context)) {
+            alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMs, token)
+            Log.record(TAG, "精确闹钟权限不可用，已降级投递")
+        } else if (userExact) {
+            // OnePlus widens ordinary exact alarms even for allowlisted apps.
+            val showIntent = PendingIntent.getActivity(
+                context, 0, Intent(context, io.github.aoguai.sesameag.ui.MainActivity::class.java),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            alarmManager.setAlarmClock(AlarmManager.AlarmClockInfo(triggerAtMs, showIntent), token)
+        } else {
+            alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMs, token)
+        }
+        return true
+    }
 
     private fun laneFor(schedule: PersistentSchedule): Int =
         if (schedule.attemptCount > 0 || schedule.lastError in setOf("launch_pending", "delivery_pending") ||
@@ -219,10 +229,12 @@ object SystemWakeScheduler {
             "--es", EXTRA_SCHEDULE_ID, schedule.id,
             "--ez", EXTRA_PERSISTENT_ALARM_LAUNCH, "true",
             "--el", EXTRA_CONFIRMATION_AT, schedule.updatedAtMs.toString(),
-        ).joinToString(" ") { "'" + it.replace("'", "'\\''") + "'" }
+        )
+        // Shizuku splits argv directly; shell quotes would become literal characters.
+        if (command.any { !it.matches(Regex("[A-Za-z0-9_./:$-]+")) }) return false
         return try {
             withTimeoutOrNull(5_000L) {
-                val output = CommandUtil.executeCommand(context, command)
+                val output = CommandUtil.executeCommand(context, command.joinToString(" "))
                 if (output == null) {
                     Log.record(TAG, "定向启动请求失败[${schedule.name}]")
                     false

@@ -1,6 +1,5 @@
 package io.github.aoguai.sesameag.util
 
-import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -56,20 +55,16 @@ object CommandUtil {
     // AIDL 接口实例
     @Volatile
     private var commandService: ICommandService? = null
-    private val alarmIntents = java.util.concurrent.ConcurrentHashMap<Int, PendingIntent>()
-
-    fun getPersistentScheduleAlarmIntent(lane: Int): PendingIntent? {
-        require(lane == SystemWakeScheduler.LANE_EXACT || lane == SystemWakeScheduler.LANE_FLEXIBLE)
-        alarmIntents[lane]?.let { return it }
-        val service = commandService ?: return null
+    fun schedulePersistentAlarm(lane: Int, triggerAtMs: Long, windowMs: Long, userExact: Boolean): Boolean {
+        val service = commandService ?: return false
         return try {
-            service.getPersistentScheduleAlarmIntent(lane)?.also { alarmIntents[lane] = it }
+            service.schedulePersistentAlarm(lane, triggerAtMs, windowMs, userExact)
         } catch (e: RemoteException) {
             handleServiceLost()
-            null
+            false
         } catch (e: Exception) {
-            Log.e(TAG, "获取持久调度令牌失败", e)
-            null
+            Log.e(TAG, "登记持久调度闹钟失败", e)
+            false
         }
     }
 
@@ -145,7 +140,6 @@ object CommandUtil {
     private fun handleServiceLost(updateStatus: Boolean = true) {
         ModuleDiagnostics.event("command_bind", "lost", "updateStatus=$updateStatus")
         commandService = null
-        alarmIntents.clear()
         isBound.set(false)
         connectionDeferred = null
         lastStatusType = null

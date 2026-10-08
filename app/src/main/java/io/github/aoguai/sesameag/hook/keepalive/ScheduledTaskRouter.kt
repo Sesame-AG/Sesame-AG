@@ -50,7 +50,7 @@ object ScheduledTaskRouter {
 
     suspend fun fireDueFromModule(context: Context, source: String): Int = deliveryMutex.withLock {
         val now = System.currentTimeMillis()
-        val due = PersistentScheduleRegistry.list().filter {
+        val due = PersistentScheduleRegistry.listFresh().filter {
             it.state == PersistentScheduleState.SCHEDULED && it.triggerAtMs <= now
         }.sortedBy { it.deadlineAtMs() }
         try {
