@@ -134,8 +134,18 @@ internal fun AntMember.handleYebExpGoldTasks() {
         if (isYebExpGoldSuccess(queryResponse)) {
             collectYebExpGoldTasks(queryResponse, registry, YebExpGoldTaskSource.MAIN_QUERY)
             handledTask = claimPendingYebExpGoldRewards(queryResponse, registry) || handledTask
-            handledTask = handleYebExpGoldExchange(queryResponse) || handledTask
-            handledTask = handleYebExpGoldCertVouchers() || handledTask
+            val vouchersConverted = handleYebExpGoldCertVouchers()
+            handledTask = vouchersConverted || handledTask
+            if (!Status.hasFlagToday(StatusFlags.FLAG_ANTMEMBER_YEB_EXP_GOLD_EXCHANGE_DONE)) {
+                if (vouchersConverted) {
+                    queryResponse = JSONObject(AntMemberYebExpGoldRpcCall.queryYebExpGoldMain())
+                }
+                if (isYebExpGoldSuccess(queryResponse)) {
+                    handledTask = handleYebExpGoldExchange(queryResponse) || handledTask
+                } else {
+                    Log.error("AntMemberYebExpGold", "券转换后余额查询失败: ${getYebExpGoldErrorDesc(queryResponse)}")
+                }
+            }
         } else {
             Log.member("余额宝体验金任务刷新失败: ${getYebExpGoldErrorDesc(queryResponse)}")
         }
@@ -573,6 +583,10 @@ private fun handleYebExpGoldExchange(queryResponse: JSONObject): Boolean {
     }
     Log.member("余额宝体验金💰[兑换激活]#${amountText}元$extraInfo")
     Status.setFlagToday(StatusFlags.FLAG_ANTMEMBER_YEB_EXP_GOLD_EXCHANGE_DONE)
+    val assetResponse = JSONObject(AntMemberYebExpGoldRpcCall.queryYebTrialAsset())
+    if (!isYebExpGoldSuccess(assetResponse)) {
+        Log.error("AntMemberYebExpGold", "体验金激活成功后资产回查失败: ${getYebExpGoldErrorDesc(assetResponse)} raw=$assetResponse")
+    }
     return true
 }
 

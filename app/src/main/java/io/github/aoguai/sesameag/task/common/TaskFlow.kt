@@ -192,7 +192,7 @@ class TaskFlowExecutionState {
     internal val failedActionSnapshotKeys = mutableSetOf<String>()
     internal val deferredActionKeys = mutableSetOf<String>()
     internal val executedActionSnapshotKeys = mutableSetOf<String>()
-    internal val noProgressConfirmationSnapshotKeys = mutableSetOf<String>()
+    internal val pendingActionConfirmations = mutableMapOf<String, Pair<TaskFlowItem, TaskFlowAction>>()
 }
 
 interface TaskFlowAdapter {
@@ -360,7 +360,7 @@ class TaskFlowEngine(
     fun run(): TaskFlowRunResult {
         // 调用方在一次模块执行内共享快照；下次模块执行创建新状态，允许正常续接。
         val executedActionSnapshotKeys = executionState.executedActionSnapshotKeys
-        val noProgressConfirmationSnapshotKeys = executionState.noProgressConfirmationSnapshotKeys
+        val pendingActionConfirmations = executionState.pendingActionConfirmations
         var round = 1
         var roundLimit = 1
         var hardRoundLimit = 1
@@ -477,8 +477,35 @@ class TaskFlowEngine(
                 hardRoundLimit = calculateHardRoundLimit(roundLimit)
             }
 
-            val snapshot = buildSnapshot(items)
             var progressed = false
+            val confirmations = pendingActionConfirmations.iterator()
+            while (confirmations.hasNext()) {
+                val (key, pending) = confirmations.next()
+                val (previous, action) = pending
+                if (key != actionSnapshotKey(previous, action)) continue
+                // 共享执行状态只确认当前任务流中的同一任务；列表缺项不能证明动作完成。
+                val refreshed = items.firstOrNull {
+                    previous.id.isNotBlank() && it.id == previous.id &&
+                        it.sceneCode == previous.sceneCode && it.type == previous.type
+                } ?: continue
+                val phase = adapter.mapPhase(refreshed)
+                val phaseConfirmed = phase != adapter.mapPhase(previous) &&
+                    (phase.toAction() != null || phase == TaskFlowPhase.TERMINAL)
+                val progressConfirmed =
+                    (previous.current != null && refreshed.current != null && refreshed.current > previous.current) ||
+                        (previous.progress.isNotBlank() && refreshed.progress.isNotBlank() &&
+                            refreshed.progress != previous.progress)
+                if (actionSnapshotKey(refreshed, action) != key && (phaseConfirmed || progressConfirmed)) {
+                    confirmations.remove()
+                    progressed = true
+                    progressedAny = true
+                    adapter.logInfo("${adapter.flowName}[回查确认${action.logName}进展：${refreshed.title}]")
+                }
+            }
+            noProgressSuccessAny = pendingActionConfirmations.any { (key, pending) ->
+                key == actionSnapshotKey(pending.first, pending.second)
+            }
+            val snapshot = buildSnapshot(items)
             var stopCurrentRound = false
             var refreshRequested = false
             var noProgressConfirmationRefreshRequested = false
@@ -522,7 +549,7 @@ class TaskFlowEngine(
                     roundActions.add(TaskFlowRoundAction("跳过已失败${action.logName}", item.title))
                     continue
                 }
-                if (actionSnapshotKey in noProgressConfirmationSnapshotKeys) {
+                if (actionSnapshotKey in pendingActionConfirmations) {
                     adapter.logInfo("${adapter.flowName}[回查后状态仍待确认，保留后续调度续接：${item.title}]")
                     roundActions.add(TaskFlowRoundAction("待续接${action.logName}", item.title))
                     continue
@@ -589,7 +616,7 @@ class TaskFlowEngine(
                         ),
                     )
                     if (requiresStateConfirmation) {
-                        noProgressConfirmationSnapshotKeys.add(actionSnapshotKey)
+                        pendingActionConfirmations[actionSnapshotKey] = item to action
                         noProgressSuccessAny = true
                         noProgressConfirmationRefreshRequested = true
                     }
@@ -611,9 +638,14 @@ class TaskFlowEngine(
                     } else {
                         noProgressSuccessAny = true
                     }
-                    roundActions.add(TaskFlowRoundAction(successActionText(action), item.title))
+                    roundActions.add(
+                        TaskFlowRoundAction(
+                            if (result.progressChanged) successActionText(action) else "${action.logName}已受理待确认",
+                            item.title,
+                        ),
+                    )
                     if (!result.progressChanged) {
-                        noProgressConfirmationSnapshotKeys.add(actionSnapshotKey)
+                        pendingActionConfirmations[actionSnapshotKey] = item to action
                         noProgressConfirmationRefreshRequested = true
                     }
                     refreshRequested = true
@@ -674,6 +706,15 @@ class TaskFlowEngine(
                     "[本轮有进展:$progressed]",
             )
 
+            if (progressed && !stopCurrentRound && !failureStoppedActions &&
+                !ApplicationHookConstants.isOffline() &&
+                executionState.deferredActionKeys.isNotEmpty() && tailFollowUpRefreshBudget > 0
+            ) {
+                adapter.logInfo("${adapter.flowName}[检测到前置状态已推进，允许1次尾部补收刷新]")
+                executionState.deferredActionKeys.clear()
+                tailFollowUpRefreshBudget--
+            }
+
             if (refreshRequested &&
                 (!stopCurrentRound || !failureStoppedActions) &&
                 !ApplicationHookConstants.isOffline()
@@ -706,7 +747,7 @@ class TaskFlowEngine(
             if (!stopCurrentRound &&
                 !failureStoppedActions &&
                 !ApplicationHookConstants.isOffline() &&
-                snapshot.isComplete && adapter.isQueryComplete(response)
+                snapshot.isComplete && adapter.isQueryComplete(response) && !noProgressSuccessAny
             ) {
                 adapter.onAllTasksDone(snapshot)
                 return finishRunResult(
@@ -736,12 +777,6 @@ class TaskFlowEngine(
                     deferredReasonCounts = deferredReasonCountsAny,
                     failureCount = failureCountAny,
                 )
-            }
-
-            if (executionState.deferredActionKeys.isNotEmpty() && tailFollowUpRefreshBudget > 0) {
-                adapter.logInfo("${adapter.flowName}[检测到前置状态已推进，允许1次尾部补收刷新]")
-                executionState.deferredActionKeys.clear()
-                tailFollowUpRefreshBudget--
             }
 
             val extendedRoundLimit = extendRoundLimitIfNeeded(round, roundLimit, hardRoundLimit, progressed)

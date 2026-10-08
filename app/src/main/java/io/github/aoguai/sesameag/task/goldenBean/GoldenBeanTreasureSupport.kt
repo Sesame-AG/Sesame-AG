@@ -785,37 +785,37 @@ internal object GoldenBeanTreasureSupport {
 
     private fun resolveGoldenBeanGameTask(appId: String): GameTask? = GameTask.fromAppId(appId)
 
-    internal fun runMiner() {
+    internal fun runMiner(): Boolean {
         val indexResponse = parseResponse(GoldenBeanRpcCall.minerIndex())
         if (indexResponse == null || !isSuccess(indexResponse)) {
             Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "金猫矿工首页查询失败 raw=${indexResponse ?: "EMPTY"}")
-            return
+            return false
         }
 
         if (!indexResponse.has("enabled")) {
             Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "金猫矿工首页缺少enabled raw=$indexResponse")
-            return
+            return false
         }
         if (!indexResponse.optBoolean("enabled", false)) {
             Log.goldenBean("金猫矿工[服务端未启用]")
-            return
+            return true
         }
 
         val minerInfo = indexResponse.optJSONObject("minerInfo") ?: run {
             Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "金猫矿工首页缺少minerInfo raw=$indexResponse")
-            return
+            return false
         }
         val taskProgress = minerInfo.optJSONObject("taskProgress") ?: run {
             Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "金猫矿工首页缺少taskProgress raw=$indexResponse")
-            return
+            return false
         }
         if (!taskProgress.has("canGrab") || !taskProgress.has("remainingTimes")) {
             Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "金猫矿工首页缺少可抓取状态 raw=$indexResponse")
-            return
+            return false
         }
         if (!taskProgress.optBoolean("canGrab", false)) {
             Log.goldenBean("金猫矿工[服务端无可抓取次数]")
-            return
+            return true
         }
 
         val grabbedItemIds = mutableSetOf<String>()
@@ -827,7 +827,7 @@ internal object GoldenBeanTreasureSupport {
         val beanItemIds = mutableListOf<String>()
         val items = minerInfo.optJSONObject("currentLevel")?.optJSONArray("items") ?: run {
             Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "金猫矿工首页缺少items raw=$indexResponse")
-            return
+            return false
         }
         for (index in 0 until items.length()) {
             val item = items.optJSONObject(index) ?: continue
@@ -846,7 +846,7 @@ internal object GoldenBeanTreasureSupport {
             val grabResponse = parseResponse(GoldenBeanRpcCall.minerGrab(expectedResult, itemId.orEmpty()))
             if (grabResponse == null || !isSuccess(grabResponse)) {
                 Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "金猫矿工抓取失败 raw=${grabResponse ?: "EMPTY"}")
-                return
+                return false
             }
 
             val syncResponse = parseResponse(GoldenBeanRpcCall.sync(
@@ -855,11 +855,11 @@ internal object GoldenBeanTreasureSupport {
                 ))
             if (syncResponse == null || !isSuccess(syncResponse)) {
                 Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "金猫矿工抓取后金豆罐回查失败 raw=${syncResponse ?: "EMPTY"}")
-                return
+                return false
             }
             if (grabResponse.optBoolean("needAd", false)) {
                 Log.goldenBean("金猫矿工[服务端要求广告，保留待人工处理]")
-                return
+                return false
             }
 
             if (expectedResult == "BEAN") {
@@ -867,11 +867,11 @@ internal object GoldenBeanTreasureSupport {
             }
             val updatedProgress = grabResponse.optJSONObject("taskProgress") ?: run {
                 Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "金猫矿工抓取响应缺少taskProgress raw=$grabResponse")
-                return
+                return false
             }
             if (!updatedProgress.has("canGrab") || !updatedProgress.has("remainingTimes")) {
                 Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "金猫矿工抓取响应缺少可抓取状态 raw=$grabResponse")
-                return
+                return false
             }
             val updatedRemainingTimes = updatedProgress.optInt("remainingTimes", remainingTimes)
             if (updatedRemainingTimes >= remainingTimes) {
@@ -879,7 +879,7 @@ internal object GoldenBeanTreasureSupport {
                     GOLDEN_BEAN_BLACKLIST_MODULE,
                     "金猫矿工抓取后次数未推进 remainingTimes=$remainingTimes->$updatedRemainingTimes raw=$grabResponse",
                 )
-                return
+                return false
             }
             remainingTimes = updatedRemainingTimes
             canGrab = updatedProgress.optBoolean("canGrab", false)
@@ -888,7 +888,7 @@ internal object GoldenBeanTreasureSupport {
         val finalResponse = parseResponse(GoldenBeanRpcCall.minerIndex())
         if (finalResponse == null || !isSuccess(finalResponse)) {
             Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "金猫矿工最终回查失败 raw=${finalResponse ?: "EMPTY"}")
-            return
+            return false
         }
         val finalProgress = finalResponse.optJSONObject("minerInfo")?.optJSONObject("taskProgress")
         if (finalProgress == null ||
@@ -896,12 +896,13 @@ internal object GoldenBeanTreasureSupport {
             !finalProgress.has("remainingTimes")
         ) {
             Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "金猫矿工最终回查缺少可抓取状态 raw=$finalResponse")
-            return
+            return false
         }
         Log.goldenBean(
             "金猫矿工最终回查 canGrab=${finalProgress.optBoolean("canGrab", false)} " +
                 "remainingTimes=${finalProgress.optInt("remainingTimes", -1)}",
         )
+        return !finalProgress.optBoolean("canGrab", false) || finalProgress.optInt("remainingTimes", -1) == 0
     }
 
     private fun logMallItems(

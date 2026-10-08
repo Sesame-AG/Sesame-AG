@@ -21,7 +21,7 @@ import io.github.aoguai.sesameag.model.modelFieldExt.SelectModelField
 import io.github.aoguai.sesameag.model.withDesc
 import io.github.aoguai.sesameag.task.ModelTask
 import io.github.aoguai.sesameag.task.antFarm.AntFarm
-import io.github.aoguai.sesameag.task.antOrchard.AntOrchardRpcCall.orchardSpreadManure
+import io.github.aoguai.sesameag.task.antOrchard.AntOrchard
 import io.github.aoguai.sesameag.task.antOrchard.UrlUtil
 import io.github.aoguai.sesameag.task.common.DeferredReason
 import io.github.aoguai.sesameag.task.common.GameCenterPlayRpcCall
@@ -563,63 +563,12 @@ class AntSesameCredit : ModelTask() {
                 // ===== 2.4 芭芭农场施肥 =====
                 if ("babanongchang_7d" == behaviorId && "wait_doing" == status) {
                     try {
-                        // 假设getWua()方法存在，返回wua（为空即可）
-                        val wua = getSecurityBodyData(4) // 传入空字符串
-                        val source = "DNHZ_NC_zhimajingnangSF" // 从buttonUrl提取的source
-                        Log.debug(TAG, "信誉任务[芭芭农场施肥] set Wua $wua")
-
-                        val spreadManureDataStr =
-                            orchardSpreadManure(
-                                Objects.requireNonNull(wua).toString(),
-                                source,
-                                false,
-                            )
-                        val spreadManureData: JSONObject?
-                        try {
-                            spreadManureData = JSONObject(spreadManureDataStr)
-                        } catch (e: Throwable) {
-                            Log.printStackTrace(
-                                "$TAG.handleGrowthGuideTasks.parsePushDailyTask 芭芭农场[提交解析失败]$spreadManureDataStr",
-                                e,
-                            )
-                            continue
+                        val orchard = Model.getModel(AntOrchard::class.java)
+                        if (orchard?.spreadManureForSesame() == true) {
+                            Log.sesame("信誉任务[芭芭农场施肥成功] $title")
+                        } else {
+                            Log.sesame("信誉任务[芭芭农场施肥] 本轮未推进，保留后续任务回查")
                         }
-
-                        if ("100" != spreadManureData.optString("resultCode")) {
-                            Log.sesame("农场 orchardSpreadManure 错误：" + spreadManureData.optString("resultDesc"))
-                            continue
-                        }
-
-                        val taobaoDataStr = spreadManureData.optString("taobaoData", "")
-                        if (taobaoDataStr.isEmpty()) {
-                            Log.error("$TAG.handleGrowthGuideTasks", "芭芭农场[缺少taobaoData]")
-                            continue
-                        }
-
-                        val spreadTaobaoData: JSONObject?
-                        try {
-                            spreadTaobaoData = JSONObject(taobaoDataStr)
-                        } catch (e: Throwable) {
-                            Log.printStackTrace(
-                                "$TAG.handleGrowthGuideTasks.parsePushDailyTask 芭芭农场[taobaoData解析失败]$taobaoDataStr",
-                                e,
-                            )
-                            continue
-                        }
-
-                        val currentStage = spreadTaobaoData.optJSONObject("currentStage")
-                        if (currentStage == null) {
-                            Log.error("$TAG.handleGrowthGuideTasks", "芭芭农场[缺少currentStage]")
-                            continue
-                        }
-
-                        val stageText = currentStage.optString("stageText", "")
-                        val statistics = spreadTaobaoData.optJSONObject("statistics")
-                        val dailyAppWateringCount = statistics?.optInt("dailyAppWateringCount", 0) ?: 0
-
-                        Log.sesame("今日农场已施肥💩 $dailyAppWateringCount 次 [$stageText]")
-
-                        Log.sesame("信誉任务[芭芭农场施肥成功] $title | 已施肥 $dailyAppWateringCount 次")
                     } catch (e: Throwable) {
                         Log.printStackTrace("$TAG.handleGrowthGuideTasks.babanongchang", e)
                     }
@@ -5944,8 +5893,61 @@ class AntSesameCredit : ModelTask() {
                 sceneCode = spec.sceneCode,
                 changeRewardType = spec.changeRewardType,
             )
-        if (!feedbackResult.success || feedbackResult.failureType == TaskRpcFailureType.TERMINAL_DONE) {
+        if (!feedbackResult.success && feedbackResult.failureType != TaskRpcFailureType.TERMINAL_DONE) {
             return feedbackResult
+        }
+
+        val confirmationRes = AntSesameCreditRpcCall.queryLastOperateTask(spec.version)
+        val confirmationJo = parseJSONObjectOrNull(confirmationRes)
+            ?: return TaskFlowActionResult.failure(
+                failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                code = "RESPONSE_PARSE_ERROR",
+                message = "生活记录回查响应无法解析",
+                rpc = "AntSesameCreditRpcCall.queryLastOperateTask",
+                raw = confirmationRes,
+                detail = "$actionDetail templateId=$templateId recordId=$recordId",
+            )
+        if (!ResChecker.checkRes(TAG, confirmationJo)) {
+            val code = confirmationJo.optString("errorCode", confirmationJo.optString("resultCode", ""))
+            val failureType = classifySesameTaskFailure(code, confirmationJo)
+            return TaskFlowActionResult.failure(
+                failureType = failureType,
+                code = code,
+                message = buildSesameRpcMessage(confirmationJo, confirmationRes),
+                rpc = "AntSesameCreditRpcCall.queryLastOperateTask",
+                raw = confirmationRes,
+                detail = "$actionDetail templateId=$templateId recordId=$recordId",
+                stopCurrentRound = isSesameTaskFlowInterrupted(confirmationJo),
+                continueCurrentRoundOnFailure = failureType == TaskRpcFailureType.RETRYABLE_RPC ||
+                    failureType == TaskRpcFailureType.BUSINESS_LIMIT,
+            )
+        }
+        val lastTask = confirmationJo.optJSONObject("data")?.optJSONObject("lastOperateTaskVO")
+        if (lastTask != null && lastTask.optString("templateId") == templateId &&
+            lastTask.optString("recordId") == recordId && lastTask.optBoolean("finishFlag", false)
+        ) {
+            spec.joinedRecordIds?.remove(templateId)
+            Log.sesame("${spec.logPrefix}[生活记录回查确认完成]#$taskTitle templateId=$templateId recordId=$recordId")
+            return TaskFlowActionResult.success(refreshAfterAction = true)
+        }
+        if (feedbackResult.failureType == TaskRpcFailureType.TERMINAL_DONE) {
+            return feedbackResult.copy(
+                failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                message = "任务回调返回终态，但同一生活记录尚未回查确认：${feedbackResult.message}",
+                refreshAfterAction = true,
+            )
+        }
+
+        // userGrowth 外跳任务由业务侧确认完成，不能用普通生活记录推送代替。
+        if (extractQueryParam(task.optString("actionUrl"), "jumpAction") == "userGrowth") {
+            return TaskFlowActionResult.defer(
+                deferredReason = DeferredReason.PREREQUISITE_PENDING,
+                message = "外跳业务尚未确认完成，保留任务并等待回查",
+                rpc = "AntSesameCreditRpcCall.queryLastOperateTask",
+                raw = confirmationRes,
+                detail = "$actionDetail jumpAction=userGrowth confirmationState=PENDING",
+                refreshAfterAction = true,
+            )
         }
 
         val feedbackCode = feedbackResult.code.ifBlank { "SUCCESS" }

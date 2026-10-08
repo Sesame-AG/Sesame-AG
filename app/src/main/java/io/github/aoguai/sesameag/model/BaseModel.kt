@@ -1,12 +1,18 @@
 package io.github.aoguai.sesameag.model
 
+import io.github.aoguai.sesameag.entity.MapperEntity
 import io.github.aoguai.sesameag.model.modelFieldExt.BooleanModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.ChoiceModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.IntegerModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.IntegerModelField.MultiplyIntegerModelField
+import io.github.aoguai.sesameag.model.modelFieldExt.SelectAndCountModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.StringModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.TimePointListModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.TimeWindowListModelField
+import io.github.aoguai.sesameag.task.antDodo.AntDodo
+import io.github.aoguai.sesameag.task.antStall.AntStall
+import io.github.aoguai.sesameag.task.greenFinance.GreenFinance
+import io.github.aoguai.sesameag.task.myBankWelfare.MyBankWelfare
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.maps.BeachMap
 import io.github.aoguai.sesameag.util.maps.IdMapManager
@@ -32,6 +38,8 @@ class BaseModel : Model() {
         modelFields.addField(offlineCooldown) // 离线冷却时间
         modelFields.addField(taskExecutionRounds) // 轮数
         modelFields.addField(taskMaxConcurrency) // 任务并发数
+        modelFields.addField(taskOrderMode)
+        modelFields.addField(taskOrderPriority)
         modelFields.addField(taskTimeout) // 单任务超时时间
         modelFields.addField(modelSleepTime) // 模块休眠时间范围
         modelFields.addField(execAtTimeList) // 定时执行的时间点列表
@@ -66,6 +74,14 @@ class BaseModel : Model() {
             const val SYSTEM: Int = 0
             const val PROGRAM: Int = 1
             val nickNames: Array<String?> = arrayOf<String?>("🤖系统计时", "📦程序计时")
+        }
+    }
+
+    interface TaskOrderMode {
+        companion object {
+            const val RANDOM = 0
+            const val MANUAL = 1
+            val nickNames = arrayOf("每轮随机", "手动优先级")
         }
     }
 
@@ -125,6 +141,36 @@ class BaseModel : Model() {
             IntegerModelField("taskMaxConcurrency", "任务并发数", 2, 1, 3).withDesc(
                 "控制每个批次最多同时运行的任务协程数；默认 2，调高会增加请求频率和风控概率。",
             )
+
+        // 仅末批这些模块可交换位置；依赖原因及固定模块见 TaskRunner.buildExecutionBatches。
+        internal val taskOrderModelClasses: Set<Class<out Model>> = setOf(
+            AntStall::class.java,
+            AntDodo::class.java,
+            GreenFinance::class.java,
+            MyBankWelfare::class.java,
+        )
+
+        val taskOrderMode: ChoiceModelField = ChoiceModelField(
+            "taskOrderMode", "同批模块顺序", TaskOrderMode.RANDOM, TaskOrderMode.nickNames,
+        ).withDesc("仅调整同批可独立执行模块的入队顺序；默认每轮随机，也可设置手动优先级。")
+
+        val taskOrderPriority: SelectAndCountModelField = SelectAndCountModelField(
+            "taskOrderPriority",
+            "模块顺序",
+            linkedMapOf(),
+            SelectAndCountModelField.SelectListFunc {
+                Model.modelArray.filterNotNull()
+                    .filter { it.javaClass in taskOrderModelClasses }
+                    .map { model ->
+                        object : MapperEntity() {
+                            init {
+                                id = model.javaClass.simpleName
+                                name = model.getName().orEmpty()
+                            }
+                        }
+                    }
+            },
+        ).withDesc("手动优先级模式生效：正整数越小越先入队；未设置的模块随后入队，同值保持原序。并发执行不保证完成顺序。")
 
         /**
          * 单任务超时时间（分钟）

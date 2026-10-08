@@ -322,7 +322,8 @@ class AntForest : ModelTask(), EnergyCollectCallback {
     private val forestGameCenterRecentAppRecords = linkedMapOf<String, Long>()
 
     private data class PropCheckRoundState(
-        val latestHome: JSONObject?
+        val latestHome: JSONObject?,
+        val friendCollectChecked: Boolean,
     )
 
     private data class RobMultiplierCardState(
@@ -5439,6 +5440,11 @@ class AntForest : ModelTask(), EnergyCollectCallback {
 
         private fun isAccumulatedEffectiveTask(item: TaskFlowItem): Boolean {
             val taskBaseInfo = item.raw?.optJSONObject("taskBaseInfo") ?: return false
+            if (item.type == "FOREST_CONTINUOUS_COLLECT_ENERGY_7" &&
+                taskBaseInfo.optString("taskMode") == "CONSECUTIVE_ANTIEP"
+            ) {
+                return true
+            }
             if (taskBaseInfo.optString("taskMode") != "ACC_ANTIEP") {
                 return false
             }
@@ -6083,8 +6089,9 @@ class AntForest : ModelTask(), EnergyCollectCallback {
      * @return 最新的主页对象
      */
     internal fun usePropBeforeCollectEnergy(userId: String?, skipPropCheck: Boolean = false): JSONObject? {
-        var latestHome: JSONObject? = null
+        var latestHome: JSONObject? = roundPropCheckState?.latestHome
         var checkedThisCall = false
+        val isFriendCollectTarget = !userId.isNullOrBlank() && userId != UserMap.currentUid
         try {
             // 🚀 快速收取通道：跳过道具检查，直接返回
             if (skipPropCheck) {
@@ -6092,16 +6099,24 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 return null
             }
             roundPropCheckState?.let { cachedState ->
-                Log.debug(TAG, "本轮道具检查已完成，复用当前状态，跳过重复请求")
-                return cachedState.latestHome
+                if (!isFriendCollectTarget || cachedState.friendCollectChecked) {
+                    Log.debug(TAG, "本轮所需道具检查已完成，复用当前状态")
+                    return cachedState.latestHome
+                }
             }
             val now = System.currentTimeMillis()
-            if (now - lastUsePropCheckTime < 5000) {
+            if (now - lastUsePropCheckTime < 5000 &&
+                (!isFriendCollectTarget || roundPropCheckState?.friendCollectChecked != false)
+            ) {
                 Log.debug(TAG, "道具检查刚在5秒内完成，复用当前状态，跳过重复请求")
                 return null
             }
             lastUsePropCheckTime = now
             checkedThisCall = true
+            if (isFriendCollectTarget) {
+                // 自身检查后的好友补查只尝试一次，失败也不逐好友重复请求。
+                roundPropCheckState = roundPropCheckState?.copy(friendCollectChecked = true)
+            }
 
             /*
              * 在收集能量之前决定是否使用增益类道具卡。
@@ -6126,7 +6141,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     now
                 )
 
-            val isFriendCollectTarget = !userId.isNullOrBlank() && userId != UserMap.currentUid
             val needRobMultiplierCard =
                 isFriendCollectTarget && robMultiplierCard!!.value != ApplyPropType.CLOSE
             val needStealth =
@@ -6179,7 +6193,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             Log.printStackTrace(e)
         }
         if (checkedThisCall) {
-            roundPropCheckState = PropCheckRoundState(latestHome)
+            roundPropCheckState = PropCheckRoundState(latestHome, isFriendCollectTarget)
         }
         return latestHome
     }

@@ -296,11 +296,27 @@ class AntOrchard : ModelTask() {
         return reserveAmount
     }
 
+    internal fun spreadManureForSesame(): Boolean {
+        if (!isEnable() || plantModeField.value == PlantModeType.YEB) return false
+        val targetLimit = orchardSpreadManureCountMain.value ?: 0
+        if (targetLimit == 0) return false
+        return waterTree(
+            targetScene = "main",
+            targetLimit = targetLimit,
+            goldenBeanReserve = goldenBeanManureReserveAmount(),
+            source = "DNHZ_NC_zhimajingnangSF",
+            maxActions = 1,
+        )
+    }
+
     private fun waterTree(
         targetScene: String,
         targetLimit: Int,
         goldenBeanReserve: Int,
-    ) {
+        source: String = ACTION_SOURCE,
+        maxActions: Int = Int.MAX_VALUE,
+    ): Boolean {
+        var wateredThisCall = 0
         val isMain = targetScene == "main"
         val waterToLimit = targetLimit == -1
         val sceneName = if (isMain) "种果树" else "种摇钱树"
@@ -345,7 +361,7 @@ class AntOrchard : ModelTask() {
                 val taobaoData = JSONObject(taobaoDataStr)
                 if (isPlantSelectionExplicitlyMissing(taobaoData, targetScene)) {
                     Log.orchard("$sceneName 前置状态不足: 服务端未返回已选种状态，本轮跳过施肥")
-                    return
+                    return wateredThisCall > 0
                 }
                 val accountInfo = taobaoData.optJSONObject("gameInfo")?.optJSONObject("accountInfo")
                 if (isMain) {
@@ -358,7 +374,7 @@ class AntOrchard : ModelTask() {
                 }
                 if (!waterToLimit && totalWatered >= targetLimit) {
                     Log.orchard("$sceneName: 服务端已完成施肥目标 $totalWatered/$targetLimit")
-                    return
+                    return wateredThisCall > 0
                 }
 
                 val singleWateringCost = accountInfo?.optInt("wateringCost", 600)?.takeIf { it > 0 } ?: 600
@@ -400,14 +416,14 @@ class AntOrchard : ModelTask() {
                             }
                         }
                         Log.orchard("$sceneName 肥料不足: 当前 ${happyPoint ?: 0} < 消耗 $singleWateringCost")
-                        return
+                        return wateredThisCall > 0
                     }
                     if (availableManureForWatering == null || availableManureForWatering < singleWateringCost) {
                         Log.orchard(
                             "$sceneName 保留金豆夺宝肥料额度 $effectiveGoldenBeanReserve 后可用 " +
                                 "${availableManureForWatering ?: 0} < 消耗 $singleWateringCost，停止施肥",
                         )
-                        return
+                        return wateredThisCall > 0
                     }
                 }
 
@@ -415,7 +431,8 @@ class AntOrchard : ModelTask() {
                 var actualWaterTimes = 1
 
                 val remainingTarget = if (waterToLimit) Int.MAX_VALUE else (targetLimit - totalWatered).coerceAtLeast(0)
-                val canBatchByTarget = waterToLimit || remainingTarget >= batchSpreadTimes
+                val canBatchByTarget = (waterToLimit || remainingTarget >= batchSpreadTimes) &&
+                    maxActions - wateredThisCall >= batchSpreadTimes
                 val batchWateringCost = singleWateringCost * batchSpreadTimes
 
                 if (batchSpreadValid && batchSpreadTimes > 1 && canBatchByTarget &&
@@ -431,7 +448,7 @@ class AntOrchard : ModelTask() {
                 val spreadResponse =
                     AntOrchardRpcCall.orchardSpreadManure(
                         wua,
-                        ACTION_SOURCE,
+                        source,
                         useBatchSpread,
                         targetScene,
                     )
@@ -440,19 +457,19 @@ class AntOrchard : ModelTask() {
 
                 if (resultCode == "P14" || resultCode == "P13") {
                     Log.orchard("$sceneName 服务端已达当日次数或余额终态，停止施肥")
-                    return
+                    return wateredThisCall > 0
                 }
 
                 if (resultCode == "H06" || resultCode == "H09") {
                     Log.error(TAG, "$sceneName 施肥受限[classification=BUSINESS_LIMIT resultCode=$resultCode] raw=$spreadJson")
-                    return
+                    return wateredThisCall > 0
                 }
                 if (resultCode != "100") {
                     Log.error(TAG, "$sceneName 施肥失败[resultCode=$resultCode] raw=$spreadJson")
-                    return
+                    return wateredThisCall > 0
                 }
 
-                Status.removeFlag(StatusFlags.FLAG_ANTORCHARD_TASKS_DONE)
+                wateredThisCall += actualWaterTimes
                 actualWaterTimes = spreadJson
                     .optJSONObject("batchSpreadInfo")
                     ?.takeIf { it.optBoolean("useBatchSpread", false) }
@@ -507,7 +524,7 @@ class AntOrchard : ModelTask() {
             } finally {
                 CoroutineUtils.sleepCompat(executeIntervalInt.toLong())
             }
-        } while (waterToLimit || totalWatered < targetLimit)
+        } while (wateredThisCall < maxActions && (waterToLimit || totalWatered < targetLimit))
 
         Log.orchard(
             if (waterToLimit) {
@@ -516,6 +533,7 @@ class AntOrchard : ModelTask() {
                 "$sceneName 施肥结束，最终累计: $totalWatered"
             },
         )
+        return wateredThisCall > 0
     }
 
     private fun isPlantSelectionExplicitlyMissing(
@@ -680,9 +698,6 @@ class AntOrchard : ModelTask() {
         override val moduleName: String = ORCHARD_TASK_BLACKLIST_MODULE
         override val flowName: String = if (starTasks) "农场努力流星任务" else "农场任务"
         override val continueCurrentRoundOnRetryableFailure: Boolean = true
-
-        override fun isFlowHandledToday(): Boolean =
-            !starTasks && Status.hasFlagToday(StatusFlags.FLAG_ANTORCHARD_TASKS_DONE)
 
         override fun query(): JSONObject {
             val response = if (starTasks) AntOrchardRpcCall.listStarTasks() else AntOrchardRpcCall.orchardListTask()

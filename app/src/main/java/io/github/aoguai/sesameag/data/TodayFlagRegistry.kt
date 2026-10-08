@@ -68,7 +68,7 @@ object TodayFlagRegistry {
         binding("YouthPrivilege", "youthPrivilegeCheckIn", patterns = listOf(exact(StatusFlags.FLAG_YOUTH_PRIVILEGE_CHECK_IN_DONE))),
         binding("YouthPrivilege", "youthPrivilegeTasks", patterns = listOf(exact(StatusFlags.FLAG_YOUTH_PRIVILEGE_TASKS_DONE))),
         binding("AntMember", "memberSign", patterns = listOf(exact(StatusFlags.FLAG_ANTMEMBER_MEMBER_SIGN_DONE))),
-        binding("AntMember", "memberTask", patterns = listOf(exact(StatusFlags.FLAG_ANTMEMBER_MEMBER_TASK_EMPTY_TODAY))),
+        binding("AntMember", "memberTask", "memberSignPageTask", "memberSignInAdTask", patterns = listOf(exact(StatusFlags.FLAG_ANTMEMBER_MEMBER_TASK_EMPTY_TODAY))),
         binding("AntMember", "yebExpGold", patterns = listOf(prefix(StatusFlags.FLAG_ANTMEMBER_YEB_EXP_GOLD_TASK_PREFIX), exact(StatusFlags.FLAG_ANTMEMBER_YEB_EXP_GOLD_SIGN_DONE), exact(StatusFlags.FLAG_ANTMEMBER_YEB_EXP_GOLD_VOUCHER_CONVERT_DONE), exact(StatusFlags.FLAG_ANTMEMBER_YEB_EXP_GOLD_EXCHANGE_DONE))),
         binding("AntMember", "CollectStickers", patterns = listOf(exact(StatusFlags.FLAG_ANTMEMBER_STICKERS_DONE))),
         binding("AntMember", "billBlockWorld", patterns = listOf(exact(StatusFlags.FLAG_ANTMEMBER_BILL_BLOCK_WORLD_DONE))),
@@ -89,7 +89,6 @@ object TodayFlagRegistry {
         binding("AntSesameCredit", "enableZhimaTree", patterns = listOf(exact(StatusFlags.FLAG_SESAME_ZHIMA_TREE_TASK_HANDLED_TODAY), prefix(StatusFlags.FLAG_SESAME_ZHIMA_TREE_ACTION_STOP_PREFIX))),
         binding("AntSesameCredit", "collectSesame", "collectSesameWithOneClick", patterns = listOf(exact(StatusFlags.FLAG_SESAME_COLLECT_DONE))),
         binding("AntSesameCredit", "sesameGrainExchange", "sesameGrainExchangeList", patterns = listOf(exact(StatusFlags.FLAG_SESAME_GRAIN_EXCHANGE_DONE))),
-        binding("OtherTask", "credit2101", "CreditOptions", patterns = listOf(exact(StatusFlags.FLAG_CREDIT2101_CHAPTER_TASK_DONE), prefix(StatusFlags.FLAG_CREDIT2101_EVENT_COUNT_PREFIX))),
         binding("AntSports", "sportsTasks", patterns = listOf(exact(StatusFlags.FLAG_ANTSPORTS_DAILY_TASKS_DONE), exact(StatusFlags.FLAG_ANTSPORTS_MOTION_DAILY_QUIZ_DONE), exact(StatusFlags.FLAG_ANTSPORTS_MOTION_QUIZ_HEALTH_CONFIRMED), exact(StatusFlags.FLAG_ANTSPORTS_MOTION_QUIZ_GREEN_CONFIRMED))),
         binding("AntSports", "syncStepCount", patterns = listOf(exact(StatusFlags.FLAG_ANTSPORTS_SYNC_STEP_DONE))),
         binding("AntSports", "walkReviveSteps", "walkReviveTask", patterns = listOf(exact(StatusFlags.FLAG_ANTSPORTS_ROUTE_REVIVE_TRIED))),
@@ -137,7 +136,6 @@ object TodayFlagRegistry {
         "AntStall" to listOf(prefix("AntStall::"), prefix("stall::"), prefix("Flag_AntStall_")),
         "AntFarm" to listOf(prefix("AntFarm::"), prefix("antFarm::"), prefix("farm::"), prefix("farmQuestion::")),
         "BaseModel" to listOf(prefix("OnceDaily::"), prefix("customRpcSchedule::"), prefix("friendCenter::")),
-        "OtherTask" to listOf(prefix("OnceDaily::"), prefix("friendCenter::"), prefix(StatusFlags.FLAG_CREDIT2101_EVENT_COUNT_PREFIX), exact(StatusFlags.FLAG_CREDIT2101_CHAPTER_TASK_DONE)),
         "ManualTaskModel" to listOf(prefix("customRpcSchedule::")),
     )
 

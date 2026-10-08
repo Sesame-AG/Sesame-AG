@@ -19,7 +19,6 @@ import io.github.aoguai.sesameag.task.antSports.AntSports
 import io.github.aoguai.sesameag.task.antStall.AntStall
 import io.github.aoguai.sesameag.task.greenFinance.GreenFinance
 import io.github.aoguai.sesameag.task.myBankWelfare.MyBankWelfare
-import io.github.aoguai.sesameag.task.other.OtherTask
 import io.github.aoguai.sesameag.task.reserve.Reserve
 import io.github.aoguai.sesameag.task.youthPrivilege.YouthPrivilege
 import io.github.aoguai.sesameag.util.GlobalThreadPools
@@ -151,7 +150,6 @@ object ManualTask {
                             CustomTask.GREEN_FINANCE -> runModuleTask(GreenFinance::class.java)
                             CustomTask.MY_BANK_WELFARE -> runModuleTask(MyBankWelfare::class.java)
                             CustomTask.RESERVE -> runModuleTask(Reserve::class.java)
-                            CustomTask.OTHER_TASK -> runModuleTask(OtherTask::class.java)
                         }
                     } catch (e: CancellationException) {
                         Log.record("ManualTask", "⏹️ 手动任务 ${task.displayName} 已取消")

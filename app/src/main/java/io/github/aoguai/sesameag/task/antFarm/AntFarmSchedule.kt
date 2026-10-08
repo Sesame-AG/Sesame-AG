@@ -124,13 +124,13 @@ internal suspend fun AntFarm.runDueFarmWork() {
             "zhimaPigeon" -> if (isZhimaPigeonConfigured()) runZhimaPigeonTaskFlow()
             "awards" -> receiveFarmAwards()
             "draw" -> if (enableChouchoule?.value == true) ChouChouLe().run(this)
-            "exchange" -> if (enableChouchoule?.value == true && autoExchange?.value == true) ChouChouLe().exchangeIpRewards()
+            "exchange" -> if (enableChouchoule?.value == true && autoExchange?.value == true) ChouChouLe().run(this)
             "meal" -> if (family?.value == true && familyOptions?.value?.contains("eatTogetherConfig") == true) {
                 AntFarmFamily.runMeal(this)
             }
         }
-        // 已过期的日末触发只负责一次收尾；未确认的业务状态仍由下一轮自然调度读取。
-        if (reason == "awards" || reason == "draw" || reason == "loveChicken" || reason == "zhimaPigeon") {
+        // 到期待办只负责一次收尾；未确认的业务状态仍由下一轮自然调度读取。
+        if (reason == "awards" || reason == "draw" || reason == "exchange" || reason == "loveChicken" || reason == "zhimaPigeon") {
             val pending = store.getOrCreate<MutableMap<String, Long>>(FARM_PENDING_WORK)
             if ((pending[reason] ?: Long.MAX_VALUE) <= now) {
                 pending.remove(reason)

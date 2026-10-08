@@ -216,15 +216,6 @@ object StatusFlags {
     /** 芝麻信用：芝麻粒兑换今日是否已处理 */
     const val FLAG_SESAME_GRAIN_EXCHANGE_DONE: String = "AntSesameCredit::sesameGrainExchangeDone"
 
-    /** 信用 2101：图鉴章节任务是否全部完成 */
-    const val FLAG_CREDIT2101_CHAPTER_TASK_DONE: String = "FLAG_Credit2101_ChapterTask_Done"
-
-    /** 信用 2101：事件当日计数前缀 */
-    const val FLAG_CREDIT2101_EVENT_COUNT_PREFIX: String = "2101_Event_"
-
-    /** 信用 2101：事件当日计数后缀 */
-    const val FLAG_CREDIT2101_EVENT_COUNT_SUFFIX: String = "_COUNT_TODAY"
-
     /** 商家服务：每日签到 */
     const val FLAG_ANTMEMBER_MERCHANT_SIGN_DONE: String = "AntMember::merchantSignDone"
 

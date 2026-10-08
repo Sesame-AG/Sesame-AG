@@ -297,54 +297,88 @@ class CoroutineTaskRunner(allModels: List<Model>) {
             return matched
         }
 
-        return buildList {
-            // 1) 运动先跑：步数改动需要尽早落地，供后续联动模块消费。
+        // 批次限定主流程入队边界，不因随机/手动排序跨批，也不清除每日标识或补跑模块。
+        // 普通任务由外层逐批等待；运动、森林、庄园仍走原后台长任务机制，不保证在下一批前完成。
+        val batches = buildList<List<ModelTask>> {
+            // 1) 固定：运动优先更新步数，并处理森林可用道具兑换；不能随机到消费者之后。
             takeBatch { it is AntSports }
                 .takeIf { it.isNotEmpty() }
                 ?.let(::add)
 
-            // 2) 青春特权先领取可供森林消费的道具。
+            // 2) 固定：青春特权先领取森林可用道具，森林再检查库存并使用。
             takeBatch { it is YouthPrivilege }
                 .takeIf { it.isNotEmpty() }
                 ?.let(::add)
 
-            // 3) 森林承接青春特权已确认的道具状态。
+            // 3) 固定：森林消费前置道具并收能量，优先于巡护和末批森林能量消费模块。
             takeBatch { it is AntForest }
                 .takeIf { it.isNotEmpty() }
                 ?.let(::add)
 
-            // 巡护独立于森林启用状态，承接森林完成后的实际能量和动物状态。
+            // 4) 固定：巡护使用步数、森林能量和动物状态，但不依赖森林模块必须启用。
             takeBatch { it is AntForestPatrol }
                 .takeIf { it.isNotEmpty() }
                 ?.let(::add)
 
-            // 4) 海洋尽量承接前面模块已完成的联动任务状态，减少碎片奖励漏领。
+            // 5) 固定：海洋保留联动行为之后的查询/领奖位置，避免随机提前后漏领本轮碎片。
             takeBatch { it is AntOcean }
                 .takeIf { it.isNotEmpty() }
                 ?.let(::add)
 
-            // 5) 芭芭农场先跑：施肥时为金豆夺宝保留配置额度。
+            // 6) 固定：农场施肥需先为金豆留出配置额度，信用联动施肥复用相同资源约束。
             takeBatch { it is AntOrchard }
                 .takeIf { it.isNotEmpty() }
                 ?.let(::add)
 
-            // 6) 庄园尽量承接前面模块已完成的联动任务状态，减少碎片奖励漏领。
+            // 7) 固定：庄园保留联动行为之后的位置，信用的大表鸽链路也会使用庄园状态。
             takeBatch { it is AntFarm }
                 .takeIf { it.isNotEmpty() }
                 ?.let(::add)
 
-            // 7) 会员与芝麻信用放在联动行为之后。
-            takeBatch { it is AntMember || it is AntSesameCredit }
+            // 8) 固定且单独等待：会员领取积分和兑换道具后，再执行信用的农场施肥。
+            // 信用施肥缺肥时会经 ExchangeReplenisher 使用会员积分补兑，二者不能同批随机/并发。
+            takeBatch { it is AntMember }
                 .takeIf { it.isNotEmpty() }
                 ?.let(::add)
 
-            // 8) 金豆夺宝最后处理农场肥料和芝麻炼金已确认的最新余额。
+            // 9) 固定：信用在会员之后、金豆之前，保留联动施肥及芝麻炼金的余额产出顺序。
+            takeBatch { it is AntSesameCredit }
+                .takeIf { it.isNotEmpty() }
+                ?.let(::add)
+
+            // 10) 固定：金豆使用农场肥料和信用炼金已确认的余额，不能移到这两个来源之前。
             takeBatch { it is GoldenBeanTreasure }
                 .takeIf { it.isNotEmpty() }
                 ?.let(::add)
 
+            // 11) 末批仅新村、物种、绿色经营、网商福利金允许随机/手动交换位置：
+            // 新村金币/肥料、经营金币、网商福利金分别独立；
+            // 物种使用自身卡片/次数，缺货补兑来自前置森林/会员，不依赖末批其他候选。
+            // 合种、古树、保护地共用森林能量，不纳入候选，保持原槽位和相对入队顺序；
+            // 同批仍受原并发控制，这不代表三者严格串行，也不改变它们已有的消费额度。
+            // 未明确列入 taskOrderModelClasses 的其他模块同样不移动，避免将新增模块默认视为独立。
             if (remainingTasks.isNotEmpty()) {
                 add(remainingTasks.toList())
+            }
+        }
+
+        val manualOrder = BaseModel.taskOrderMode.value == BaseModel.TaskOrderMode.MANUAL
+        val priorities = BaseModel.taskOrderPriority.value.orEmpty().toMap()
+        return batches.map { batch ->
+            val positions = batch.indices.filter { batch[it].javaClass in BaseModel.taskOrderModelClasses }
+            if (positions.size < 2) return@map batch
+            val movableTasks = positions.map { batch[it] }
+            val orderedTasks = if (manualOrder) {
+                movableTasks.sortedBy {
+                    priorities[it.javaClass.simpleName]?.takeIf { priority -> priority > 0 }?.toLong()
+                        ?: Long.MAX_VALUE
+                }
+            } else {
+                movableTasks.shuffled()
+            }
+            // 只重排同批独立模块，保留依赖批次和资源消费模块的原位置。
+            batch.toMutableList().apply {
+                positions.forEachIndexed { index, position -> this[position] = orderedTasks[index] }
             }
         }
     }

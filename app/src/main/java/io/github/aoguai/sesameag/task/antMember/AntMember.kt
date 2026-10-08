@@ -139,6 +139,8 @@ class AntMember : ModelTask() {
 
     internal var memberSign: BooleanModelField? = null
     internal var memberTask: BooleanModelField? = null
+    private var memberSignPageTask: BooleanModelField? = null
+    private var memberSignInAdTask: BooleanModelField? = null
     internal var yebExpGold: BooleanModelField? = null
     internal var memberPointExchangeBenefit: BooleanModelField? = null
     private var memberPointExchangeBenefitList: SelectModelField? = null
@@ -375,9 +377,19 @@ class AntMember : ModelTask() {
             memberSign = it
         })
         modelFields.addField(BooleanModelField("memberTask", "会员积分 | 任务", false).withDesc(
-            "执行会员中心每日任务，完成后统一领取会员积分。"
+            "执行会员浮球与阶段任务，完成后统一领取会员积分。"
         ).also {
             memberTask = it
+        })
+        modelFields.addField(BooleanModelField("memberSignPageTask", "会员积分 | 签到页任务", false).withDesc(
+            "需开启“会员积分 | 任务”。查询并处理签到页任务。"
+        ).also {
+            memberSignPageTask = it
+        })
+        modelFields.addField(BooleanModelField("memberSignInAdTask", "会员积分 | 签到广告任务", false).withDesc(
+            "需开启“会员积分 | 任务”。查询并处理签到广告任务。"
+        ).also {
+            memberSignInAdTask = it
         })
         modelFields.addField(BooleanModelField("yebExpGold", "余额宝体验金", false).withDesc(
             "处理余额宝体验金签到、可自动完成任务、待使用券和兑换。"
@@ -1928,11 +1940,15 @@ class AntMember : ModelTask() {
             }
 
             return try {
-                val queries = listOf<Pair<String, () -> String>>(
-                    "signPage" to { AntMemberRpcCall.signPageTaskList() },
-                    "signInAd" to { AntMemberRpcCall.queryMemberTaskList() },
-                    "memberPoint" to { AntMemberRpcCall.queryMemberTaskProcessList() },
-                )
+                val queries = buildList<Pair<String, () -> String>> {
+                    if (memberSignPageTask?.value == true) {
+                        add("signPage" to { AntMemberRpcCall.signPageTaskList() })
+                    }
+                    if (memberSignInAdTask?.value == true) {
+                        add("signInAd" to { AntMemberRpcCall.queryMemberTaskList() })
+                    }
+                    add("memberPoint" to { AntMemberRpcCall.queryMemberTaskProcessList() })
+                }
                 for ((scene, query) in queries) {
                     if (stopReason.isNotBlank() || ApplicationHookConstants.isOffline()) break
                     runCatching { appendTaskResponse(query(), scene) }.onFailure {

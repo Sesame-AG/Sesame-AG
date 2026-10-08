@@ -712,8 +712,7 @@ internal object ApplicationBroadcastDispatcher {
                         CustomTask.ECO_PROTECTION,
                         CustomTask.GREEN_FINANCE,
                         CustomTask.MY_BANK_WELFARE,
-                        CustomTask.RESERVE,
-                        CustomTask.OTHER_TASK -> {
+                        CustomTask.RESERVE -> {
                             Unit
                         }
 

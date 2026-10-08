@@ -46,7 +46,6 @@ internal suspend fun AntSesameCredit.prepareSesameWorkflows(
 
     var claimSesame = false
     var claimProgress = false
-    var sesameTaskWorkflowRan = false
     var accountInterrupted = false
 
     if (sesameGrainExchange?.value == true) {
@@ -64,7 +63,6 @@ internal suspend fun AntSesameCredit.prepareSesameWorkflows(
             if (hasFlagToday(StatusFlags.FLAG_SESAME_DO_ALL_AVAILABLE_TASK)) {
                 Log.sesame("⏭️ 今天已完成过芝麻信用任务，跳过执行")
             } else {
-                sesameTaskWorkflowRan = true
                 Log.sesame("🎮 开始执行芝麻信用任务")
                 accountInterrupted = doAllAvailableSesameTask().interrupted
             }
@@ -80,7 +78,7 @@ internal suspend fun AntSesameCredit.prepareSesameWorkflows(
         }
 
         if (collectSesame?.value == true) {
-            if (hasFlagToday(StatusFlags.FLAG_SESAME_COLLECT_DONE) && !sesameTaskWorkflowRan) {
+            if (hasFlagToday(StatusFlags.FLAG_SESAME_COLLECT_DONE)) {
                 Log.sesame("⏭️ 今天已处理过芝麻粒领取，跳过执行")
             } else {
                 claimSesame = true

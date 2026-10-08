@@ -192,7 +192,15 @@ private class OrchardDrawTaskFlowAdapter(
     override fun mapPhase(item: TaskFlowItem): TaskFlowPhase =
         when (item.status) {
             "FINISHED" -> TaskFlowPhase.REWARD_READY
-            "TODO" -> TaskFlowPhase.READY_TO_COMPLETE
+            "TODO" -> if (item.type in setOf(
+                    "CHOUCHOULE_GAME_ZJD1500",
+                    "CHOUCHOULE_GAME_ZJD3000",
+                    "CHOUCHOULE_GAME_ZJD5000",
+                )) {
+                TaskFlowPhase.BUSINESS_ACTION
+            } else {
+                TaskFlowPhase.READY_TO_COMPLETE
+            }
             "RECEIVED" -> TaskFlowPhase.TERMINAL
             else -> TaskFlowPhase.UNKNOWN
         }

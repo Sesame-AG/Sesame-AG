@@ -20,7 +20,6 @@ private val sesameCreditDefaultBlacklist =
         "zml_zmzl_xdrw_erfang", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实租赁下单
         "zml_tbbbnc_shifei_sanfang", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实淘宝行为
         "zmxy_zml_wannengxiaozujian", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实桌面组件行为
-        "zml_cainiao_guojiang_sanfang", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实菜鸟行为
         "zml_tbqd_qiandao_sanfang", // 需要淘宝签到结果
         "zml_xiangjiangshikaipao_renwu", // 需要游戏内任务事件
         "zml_longjizhicheng_renwu", // pushActivity 返回 promiseActivityExtCheck 非法，需游戏内任务事件
@@ -28,6 +27,7 @@ private val sesameCreditDefaultBlacklist =
         "zml_baoweixiangrikui_renwu", // 需要游戏内任务事件
         "zml_jihewangguo_renwu", // 需要游戏内任务事件
         "zml_xundaodaqian_renwu", // 砍伐30次的游戏事件，pushActivity返回ILLEGAL_ARGUMENT
+        "zm_WckGYybV_kUm3oyT1", // 砍伐20次的游戏事件，pushActivity返回ILLEGAL_ARGUMENT
         "AP16358996", // EVENT_TRIGGER：几何王国通过3关，直接send返回20020012
         "AP17359071", // EVENT_TRIGGER：灵画师消耗30包子，直接send返回20020012
     )
@@ -38,7 +38,6 @@ private val sesameAlchemyDefaultBlacklist =
         "hjwf_zcylt_zhuanhua",
         "hjwf_eduka_renwu",
         "alchemy_check_in_subscribe_task", // joinActivity 返回 PROMISE_TEMPLATE_NOT_EXIST
-        "hjwf_tbqd_qiandao_sanfang",
         "hjwf_tbbbnc_shifei_sanfang",
         "hjwf_xiangjiangshikaipao_renwu", // 游戏事件不能由pushActivity完成，返回ILLEGAL_ARGUMENT
         "hjwf_zcylt_chongzhi", // 真实充值不能由pushActivity完成，返回ILLEGAL_ARGUMENT
@@ -111,6 +110,8 @@ private val farmDefaultBlacklist =
         "HEART_DONATE", // 爱心捐赠
         "MYZY_pay_rcccl_jhwg", // 游戏充值得10次抽抽乐机会，需真实支付
         "MYZY_pay_IPccl_jhwg", // 游戏充值得10次抽抽乐机会，需真实支付
+        "MYZY_pay_rcccl_fkssj", // 游戏充值并消费，需真实支付
+        "MYZY_pay_IPccl_fkssj", // 游戏充值并消费，需真实支付
         "antfarm_pay_task_wdhysj_ccl", // 游戏充值得10次抽抽乐机会，需真实支付
         "ipccl_pay_ah_wdhy_ahsj_1y_ah", // 游戏充值得10次抽抽乐机会，需真实支付
         "20251118_chouchoulechoukuan2|伸出援手，点亮希望", // 装扮抽抽乐公益捐赠任务

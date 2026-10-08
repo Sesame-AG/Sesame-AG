@@ -153,7 +153,6 @@ class ChouChouLe {
         if (antFarm.enableChouchoule?.value != true || ApplicationHookConstants.isOffline()) return
         if (!antFarm.farmWorkAttempted.add("draw")) return
         executeAndSync(antFarm)
-        if (!antFarm.farmWorkAttempted.contains("exchange")) exchangeIpRewards()
     }
 
     private fun executeAndSync(antFarm: AntFarm) {
@@ -206,6 +205,9 @@ class ChouChouLe {
                     continue
                 }
                 val finished = doChouchoule(drawType)
+                if (drawType == "ipDraw" && AntFarm.instance?.farmWorkAttempted?.contains("exchange") != true) {
+                    exchangeIpRewards()
+                }
                 if (finished && useDailyState) Status.setFlagToday(flag)
                 allFinished = allFinished && finished
             }
@@ -453,7 +455,7 @@ class ChouChouLe {
             return farm.buildFarmTaskFailureResult(response, task.taskId, task.title, "完成", "doFarmTask")
         }
         GlobalThreadPools.sleepCompat(1000L)
-        return TaskFlowActionResult.success()
+        return TaskFlowActionResult.success(progressChanged = false)
     }
 
     private fun finishTaskDirectly(
@@ -476,7 +478,7 @@ class ChouChouLe {
             }
         val response = AntFarmRpcCall.finishTask(task.taskId, taskSceneCode, outBizNo)
         val jo = JSONObject(response)
-        if (ResChecker.checkRes(TAG, jo)) return TaskFlowActionResult.success()
+        if (ResChecker.checkRes(TAG, jo)) return TaskFlowActionResult.success(progressChanged = false)
         return farm.buildFarmTaskFailureResult(jo, task.taskId, task.title, "完成[$drawType]", "finishTask")
     }
 
@@ -703,7 +705,7 @@ class ChouChouLe {
         return false
     }
 
-    internal fun exchangeIpRewards() {
+    private fun exchangeIpRewards() {
         val farm = AntFarm.instance ?: return
         if (farm.enableChouchoule?.value != true || farm.autoExchange?.value != true || ApplicationHookConstants.isOffline()) return
         try {

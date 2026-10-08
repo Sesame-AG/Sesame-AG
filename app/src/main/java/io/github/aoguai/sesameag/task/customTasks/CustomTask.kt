@@ -28,7 +28,6 @@ enum class CustomTask(val displayName: String, val isModule: Boolean = false) {
     ECO_PROTECTION("生态保护", isModule = true),
     GREEN_FINANCE("绿色经营", isModule = true),
     MY_BANK_WELFARE("网商银行", isModule = true),
-    RESERVE("保护地", isModule = true),
-    OTHER_TASK("其他任务", isModule = true)
+    RESERVE("保护地", isModule = true)
 }
 

@@ -119,6 +119,7 @@ import io.github.aoguai.sesameag.entity.friend.FriendSelectionCountSpec
 import io.github.aoguai.sesameag.entity.friend.FriendSelectionScope
 import io.github.aoguai.sesameag.entity.friend.FriendSelectionSpec
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
+import io.github.aoguai.sesameag.model.BaseModel
 import io.github.aoguai.sesameag.model.modelFieldExt.ChoiceSwitchMeta
 import io.github.aoguai.sesameag.model.modelFieldExt.FriendSelectionEditorMeta
 import io.github.aoguai.sesameag.model.modelFieldExt.IntegerModelField
@@ -779,6 +780,8 @@ private fun FieldEditor(
     onRunAction: () -> Unit,
 ) {
     val hasTodayFlag = field.todayClearableFlagKeys.isNotEmpty()
+    val isTaskOrder = field.key.modelCode == BaseModel::class.java.simpleName &&
+        field.key.fieldCode == BaseModel.taskOrderPriority.code
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
             modifier = if (hasTodayFlag) {
@@ -873,7 +876,9 @@ private fun FieldEditor(
             "TEXT", "READ_TEXT" -> ReadOnlyValue(decodeJsonString(value))
             "URL_TEXT" -> UrlValue(decodeJsonString(value))
             "SELECT" -> ValueButton(selectionSummary(value, emptyList(), false)) { onOpenSelection(false, false) }
-            "SELECT_AND_COUNT" -> ValueButton(mapSummary(value)) { onOpenSelection(false, true) }
+            "SELECT_AND_COUNT" -> ValueButton(mapSummary(value, if (isTaskOrder) "顺序" else "次数")) {
+                onOpenSelection(false, true)
+            }
             "SELECT_AND_COUNT_ONE" -> ValueButton(singleCountSummary(value)) { onOpenSelection(true, true) }
             "FRIEND_SELECTION", "FRIEND_SELECTION_COUNT" -> ValueButton(friendSummary(value, field.type)) {
                 onOpenFriendSelection()
@@ -1110,6 +1115,8 @@ private fun SelectionEditorDialog(
     var values by rememberSaveable(request.field.key.modelCode, request.field.key.fieldCode, value) {
         mutableStateOf(parseSelectionValues(value, request))
     }
+    val isTaskOrder = request.field.key.modelCode == BaseModel::class.java.simpleName &&
+        request.field.key.fieldCode == BaseModel.taskOrderPriority.code
     val options = (optionsState as? FieldOptionsState.Ready)?.options.orEmpty()
     val filtered = options.filter { it.name.contains(search, true) || it.id.contains(search, true) }
 
@@ -1163,6 +1170,7 @@ private fun SelectionEditorDialog(
                                 count = values[option.id],
                                 single = request.single,
                                 withCount = request.withCount,
+                                isOrder = isTaskOrder,
                                 onChange = { selected, count ->
                                     values = when {
                                         !selected -> values - option.id
@@ -1178,7 +1186,8 @@ private fun SelectionEditorDialog(
                     TextButton(onClick = onDismiss) { Text("取消") }
                     TextButton(
                         onClick = { onSave(serializeSelectionValues(values, request)) },
-                        enabled = optionsState is FieldOptionsState.Ready,
+                        enabled = optionsState is FieldOptionsState.Ready &&
+                            (!isTaskOrder || values.values.all { it > 0 }),
                     ) { Text("完成") }
                 }
             }
@@ -1193,6 +1202,7 @@ private fun SelectionOptionRow(
     count: Int?,
     single: Boolean,
     withCount: Boolean,
+    isOrder: Boolean,
     onChange: (Boolean, Int) -> Unit,
 ) {
     ListItem(
@@ -1212,11 +1222,24 @@ private fun SelectionOptionRow(
         },
         trailingContent = if (withCount && selected) {
             {
+                var orderText by rememberSaveable(option.id) { mutableStateOf((count ?: 1).toString()) }
+                val invalidOrder = isOrder && orderText.toIntOrNull()?.let { it > 0 } != true
                 OutlinedTextField(
-                    value = (count ?: 1).toString(),
-                    onValueChange = { raw -> raw.toIntOrNull()?.let { onChange(true, it) } },
-                    modifier = Modifier.width(88.dp),
-                    label = { Text("次数") },
+                    value = if (isOrder) orderText else (count ?: 1).toString(),
+                    onValueChange = { raw ->
+                        if (isOrder) {
+                            orderText = raw
+                            onChange(true, raw.toIntOrNull()?.takeIf { it > 0 } ?: 0)
+                        } else {
+                            raw.toIntOrNull()?.let { onChange(true, it) }
+                        }
+                    },
+                    modifier = Modifier.width(if (isOrder) 112.dp else 88.dp),
+                    label = { Text(if (isOrder) "顺序" else "次数") },
+                    isError = invalidOrder,
+                    supportingText = if (invalidOrder) {
+                        { Text("请输入正整数") }
+                    } else null,
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 )
@@ -2051,9 +2074,9 @@ private fun selectionSummary(value: String, options: List<FieldOptionUiModel>, s
     return if (count == 0) "未选择" else "已选择 $count 项"
 }
 
-private fun mapSummary(value: String): String {
+private fun mapSummary(value: String, countLabel: String = "次数"): String {
     val count = JsonUtil.toNode(value)?.takeIf { it.isObject }?.size() ?: 0
-    return if (count == 0) "未选择" else "已选择 $count 项并设置次数"
+    return if (count == 0) "未选择" else "已选择 $count 项并设置$countLabel"
 }
 
 private fun singleCountSummary(value: String): String {

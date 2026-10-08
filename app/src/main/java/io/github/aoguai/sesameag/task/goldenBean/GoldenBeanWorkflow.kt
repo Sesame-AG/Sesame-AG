@@ -81,22 +81,19 @@ internal suspend fun GoldenBeanTreasure.runGoldenBeanTreasure() {
 
     runGoldenBeanExchanges(entryRuns)
     taskResults = entryRuns.associateWith { it.runTaskFlow(executeIntervalInt) }
+    val minerConfirmed = masterRun?.adapter?.isMinerEntryReceived() != true ||
+        GoldenBeanTreasureSupport.runMiner()
 
     val allEntrancesQueried = entryRuns.size == GoldenBeanRpcCall.ENTRIES.size
     val allTaskFlowsConfirmed = taskResults.values.all { it.completed && !it.stopped }
     val hasUnresolvedTasks = entryRuns.any { it.adapter.hasUnresolvedTasks() }
-    if (allEntrancesQueried && !reachedConvergenceLimit && allTaskFlowsConfirmed && gameResult.completed && !hasUnresolvedTasks) {
+    if (allEntrancesQueried && minerConfirmed && !reachedConvergenceLimit && allTaskFlowsConfirmed && gameResult.completed && !hasUnresolvedTasks) {
         Status.setFlagToday(StatusFlags.FLAG_GOLDEN_BEAN_TASKS_DONE)
     } else if (!hasUnresolvedTasks) {
-        Log.goldenBean("金豆夺宝任务未写入当日完成标记：任务流或金豆乐园状态尚未完成确认")
+        Log.goldenBean("金豆夺宝任务未写入当日完成标记：任务流、矿工或金豆乐园状态尚未完成确认")
     } else {
         Log.goldenBean("金豆夺宝仍有非黑名单待完成或待领奖任务，不写入今日完成标记")
     }
-
-    entryRuns.firstOrNull { it.entry == GoldenBeanRpcCall.MASTER_ENTRY }
-        ?.adapter
-        ?.takeIf { it.isMinerEntryReceived() }
-        ?.let { GoldenBeanTreasureSupport.runMiner() }
 }
 
 private data class GoldenBeanEntryRun(
@@ -342,8 +339,7 @@ private class GoldenBeanTaskFlowAdapter(
         }
         return when (entry) {
             GoldenBeanRpcCall.MASTER_ENTRY ->
-                (item.type == GoldenBeanRpcCall.WAKUANG_TASK_TYPE &&
-                    item.actionType == GoldenBeanRpcCall.WAKUANG_ACTION_TYPE) ||
+                item.actionType == GoldenBeanRpcCall.WAKUANG_ACTION_TYPE ||
                     (item.type == GoldenBeanRpcCall.JINDOULEYUAN_TASK_TYPE &&
                         item.actionType == GoldenBeanRpcCall.JINDOULEYUAN_ACTION_TYPE)
 

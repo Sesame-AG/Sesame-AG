@@ -17,7 +17,6 @@ import io.github.aoguai.sesameag.task.antStall.AntStall
 import io.github.aoguai.sesameag.task.customTasks.ManualTaskModel
 import io.github.aoguai.sesameag.task.greenFinance.GreenFinance
 import io.github.aoguai.sesameag.task.myBankWelfare.MyBankWelfare
-import io.github.aoguai.sesameag.task.other.OtherTask
 import io.github.aoguai.sesameag.task.reserve.Reserve
 import io.github.aoguai.sesameag.task.youthPrivilege.YouthPrivilege
 
@@ -42,7 +41,6 @@ object ModelOrder {
         MyBankWelfare::class.java, // 网商福利金
         Reserve::class.java,       // 保护地
         ManualTaskModel::class.java, // 手动调度任务
-        OtherTask::class.java,      // 其他
         AnswerAI::class.java         // AI答题
 
     )

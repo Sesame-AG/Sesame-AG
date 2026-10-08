@@ -53,8 +53,7 @@ object CustomSettings {
             SimpleEntity("antSesameCredit", "芝麻信用"),
             SimpleEntity("EcoProtection", "生态保护"),
             SimpleEntity("greenFinance", "绿色经营"),
-            SimpleEntity("reserve", "保护地"),
-            SimpleEntity("other", "其他任务")
+            SimpleEntity("reserve", "保护地")
         )
     }
 
@@ -148,7 +147,6 @@ object CustomSettings {
             taskInfo.contains("生态保护") || taskInfo.contains("EcoProtection") -> "EcoProtection"
             taskInfo.contains("绿色经营") || taskInfo.contains("greenFinance") -> "greenFinance"
             taskInfo.contains("保护地") || taskInfo.contains("reserve") -> "reserve"
-            taskInfo.contains("其他任务") || taskInfo.contains("other") -> "other"
             else -> null
         }
     }

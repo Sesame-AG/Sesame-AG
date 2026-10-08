@@ -49,10 +49,6 @@ internal fun AntMember.prepareMemberPointWorkflows(
         deferredTasks.add(scope.async(Dispatchers.IO) { handleYebExpGoldTasks() })
     }
 
-    if (memberPointExchangeBenefit?.value == true) {
-        deferredTasks.add(scope.async(Dispatchers.IO) { memberPointExchangeBenefit() })
-    }
-
     return plan
 }
 
@@ -75,5 +71,8 @@ internal suspend fun AntMember.finishMemberPointWorkflows(plan: AntMemberPointWo
             Log.member("🎯 会员流程执行完成，开始统一领取会员积分")
             AntMember.queryPointCert(1, 20)
         }
+    }
+    if (memberPointExchangeBenefit?.value == true && !ApplicationHookConstants.isOffline()) {
+        memberPointExchangeBenefit()
     }
 }
