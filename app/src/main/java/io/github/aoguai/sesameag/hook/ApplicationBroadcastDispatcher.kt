@@ -26,6 +26,7 @@ import io.github.aoguai.sesameag.task.customTasks.ManualTaskModel
 import io.github.aoguai.sesameag.task.exchange.ExchangeFetchProgress
 import io.github.aoguai.sesameag.task.myBankWelfare.MyBankWelfare
 import io.github.aoguai.sesameag.util.GlobalThreadPools.execute
+import io.github.aoguai.sesameag.util.CommandUtil
 import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log.capture
 import io.github.aoguai.sesameag.util.Log.record
@@ -64,7 +65,8 @@ internal object ApplicationBroadcastDispatcher {
             action != ApplicationHookConstants.BroadcastActions.RESTART &&
             !WorkflowRootGuard.isExecutionAllowed()
         ) {
-            record(TAG, "必需权限或使用协议未就绪，已拒绝执行: $action")
+            val reason = if (!CommandUtil.isServiceConnected()) "执行服务连接中，请稍后重试" else "必需权限或使用协议未就绪"
+            record(TAG, "$reason，已拒绝执行: $action")
             return
         }
 

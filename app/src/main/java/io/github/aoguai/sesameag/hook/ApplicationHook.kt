@@ -86,10 +86,12 @@ import io.github.aoguai.sesameag.util.maps.UserMap.currentUid
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.lang.AutoCloseable
 import java.lang.reflect.Method
 import java.util.Calendar
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.Volatile
 
 class ApplicationHook {
@@ -1470,7 +1472,29 @@ class ApplicationHook {
             }
         }
 
+        private val executionRecoveryRequested = AtomicBoolean(false)
+
+        internal fun requestExecutionServiceRecovery() {
+            if (rootCheckInProgress || service == null || !Config.isLoaded() ||
+                !Config.isLegalAcceptedForCurrentVersion() || ApplicationHookConstants.isOffline() ||
+                !RuntimeIdentityGuard.isTrustedForExecution() || !AccountSlotRegistry.isExecutableUser(currentUid) ||
+                !executionRecoveryRequested.compareAndSet(false, true)
+            ) return
+            ApplicationHookConstants.submitEntry("execution_service_recovery") {
+                try {
+                    if (!CommandUtil.isServiceConnected()) {
+                        ensureRootAccessForWorkflow("execution_service_recovery")
+                    }
+                } finally {
+                    executionRecoveryRequested.set(false)
+                }
+            }.invokeOnCompletion { executionRecoveryRequested.set(false) }
+        }
+
         private fun ensureRootAccessForWorkflow(reason: String): Boolean {
+            if (!Config.isLoaded() || !Config.isLegalAcceptedForCurrentVersion() ||
+                ApplicationHookConstants.isOffline()
+            ) return false
             if (WorkflowRootGuard.hasGrantedRoot() && WorkflowRootGuard.isExecutionAllowed()) {
                 pendingInit = false
                 pendingInitReason = null
@@ -1485,17 +1509,30 @@ class ApplicationHook {
             }
 
             rootCheckInProgress = true
+            val recoveryEpoch = AccountSessionCoordinator.currentSessionEpoch()
+            val recoveryUser = currentUid
+            fun isRecoveryCurrent(): Boolean =
+                service != null && currentUid == recoveryUser &&
+                    AccountSessionCoordinator.currentSessionEpoch() == recoveryEpoch &&
+                    Config.isLoaded() && Config.isLegalAcceptedForCurrentVersion() &&
+                    RuntimeIdentityGuard.isTrustedForExecution() && AccountSlotRegistry.isExecutableUser(currentUid) &&
+                    !ApplicationHookConstants.isOffline()
             record(TAG, "⏳ 正在检查执行权限，暂不启动工作流: $reason")
             execute {
                 try {
                     val context = appContext ?: return@execute
-                    val executorStatus = CommandUtil.awaitServiceStatus(context)
-                    if (executorStatus is CommandUtil.ServiceStatus.Loading ||
-                        executorStatus is CommandUtil.ServiceStatus.Error
-                    ) {
-                        record(TAG, "⏳ 执行权限服务尚未就绪，保留待初始化状态: $reason")
-                        return@execute
+                    var executorStatus: CommandUtil.ServiceStatus
+                    while (true) {
+                        if (!isRecoveryCurrent()) return@execute
+                        executorStatus = CommandUtil.awaitServiceStatus(context)
+                        if (executorStatus !is CommandUtil.ServiceStatus.Loading &&
+                            executorStatus !is CommandUtil.ServiceStatus.Error
+                        ) break
+                        record(TAG, "⏳ 执行服务连接未就绪，15秒后自动重试: $reason")
+                        updateRunningStatus("执行服务连接未就绪，等待自动重连")
+                        delay(15_000L)
                     }
+                    if (!isRecoveryCurrent()) return@execute
                     val granted = WorkflowRootGuard.hasRoot(forceRefresh = true, reason = reason) &&
                         executorStatus is CommandUtil.ServiceStatus.Active &&
                         WorkflowRootGuard.isExecutionAllowed()
@@ -1509,12 +1546,20 @@ class ApplicationHook {
                     }
 
                     ApplicationHookConstants.submitEntry("execution_permission_ready") {
+                        if (!isRecoveryCurrent()) return@submitEntry
                         val retryReason = pendingInitReason ?: reason
-                        if (service != null && (!init || pendingInit)) {
+                        if (!init) {
                             record(TAG, "✅ 执行权限检查通过，继续初始化: $retryReason")
                             if (initHandler(retryReason)) {
                                 init = true
                             }
+                        } else {
+                            pendingInit = false
+                            pendingInitReason = null
+                            AccountSessionCoordinator.refreshWorkflowState(context, "execution_service_recovered")
+                            UnifiedScheduler.reconcilePersistentSchedules(context, PersistentReconcileMode.FIRE_ALARM_DUE)
+                            ApplicationHookCore.dispatchIfNeeded()
+                            record(TAG, "✅ 执行服务已恢复，继续现有任务")
                         }
                     }
                 } catch (th: Throwable) {

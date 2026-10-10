@@ -10,6 +10,7 @@ import io.github.aoguai.sesameag.util.CoroutineUtils
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.NetworkUtils
 import io.github.aoguai.sesameag.util.RpcOfflineRisk
+import io.github.aoguai.sesameag.util.WorkflowRootGuard
 import org.json.JSONObject
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -103,6 +104,9 @@ object RequestManager {
     ): RpcRequestOutcome {
         val blocked = tryBlockByOffline(methodLog)
         if (blocked != null) return blocked
+        if (!WorkflowRootGuard.isExecutionAllowed()) {
+            return RpcRequestOutcome.Stopped(RpcFallbackJsonFactory.build("本地执行条件未就绪", methodLog))
+        }
 
         // 2. 获取 Bridge (包含网络检查)
         // 如果这里获取失败，也视为一次错误
@@ -133,6 +137,10 @@ object RequestManager {
             return RpcRequestOutcome.Stopped(RpcFallbackJsonFactory.build("账号会话已变化", methodLog))
         }
         if (result.isNullOrBlank()) {
+            // 本地门禁拦截没有发起 RPC，不能累计为远端失败并触发永久离线。
+            if (!WorkflowRootGuard.isExecutionAllowed()) {
+                return RpcRequestOutcome.Stopped(RpcFallbackJsonFactory.build("本地执行条件未就绪", methodLog))
+            }
             // 在途请求可能因其他 RPC 触发离线而返回空值，不应再次熔断并覆盖风控原因。
             if (ApplicationHookConstants.isOffline()) {
                 return RpcRequestOutcome.Stopped(RpcFallbackJsonFactory.build("离线模式", methodLog))
@@ -298,4 +306,3 @@ object RequestManager {
     fun requestString(method: String?, data: String?, tryCount: Int, retryInterval: Int): String =
         requestStringWithPolicy(RpcEntity(method, data), tryCount, retryInterval)
 }
-

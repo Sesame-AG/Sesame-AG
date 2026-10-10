@@ -333,6 +333,8 @@ object CommandUtil {
         }
     }
 
+    fun isServiceConnected(): Boolean = isBound.get() && commandService?.asBinder()?.isBinderAlive == true
+
     fun isExecutionAllowed(userId: String): Boolean {
         val service = commandService ?: return false
         return try {
@@ -391,4 +393,3 @@ object CommandUtil {
         }
     }
 }
-

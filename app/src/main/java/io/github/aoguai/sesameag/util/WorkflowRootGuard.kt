@@ -32,6 +32,10 @@ object WorkflowRootGuard {
     fun isExecutionAllowed(): Boolean {
         if (!RuntimeIdentityGuard.isTrustedForExecution() || resolveHookAccessSource() == null) return false
         val userId = UserMap.currentUid?.trim()?.takeIf { it.isNotEmpty() } ?: return false
+        if (!CommandUtil.isServiceConnected()) {
+            ApplicationHook.requestExecutionServiceRecovery()
+            return false
+        }
         return AccountSlotRegistry.isExecutableUser(userId) && CommandUtil.isExecutionAllowed(userId)
     }
 
@@ -146,4 +150,3 @@ object WorkflowRootGuard {
         }
     }
 }
-
