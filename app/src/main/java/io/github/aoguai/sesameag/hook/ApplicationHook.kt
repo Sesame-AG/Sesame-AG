@@ -16,6 +16,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import androidx.core.content.ContextCompat
+import com.fasterxml.jackson.databind.node.ObjectNode
 import io.github.aoguai.sesameag.BuildConfig
 import io.github.aoguai.sesameag.SesameApplication
 import io.github.aoguai.sesameag.data.Config
@@ -66,6 +67,7 @@ import io.github.aoguai.sesameag.util.Files
 import io.github.aoguai.sesameag.util.GlobalThreadPools.execute
 import io.github.aoguai.sesameag.util.GlobalThreadPools.shutdownAndRestart
 import io.github.aoguai.sesameag.util.CommandUtil
+import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.LocaleSettingsApplier
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.Log.error
@@ -1599,8 +1601,8 @@ class ApplicationHook {
          * 为已被运行时识别、但尚未建立配置目录的账号登记最小配置。
          *
          * 可执行槽位只允许用户显式选择，而候选名单来自已存在的配置目录，因此被拒绝的账号若不在此处落地
-         * 目录与快照，就永远无法出现在槽位候选里。这里只补齐账号身份所需的最小文件：内容为空对象的
-         * config_v2.json 与当前账号快照 self.json，两者都不授予执行权，也不启动任何调度。
+         * 目录与快照，就永远无法出现在槽位候选里。这里只补齐账号配置与当前账号快照，
+         * 不授予执行权，也不启动任何调度。
          */
         private fun provisionUnregisteredAccount(reasonCode: String, userId: String, loader: ClassLoader?) {
             if (reasonCode != "account_slot_not_selected" && reasonCode != "account_slot_migration_required") {
@@ -1611,26 +1613,32 @@ class ApplicationHook {
                 record(TAG, "account_provision_skipped: runtime_identity_untrusted account=$accountTag")
                 return
             }
-            val userDirectory = Files.child(Files.CONFIG_DIR, userId)
-            val configProbe = Files.child(userDirectory, "config_v2.json")
-            val selfProbe = Files.child(userDirectory, "self.json")
-            if (configProbe.isFile && configProbe.length() > 0L && selfProbe.isFile && selfProbe.length() > 0L) {
-                return
-            }
             runCatching {
+                val userDirectory = Files.child(Files.CONFIG_DIR, userId)
+                val configProbe = Files.child(userDirectory, "config_v2.json")
+                val selfProbe = Files.child(userDirectory, "self.json")
+                if (configProbe.isFile && configProbe.length() > 0L && selfProbe.isFile && selfProbe.length() > 0L) {
+                    return
+                }
                 Files.withAccountLock(userId) {
-                    // 走带旧版迁移语义的路径；骨架必须是空对象，避免从共享默认配置继承协议确认状态。
+                    // 保留旧版迁移和共享默认业务配置；新账号必须独立确认使用协议。
                     val configFile = Files.getConfigV2File(userId)
                     if (!configFile.isFile || configFile.length() == 0L) {
-                        check(Files.writeAtomically("{}", configFile)) { "config_skeleton_write_failed" }
+                        val defaultFile = Files.getDefaultConfigV2File()
+                        val mapper = JsonUtil.copyMapper()
+                        val configNode = if (defaultFile.exists()) {
+                            mapper.readTree(Files.readText(defaultFile)) as? ObjectNode
+                                ?: kotlin.error("default_config_invalid")
+                        } else {
+                            mapper.createObjectNode()
+                        }
+                        configNode.remove("legalAcceptedAppVersion")
+                        check(Files.writeAtomically(mapper.writeValueAsString(configNode), configFile)) {
+                            "config_skeleton_write_failed"
+                        }
                     }
                     AccountSessionCoordinator.ensureActiveUserSnapshot(userId, loader)
                 }
-            }.onFailure { error ->
-                if (error is kotlinx.coroutines.CancellationException) throw error
-                record(TAG, "account_provision_failed: ${error.javaClass.simpleName} account=$accountTag")
-                Log.w(TAG, "account_provision_failed: ${error.javaClass.simpleName} account=$accountTag")
-            }.onSuccess {
                 // 账号快照写入失败只返回结果不抛异常，因此以磁盘上的实际文件作为登记成功依据。
                 val registered = configProbe.isFile && configProbe.length() > 0L &&
                     selfProbe.isFile && selfProbe.length() > 0L
@@ -1640,6 +1648,10 @@ class ApplicationHook {
                     record(TAG, "account_provision_incomplete: account=$accountTag reason=$reasonCode")
                     Log.w(TAG, "account_provision_incomplete: account=$accountTag")
                 }
+            }.onFailure { error ->
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                record(TAG, "account_provision_failed: ${error.javaClass.simpleName} account=$accountTag")
+                Log.w(TAG, "account_provision_failed: ${error.javaClass.simpleName} account=$accountTag")
             }
         }
 
