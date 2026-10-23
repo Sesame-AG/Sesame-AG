@@ -1233,6 +1233,7 @@ class ApplicationHook {
                     is AccountSlotAdmission.Denied -> {
                         record(TAG, "execution_gate_denied: ${result.reasonCode} process_role=main")
                         Log.w(TAG, "execution_gate_denied: ${result.reasonCode} process_role=main account=${AccountSlotRegistry.shortHash(userId)}")
+                        provisionUnregisteredAccount(result.reasonCode, userId, activeClassLoader)
                         destroyHandlerInternal("account_slot_${result.reasonCode}", invalidateSession = true)
                         return false
                     }
@@ -1592,6 +1593,54 @@ class ApplicationHook {
             ApplicationHookConstants.clearPendingTriggers("execution_prerequisites_missing")
             AccountSessionCoordinator.refreshWorkflowState(appContext, "execution_prerequisites_missing", legalAccepted = legalAccepted)
             return false
+        }
+
+        /**
+         * 为已被运行时识别、但尚未建立配置目录的账号登记最小配置。
+         *
+         * 可执行槽位只允许用户显式选择，而候选名单来自已存在的配置目录，因此被拒绝的账号若不在此处落地
+         * 目录与快照，就永远无法出现在槽位候选里。这里只补齐账号身份所需的最小文件：内容为空对象的
+         * config_v2.json 与当前账号快照 self.json，两者都不授予执行权，也不启动任何调度。
+         */
+        private fun provisionUnregisteredAccount(reasonCode: String, userId: String, loader: ClassLoader?) {
+            if (reasonCode != "account_slot_not_selected" && reasonCode != "account_slot_migration_required") {
+                return
+            }
+            val accountTag = AccountSlotRegistry.shortHash(userId)
+            if (!RuntimeIdentityGuard.isTrustedForExecution()) {
+                record(TAG, "account_provision_skipped: runtime_identity_untrusted account=$accountTag")
+                return
+            }
+            val userDirectory = Files.child(Files.CONFIG_DIR, userId)
+            val configProbe = Files.child(userDirectory, "config_v2.json")
+            val selfProbe = Files.child(userDirectory, "self.json")
+            if (configProbe.isFile && configProbe.length() > 0L && selfProbe.isFile && selfProbe.length() > 0L) {
+                return
+            }
+            runCatching {
+                Files.withAccountLock(userId) {
+                    // 走带旧版迁移语义的路径；骨架必须是空对象，避免从共享默认配置继承协议确认状态。
+                    val configFile = Files.getConfigV2File(userId)
+                    if (!configFile.isFile || configFile.length() == 0L) {
+                        check(Files.writeAtomically("{}", configFile)) { "config_skeleton_write_failed" }
+                    }
+                    AccountSessionCoordinator.ensureActiveUserSnapshot(userId, loader)
+                }
+            }.onFailure { error ->
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                record(TAG, "account_provision_failed: ${error.javaClass.simpleName} account=$accountTag")
+                Log.w(TAG, "account_provision_failed: ${error.javaClass.simpleName} account=$accountTag")
+            }.onSuccess {
+                // 账号快照写入失败只返回结果不抛异常，因此以磁盘上的实际文件作为登记成功依据。
+                val registered = configProbe.isFile && configProbe.length() > 0L &&
+                    selfProbe.isFile && selfProbe.length() > 0L
+                if (registered) {
+                    record(TAG, "account_provision_registered: account=$accountTag reason=$reasonCode")
+                } else {
+                    record(TAG, "account_provision_incomplete: account=$accountTag reason=$reasonCode")
+                    Log.w(TAG, "account_provision_incomplete: account=$accountTag")
+                }
+            }
         }
 
         internal fun onHostAccountUnavailable(reason: String) {
