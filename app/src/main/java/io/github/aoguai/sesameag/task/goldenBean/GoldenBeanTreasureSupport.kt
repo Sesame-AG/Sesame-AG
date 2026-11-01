@@ -26,6 +26,7 @@ import org.json.JSONObject
 internal data class GoldenBeanManureExchangePlan(
     val reservedManure: Int,
     val exchangedToday: Int,
+    val minimumRemainingManure: Int,
 )
 
 internal data class GoldenBeanSesameExchangePlan(
@@ -63,6 +64,42 @@ internal object GoldenBeanTreasureSupport {
         }
         return response.optString("resultCode") in setOf("100", "SUCCESS") ||
             response.optString("code") == "100000000"
+    }
+
+    internal fun collectFloatingBeans(): Boolean {
+        val attempted = mutableSetOf<String>()
+        var previousAsset: String? = null
+        repeat(GOLDEN_BEAN_CONVERGENCE_LIMIT) {
+            val snapshot = parseResponse(GoldenBeanRpcCall.sync(listOf("FLOATING_BEANS")))
+            if (snapshot == null || !isSuccess(snapshot)) {
+                Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "浮动金豆列表查询失败 raw=$snapshot")
+                return false
+            }
+            val beans = snapshot.optJSONArray("floatingBeans")
+                ?: snapshot.optJSONObject("data")?.optJSONArray("floatingBeans") ?: JSONArray()
+            val candidates = (0 until beans.length()).mapNotNull { beans.optJSONObject(it) }
+            if (previousAsset != null) {
+                if (candidates.any { it.optString("assetId") == previousAsset }) {
+                    Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "浮动金豆收取后仍待确认 assetId=$previousAsset raw=$snapshot")
+                    return false
+                }
+                Log.goldenBean("浮动金豆已收取并回查 assetId=$previousAsset")
+            }
+            if (candidates.isEmpty()) return true
+            val assetId = candidates.first().optString("assetId")
+            if (assetId.isBlank() || !attempted.add(assetId)) {
+                Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "浮动金豆资产标识缺失或重复 raw=$snapshot")
+                return false
+            }
+            val result = parseResponse(GoldenBeanRpcCall.collect(assetId))
+            if (result == null || !isSuccess(result)) {
+                Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "浮动金豆收取失败 assetId=$assetId raw=$result")
+                return false
+            }
+            previousAsset = assetId
+        }
+        Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "浮动金豆达到本轮处理上限，保留待确认状态")
+        return false
     }
 
     internal fun planSesameExchange(
@@ -165,6 +202,7 @@ internal object GoldenBeanTreasureSupport {
     internal fun planManureExchange(
         indexResponse: JSONObject,
         configuredDailyReserveAmount: Int,
+        minimumRemainingManure: Int,
     ): GoldenBeanManureExchangePlan? {
         if (configuredDailyReserveAmount == 0) {
             return null
@@ -183,7 +221,10 @@ internal object GoldenBeanTreasureSupport {
             Status.getIntFlagToday(StatusFlags.FLAG_GOLDEN_BEAN_MANURE_EXCHANGE_AMOUNT) ?: 0
         val reservedManure =
             when {
-                configuredDailyReserveAmount == -1 -> minOf(effectiveExchangeManure, remainQuota)
+                configuredDailyReserveAmount == -1 -> minOf(
+                    effectiveExchangeManure, remainQuota,
+                    (currentManure - minimumRemainingManure).coerceAtLeast(0),
+                )
                 configuredDailyReserveAmount > 0 -> configuredDailyReserveAmount - exchangedToday
                 else -> {
                     Log.error(
@@ -230,7 +271,7 @@ internal object GoldenBeanTreasureSupport {
             )
             return null
         }
-        if (currentManure < reservedManure ||
+        if (currentManure.toLong() - reservedManure < minimumRemainingManure ||
             effectiveExchangeManure < reservedManure ||
             remainQuota < reservedManure
         ) {
@@ -244,6 +285,7 @@ internal object GoldenBeanTreasureSupport {
         return GoldenBeanManureExchangePlan(
             reservedManure = reservedManure,
             exchangedToday = exchangedToday,
+            minimumRemainingManure = minimumRemainingManure,
         )
     }
 
@@ -273,7 +315,7 @@ internal object GoldenBeanTreasureSupport {
             return false
         }
         if (plan.reservedManure < minExchangeAmount ||
-            currentManure < plan.reservedManure ||
+            currentManure.toLong() - plan.reservedManure < plan.minimumRemainingManure ||
             effectiveExchangeManure < plan.reservedManure ||
             remainQuota < plan.reservedManure
         ) {

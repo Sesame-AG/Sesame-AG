@@ -9,18 +9,33 @@ import io.github.aoguai.sesameag.task.exchange.ExchangeOptionRow
 import io.github.aoguai.sesameag.util.maps.UserMap
 import io.github.aoguai.sesameag.model.ModelGroup
 import io.github.aoguai.sesameag.model.withDesc
+import io.github.aoguai.sesameag.model.withPortScope
 import io.github.aoguai.sesameag.model.modelFieldExt.BooleanModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.IntegerModelField
+import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
+import io.github.aoguai.sesameag.hook.ApplicationHook
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleKind
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleState
+import io.github.aoguai.sesameag.hook.keepalive.ScheduledTaskRouter
+import io.github.aoguai.sesameag.hook.keepalive.UnifiedScheduler
 import io.github.aoguai.sesameag.task.ModelTask
+import io.github.aoguai.sesameag.util.SerialTaskQueue
+import org.json.JSONObject
 import io.github.aoguai.sesameag.util.Log
 import kotlin.math.max
 
 class GoldenBeanTreasure : ModelTask() {
+    companion object {
+        internal const val PERSISTENT_CHILD_KIND = "golden_bean_task"
+    }
+
+    private val goldenBeanQueue = SerialTaskQueue()
     internal var executeIntervalInt: Int = 0
 
     private lateinit var executeInterval: IntegerModelField
     internal lateinit var goldenBeanTreasure: BooleanModelField
     internal lateinit var goldenBeanManureExchangeDailyReserveAmount: IntegerModelField
+    internal lateinit var goldenBeanManureRemainingAmount: IntegerModelField
     internal lateinit var goldenBeanSesameExchangeDailyBeanAmount: IntegerModelField
     internal lateinit var goldenBeanMallExchange: BooleanModelField
     internal lateinit var goldenBeanMallExchangeList: SelectAndCountModelField
@@ -55,6 +70,12 @@ class GoldenBeanTreasure : ModelTask() {
                     "0 不自动换豆；正数为当天换豆的肥料额度；-1 按服务端可兑换额度处理。余额、资格、最低兑换量或每日额度不足时，本轮不换豆。",
                 )
                 .also { goldenBeanManureExchangeDailyReserveAmount = it },
+        )
+        modelFields.addField(
+            IntegerModelField("goldenBeanManureRemainingAmount", "肥料换豆后至少保留", 0, 0, null)
+                .withPortScope(ConfigPortScope.GENERIC)
+                .withDesc("兑换后保留的肥料数量，0 不额外保留。与每日肥料额度同时生效。")
+                .also { goldenBeanManureRemainingAmount = it },
         )
         modelFields.addField(
             IntegerModelField(
@@ -92,7 +113,7 @@ class GoldenBeanTreasure : ModelTask() {
     fun refreshGoldenBeanMallOptionsForRemote(forceRefresh: Boolean = false): List<ExchangeOptionRow> =
         GoldenBeanTreasureSupport.queryMallItems(forceRefresh).rows
 
-    override suspend fun runSuspend() {
+    override suspend fun runSuspend(): Unit = goldenBeanQueue.submit {
         try {
             Log.goldenBean("执行开始-${getName()}")
             executeIntervalInt = max(executeInterval.value ?: 0, 500)
@@ -111,6 +132,51 @@ class GoldenBeanTreasure : ModelTask() {
             Log.printStackTrace("GoldenBeanTreasure", "start.run err:", t)
         } finally {
             Log.goldenBean("执行结束-${getName()}")
+        }
+    }
+
+    internal fun scheduleGoldenBeanTasks(waitKey: String, triggerAt: Long) {
+        val context = ApplicationHook.appContext ?: return
+        val owner = AccountSessionCoordinator.currentUserId()?.takeIf { it.isNotBlank() } ?: return
+        val epoch = AccountSessionCoordinator.currentSessionEpoch()
+        val childId = "$PERSISTENT_CHILD_KIND:$owner:$waitKey:$triggerAt"
+        val payload = JSONObject().put("child_kind", PERSISTENT_CHILD_KIND)
+            .put("owner_user_id", owner).put("session_epoch", epoch).put("wait_key", waitKey)
+        val schedule = UnifiedScheduler.schedulePersistentTrigger(
+            context = context, name = "金豆任务计时与回查", kind = PersistentScheduleKind.MODULE_CHILD,
+            triggerAtMs = triggerAt, dedupeKey = childId, payloadJson = payload.toString(),
+            ownerUserId = owner, sessionEpoch = epoch,
+        )
+        if (schedule.state == PersistentScheduleState.FAILED) {
+            Log.error("GoldenBeanTreasure", "金豆任务持久调度注册失败:${schedule.lastError}")
+        }
+        if (!hasChildTask(childId)) {
+            addChildTask(ChildModelTask(
+                id = childId, group = PERSISTENT_CHILD_KIND, execTime = triggerAt,
+                suspendRunnable = {
+                    if (schedule.state == PersistentScheduleState.FAILED) {
+                        triggerPersistentGoldenBeanTasks(payload.toString(), schedule.id, "golden_bean_timer", persistent = false)
+                    } else ScheduledTaskRouter.fire(context, schedule, "golden_bean_timer")
+                },
+            ))
+        }
+    }
+
+    internal fun triggerPersistentGoldenBeanTasks(
+        payloadJson: String, scheduleId: String, source: String, persistent: Boolean = true,
+    ): Boolean {
+        val payload = JSONObject(payloadJson)
+        return executePersistentChild(
+            scheduleId = scheduleId, ownerUserId = payload.getString("owner_user_id"),
+            sessionEpoch = payload.getLong("session_epoch"), source = source,
+            workflowQueue = goldenBeanQueue, persistent = persistent,
+        ) {
+            if (!isEnable() || goldenBeanTreasure.value != true) {
+                io.github.aoguai.sesameag.task.TaskExecutionOutcome.SKIPPED
+            } else {
+                executeIntervalInt = max(executeInterval.value ?: 0, 500)
+                resumeGoldenBeanTasks()
+            }
         }
     }
 
@@ -148,6 +214,7 @@ class GoldenBeanTreasure : ModelTask() {
         val plan = GoldenBeanTreasureSupport.planManureExchange(
             indexResponse,
             configuredReserveAmount,
+            goldenBeanManureRemainingAmount.value ?: 0,
         ) ?: return false
         val finalIndexResponse = GoldenBeanTreasureSupport.parseResponse(GoldenBeanRpcCall.index())
         if (finalIndexResponse == null || !GoldenBeanTreasureSupport.isSuccess(finalIndexResponse)) {

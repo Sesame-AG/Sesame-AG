@@ -64,6 +64,27 @@ internal object GoldenBeanRpcCall {
             },
         )
 
+    fun indexFromHome(): String =
+        request(
+            "com.alipay.goldenbean.index",
+            JSONObject().apply {
+                put("bizType", MASTER_ENTRY.bizType)
+                put("source", "ch_appcenter__chsub_commonapp")
+                put("version", VERSION)
+            },
+        )
+
+    fun collect(assetId: String): String =
+        request(
+            "com.alipay.goldenbean.collect",
+            JSONObject().apply {
+                put("assetIds", JSONArray().put(assetId))
+                put("bizType", MASTER_ENTRY.bizType)
+                put("source", MASTER_ENTRY.source)
+                put("version", VERSION)
+            },
+        )
+
     fun sync(
         syncTypeList: List<String>,
         entry: GoldenBeanEntry = MASTER_ENTRY,

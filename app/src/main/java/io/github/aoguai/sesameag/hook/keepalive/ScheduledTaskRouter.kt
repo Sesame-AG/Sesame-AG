@@ -20,6 +20,7 @@ import io.github.aoguai.sesameag.task.antOrchard.AntOrchard
 import io.github.aoguai.sesameag.task.antSesameCredit.AntSesameCredit
 import io.github.aoguai.sesameag.task.antSports.AntSports
 import io.github.aoguai.sesameag.task.antStall.AntStall
+import io.github.aoguai.sesameag.task.goldenBean.GoldenBeanTreasure
 import io.github.aoguai.sesameag.util.DataStore
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.TimeUtil
@@ -424,6 +425,16 @@ object ScheduledTaskRouter {
             }
             return routeResult(dispatchExecute(context, schedule, source, wakenAtTime = false, wakenTime = null))
         }
+        if (childKind == GoldenBeanTreasure.PERSISTENT_CHILD_KIND) {
+            if (targetProcess) {
+                val goldenBean = Model.getModel(GoldenBeanTreasure::class.java) ?: return RouteResult.DEFERRED
+                if (!goldenBean.isEnable() || goldenBean.goldenBeanTreasure.value != true) return RouteResult.SKIPPED
+                return if (goldenBean.triggerPersistentGoldenBeanTasks(schedule.payloadJson, schedule.id, source)) {
+                    RouteResult.HANDLED
+                } else RouteResult.FAILED
+            }
+            return routeResult(dispatchExecute(context, schedule, source, wakenAtTime = false, wakenTime = null))
+        }
         if (childKind == AntSesameCredit.PERSISTENT_CONFIRMATION_KIND) {
             if (targetProcess) {
                 val sesame = Model.getModel(AntSesameCredit::class.java) ?: return RouteResult.DEFERRED
@@ -436,7 +447,7 @@ object ScheduledTaskRouter {
         }
         if (childKind == AntDodo.PERSISTENT_CHILD_KIND) {
             val childId = payload.optString("child_id").trim()
-            if (childId != AntDodo.COLLECT_TO_FRIEND_CHILD_ID) {
+            if (childId !in setOf(AntDodo.COLLECT_TO_FRIEND_CHILD_ID, AntDodo.TASK_FLOW_CHILD_ID)) {
                 Log.record(TAG, "神奇物种持久子任务缺少或未知 child_id: ${schedule.name}")
                 return RouteResult.FAILED
             }
@@ -447,7 +458,12 @@ object ScheduledTaskRouter {
                         Log.record(TAG, "神奇物种持久子任务触发时模块已关闭，标记完成: ${schedule.name}")
                         return RouteResult.SKIPPED
                     }
-                    return if (antDodo.triggerPersistentCollectToFriend(schedule.payloadJson, schedule.id, source)) {
+                    val handled = if (childId == AntDodo.TASK_FLOW_CHILD_ID) {
+                        antDodo.triggerPersistentTaskFlow(schedule.payloadJson, schedule.id, source)
+                    } else {
+                        antDodo.triggerPersistentCollectToFriend(schedule.payloadJson, schedule.id, source)
+                    }
+                    return if (handled) {
                         RouteResult.HANDLED
                     } else {
                         RouteResult.FAILED

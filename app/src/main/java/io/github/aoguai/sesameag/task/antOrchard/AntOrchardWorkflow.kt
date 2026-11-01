@@ -1,10 +1,8 @@
 package io.github.aoguai.sesameag.task.antOrchard
 
-import io.github.aoguai.sesameag.util.RandomUtil
 
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
-import io.github.aoguai.sesameag.util.CoroutineUtils
 import io.github.aoguai.sesameag.util.GameTask
 import io.github.aoguai.sesameag.util.Log
 import org.json.JSONObject
@@ -75,7 +73,6 @@ internal suspend fun AntOrchard.runOrchardRewardWorkflow(indexJson: JSONObject, 
 
 internal fun AntOrchard.runOrchardCultivationWorkflow() {
     if ((orchardSpreadManureCountMain.value ?: 0) != 0 || (orchardSpreadManureCountYeb.value ?: 0) != 0) {
-        CoroutineUtils.sleepCompat(RandomUtil.nextLong(170, 201))
         orchardSpreadManure()
         tryReceiveSpreadManureActivityAwardByQueryIndex()
     }

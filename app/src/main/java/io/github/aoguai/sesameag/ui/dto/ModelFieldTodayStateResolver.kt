@@ -365,10 +365,12 @@ object ModelFieldTodayStateResolver {
                 }
             }
 
-            "GoldenBeanTreasure.goldenBeanManureExchangeDailyReserveAmount" -> {
+            "GoldenBeanTreasure.goldenBeanManureExchangeDailyReserveAmount",
+            "GoldenBeanTreasure.goldenBeanManureRemainingAmount",
+            -> {
                 limitReached(
                     current = Status.getIntFlagToday(StatusFlags.FLAG_GOLDEN_BEAN_MANURE_EXCHANGE_AMOUNT),
-                    limit = intValue(modelField),
+                    limit = intValue(modelFields["goldenBeanManureExchangeDailyReserveAmount"]),
                     reason = "今日肥料换豆额度已达上限",
                 )
             }

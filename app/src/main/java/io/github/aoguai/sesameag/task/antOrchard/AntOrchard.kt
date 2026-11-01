@@ -7,12 +7,14 @@ import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
 import io.github.aoguai.sesameag.hook.ApplicationHook
+import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleKind
 import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleRegistry
 import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleState
 import io.github.aoguai.sesameag.hook.keepalive.UnifiedScheduler
 import io.github.aoguai.sesameag.hook.internal.SecurityBodyHelper
 import io.github.aoguai.sesameag.model.Model
+import io.github.aoguai.sesameag.model.ConfigPortScope
 import io.github.aoguai.sesameag.model.ModelFields
 import io.github.aoguai.sesameag.model.ModelGroup
 import io.github.aoguai.sesameag.model.modelFieldExt.BooleanModelField
@@ -20,6 +22,7 @@ import io.github.aoguai.sesameag.model.modelFieldExt.ChoiceModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.FriendSelectionModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.IntegerModelField
 import io.github.aoguai.sesameag.model.withDesc
+import io.github.aoguai.sesameag.model.withPortScope
 import io.github.aoguai.sesameag.task.ModelTask
 import io.github.aoguai.sesameag.task.TaskExecutionOutcome
 import io.github.aoguai.sesameag.task.common.DeferredReason
@@ -46,6 +49,7 @@ import io.github.aoguai.sesameag.util.ResChecker
 import io.github.aoguai.sesameag.util.RpcOfflineRisk
 import io.github.aoguai.sesameag.util.maps.UserMap
 import io.github.aoguai.sesameag.util.SerialTaskQueue
+import io.github.aoguai.sesameag.util.TaskBlacklist
 
 import org.json.JSONArray
 import org.json.JSONObject
@@ -94,6 +98,8 @@ class AntOrchard : ModelTask() {
     internal var executeIntervalInt: Int = 0
     internal var skipManurePotCollectThisRound: Boolean = false
 
+    private lateinit var orchardAutoPlant: BooleanModelField
+    private lateinit var orchardGrownRecords: BooleanModelField
     private lateinit var executeInterval: IntegerModelField
     internal lateinit var receiveSevenDayGift: BooleanModelField
     internal lateinit var receiveOrchardTaskAward: BooleanModelField
@@ -125,6 +131,18 @@ class AntOrchard : ModelTask() {
             ).also { plantModeField = it },
         )
 
+        modelFields.addField(
+            BooleanModelField("orchardAutoPlant", "果树 | 自动播种", false)
+                .withPortScope(ConfigPortScope.GENERIC)
+                .withDesc("地块未选种时，使用第一个有库存的种子并回查确认；不执行实物兑换。")
+                .also { orchardAutoPlant = it },
+        )
+        modelFields.addField(
+            BooleanModelField("orchardGrownRecords", "果树 | 查询种成记录", false)
+                .withPortScope(ConfigPortScope.GENERIC)
+                .withDesc("查询种成与待兑换数量，待兑换水果仍需手动处理。")
+                .also { orchardGrownRecords = it },
+        )
         modelFields.addField(
             IntegerModelField("executeInterval", "操作间隔(毫秒)", 500, 500, null)
                 .withDesc(
@@ -188,8 +206,9 @@ class AntOrchard : ModelTask() {
 
     internal fun resumeTasksAfterGoldenBeanProgress() {
         if (!isEnable() || receiveOrchardTaskAward.value != true) return
-        Status.removeFlag(StatusFlags.FLAG_ANTORCHARD_TASKS_DONE)
-        scheduleOrchardContinuation("daily", System.currentTimeMillis(), executionState = orchardContinuationState("daily"))
+        if (!Status.hasFlagToday(StatusFlags.FLAG_ANTORCHARD_TASKS_DONE)) {
+            scheduleOrchardContinuation("daily", System.currentTimeMillis(), executionState = orchardContinuationState("daily"))
+        }
         scheduleOrchardContinuation("star", System.currentTimeMillis(), executionState = orchardContinuationState("star"))
     }
 
@@ -305,7 +324,7 @@ class AntOrchard : ModelTask() {
             executeIntervalInt = maxOf(executeInterval.value ?: 0, 500)
 
             val indexResponse = AntOrchardRpcCall.orchardIndex()
-            val indexJson = JSONObject(indexResponse)
+            var indexJson = JSONObject(indexResponse)
 
             if (indexJson.optString("resultCode") != "100") {
                 Log.orchard(indexJson.optString("resultDesc", "orchardIndex 调用失败"))
@@ -317,6 +336,59 @@ class AntOrchard : ModelTask() {
                 return@submit
             }
 
+            if (orchardGrownRecords.value == true) {
+                try {
+                    val records = AntOrchardRpcCall.orchardGrownRecords()
+                    val data = records?.optJSONObject("data")
+                    val model = data?.optJSONObject("model")
+                    val grownRecords = model?.optJSONArray("grownUpRecords")
+                    if (data?.optString("code") == "OK" && grownRecords != null) {
+                        val counts = model?.optJSONObject("accumulateTimes")
+                        Log.orchard("种成记录[累计${counts?.optInt("grownUpTimes", -1)}次，待兑换${counts?.optInt("unExchangeTimes", -1)}次]")
+                        if ((counts?.optInt("unExchangeTimes", 0) ?: 0) > 0) {
+                            Log.orchard("果树存在待兑换记录，请前往农场手动兑换")
+                        }
+                    } else {
+                        Log.error(TAG, "农场种成记录查询未完成 raw=$records")
+                    }
+                } catch (t: Throwable) {
+                    if (t is kotlinx.coroutines.CancellationException || t is InterruptedException) throw t
+                    Log.printStackTrace(TAG, "种成记录查询失败", t)
+                }
+            }
+            if (orchardAutoPlant.value == true && !ApplicationHookConstants.shouldBlockRpc()) {
+                val plantingData = indexJson.optString("taobaoData").takeIf { it.isNotBlank() }?.let(::JSONObject)
+                if (plantingData != null && isPlantSelectionExplicitlyMissing(plantingData, "main")) {
+                    val seedsResponse = JSONObject(AntOrchardRpcCall.orchardSeedList())
+                    if (ResChecker.checkRes(TAG, seedsResponse)) {
+                        val seedList = seedsResponse.optString("taobaoData").takeIf { it.isNotBlank() }
+                            ?.let(::JSONObject)?.optJSONArray("seedList")
+                        val seed = seedList?.let { list ->
+                            (0 until list.length()).mapNotNull { list.optJSONObject(it) }
+                                .firstOrNull { it.optBoolean("hasInventory") && it.optString("seedCode").isNotBlank() }
+                        }
+                        if (seed != null) {
+                            val seedCode = seed.getString("seedCode")
+                            val planted = JSONObject(AntOrchardRpcCall.orchardSelectSeed(seedCode))
+                            if (ResChecker.checkRes(TAG, planted)) {
+                                val refreshed = JSONObject(AntOrchardRpcCall.orchardIndex())
+                                val plantInfo = refreshed.optString("taobaoData").takeIf { it.isNotBlank() }
+                                    ?.let(::JSONObject)?.optJSONObject("gameInfo")?.optJSONObject("plantInfo")
+                                if (ResChecker.checkRes(TAG, refreshed) && plantInfo?.optJSONObject("seedStage") != null) {
+                                    indexJson = refreshed
+                                    Log.orchard("播种已确认[${seed.optString("seedTitle", seedCode)}]")
+                                } else {
+                                    Log.error(TAG, "播种后首页未确认选种 raw=$refreshed")
+                                }
+                            }
+                        } else if (seedList != null) {
+                            Log.orchard("农场暂无可用种子")
+                        } else {
+                            Log.error(TAG, "农场种子列表不完整 raw=$seedsResponse")
+                        }
+                    }
+                }
+            }
             val taobaoDataStr = indexJson.optString("taobaoData")
             if (taobaoDataStr.isNotEmpty()) {
                 val taobaoData = JSONObject(taobaoDataStr)
@@ -349,19 +421,26 @@ class AntOrchard : ModelTask() {
             val targetLimitMain = orchardSpreadManureCountMain.value ?: 0
             val targetLimitYeb = orchardSpreadManureCountYeb.value ?: 0
             val goldenBeanReserve = goldenBeanManureReserveAmount()
+            var progressed = false
 
             // 1. 如果是 摇钱树模式(YEB) 或者 混合模式(HYBRID)
             if (modeSet == PlantModeType.YEB || modeSet == PlantModeType.HYBRID) {
                 if (targetLimitYeb != 0) {
-                    waterTree("yeb", targetLimitYeb, goldenBeanReserve)
+                    progressed = waterTree("yeb", targetLimitYeb, goldenBeanReserve) || progressed
                 }
             }
 
             // 2. 如果是 果树模式(MAIN) 或者 混合模式(HYBRID)
             if (modeSet == PlantModeType.MAIN || modeSet == PlantModeType.HYBRID) {
                 if (targetLimitMain != 0) {
-                    waterTree("main", targetLimitMain, goldenBeanReserve)
+                    progressed = waterTree("main", targetLimitMain, goldenBeanReserve) || progressed
                 }
+            }
+            if (progressed && receiveOrchardTaskAward.value == true &&
+                !Status.hasFlagToday(StatusFlags.FLAG_ANTORCHARD_TASKS_DONE)
+            ) {
+                // 施肥后的任务状态在本轮收尾回查；此前额度未耗尽时不会落每日完成标识。
+                doOrchardDailyTask(userId.orEmpty())
             }
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "orchardSpreadManure err:", t)
@@ -402,36 +481,10 @@ class AntOrchard : ModelTask() {
             return 0
         }
 
-        val exchangeInfo = indexResponse.optJSONObject("manureExchangeInfo") ?: run {
-            Log.goldenBean("金豆夺宝预留额度缺少manureExchangeInfo，农场本轮不设置预留")
-            return 0
-        }
-        if (!exchangeInfo.optBoolean("farmOpened") ||
-            !exchangeInfo.optBoolean("pageOpened") ||
-            !exchangeInfo.optBoolean("taobaoBinding")
-        ) {
-            Log.goldenBean("金豆夺宝预留额度资格未满足，农场本轮不设置预留")
-            return 0
-        }
-
-        val currentManure = exchangeInfo.optInt("currentManure", 0)
-        val effectiveExchangeManure = exchangeInfo.optInt("effectiveExchangeManure", 0)
-        val remainQuota = exchangeInfo.optInt("remainQuota", 0)
-        val minExchangeAmount = exchangeInfo.optInt("minExchangeAmount", 0)
-        val reserveAmount =
-            if (configuredAmount == -1) {
-                minOf(effectiveExchangeManure, remainQuota)
-            } else {
-                configuredRemaining
-            }
-        if (minExchangeAmount <= 0 || reserveAmount < minExchangeAmount ||
-            currentManure < reserveAmount ||
-            effectiveExchangeManure < reserveAmount ||
-            remainQuota < reserveAmount
-        ) {
-            Log.goldenBean("金豆夺宝预留额度或服务端兑换条件不足，农场本轮不设置预留")
-            return 0
-        }
+        val plan = GoldenBeanTreasureSupport.planManureExchange(
+            indexResponse, configuredAmount, goldenBean.goldenBeanManureRemainingAmount.value ?: 0,
+        ) ?: return 0
+        val reserveAmount = plan.reservedManure + plan.minimumRemainingManure
         Log.orchard("农场为金豆夺宝预留肥料额度: $reserveAmount")
         return reserveAmount
     }
@@ -440,13 +493,19 @@ class AntOrchard : ModelTask() {
         if (!isEnable() || plantModeField.value == PlantModeType.YEB) return false
         val targetLimit = orchardSpreadManureCountMain.value ?: 0
         if (targetLimit == 0) return false
-        return waterTree(
+        val progressed = waterTree(
             targetScene = "main",
             targetLimit = targetLimit,
             goldenBeanReserve = goldenBeanManureReserveAmount(),
             source = "DNHZ_NC_zhimajingnangSF",
             maxActions = 1,
         )
+        if (progressed && receiveOrchardTaskAward.value == true &&
+            !Status.hasFlagToday(StatusFlags.FLAG_ANTORCHARD_TASKS_DONE)
+        ) {
+            scheduleOrchardContinuation("daily", System.currentTimeMillis(), executionState = orchardContinuationState("daily"))
+        }
+        return progressed
     }
 
     private fun waterTree(
@@ -478,7 +537,6 @@ class AntOrchard : ModelTask() {
         try {
             AntOrchardRpcCall.switchPlantScene(targetScene, getSceneSource(targetScene))
             currentPlantScene = targetScene
-            CoroutineUtils.sleepCompat(500)
         } catch (ignore: Throwable) {
         }
 
@@ -670,11 +728,11 @@ class AntOrchard : ModelTask() {
                     Log.orchard("施肥💩[$sceneName] 成功|累计:$totalWatered")
                 }
 
-                CoroutineUtils.sleepCompat(500)
                 // 检查施肥后礼盒
                 extraInfoGet(from = "water")
                 tryReceiveSpreadManureActivityAwardByQueryIndex()
             } finally {
+                // 连续施肥遵守 executeInterval 配置；失败或提前退出本轮也保留相同请求间隔。
                 CoroutineUtils.sleepCompat(executeIntervalInt.toLong())
             }
         } while (wateredThisCall < maxActions && (waterToLimit || totalWatered < targetLimit))
@@ -891,6 +949,9 @@ class AntOrchard : ModelTask() {
         override val flowName: String = if (starTasks) "农场努力流星任务" else "农场任务"
         override val continueCurrentRoundOnRetryableFailure: Boolean = true
 
+        override fun isFlowHandledToday(): Boolean =
+            !starTasks && Status.hasFlagToday(StatusFlags.FLAG_ANTORCHARD_TASKS_DONE)
+
         override fun query(): JSONObject {
             val response = if (starTasks) AntOrchardRpcCall.listStarTasks() else AntOrchardRpcCall.orchardListTask()
             if (response.isBlank()) {
@@ -975,12 +1036,6 @@ class AntOrchard : ModelTask() {
                 -> {
                     when {
                         item.actionType == "ANTFOREST_DEFOLIATION" -> TaskFlowPhase.BUSINESS_ACTION
-
-                        // 该任务要求闯关进度；没有时长合同不能用通用完成请求替代业务动作。
-                        item.id == "ORCHARD_FLRW_ZH5_FKSSJ" &&
-                            item.raw?.let(::orchardGamePlayContract) == null &&
-                            GameCenterPlayRpcCall.resolveTaskAction(item.raw).action == GameCenterPlayRpcCall.TaskAction.DEFERRED ->
-                            TaskFlowPhase.BUSINESS_ACTION
 
                         item.raw?.let(::isSupportedTaobaoVisitTask) == true -> TaskFlowPhase.READY_TO_COMPLETE
 
@@ -1085,32 +1140,35 @@ class AntOrchard : ModelTask() {
                 )
                 return TaskFlowActionResult.success(refreshAfterAction = true)
             }
-            orchardGamePlayContract(task)?.let { contract ->
-                val ack = GameCenterPlayRpcCall.submitForAck(contract)
-                val response = ack.response
-                    ?: return TaskFlowActionResult.failure(
-                        failureType = ack.failureType,
-                        message = "时长动作响应无法解析",
-                        rpc = "GameCenterPlayRpcCall.submit",
-                        raw = ack.raw,
-                        detail = orchardActionDetail(item, "playDuration"),
-                        continueCurrentRoundOnFailure =
-                            ack.failureType == TaskRpcFailureType.RETRYABLE_RPC ||
-                                ack.failureType == TaskRpcFailureType.BUSINESS_LIMIT,
-                    )
-                if (!ack.accepted) {
-                    return TaskFlowActionResult.failure(
-                        failureType = ack.failureType,
-                        code = response.optString("resultCode"),
-                        message = response.optString("resultDesc", response.optString("desc", ack.raw)),
-                        rpc = "GameCenterPlayRpcCall.submit",
-                        raw = ack.raw,
-                        detail = orchardActionDetail(item, "playDuration"),
-                        continueCurrentRoundOnFailure =
-                            ack.failureType == TaskRpcFailureType.RETRYABLE_RPC ||
-                                ack.failureType == TaskRpcFailureType.BUSINESS_LIMIT,
-                    )
+            val gameAction = GameCenterPlayRpcCall.resolveTaskAction(task)
+            if (gameAction.action == GameCenterPlayRpcCall.TaskAction.LEGACY_EXTERNAL_REPORT) {
+                val game = requireNotNull(gameAction.mappedTask)
+                val report = kotlinx.coroutines.runBlocking {
+                    game.reportDetailed(
+                        1,
+                        actionFinishChannel = GameCenterPlayRpcCall.describeTask(task).urlParameters["channel"]
+                            ?.takeIf { it.isNotBlank() } ?: game.channel,
+                        includeSafetyReport = false,
+                    ) { Log.orchard(it) }
                 }
+                if (!report.completed) return TaskFlowActionResult.failure(
+                    failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                    message = report.failureMessage,
+                    rpc = "GameTask.reportDetailed",
+                    detail = orchardActionDetail(item, "gameReport"),
+                    continueCurrentRoundOnFailure = true,
+                )
+                return TaskFlowActionResult.defer(
+                    deferredReason = io.github.aoguai.sesameag.task.common.DeferredReason.STATE_CONFIRMATION,
+                    message = "游戏业务已上报，回查农场任务进度",
+                    refreshAfterAction = true,
+                )
+            }
+            orchardGamePlayContract(task)?.let { contract ->
+                val result = GameCenterPlayRpcCall.advanceDuration(
+                    "orchard_game:${item.sceneCode}:${item.id}:${item.progress}", contract,
+                )
+                if (!result.success || result.deferredReason != null) return result
                 Log.orchard("农场乐园任务[${item.title}]时长上报已接受，继续任务完成闭环")
                 if (starTasks) return completeStarTask(item)
                 return executeOrchardFinishTask(
@@ -1166,9 +1224,24 @@ class AntOrchard : ModelTask() {
 
         override fun onAllTasksDone(snapshot: io.github.aoguai.sesameag.task.common.TaskFlowSnapshot) {
             if (!starTasks) {
-                Status.setFlagToday(StatusFlags.FLAG_ANTORCHARD_TASKS_DONE)
+                val tasks = latestListTaskResponse.optJSONArray("taskList")
+                val dailyQuotaExhausted = tasks != null && tasks.length() > 0 && (0 until tasks.length()).all { index ->
+                    val task = tasks.optJSONObject(index) ?: return@all false
+                    val blacklisted = listOf(task.optString("taskId"), task.optString("groupId"))
+                        .filter { it.isNotBlank() }.any { TaskBlacklist.isTaskInBlacklist(moduleName, it) }
+                    val limit = task.optInt("rightsTimesLimit", 0)
+                    blacklisted || if (limit > 0) task.optInt("rightsTimes", -1) >= limit
+                    else task.optString("taskStatus") in setOf("DONE", "COMPLETED", "SUCCESS")
+                }
+                val goldenBean = Model.getModel(GoldenBeanTreasure::class.java)
+                val linkedTasksDone = goldenBean?.isEnable() != true || goldenBean.goldenBeanTreasure.value != true ||
+                    Status.hasFlagToday(StatusFlags.FLAG_GOLDEN_BEAN_TASKS_DONE)
+                // 本次列表处理完不等于全天完成；等日奖励额度及后置金豆任务均结束后再落标。
+                if (dailyQuotaExhausted && linkedTasksDone) {
+                    Status.setFlagToday(StatusFlags.FLAG_ANTORCHARD_TASKS_DONE)
+                }
             }
-            Log.orchard("农场任务列表已无待处理任务")
+            Log.orchard("农场本次任务列表已无待处理任务")
         }
 
         override fun logInfo(message: String) {
@@ -1513,7 +1586,6 @@ class AntOrchard : ModelTask() {
                 }
                 if (remainingRounds > 0) {
                     round++
-                    CoroutineUtils.sleepCompat(executeIntervalInt.toLong())
                 }
             }
 
@@ -1596,7 +1668,7 @@ class AntOrchard : ModelTask() {
             task = task,
         )
         return if (failure.code == "400000040") {
-            AntFarmRpcCall.doSceneTask(taskId, sceneCode) { fallback ->
+            AntFarmRpcCall.doSceneTask(taskId, sceneCode, failure) { fallback ->
                 buildOrchardTaskFailureResult(fallback, taskId, title, action, "AntFarmRpcCall.doFarmTask", task = task)
             }
         } else failure
@@ -1926,7 +1998,11 @@ class AntOrchard : ModelTask() {
             ).copy(raw = simpleResp.toString())
         }
         Log.orchard("农场淘宝浏览请求已接受[${item.title}]")
-        return TaskFlowActionResult.success()
+        return TaskFlowActionResult.defer(
+            deferredReason = io.github.aoguai.sesameag.task.common.DeferredReason.STATE_CONFIRMATION,
+            message = "淘宝浏览请求已受理，回查来源任务进度",
+            refreshAfterAction = true,
+        )
     }
 
     private fun executeOrchardBrowseRound(
@@ -2094,7 +2170,6 @@ class AntOrchard : ModelTask() {
                 }
                 processedEventKeys.add(eventKey)
                 finishedCount++
-                CoroutineUtils.sleepCompat(executeIntervalInt.toLong())
                 if (config.stopAfterFirstRewardInRound) {
                     return OrchardBrowseRoundResult(finishedCount)
                 }
@@ -2408,6 +2483,7 @@ class AntOrchard : ModelTask() {
                 }
                 remaining = confirmedRemaining
                 if (remaining > 0) {
+                    // 多次砸金蛋遵守农场 executeInterval 配置，最后一次完成后不再等待。
                     CoroutineUtils.sleepCompat(executeIntervalInt.toLong())
                 }
             }
@@ -2915,7 +2991,6 @@ class AntOrchard : ModelTask() {
                     )
                 val str = AntOrchardRpcCall.achieveBeShareP2P(shareId)
                 val jsonObject = JSONObject(str)
-                CoroutineUtils.sleepCompat(RandomUtil.nextLong(680, 801))
                 val name = UserMap.getMaskName(uid)
 
                 if (!ResChecker.checkRes(TAG, str)) {

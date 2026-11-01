@@ -2,9 +2,9 @@ package io.github.aoguai.sesameag.task.goldenBean
 
 import io.github.aoguai.sesameag.util.RandomUtil
 
-import io.github.aoguai.sesameag.task.antFarm.AntFarmRpcCall
 import io.github.aoguai.sesameag.model.Model
 import io.github.aoguai.sesameag.task.antOrchard.AntOrchard
+import io.github.aoguai.sesameag.task.antStall.AntStall
 
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
@@ -45,6 +45,7 @@ internal const val GOLDEN_BEAN_CONVERGENCE_LIMIT = 64
  * own server state because neither belongs to the task-list lifecycle.
  */
 internal suspend fun GoldenBeanTreasure.runGoldenBeanTreasure() {
+    val initialFloatingConfirmed = GoldenBeanTreasureSupport.collectFloatingBeans()
     if (Status.hasFlagToday(StatusFlags.FLAG_GOLDEN_BEAN_TASKS_DONE)) {
         if (!Status.hasFlagToday(StatusFlags.FLAG_GOLDEN_BEAN_FORTUNE_DRAWN)) {
             val indexResponse = GoldenBeanTreasureSupport.parseResponse(GoldenBeanRpcCall.index())
@@ -74,7 +75,7 @@ internal suspend fun GoldenBeanTreasure.runGoldenBeanTreasure() {
         val marketingSource =
             signSyncResponse?.takeIf { it.optJSONObject("marketingPopupTask") != null } ?: indexResponse
         GoldenBeanTreasureSupport.handleMarketingPopup(marketingSource, entry)
-        GoldenBeanEntryRun(entry, GoldenBeanTaskFlowAdapter(entry))
+        GoldenBeanEntryRun(entry, GoldenBeanTaskFlowAdapter(this, entry))
     }
     val masterRun = entryRuns.firstOrNull { it.entry == GoldenBeanRpcCall.MASTER_ENTRY }
     masterRun?.let {
@@ -117,22 +118,30 @@ internal suspend fun GoldenBeanTreasure.runGoldenBeanTreasure() {
         Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "金豆夺宝达到收敛轮次上限$GOLDEN_BEAN_CONVERGENCE_LIMIT")
     }
 
-    runGoldenBeanExchanges(entryRuns)
-    taskResults = entryRuns.associateWith { it.runTaskFlow(executeIntervalInt) }
-    confirmedTaskProgress = confirmedTaskProgress || taskResults.values.any { it.progressed }
-    if (confirmedTaskProgress) Model.getModel(AntOrchard::class.java)?.resumeTasksAfterGoldenBeanProgress()
+    val exchangedEntries = runGoldenBeanExchanges(entryRuns)
+    if (exchangedEntries.isNotEmpty()) {
+        val refreshedResults = exchangedEntries.associateWith { it.runTaskFlow(executeIntervalInt) }
+        taskResults = taskResults + refreshedResults
+        confirmedTaskProgress = confirmedTaskProgress || refreshedResults.values.any { it.progressed }
+    }
     val minerConfirmed = masterRun?.adapter?.isMinerEntryReceived() != true ||
         GoldenBeanTreasureSupport.runMiner()
 
+    val floatingConfirmed = GoldenBeanTreasureSupport.collectFloatingBeans() && initialFloatingConfirmed
     val allEntrancesQueried = entryRuns.size == GoldenBeanRpcCall.ENTRIES.size
     val allTaskFlowsConfirmed = taskResults.values.all { it.completed && !it.stopped }
     val hasUnresolvedTasks = entryRuns.any { it.adapter.hasUnresolvedTasks() }
-    if (allEntrancesQueried && minerConfirmed && !reachedConvergenceLimit && allTaskFlowsConfirmed && gameResult.completed && !hasUnresolvedTasks) {
+    if (allEntrancesQueried && floatingConfirmed && minerConfirmed && !reachedConvergenceLimit && allTaskFlowsConfirmed && gameResult.completed && !hasUnresolvedTasks) {
         Status.setFlagToday(StatusFlags.FLAG_GOLDEN_BEAN_TASKS_DONE)
     } else if (!hasUnresolvedTasks) {
         Log.goldenBean("金豆夺宝任务未写入当日完成标记：任务流、矿工或金豆乐园状态尚未完成确认")
     } else {
         Log.goldenBean("金豆夺宝仍有非黑名单待完成或待领奖任务，不写入今日完成标记")
+    }
+    // 先保存金豆最终确认结果，再续接依赖任务，避免收尾读到旧的依赖状态。
+    if (confirmedTaskProgress || exchangedEntries.isNotEmpty() || Status.hasFlagToday(StatusFlags.FLAG_GOLDEN_BEAN_TASKS_DONE)) {
+        Model.getModel(AntOrchard::class.java)?.resumeTasksAfterGoldenBeanProgress()
+        Model.getModel(AntStall::class.java)?.resumeTasksAfterGoldenBeanProgress()
     }
 }
 
@@ -239,6 +248,7 @@ internal fun GoldenBeanTreasure.runGoldenBeanMall() {
                 if (!acknowledged) Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "金豆商城兑换未确认成功，保留订单回查:$response")
                 if (!confirmGoldenBeanMallExchange(store, request, checkCurrent)) return@execute
                 confirmed++
+                // 保留金豆 executeInterval 配置的连续兑换间隔，并沿用原有 425–500ms 随机下限。
                 CoroutineUtils.sleepCompat(executeIntervalInt.toLong().coerceAtLeast(RandomUtil.nextLong(425, 501)))
             }
             if (confirmed >= GOLDEN_BEAN_CONVERGENCE_LIMIT) {
@@ -297,16 +307,29 @@ private data class GoldenBeanEntryRun(
         ).run()
 }
 
-private fun GoldenBeanTreasure.runGoldenBeanExchanges(entryRuns: List<GoldenBeanEntryRun>) {
-    if (entryRuns.any { it.entry == GoldenBeanRpcCall.MASTER_ENTRY }) {
-        runGoldenBeanManureExchangeIfNeeded()
+private fun GoldenBeanTreasure.runGoldenBeanExchanges(entryRuns: List<GoldenBeanEntryRun>): List<GoldenBeanEntryRun> =
+    entryRuns.filter { run ->
+        when (run.entry) {
+            GoldenBeanRpcCall.MASTER_ENTRY -> runGoldenBeanManureExchangeIfNeeded()
+            GoldenBeanRpcCall.ZHIMA_ENTRY -> runGoldenBeanSesameExchangeIfNeeded()
+            else -> false
+        }
     }
-    if (entryRuns.any { it.entry == GoldenBeanRpcCall.ZHIMA_ENTRY }) {
-        runGoldenBeanSesameExchangeIfNeeded()
+
+internal fun GoldenBeanTreasure.resumeGoldenBeanTasks(): io.github.aoguai.sesameag.task.TaskExecutionOutcome {
+    val results = GoldenBeanRpcCall.ENTRIES.map { entry ->
+        TaskFlowEngine(GoldenBeanTaskFlowAdapter(this, entry), roundSleepMs = executeIntervalInt.toLong()).run()
+    }
+    return when {
+        results.any { it.interrupted } -> io.github.aoguai.sesameag.task.TaskExecutionOutcome.CANCELLED
+        results.any { it.failureCount > 0 } -> io.github.aoguai.sesameag.task.TaskExecutionOutcome.FAILED
+        results.all { it.completed } -> io.github.aoguai.sesameag.task.TaskExecutionOutcome.SUCCESS
+        else -> io.github.aoguai.sesameag.task.TaskExecutionOutcome.DEFERRED
     }
 }
 
 private class GoldenBeanTaskFlowAdapter(
+    private val owner: GoldenBeanTreasure,
     private val entry: GoldenBeanEntry,
 ) : TaskFlowAdapter {
     private val loggedDeferredTaskIds = mutableSetOf<String>()
@@ -315,6 +338,7 @@ private class GoldenBeanTaskFlowAdapter(
 
     override val moduleName: String = GOLDEN_BEAN_BLACKLIST_MODULE
     override val flowName: String = "金豆夺宝任务"
+    override val stateScope: String = "$flowName:${entry.taskSceneCode}"
     override val continueCurrentRoundOnRetryableFailure: Boolean = true
 
     override fun query(): JSONObject {
@@ -422,23 +446,36 @@ private class GoldenBeanTaskFlowAdapter(
         if (item.type.isBlank()) {
             return GoldenBeanTreasureSupport.missingTaskTypeFailure(item, "complete")
         }
-        if (item.actionType == "VISIT") {
-            val decision = GameCenterPlayRpcCall.resolveTaskAction(item.raw, directFinishSupported = true)
+        if (item.actionType == "COMMON_USED_VISIT") {
+            val response = GoldenBeanTreasureSupport.parseResponse(GoldenBeanRpcCall.indexFromHome())
+                ?: return GoldenBeanTreasureSupport.emptyResponseFailure(item, "indexFromHome")
+            if (GoldenBeanTreasureSupport.isSuccess(response)) {
+                nextQuerySyncTypes = RECEIVE_TASK_SYNC_TYPES
+                val awardCount = response.optInt("receptionAwardCount")
+                if (awardCount > 0) Log.goldenBean("金豆常用来访获得${awardCount}金豆")
+            }
+            return GoldenBeanTreasureSupport.actionResult(item, response, "indexFromHome")
+        }
+        if (item.actionType != GoldenBeanRpcCall.WAKUANG_ACTION_TYPE &&
+            !(entry == GoldenBeanRpcCall.MASTER_ENTRY && item.type == GoldenBeanRpcCall.JINDOULEYUAN_TASK_TYPE &&
+                item.actionType == GoldenBeanRpcCall.JINDOULEYUAN_ACTION_TYPE)
+        ) {
+            val descriptor = GameCenterPlayRpcCall.describeTask(item.raw)
+            val decision = GameCenterPlayRpcCall.resolveTaskAction(
+                item.raw, directFinishSupported = item.actionType == "MULTI_STAGE" ||
+                    (item.actionType == "VISIT" && !descriptor.isGameTask),
+            )
             when (decision.action) {
                 GameCenterPlayRpcCall.TaskAction.DIRECT_FINISH -> Unit
                 GameCenterPlayRpcCall.TaskAction.DURATION_ONLY -> {
-                    val contract = requireNotNull(decision.contract)
-                    val ack = GameCenterPlayRpcCall.submitForAck(contract)
-                    if (!ack.accepted) return TaskFlowActionResult.failure(
-                        failureType = ack.failureType, message = "金豆游戏时长上报未成功",
-                        rpc = "submitUserPlayDurationAction", raw = ack.raw,
-                        detail = "taskId=${item.type}", continueCurrentRoundOnFailure = true,
+                    val result = GameCenterPlayRpcCall.advanceDuration(
+                        "golden_game:${item.sceneCode}:${item.id}:${item.progress}", requireNotNull(decision.contract),
                     )
+                    if (!result.success || result.deferredReason != null) return result
                 }
                 GameCenterPlayRpcCall.TaskAction.LEGACY_EXTERNAL_REPORT -> {
-                    val count = ((item.limit ?: 1) - (item.current ?: 0)).coerceAtLeast(1)
                     val report = runBlocking {
-                        requireNotNull(decision.mappedTask).reportDetailed(count, GOLDEN_BEAN_GAME_CHANNEL,
+                        requireNotNull(decision.mappedTask).reportDetailed(1, GOLDEN_BEAN_GAME_CHANNEL,
                             includeSafetyReport = false) { Log.goldenBean(it) }
                     }
                     if (!report.completed) return TaskFlowActionResult.failure(
@@ -455,17 +492,12 @@ private class GoldenBeanTaskFlowAdapter(
         }
         val response = GoldenBeanTreasureSupport.parseResponse(GoldenBeanRpcCall.finishTask(item.type, entry))
             ?: return GoldenBeanTreasureSupport.emptyResponseFailure(item, "complete")
-        val result = GoldenBeanTreasureSupport.actionResult(item, response, "complete")
-        if (result.code == "400000040") {
-            nextQuerySyncTypes = TASK_STATUS_SYNC_TYPES
-            return AntFarmRpcCall.doSceneTask(item.type, entry.taskSceneCode) { fallback ->
-                GoldenBeanTreasureSupport.actionResult(item, fallback, "complete")
-            }
-        }
-        if (GoldenBeanTreasureSupport.isSuccess(response)) {
-            nextQuerySyncTypes = TASK_STATUS_SYNC_TYPES
-        }
-        return result
+        if (GoldenBeanTreasureSupport.isSuccess(response)) nextQuerySyncTypes = TASK_STATUS_SYNC_TYPES
+        return GoldenBeanTreasureSupport.actionResult(item, response, "complete").copy(progressChanged = false)
+    }
+
+    override fun afterDeferred(item: TaskFlowItem, action: TaskFlowAction, result: TaskFlowActionResult) {
+        result.deferredUntil?.let { owner.scheduleGoldenBeanTasks("${item.id}:${item.progress}", it) }
     }
 
     override fun actionKey(
@@ -563,8 +595,10 @@ private class GoldenBeanTaskFlowAdapter(
             item.actionType == "COMMON_USED_VISIT" ||
             (entry == GoldenBeanRpcCall.MASTER_ENTRY && item.type == GoldenBeanRpcCall.JINDOULEYUAN_TASK_TYPE &&
                 item.actionType == GoldenBeanRpcCall.JINDOULEYUAN_ACTION_TYPE)) return true
+        val descriptor = GameCenterPlayRpcCall.describeTask(item.raw)
         val decision = GameCenterPlayRpcCall.resolveTaskAction(
-            item.raw, directFinishSupported = item.actionType == "VISIT",
+            item.raw, directFinishSupported = item.actionType == "MULTI_STAGE" ||
+                (item.actionType == "VISIT" && !descriptor.isGameTask),
         )
         return decision.action in setOf(
             GameCenterPlayRpcCall.TaskAction.DIRECT_FINISH,
@@ -582,6 +616,12 @@ private class GoldenBeanTaskFlowAdapter(
         val taskRequire = task.optInt("taskRequire", 0)
         if (taskRequire > 0) {
             parts.add("task=${task.optInt("taskProgress", 0)}/$taskRequire")
+        }
+        task.optJSONArray("multiStageDisplayList")?.let { stages ->
+            for (index in 0 until stages.length()) {
+                val stage = stages.getJSONObject(index)
+                parts.add("stage=$index:${stage.optInt("timeCount")}:${stage.optString("status")}")
+            }
         }
         return parts.joinToString(" ")
     }

@@ -1,6 +1,14 @@
 package io.github.aoguai.sesameag.task.antOrchard
 
 import io.github.aoguai.sesameag.hook.RequestManager
+import io.github.aoguai.sesameag.hook.ApplicationHook
+import io.github.aoguai.sesameag.hook.ApplicationHookConstants
+import io.github.aoguai.sesameag.hook.rpc.RpcDailyCircuit
+import io.github.aoguai.sesameag.hook.rpc.capture.RpcTrafficCapture
+import io.github.aoguai.sesameag.hook.rpc.intervallimit.RpcIntervalLimit
+import io.github.aoguai.sesameag.task.TaskExecutionReport
+import io.github.aoguai.sesameag.util.RpcOfflineRisk
+import io.github.aoguai.sesameag.util.WorkflowRootGuard
 import io.github.aoguai.sesameag.util.RandomUtil
 import org.json.JSONArray
 import org.json.JSONObject
@@ -66,6 +74,60 @@ object AntOrchardRpcCall {
             "com.alipay.antfarm.orchardIndex",
             JSONArray().put(requestData).toString(),
         )
+    }
+
+    fun orchardSeedList(): String = RequestManager.requestString(
+        "com.alipay.antfarm.orchardSeedList",
+        JSONArray().put(JSONObject().put("from", "SEED_LIST").put("page", 0)
+            .put("requestType", "NORMAL").put("sceneCode", "ORCHARD")
+            .put("source", ENTRY_SOURCE).put("version", VERSION)).toString(),
+    )
+
+    fun orchardSelectSeed(seedCode: String): String = RequestManager.requestString(
+        "com.alipay.antfarm.orchardSelectSeed",
+        JSONArray().put(JSONObject().put("seedCode", seedCode).put("requestType", "NORMAL")
+            .put("sceneCode", "ORCHARD").put("source", ENTRY_SOURCE).put("version", VERSION)).toString(),
+    )
+
+    fun orchardGrownRecords(): JSONObject? {
+        val method = "mtop.tmall.farm.commonapi.get"
+        val identity = RpcDailyCircuit.captureIdentity()
+        TaskExecutionReport.current()?.ensureSessionActive()
+        return RpcIntervalLimit.dispatch(method) {
+            if (!RpcDailyCircuit.isSameSession(identity) || ApplicationHookConstants.shouldBlockRpc() ||
+                RpcDailyCircuit.isBlockedToday(identity.userId, method) || !WorkflowRootGuard.isExecutionAllowed()
+            ) return@dispatch null
+            val loader = ApplicationHook.classLoader ?: return@dispatch null
+            val agentClass = Class.forName("com.alipay.mobile.framework.LauncherApplicationAgent", false, loader)
+            val agent = agentClass.getMethod("getInstance").invoke(null)
+            val context = agent.javaClass.getMethod("getMicroApplicationContext").invoke(agent)
+            val service = context.javaClass.getMethod("findServiceByInterface", String::class.java)
+                .invoke(context, "com.alipay.android.phone.mobilesdk.mtop.MtopService") ?: return@dispatch null
+            val jsonClass = Class.forName("com.alibaba.fastjson.JSONObject", false, loader)
+            val payload = JSONObject().put("bizParam", "{}").put("bizType", "plantTree.showFruitList").toString()
+            val args = linkedMapOf<String, Any>(
+                "apiName" to method, "apiVersion" to "1.0", "dataText" to payload,
+                "type" to "originaljson", "timeout" to 15000, "needHttps" to true,
+                "needSpdy" to true, "needWua" to false, "needEcodeSign" to false,
+                "shouldSkipAutoLogin" to false, "ignore_aliauth_autologin" to false,
+                "isvOpenAppkey" to "DEFAULT_AUTH", "isvAccessToken" to "", "customHost" to "",
+                "ttid" to "", "tb_eagleeyex_scm_project" to "",
+                "headers" to jsonClass.getDeclaredConstructor().newInstance(),
+                "usePost" to Class.forName("mtopsdk.mtop.domain.MethodEnum", false, loader).getField("GET").get(null),
+            )
+            if (!RpcDailyCircuit.isSameSession(identity) || ApplicationHookConstants.shouldBlockRpc()) return@dispatch null
+            val call = service.javaClass.getMethod("syncRequestFastJson", Map::class.java)
+            val startedAt = System.currentTimeMillis()
+            val requestId = RpcTrafficCapture.recordModuleRequest(method, payload)
+            val pair = call.invoke(service, args) ?: return@dispatch null
+            val raw = pair.javaClass.getField("second").get(pair)?.toString() ?: return@dispatch null
+            RpcTrafficCapture.recordModuleResponse(method, raw, System.currentTimeMillis() - startedAt, requestId, null)
+            if (!RpcDailyCircuit.isCurrent(identity)) return@dispatch null
+            val response = JSONObject(raw)
+            if (RpcOfflineRisk.isHardBlocked(response)) RpcDailyCircuit.markBlockedToday(identity, method)
+            RpcOfflineRisk.enterOfflineIfNeeded("AntOrchard.grownRecords", response)
+            response
+        }
     }
 
     /**

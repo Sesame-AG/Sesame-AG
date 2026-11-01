@@ -83,6 +83,7 @@ internal fun AntOrchard.runOrchardChouChouLe(userId: String) {
                 Log.error(TAG, "农场抽抽乐余额未推进，保留后续调度回查 raw=$response")
                 return
             }
+            // 剩余次数大于零时按农场 executeInterval 配置衔接下一次抽奖。
             if (balance > 0) CoroutineUtils.sleepCompat(executeIntervalInt.toLong())
         }
     } catch (t: Throwable) {
