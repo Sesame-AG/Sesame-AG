@@ -1368,7 +1368,6 @@ modelFields.addField(
         val sleepAt = configuredFarmSleepTime() ?: return
         if (System.currentTimeMillis() < sleepAt) return
         if (!isOwnerAnimalSleeping()) {
-            runFarmResourceWork(includeGames = false)
             animalSleepNow()
         }
         syncAnimalStatus(ownerFarmId)
@@ -2329,7 +2328,7 @@ modelFields.addField(
     /**
      * 自动喂鸡
      */
-    internal suspend fun handleAutoFeedAnimal(isChildTask: Boolean = false) {
+    internal suspend fun handleAutoFeedAnimal(isChildTask: Boolean = false, sleepPreparation: Boolean = false) {
         if (!ownerFarmId.isNullOrBlank()) {
             syncAnimalStatus(ownerFarmId)
         }
@@ -2388,6 +2387,15 @@ modelFields.addField(
             }
         }
 
+        if (sleepPreparation) {
+            val status = checkNotNull(syncAnimalStatus(ownerFarmId, "SYNC_RESUME", "QUERY_ALL")) {
+                "睡前用卡未取得最新庄园状态"
+            }
+            check(ResChecker.checkRes(TAG, status)) { "睡前用卡状态查询失败" }
+            parseSyncAnimalStatusResponse(status)
+            foodStock = status.getJSONObject("subFarmVO").getInt("foodStock")
+        }
+
         // 3. 使用加饭卡（仅当正在吃饭且开启配置）
         if (useBigEaterTool?.value == true && AnimalFeedStatus.EATING.name == ownerAnimal.animalFeedStatus) {
             // 若服务端已标记今日使用过（或当前有效），本地直接跳过
@@ -2404,6 +2412,8 @@ modelFields.addField(
 
                 if (usedCount >= 2) {
                     Log.farm("今日加饭卡已使用${usedCount}/2，跳过使用")
+                } else if (sleepPreparation && foodStock < 180) {
+                    Log.farm("睡前加饭：当前${foodStock}g，不足额外一份饲料，保留加饭卡")
                 } else {
                     when (useFarmToolDetailed(ownerFarmId, ToolType.BIG_EATER_TOOL)) {
                         FarmToolUseResult.SUCCESS -> {
@@ -2429,7 +2439,7 @@ modelFields.addField(
                         ", " + getAccelerateToolUsageSummary() +
                         ", 今日封顶=" + (detectAccelerateToolLimit(syncFlag = false) != null) + "]"
             )
-            val accelerated = useAccelerateTool()
+            val accelerated = useAccelerateTool(sleepPreparation = sleepPreparation)
             if (accelerated) {
                 Log.farm("使用道具🎭[加速卡]⏩成功")
                 // 刷新状态
@@ -2483,7 +2493,18 @@ modelFields.addField(
             listOrnaments()
         }
     }
-    private fun animalSleepNow() {
+    private fun requiredSleepPreparationFood(hireCount: Int): Long? {
+        val canFeed = feedAnimal?.value == true
+        if (!isOwnerAnimalAtHome() || isOwnerAnimalSleeping() ||
+            (!canFeed && ownerAnimal.animalFeedStatus != AnimalFeedStatus.EATING.name)) return null
+        // 先保障雇佣与基础投喂；用卡在实际消费点检查，不为未必可用的道具冻结饲料。
+        return hireCount.coerceAtLeast(0) * 50L + if (canFeed) 180L else 0L
+    }
+
+    private suspend fun animalSleepNow() {
+        val owner = AccountSessionCoordinator.currentUserId().orEmpty()
+        val epoch = AccountSessionCoordinator.currentSessionEpoch()
+        if (ApplicationHookConstants.isOffline() || !AccountSessionCoordinator.isCurrentSession(owner, epoch)) return
         try {
             var s = AntFarmRpcCall.queryLoveCabin(UserMap.currentUid)
             var jo = JSONObject(s)
@@ -2491,6 +2512,218 @@ modelFields.addField(
                 val sleepNotifyInfo = jo.getJSONObject("sleepNotifyInfo")
                 if (sleepNotifyInfo.optBoolean("canSleep", false)) {
                     val groupId = jo.optString("groupId")
+                    try {
+                        runFarmResourceWork(includeGames = false, feedAfterAwards = false)
+                        currentCoroutineContext().ensureActive()
+                        if (ApplicationHookConstants.isOffline() || !AccountSessionCoordinator.isCurrentSession(owner, epoch)) return
+                        val status = checkNotNull(syncAnimalStatus(ownerFarmId, "SYNC_RESUME", "QUERY_ALL")) {
+                            "睡前未取得庄园状态"
+                        }
+                        check(ResChecker.checkRes(TAG, status)) { "睡前庄园状态查询失败" }
+                        parseSyncAnimalStatusResponse(status)
+                        val initialAnimals = status.getJSONObject("subFarmVO").getJSONArray("animals")
+                        // 只预算本次获准轮换的原有雇员，不重复处理新补位的小鸡。
+                        val hireAnimalSet = hireAnimalList?.resolvedIds() ?: emptySet()
+                        val nextWakeAt = farmConfiguredTime(wakeUpTime)?.let {
+                            Calendar.getInstance().apply {
+                                timeInMillis = it
+                                if (timeInMillis <= System.currentTimeMillis()) add(Calendar.DAY_OF_YEAR, 1)
+                            }.timeInMillis
+                        }
+                        var workAnimals = if (sendBackAnimal?.value == true && shouldHireAnimalNow()) {
+                            (0 until initialAnimals.length()).map { initialAnimals.getJSONObject(it) }.filter { animal ->
+                                val animalId = animal.optString("animalId")
+                                val masterFarmId = animal.optString("masterFarmId")
+                                if (animal.optString("subAnimalType") != SubAnimalType.WORK.name ||
+                                    animalId.isBlank() || masterFarmId.isBlank() || masterFarmId == ownerFarmId ||
+                                    animal.optString("currentFarmId") != ownerFarmId) return@filter false
+                                val userId = AntFarmRpcCall.farmId2UserId(masterFarmId)
+                                if (userId.isNullOrBlank() || userId == owner ||
+                                    FriendGuard.shouldSkipFriend(userId, TAG, "睡前重雇")) return@filter false
+                                val selectedForSendBack = sendBackAnimalList?.contains(userId) == true
+                                val allowedToSendBack = if (sendBackAnimalType?.value == SendBackAnimalType.BACK) {
+                                    selectedForSendBack
+                                } else !selectedForSendBack
+                                val selectedForHire = hireAnimalSet.contains(userId)
+                                val allowedToHire = if (hireAnimalType?.value == HireAnimalType.DONT_HIRE) {
+                                    !selectedForHire
+                                } else selectedForHire
+                                val hiredUntil = animal.optLong("beHiredEndTime")
+                                allowedToSendBack && allowedToHire && hiredUntil > 0 &&
+                                    (nextWakeAt == null || hiredUntil < nextWakeAt)
+                            }.sortedBy { it.optLong("beHiredEndTime") }
+                        } else emptyList()
+                        currentCoroutineContext().ensureActive()
+                        if (ApplicationHookConstants.isOffline() || !AccountSessionCoordinator.isCurrentSession(owner, epoch)) return
+                        if (isOwnerAnimalSleeping()) return
+                        if (sendBackAnimal?.value == true) {
+                            sendBackAnimal(sleepPreparation = true)
+                        }
+                        currentCoroutineContext().ensureActive()
+                        if (ApplicationHookConstants.isOffline() || !AccountSessionCoordinator.isCurrentSession(owner, epoch)) return
+                        var hireBudgetMet = false
+                        if (shouldHireAnimalNow()) {
+                            val hiringStatus = checkNotNull(syncAnimalStatus(ownerFarmId, "SYNC_RESUME", "QUERY_ALL")) {
+                                "睡前雇佣预算缺少最新庄园状态"
+                            }
+                            check(ResChecker.checkRes(TAG, hiringStatus)) { "睡前雇佣预算状态查询失败" }
+                            parseSyncAnimalStatusResponse(hiringStatus)
+                            // 预算不接受库存字段缺失时沿用旧值。
+                            foodStock = hiringStatus.getJSONObject("subFarmVO").getInt("foodStock")
+                            val hiringAnimals = hiringStatus.getJSONObject("subFarmVO").getJSONArray("animals")
+                            val currentAnimals = (0 until hiringAnimals.length()).map { hiringAnimals.getJSONObject(it) }
+                            val reserveNpcSlot = selectedNpcConfig() != NpcConfig.NONE &&
+                                currentAnimals.none { it.optString("subAnimalType") == "NPC" }
+                            val animalLimit = 3 - if (reserveNpcSlot) 1 else 0
+                            val vacancyCount = (animalLimit - currentAnimals.size).coerceAtLeast(0)
+                            val baseFood = requiredSleepPreparationFood(vacancyCount)
+                            val affordableRotations = if (baseFood != null && foodStock >= baseFood &&
+                                currentAnimals.size <= animalLimit) {
+                                ((foodStock - baseFood) / 50L).coerceAtMost(workAnimals.size.toLong()).toInt()
+                            } else 0
+                            // 预算不足以全换时，仍可闭环处理最早到期且负担得起的部分。
+                            workAnimals = workAnimals.filter { planned ->
+                                currentAnimals.any {
+                                    it.optString("animalId") == planned.optString("animalId") &&
+                                        it.optString("subAnimalType") == SubAnimalType.WORK.name &&
+                                        it.optLong("beHiredEndTime") > 0 &&
+                                        (nextWakeAt == null || it.optLong("beHiredEndTime") < nextWakeAt)
+                                }
+                            }.take(affordableRotations)
+                            val hireCount = vacancyCount + workAnimals.size
+                            val requiredFood = requiredSleepPreparationFood(hireCount)
+                            hireBudgetMet = requiredFood != null && foodStock >= requiredFood
+                            if (hireBudgetMet) {
+                                runHireAnimalFeedTaskFlow()
+                                currentCoroutineContext().ensureActive()
+                                if (ApplicationHookConstants.isOffline() || !AccountSessionCoordinator.isCurrentSession(owner, epoch)) return
+                                hireAnimal()
+                            } else {
+                                Log.farm("睡前雇佣：${hireCount}只雇佣及基础喂食需${requiredFood?.let { "${it}g" } ?: "未确认"}，当前${foodStock}g，跳过雇佣和打工鸡遣返")
+                            }
+                        }
+                        if (hireBudgetMet && sendBackAnimal?.value == true && shouldHireAnimalNow()) {
+                            for ((index, animal) in workAnimals.withIndex()) {
+                                currentCoroutineContext().ensureActive()
+                                if (ApplicationHookConstants.isOffline() || !AccountSessionCoordinator.isCurrentSession(owner, epoch)) return
+                                val animalId = animal.optString("animalId")
+                                val masterFarmId = animal.optString("masterFarmId")
+                                if (animalId.isBlank() || masterFarmId.isBlank() || masterFarmId == ownerFarmId ||
+                                    animal.optString("currentFarmId") != ownerFarmId) continue
+                                val userId = AntFarmRpcCall.farmId2UserId(masterFarmId)
+                                if (userId.isNullOrBlank() || userId == owner ||
+                                    FriendGuard.shouldSkipFriend(userId, TAG, "睡前重雇")) continue
+                                var excludedFromSendBack = sendBackAnimalList?.contains(userId) == true
+                                if (sendBackAnimalType?.value == SendBackAnimalType.BACK) {
+                                    excludedFromSendBack = !excludedFromSendBack
+                                }
+                                var allowedToHire = hireAnimalSet.contains(userId)
+                                if (hireAnimalType?.value == HireAnimalType.DONT_HIRE) {
+                                    allowedToHire = !allowedToHire
+                                }
+                                if (excludedFromSendBack || !allowedToHire) continue
+
+                                val before = syncAnimalStatus(ownerFarmId, "SYNC_RESUME", "QUERY_ALL") ?: break
+                                if (!ResChecker.checkRes(TAG, before)) break
+                                parseSyncAnimalStatusResponse(before)
+                                foodStock = before.getJSONObject("subFarmVO").getInt("foodStock")
+                                val beforeAnimals = before.getJSONObject("subFarmVO").getJSONArray("animals")
+                                val currentAnimals = (0 until beforeAnimals.length()).map { beforeAnimals.getJSONObject(it) }
+                                val currentAnimal = currentAnimals.firstOrNull {
+                                    it.optString("animalId") == animalId &&
+                                        it.optString("subAnimalType") == SubAnimalType.WORK.name &&
+                                        it.optString("masterFarmId") == masterFarmId &&
+                                        it.optString("currentFarmId") == ownerFarmId
+                                } ?: continue
+                                val hiredUntil = currentAnimal.optLong("beHiredEndTime")
+                                if (hiredUntil <= 0 || (nextWakeAt != null && hiredUntil >= nextWakeAt)) continue
+                                if (sendBackAnimal?.value != true || !shouldHireAnimalNow()) break
+                                val reserveNpcSlot = selectedNpcConfig() != NpcConfig.NONE &&
+                                    currentAnimals.none { it.optString("subAnimalType") == "NPC" }
+                                val animalLimit = 3 - if (reserveNpcSlot) 1 else 0
+                                if (currentAnimals.size > animalLimit) {
+                                    Log.farm("睡前重雇：当前鸡群占用了 NPC 预留位置，遣返后无法补位，保留现有打工鸡")
+                                    break
+                                }
+                                val remainingWorkCount = workAnimals.drop(index).count { planned ->
+                                    currentAnimals.any { it.optString("animalId") == planned.optString("animalId") &&
+                                        it.optString("subAnimalType") == SubAnimalType.WORK.name }
+                                }
+                                val remainingHireCount = (animalLimit - currentAnimals.size).coerceAtLeast(0) + remainingWorkCount
+                                val requiredFood = requiredSleepPreparationFood(remainingHireCount)
+                                if (requiredFood == null || foodStock < requiredFood) {
+                                    Log.farm("睡前重雇：剩余${remainingHireCount}只雇佣及基础喂食需${requiredFood?.let { "${it}g" } ?: "未确认"}，当前${foodStock}g，保留剩余打工鸡")
+                                    break
+                                }
+                                val workCountBefore = currentAnimals.count { it.optString("subAnimalType") == SubAnimalType.WORK.name }
+                                currentCoroutineContext().ensureActive()
+                                if (ApplicationHookConstants.isOffline() || !AccountSessionCoordinator.isCurrentSession(owner, epoch)) return
+                                val sent = JSONObject(AntFarmRpcCall.sendBackAnimal("NORMAL", animalId, ownerFarmId, masterFarmId))
+                                if (!ResChecker.checkRes(TAG, sent)) {
+                                    Log.farm("睡前重雇：遣返打工鸡失败，停止后续遣返[$sent]")
+                                    break
+                                }
+                                currentCoroutineContext().ensureActive()
+                                if (ApplicationHookConstants.isOffline() || !AccountSessionCoordinator.isCurrentSession(owner, epoch)) return
+                                val after = syncAnimalStatus(ownerFarmId, "SYNC_RESUME", "QUERY_ALL") ?: break
+                                if (!ResChecker.checkRes(TAG, after)) break
+                                parseSyncAnimalStatusResponse(after)
+                                val remainingAnimals = after.getJSONObject("subFarmVO").getJSONArray("animals")
+                                if ((0 until remainingAnimals.length()).any { remainingAnimals.getJSONObject(it).optString("animalId") == animalId }) {
+                                    Log.farm("睡前重雇：打工鸡尚未确认离场，停止后续遣返")
+                                    break
+                                }
+                                val childId = "HIRE|$animalId"
+                                // 父类按同 ID 替换取消旧内存等待；空任务不触发雇佣。
+                                addChildTask(ModelTask.ChildModelTask(
+                                    id = childId, group = "HIRE", suspendRunnable = {}, execTime = System.currentTimeMillis(),
+                                ))
+                                cancelPersistentChildTask(childId)
+                                Log.farm("睡前重雇：已遣返[${UserMap.getMaskName(userId) ?: userId}]，开始补位")
+                                runHireAnimalFeedTaskFlow()
+                                currentCoroutineContext().ensureActive()
+                                if (ApplicationHookConstants.isOffline() || !AccountSessionCoordinator.isCurrentSession(owner, epoch)) return
+                                hireAnimal()
+                                currentCoroutineContext().ensureActive()
+                                if (ApplicationHookConstants.isOffline() || !AccountSessionCoordinator.isCurrentSession(owner, epoch)) return
+                                val refreshed = syncAnimalStatus(ownerFarmId, "SYNC_RESUME", "QUERY_ALL") ?: break
+                                if (!ResChecker.checkRes(TAG, refreshed)) break
+                                parseSyncAnimalStatusResponse(refreshed)
+                                val hiredAnimals = refreshed.getJSONObject("subFarmVO").getJSONArray("animals")
+                                registerHiredWorkAnimals(hiredAnimals)
+                                val workCountAfter = (0 until hiredAnimals.length()).count {
+                                    hiredAnimals.getJSONObject(it).optString("subAnimalType") == SubAnimalType.WORK.name
+                                }
+                                if (workCountAfter < workCountBefore) {
+                                    Log.farm("睡前重雇：未补齐打工鸡，停止后续遣返")
+                                    break
+                                }
+                            }
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (t: Throwable) {
+                        Log.printStackTrace(TAG, "睡前鸡群准备失败，继续喂食并尝试睡觉:", t)
+                    }
+                    try {
+                        currentCoroutineContext().ensureActive()
+                        if (ApplicationHookConstants.isOffline() || !AccountSessionCoordinator.isCurrentSession(owner, epoch)) return
+                        // 即使未执行重雇，也保留原喂食中的领奖、按配置补兑与换装链路。
+                        handleAutoFeedAnimal(sleepPreparation = true)
+                        currentCoroutineContext().ensureActive()
+                        if (ApplicationHookConstants.isOffline() || !AccountSessionCoordinator.isCurrentSession(owner, epoch)) return
+                        syncAnimalStatus(ownerFarmId)
+                        if (feedAnimal?.value == true && AnimalFeedStatus.HUNGRY.name == ownerAnimal.animalFeedStatus &&
+                            foodStock >= 180 && feedAnimal(ownerFarmId)) {
+                            syncAnimalStatus(ownerFarmId)
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (t: Throwable) {
+                        Log.printStackTrace(TAG, "睡前喂食失败，继续尝试睡觉:", t)
+                    }
+                    currentCoroutineContext().ensureActive()
+                    if (ApplicationHookConstants.isOffline() || !AccountSessionCoordinator.isCurrentSession(owner, epoch)) return
                     s = if (groupId.isNotEmpty()) {
                         AntFarmRpcCall.sleep(groupId)
                     } else {
@@ -2515,6 +2748,8 @@ modelFields.addField(
                     Log.farm("小鸡无需睡觉🛌")
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "animalSleepNow err:",t)
         }
@@ -2688,12 +2923,15 @@ modelFields.addField(
         }
     }
 
-    internal fun sendBackAnimal() {
+    internal fun sendBackAnimal(sleepPreparation: Boolean = false) {
         if (animals == null) {
             return
         }
         try {
             for (animal in animals?.toList().orEmpty().shuffled()) {
+                if (sleepPreparation && (animal.masterFarmId == ownerFarmId || animal.subAnimalType == "NPC")) {
+                    continue
+                }
                 if (AnimalInteractStatus.STEALING.name == animal.animalInteractStatus && (SubAnimalType.GUEST.name != animal.subAnimalType) && (SubAnimalType.WORK.name != animal.subAnimalType)) {
                     // 赶鸡
                     val userId = AntFarmRpcCall.farmId2UserId(animal.masterFarmId)
@@ -5290,7 +5528,10 @@ modelFields.addField(
      *
      * @return true: 使用成功，false: 使用失败
      */
-    private suspend fun useAccelerateTool(releaseRewardSlot: Boolean = false): Boolean {
+    private suspend fun useAccelerateTool(
+        releaseRewardSlot: Boolean = false,
+        sleepPreparation: Boolean = false,
+    ): Boolean {
         if ((useAccelerateTool?.value != true && !releaseRewardSlot) || !isOwnerAnimalAtHome() ||
             ownerAnimal.animalFeedStatus != AnimalFeedStatus.EATING.name || ApplicationHookConstants.isOffline()
         ) return false
@@ -5380,6 +5621,19 @@ modelFields.addField(
                 }
 
                 null -> Unit
+            }
+            if (sleepPreparation) {
+                currentCoroutineContext().ensureActive()
+                val status = syncAnimalStatus(ownerFarmId, "SYNC_RESUME", "QUERY_ALL") ?: break
+                if (!ResChecker.checkRes(TAG, status)) break
+                parseSyncAnimalStatusResponse(status)
+                foodStock = status.getJSONObject("subFarmVO").getInt("foodStock")
+                if (!isOwnerAnimalAtHome() || ownerAnimal.animalFeedStatus != AnimalFeedStatus.EATING.name ||
+                    feedAnimal?.value != true || foodStock < 180) {
+                    Log.farm("睡前加速：无法保证吃空后的补喂，保留剩余加速卡")
+                    exitReason = "SLEEP_FEED_REQUIRED"
+                    break
+                }
             }
             if (accelerateToolCount <= 0) {
                 val replenishedTool = replenishFarmToolIfMissing(

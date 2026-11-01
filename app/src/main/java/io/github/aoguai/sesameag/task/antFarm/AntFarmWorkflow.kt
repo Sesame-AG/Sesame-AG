@@ -234,7 +234,10 @@ internal suspend fun AntFarm.runFarmFinalizeWorkflow(
     tc.stop()
 }
 
-internal suspend fun AntFarm.runFarmResourceWork(includeGames: Boolean = true): Boolean {
+internal suspend fun AntFarm.runFarmResourceWork(
+    includeGames: Boolean = true,
+    feedAfterAwards: Boolean = true,
+): Boolean {
     if (ApplicationHookConstants.isOffline()) return false
     val stockBefore = AntFarm.foodStock
     preloadFarmTools()
@@ -246,7 +249,7 @@ internal suspend fun AntFarm.runFarmResourceWork(includeGames: Boolean = true): 
     if (ApplicationHookConstants.isOffline()) return kitchenProgress
     receiveFarmAwards()
     handleMultiStageTasksLoop()
-    if (stockBefore < 180 && AntFarm.foodStock >= 180 && feedAnimal?.value == true) {
+    if (feedAfterAwards && stockBefore < 180 && AntFarm.foodStock >= 180 && feedAnimal?.value == true) {
         handleAutoFeedAnimal()
         receiveFarmAwards()
     }
