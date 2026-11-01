@@ -58,6 +58,7 @@ internal class ForestReadRpcCall(var token: String) {
         var captureId: String? = null
         try {
             connection.requestMethod = if (body == null) "GET" else "POST"
+            // 十秒连接、二十秒读取均为网络等待上限，防止阅读请求无限挂起；响应及时则不会等满。
             connection.connectTimeout = 10_000
             connection.readTimeout = 20_000
             connection.instanceFollowRedirects = false

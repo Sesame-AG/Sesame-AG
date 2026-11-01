@@ -92,7 +92,7 @@ object ForestUtil {
         val info = userFrequencyMap.getOrPut(userId) { FrequencyLimitInfo() }
         // 增加失败次数
         info.failCount++
-        // 根据失败次数设置冷却时间
+        // 已触发“手速太快”后逐级冷却 2/10/30 分钟，避免继续请求同一用户；这里只记录期限，不阻塞线程。
         val cooldownMinutes = when (info.failCount) {
             1 -> {
                 info.cooldownUntil = currentTime + 2 * 60 * 1000L  // 2分钟

@@ -22,22 +22,24 @@ import io.github.aoguai.sesameag.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 
-internal fun AntForest.waterMemberPlant() {
+internal fun AntForest.waterMemberPlant(): TaskFlowActionResult {
+    var result = TaskFlowActionResult.defer(DeferredReason.PREREQUISITE_PENDING, "绿植等待种植或浇水条件")
     try {
         var response = JSONObject(AntForestRpcCall.memberForestSignin())
         while (!ApplicationHookConstants.isOffline()) {
             if (!response.optBoolean("success") || response.optString("resultCode") != "SUCCESS") {
                 Log.error("ForestPlant", "绿植状态查询失败 raw=$response")
-                return
+                return TaskFlowActionResult.failure(TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                    code = response.optString("resultCode"), message = "绿植状态查询失败", raw = response.toString())
             }
-            val data = response.optJSONObject("resultData") ?: return
-            if (data.optJSONObject("plantChannelResponse")?.optBoolean("access") != true) return
-            val plant = data.optJSONObject("plantInfo") ?: return
-            if (plant.optString("status") != "in_progress") return
-            val info = plant.optJSONObject("plantInfoMap") ?: return
-            val water = info.optJSONObject("WATER") ?: return
-            val pot = info.optJSONObject("WATERING_POT") ?: return
-            val ext = pot.optJSONObject("extInfo") ?: return
+            val data = response.optJSONObject("resultData") ?: return result
+            if (data.optJSONObject("plantChannelResponse")?.optBoolean("access") != true) return result
+            val plant = data.optJSONObject("plantInfo") ?: return result
+            if (plant.optString("status") != "in_progress") return result
+            val info = plant.optJSONObject("plantInfoMap") ?: return result
+            val water = info.optJSONObject("WATER") ?: return result
+            val pot = info.optJSONObject("WATERING_POT") ?: return result
+            val ext = pot.optJSONObject("extInfo") ?: return result
             val available = JSONArray(ext.optString("availablePots").ifBlank { "[]" })
             val speeds = (0 until available.length()).map { available.getString(it) }
             val costPerWater = ext.optLong("costPerWater", 0L)
@@ -45,14 +47,15 @@ internal fun AntForest.waterMemberPlant() {
             val speed = when {
                 "five" in speeds && costPerWater > 0 && balance >= costPerWater * 5L -> "five"
                 "one" in speeds && costPerWater > 0 && balance >= costPerWater -> "one"
-                else -> return
+                else -> return result
             }
             val progress = info.optJSONObject("PLANT_PROGRESS_V2")?.optJSONObject("extInfo")
             val beforeTotal = progress?.optLong("totalWaterG", -1L) ?: -1L
             val beforeBar = progress?.optLong("currentBarProgressG", -1L) ?: -1L
             if (beforeTotal < 0L) {
                 Log.error("ForestPlant", "绿植缺少累计浇水进度 raw=$response")
-                return
+                return TaskFlowActionResult.failure(TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                    message = "绿植缺少累计浇水进度", raw = response.toString())
             }
             val award = JSONObject(AntForestRpcCall.plantAward(speed))
             if (!award.optBoolean("success") || award.optString("resultCode") != "SUCCESS") {
@@ -65,13 +68,18 @@ internal fun AntForest.waterMemberPlant() {
             val afterBalance = afterInfo?.optJSONObject("WATER")?.optLong("value", -1L) ?: -1L
             if (!response.optBoolean("success") || afterTotal <= beforeTotal || afterBalance < 0L || afterBalance >= balance) {
                 Log.error("ForestPlant", "绿植浇水进度未确认 beforeTotal=$beforeTotal beforeWater=$balance raw=$response")
-                return
+                return TaskFlowActionResult.failure(TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                    message = "绿植浇水进度未确认", raw = response.toString())
             }
+            result = TaskFlowActionResult.success()
             Log.forest("绿植浇水🌱累计${beforeTotal}→${afterTotal}，水滴${balance}→${afterBalance}，段进度${beforeBar}→${afterProgress?.optLong("currentBarProgressG")}")
         }
     } catch (t: Throwable) {
+        if (t is java.util.concurrent.CancellationException || t is InterruptedException) throw t
         Log.printStackTrace("ForestPlant", "绿植浇水处理异常", t)
+        return TaskFlowActionResult.failure(TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW, message = t.message.orEmpty())
     }
+    return result
 }
 
 internal const val FOREST_PLANT_CHILD_KIND = "forest_plant_task"
@@ -123,7 +131,7 @@ internal fun AntForest.runMemberPlantTasks(continuation: JSONObject? = null): Ta
                         it.state in setOf(PersistentScheduleState.SCHEDULED, PersistentScheduleState.QUEUED, PersistentScheduleState.RUNNING)
                 }
                 if (pending != null) return TaskFlowActionResult.defer(
-                    DeferredReason.CHILD_TASK_PENDING, message = "绿植浏览等待到点续接", deferredUntil = pending.triggerAtMs,
+                    DeferredReason.CHILD_TASK_PENDING, message = "绿植浏览续接处理中", deferredUntil = pending.triggerAtMs,
                 )
             }
             val stage = continuation?.optString("stage") ?: "BROWSE"
@@ -175,7 +183,7 @@ internal fun AntForest.runMemberPlantTasks(continuation: JSONObject? = null): Ta
                 TaskRpcFailureType.RETRYABLE_RPC, message = "绿植续接注册失败：${schedule.lastError}",
             )
             return TaskFlowActionResult.defer(
-                DeferredReason.TIME_WINDOW, message = "绿植浏览已登记到点续接", deferredUntil = readyAt,
+                DeferredReason.CHILD_TASK_PENDING, message = "绿植浏览已登记后续步骤", deferredUntil = readyAt,
             )
         }
 

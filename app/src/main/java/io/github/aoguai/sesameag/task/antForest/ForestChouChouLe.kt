@@ -1,6 +1,5 @@
 package io.github.aoguai.sesameag.task.antForest
 
-import io.github.aoguai.sesameag.util.RandomUtil
 
 import io.github.aoguai.sesameag.task.antFarm.AntFarmRpcCall
 
@@ -17,7 +16,6 @@ import io.github.aoguai.sesameag.task.common.TaskFlowItem
 import io.github.aoguai.sesameag.task.common.TaskFlowPhase
 import io.github.aoguai.sesameag.task.common.TaskFlowSnapshot
 import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
-import io.github.aoguai.sesameag.util.GlobalThreadPools.sleepCompat
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.ResChecker
 import io.github.aoguai.sesameag.util.TaskBlacklist
@@ -188,7 +186,6 @@ class ForestChouChouLe(private val charityWaterEnabled: Boolean = false) {
             Log.forest("开始处理森林寻宝, 共 ${scenes.size} 个场景")
             scenes.forEach {
                 processScene(it)
-                sleepCompat(RandomUtil.nextLong(85, 101))
             }
         }.onFailure { Log.printStackTrace(TAG, "执行异常", it) }
     }
@@ -505,7 +502,6 @@ class ForestChouChouLe(private val charityWaterEnabled: Boolean = false) {
                     Log.forest("${s.name} 🎁 [获得: $name * $num] 剩余次数: $balance")
                 }
 
-                if (balance > 0) sleepCompat(RandomUtil.nextLong(425, 501))
             }
             if (balance > 0) {
                 Log.error(TAG, "${s.name} 单次抽奖达到轮次上限，剩余次数: $balance")
@@ -712,7 +708,7 @@ class ForestChouChouLe(private val charityWaterEnabled: Boolean = false) {
                     },
             )
             return if (!exchangeDrawTask && actionResult.code == "400000040" && item.sceneCode.isNotBlank()) {
-                AntFarmRpcCall.doSceneTask(item.type, item.sceneCode) { fallback ->
+                AntFarmRpcCall.doSceneTask(item.type, item.sceneCode, actionResult) { fallback ->
                     handleActionResponse(item, fallback, TaskFlowAction.COMPLETE, "AntFarmRpcCall.doFarmTask")
                 }
             } else actionResult

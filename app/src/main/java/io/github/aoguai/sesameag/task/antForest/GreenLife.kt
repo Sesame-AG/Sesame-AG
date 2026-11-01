@@ -1,6 +1,5 @@
 package io.github.aoguai.sesameag.task.antForest
 
-import io.github.aoguai.sesameag.util.RandomUtil
 
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.task.common.DeferredReason
@@ -10,7 +9,6 @@ import io.github.aoguai.sesameag.task.common.TaskFlowEngine
 import io.github.aoguai.sesameag.task.common.TaskFlowItem
 import io.github.aoguai.sesameag.task.common.TaskFlowPhase
 import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
-import io.github.aoguai.sesameag.util.CoroutineUtils
 import io.github.aoguai.sesameag.util.ResChecker
 import io.github.aoguai.sesameag.util.Log
 import kotlinx.coroutines.CancellationException
@@ -72,7 +70,6 @@ object GreenLife {
                 val attemptResult = tryForestMarket(sourceType)
                 if (attemptResult.collected) {
                     collected = true
-                    CoroutineUtils.sleepCompat(RandomUtil.nextLong(255, 301))
                     continue
                 }
                 if (collected || !attemptResult.shouldContinue) return collected
@@ -183,12 +180,10 @@ object GreenLife {
                 }
                 MarketConsultDecision.UNSUPPORTED -> {
                     logMarketFailure(sourceType, "consult", consultResult.failure)
-                    CoroutineUtils.sleepCompat(300)
                     return MarketAttemptResult(collected = false, shouldContinue = true)
                 }
                 MarketConsultDecision.FAILED -> {
                     logMarketFailure(sourceType, "consult", consultResult.failure)
-                    CoroutineUtils.sleepCompat(300)
                     return MarketAttemptResult(collected = false, shouldContinue = true)
                 }
             }

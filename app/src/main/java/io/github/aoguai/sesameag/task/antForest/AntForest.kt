@@ -45,6 +45,7 @@ import io.github.aoguai.sesameag.task.ModelTask
 import io.github.aoguai.sesameag.task.TaskCommon
 import io.github.aoguai.sesameag.task.TaskExecutionOutcome
 import io.github.aoguai.sesameag.task.TaskStatus
+import io.github.aoguai.sesameag.task.common.DeferredReason
 import io.github.aoguai.sesameag.task.common.GameCenterPlayRpcCall
 import io.github.aoguai.sesameag.task.common.TaskFlowAction
 import io.github.aoguai.sesameag.task.common.TaskFlowActionResult
@@ -158,8 +159,12 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             val result = runMemberPlantTasks(payload)
             when {
                 result.completed -> {
-                    waterMemberPlant()
-                    TaskExecutionOutcome.SUCCESS
+                    val watering = waterMemberPlant()
+                    when {
+                        watering.failureType != null -> TaskExecutionOutcome.FAILED
+                        watering.deferredReason != null -> TaskExecutionOutcome.DEFERRED
+                        else -> TaskExecutionOutcome.SUCCESS
+                    }
                 }
                 result.failureCount > 0 -> TaskExecutionOutcome.FAILED
                 result.deferredCount > 0 -> TaskExecutionOutcome.DEFERRED
@@ -1325,7 +1330,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                         continue
                     }
                 }
-                GlobalThreadPools.sleepCompat(RandomUtil.nextLong(425, 501))
             } catch (e: JSONException) {
                 Log.forest("浇水金球JSON解析错误: " + e.message)
             } catch (e: RuntimeException) {
@@ -1450,7 +1454,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 } catch (e: Exception) {
                     Log.printStackTrace(TAG, "领取道具时发生错误: " + e.message, e)
                 }
-                GlobalThreadPools.sleepCompat(RandomUtil.nextLong(850, 1001))
             }
         } catch (e: JSONException) {
             Log.printStackTrace(TAG, "givenProps JSON解析错误: " + e.message, e)
@@ -2024,7 +2027,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                         break
                     }
                     exchangedAny = true
-                    GlobalThreadPools.sleepCompat(RandomUtil.nextLong(850, 1001))
                 }
             }
         } catch (t: Throwable) {
@@ -2087,7 +2089,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     if (exchangedCount >= safeMaxCount) {
                         break
                     }
-                    GlobalThreadPools.sleepCompat(RandomUtil.nextLong(850, 1001))
                 }
             }
             when {
@@ -2259,7 +2260,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
     /**
      * 检查并处理6秒拼手速逻辑（每天主动执行一次）
      */
-    internal fun checkAndHandleWhackMole() {
+    internal suspend fun checkAndHandleWhackMole() {
         try {
             val modeIndex = whackMoleMode?.value ?: 0
 
@@ -2281,8 +2282,10 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             }
 
             Log.forest("🎮 触发拼手速任务")
-            WhackMole.start()
+            WhackMole.startSuspend()
         } catch (t: Throwable) {
+            if (t is CancellationException) throw t
+            io.github.aoguai.sesameag.task.TaskExecutionReport.current()?.recordException()
             Log.printStackTrace(TAG, t)
         }
     }
@@ -2714,8 +2717,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     )
                 }
                 if (i < 2) {
-                    Log.forest("获取" + rankingName + "失败，" + (5 * (i + 1)) + "秒后重试")
-                    GlobalThreadPools.sleepCompat(5000L * (i + 1))
+                    Log.forest("获取" + rankingName + "失败，准备重试")
                 }
             }
 
@@ -3376,8 +3378,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                         } catch (t: Throwable) {
                             Log.printStackTrace(t)
                             break
-                        } finally {
-                            GlobalThreadPools.sleepCompat(RandomUtil.nextLong(425, 501))
                         }
                     }
                 }
@@ -3445,8 +3445,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     } catch (t: Throwable) {
                         Log.printStackTrace(t)
                         break
-                    } finally {
-                        GlobalThreadPools.sleepCompat(RandomUtil.nextLong(425, 501))
                     }
                 }
             }
@@ -3535,6 +3533,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                         else -> collectIntervalEntity!!.interval ?: 1000
                     }
                     val sleep = interval - (System.currentTimeMillis() - lastCollectEnergyTime)
+                    // 补足普通收取、双击或重试各自配置的请求间隔；已耗时会扣除，不再额外整段等待。
                     if (sleep > 0) GlobalThreadPools.sleepCompat(sleep)
                     val startedAt = System.currentTimeMillis()
                     lastCollectEnergyTime = startedAt
@@ -3546,6 +3545,20 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     delayTimeMath.nextInteger((spendTime / 3).toInt())
                 }
 
+                val responseString = rpcEntity.responseString.orEmpty()
+                val jo = JSONObject(responseString.ifBlank { "{}" })
+                val resultCode = jo.optString("resultCode")
+                if (!jo.optBoolean("success") && !"SUCCESS".equals(resultCode, ignoreCase = true)) {
+                    if ("TARGET_USER_QUIT_FOREST" == resultCode) {
+                        Log.forest("[" + getAndCacheUserName(userId) + "]对方未开通蚂蚁森林，取消重试:" + jo.optString("resultDesc"))
+                        return@Runnable
+                    }
+                    if ("PARAM_ILLEGAL2" == resultCode) {
+                        Log.forest("[" + getAndCacheUserName(userId) + "]" + "能量已被收取,取消重试 错误:" + jo.optString("resultDesc"))
+                        return@Runnable
+                    }
+                }
+                val retryable = jo.opt("retryable") as? Boolean ?: jo.opt("retriable") as? Boolean
                 if (rpcEntity.hasError) {
                     val errorCode = runCatching {
                         val responseObject = rpcEntity.responseObject ?: return@runCatching null
@@ -3563,6 +3576,10 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                             return@Runnable
                         }
                     }
+                    if (retryable == false) {
+                        Log.error(TAG, "收取能量不可重试: $responseString")
+                        return@Runnable
+                    }
                     if (tryCount < tryCountInt!!) {
                         collectEnergyEntity.setNeedRetry()
                         collectEnergy(collectEnergyEntity)
@@ -3570,19 +3587,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     return@Runnable
                 }
 
-                val responseString: String = rpcEntity.responseString ?: ""
-                val jo = JSONObject(responseString)
-                val resultCode = jo.optString("resultCode")
                 if (!jo.optBoolean("success") && !"SUCCESS".equals(resultCode, ignoreCase = true)) {
-                    if ("TARGET_USER_QUIT_FOREST" == resultCode) {
-                        Log.forest("[" + getAndCacheUserName(userId) + "]对方未开通蚂蚁森林，取消重试:" + jo.optString("resultDesc"))
-                        return@Runnable
-                    }
-                    if ("PARAM_ILLEGAL2" == resultCode) {
-                        Log.forest("[" + getAndCacheUserName(userId) + "]" + "能量已被收取,取消重试 错误:" + jo.getString("resultDesc"))
-                        return@Runnable
-                    }
-
                     // 检测并记录"手速太快"错误
                     if (ForestUtil.checkAndRecordFrequencyError(userId, jo)) {
                         return@Runnable
@@ -4538,14 +4543,14 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             )
             when {
                 extractForestTaskFailureCode(finishTaskResponse) == "400000040" -> {
-                    val result = AntFarmRpcCall.doSceneTask(childTaskType, childSceneCode) { fallback ->
+                    val failure = forestTaskActionFailureResult(
+                        finishTaskResponse, "AntForestRpcCall.finishTask", "taskType=$childTaskType sceneCode=$childSceneCode",
+                    )
+                    val result = AntFarmRpcCall.doSceneTask(childTaskType, childSceneCode, failure) { fallback ->
                         forestTaskActionFailureResult(fallback, "AntFarmRpcCall.doFarmTask", "taskType=$childTaskType sceneCode=$childSceneCode")
                     }
-                    if (result.deferredReason != null) {
-                        changed = true
-                    } else {
-                        Log.error(TAG, "绿色践行子任务备用请求失败[$childTaskTitle] code=${result.code} msg=${result.message} raw=${result.raw}")
-                    }
+                    Log.error(TAG, "绿色践行子任务完成未确认[$childTaskTitle] rpc=${result.rpc} code=${result.code} msg=${result.message} raw=${result.raw} detail=${result.detail}")
+                    if (result.refreshAfterAction) changed = true
                 }
                 isForestTaskAlreadyHandled(finishTaskResponse) -> {
                     forestTaskTryCount.remove(bizKey)
@@ -4710,7 +4715,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
 
             ResChecker.checkRes(TAG, "领取森林任务奖励失败:", awardResponse) -> {
                 logForestTaskAward(taskTitle, awardCount, awardResponse, taskRights)
-                GlobalThreadPools.sleepCompat(RandomUtil.nextLong(425, 501))
                 true
             }
 
@@ -4838,7 +4842,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     awardResponse,
                     item.raw?.optJSONObject("taskRights")
                 )
-                GlobalThreadPools.sleepCompat(RandomUtil.nextLong(425, 501))
                 TaskFlowActionResult.success()
             }
 
@@ -4868,7 +4871,10 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         }
         val finishTaskResponse = JSONObject(response)
         if (extractForestTaskFailureCode(finishTaskResponse) == "400000040" && item.sceneCode.isNotBlank()) {
-            return AntFarmRpcCall.doSceneTask(item.type, item.sceneCode) { fallback ->
+            val failure = forestTaskActionFailureResult(
+                finishTaskResponse, "AntForestRpcCall.finishTask", forestTaskActionDetail(item, "finishLegacyGameTask"),
+            )
+            return AntFarmRpcCall.doSceneTask(item.type, item.sceneCode, failure) { fallback ->
                 forestTaskActionFailureResult(fallback, "AntFarmRpcCall.doFarmTask", forestTaskActionDetail(item, "complete"))
             }
         }
@@ -4902,7 +4908,10 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         }
         val finishTaskResponse = JSONObject(response)
         if (extractForestTaskFailureCode(finishTaskResponse) == "400000040" && item.sceneCode.isNotBlank()) {
-            return AntFarmRpcCall.doSceneTask(item.type, item.sceneCode) { fallback ->
+            val failure = forestTaskActionFailureResult(
+                finishTaskResponse, "AntForestRpcCall.finishTask", forestTaskActionDetail(item, "finishTask"),
+            )
+            return AntFarmRpcCall.doSceneTask(item.type, item.sceneCode, failure) { fallback ->
                 forestTaskActionFailureResult(fallback, "AntFarmRpcCall.doFarmTask", forestTaskActionDetail(item, "complete"))
             }
         }
@@ -5056,7 +5065,10 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         }
         val finishTaskResponse = JSONObject(response)
         if (extractForestTaskFailureCode(finishTaskResponse) == "400000040" && item.sceneCode.isNotBlank()) {
-            return AntFarmRpcCall.doSceneTask(item.type, item.sceneCode) { fallback ->
+            val failure = forestTaskActionFailureResult(
+                finishTaskResponse, "AntForestRpcCall.finishTask", forestTaskActionDetail(item, "oneClickWateringFinishTask"),
+            )
+            return AntFarmRpcCall.doSceneTask(item.type, item.sceneCode, failure) { fallback ->
                 forestTaskActionFailureResult(fallback, "AntFarmRpcCall.doFarmTask", forestTaskActionDetail(item, "complete"))
             }
         }
@@ -5378,6 +5390,12 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     if (targetTaskTypes.isNotEmpty() && taskType !in targetTaskTypes) {
                         continue
                     }
+                    if (taskBaseInfo.optString("taskMode") == "STATIC_GUIDE_SPACE") {
+                        if (duplicateSkipLogged.add("$sceneCode|$taskType|STATIC_GUIDE_SPACE")) {
+                            Log.forest("森林静态入口[${getForestTaskTitle(taskBaseInfo, taskType)}]不提交任务完成RPC")
+                        }
+                        continue
+                    }
                     val bizInfo = parseTaskBizInfo(taskBaseInfo)
                     val taskRights = parseTaskRights(taskInfo)
                     val awardCount = taskRights.optInt("awardCount", 0)
@@ -5480,6 +5498,9 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             if (isEnergyRainTaskCenterTaskType(item.type)) {
                 return TaskFlowPhase.TERMINAL
             }
+            if (item.type == "ZHRW_HUIYUANjiaoshui_202608" &&
+                item.status in setOf(TaskStatus.TODO.name, "WAIT_COMPLETE")
+            ) return TaskFlowPhase.READY_TO_COMPLETE
             if (isAccumulatedEffectiveTask(item)) {
                 return when (item.status.uppercase(Locale.ROOT)) {
                     TaskStatus.FINISHED.name,
@@ -5598,6 +5619,13 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             }
             if (item.type == ONE_CLICK_WATERING_TASK_TYPE) {
                 return completeOneClickWateringTask(item)
+            }
+            if (item.type == "ZHRW_HUIYUANjiaoshui_202608") {
+                val result = waterMemberPlant()
+                return if (result.success) {
+                    TaskFlowActionResult.defer(DeferredReason.STATE_CONFIRMATION,
+                        "绿植浇水已确认，回查森林任务并领奖", refreshAfterAction = true)
+                } else result
             }
             if (isGreenPracticeParentItem(item)) {
                 val taskInfo = item.raw?.optJSONObject("taskInfo")
@@ -7774,6 +7802,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                         if (propType == "LIMIT_TIME_ENERGY_RAIN_CHANCE") {
                             getLimitTimeEnergyRainFlag(jo)?.let { Status.setFlagToday(it) }
                         }
+                        // 能量雨道具使用后沿用两秒本地状态同步缓冲，再回查背包；不是服务端下发的时长。
                         delay(2000)
                         if (propType == "LIMIT_TIME_ENERGY_RAIN_CHANCE") {
                             break
@@ -7792,11 +7821,13 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                         queryPropList(true)
                     }
                     if (replenishResult == ExchangeReplenishResult.EXCHANGED) {
+                        // 能量雨次卡兑换后沿用一秒本地到账缓冲，再重新读取可用道具。
                         delay(1000)
                         val joExchanged = findPropBag(queryEnergyRainChanceBag(true), propType)
                         if (joExchanged != null && usePropBag(joExchanged)) {
                             getLimitTimeEnergyRainFlag(joExchanged)?.let { Status.setFlagToday(it) }
                             usedAny = true
+                            // 激活补兑的能量雨道具后保留一秒本地缓冲，再继续后续机会检查。
                             delay(1000)
                         }
                     } else if (replenishResult == ExchangeReplenishResult.BUSINESS_LIMIT) {
@@ -9186,6 +9217,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 Log.forest("无法获取自己主页信息")
             }
         } catch (t: Throwable) {
+            if (t is CancellationException) throw t
             Log.printStackTrace(TAG, t)
         }
     }

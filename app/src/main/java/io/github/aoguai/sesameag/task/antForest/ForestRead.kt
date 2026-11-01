@@ -17,6 +17,7 @@ import io.github.aoguai.sesameag.util.TimeUtil
 import io.github.aoguai.sesameag.util.UserDataStoreManager
 import org.json.JSONObject
 import java.net.HttpRetryException
+import java.net.SocketTimeoutException
 import java.util.Calendar
 import java.util.concurrent.TimeUnit
 
@@ -131,7 +132,7 @@ internal object ForestRead {
                     val chapterId = chapter.getString("id")
                     require(chapterId.isNotBlank() && chapter.has("next_id")) { "森林阅读章节结构不完整: $chapter" }
                     val started = System.currentTimeMillis()
-                    // 六分钟是本地调度间隔，上报时使用实际经过的时长。
+                    // 保留六分钟本地章节阅读计时，后续按实际经过秒数上报，避免开始后立即提交零阅读时长。
                     val readyAt = started + TimeUnit.MINUTES.toMillis(6)
                     state.put("chapter", JSONObject().put("id", chapterId).put("name", chapter.optString("name"))
                         .put("nextId", if (chapter.isNull("next_id")) "" else chapter.getString("next_id"))
@@ -173,13 +174,26 @@ internal object ForestRead {
                 total = progress.getInt("total")
                 require(current >= 0 && total > 0) { "森林阅读收益进度无效: $progress" }
                 val gain = current - reading.getInt("before")
-                if (gain <= 0 && current < total) {
+                if (gain <= 0 && current < total && reading.getString("phase") == "SUBMITTED") {
                     Log.record("ForestRead", "无纸阅读上报后收益待确认，当前 $current/$total，保留章节 ${reading.getString("id")}")
-                    return TaskFlowActionResult.defer(DeferredReason.STATE_CONFIRMATION, "森林阅读收益未推进")
+                    return TaskFlowActionResult.defer(
+                        DeferredReason.STATE_CONFIRMATION,
+                        "森林阅读收益未推进",
+                        // 结果未知时延后六分钟回查收益，保留 SUBMITTED 状态，避免重放可能已成功的上报。
+                        deferredUntil = System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(6),
+                    )
                 }
-                if (gain > 0) {
-                    if (reading.getString("phase") == "SUBMITTED") client.recent(bookId, chapterId, reading.optString("name"))
-                    Log.forest("无纸阅读[${state.optString("bookName")}] 获得${gain}g能量，进度 $current/$total")
+                if (gain > 0 || reading.getString("phase") == "RECENT") {
+                    if (reading.getString("phase") == "SUBMITTED") {
+                        client.recent(bookId, chapterId, reading.optString("name"))
+                        reading.put("phase", "RECENT")
+                        save()
+                    }
+                    if (gain > 0) {
+                        Log.forest("无纸阅读[${state.optString("bookName")}] 获得${gain}g能量，进度 $current/$total")
+                    } else {
+                        Log.record("ForestRead", "无纸阅读章节上报及历史记录已确认，收益 $current/$total，继续下一章节")
+                    }
                     val next = reading.getString("nextId")
                     require(next != chapterId) { "森林阅读章节游标未推进: $chapterId" }
                     if (next.isBlank() || next == "0" || next == "null") {
@@ -203,6 +217,11 @@ internal object ForestRead {
             if (t is HttpRetryException && t.responseCode() == 401) state.remove("token")
             save()
             Log.printStackTrace("ForestRead", "无纸阅读失败，保留进度:", t)
+            if (t is SocketTimeoutException) {
+                // 网络超时后按章节的六分钟本地间隔退避；SUBMITTED 只回查收益，不重发结果未知的上报。
+                return TaskFlowActionResult.failure(TaskRpcFailureType.RETRYABLE_RPC, message = t.message.orEmpty())
+                    .copy(deferredUntil = System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(6))
+            }
             return TaskFlowActionResult.failure(TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW, message = t.message.orEmpty())
         }
     }

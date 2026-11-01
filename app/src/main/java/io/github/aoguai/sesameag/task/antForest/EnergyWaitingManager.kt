@@ -945,6 +945,7 @@ object EnergyWaitingManager {
                         val checkInterval = 30000L // 30秒检查一次
                         while (remainingWait > 0 && isActive) {
                             val currentWait = minOf(remainingWait, checkInterval)
+                            // 分段等到成熟/保护结束窗口，每段最多三十秒，以便及时检查账号切换和任务失效。
                             delay(currentWait)
                             remainingWait -= currentWait
 
@@ -1091,6 +1092,7 @@ object EnergyWaitingManager {
         retryDelay: Long,
     ) {
         managerScope.launch {
+            // 失败或未收获能量时按调用方给定的退避时间重启蹲点，避免立即密集回查。
             delay(retryDelay.coerceAtLeast(0L))
             if (waitingTasks[task.taskId] == task) {
                 startPreciseWaitingCoroutine(task)
@@ -1102,6 +1104,7 @@ object EnergyWaitingManager {
         delayMillis: Long,
         taskName: String,
     ) {
+        // 三条分支都只等待目标成熟时点的剩余时间；长等待在程序计时模式下额外登记保活。
         val finalDelay = delayMillis.coerceAtLeast(0L)
         if (finalDelay < LONG_WAIT_SCHEDULE_THRESHOLD_MS) {
             delay(finalDelay)
@@ -1277,7 +1280,7 @@ object EnergyWaitingManager {
                             val retryTask = task.withRetry()
                             waitingTasks[task.taskId] = retryTask
                             syncPersistentWaitingSchedules()
-                            val retryDelay = 5000L // 5秒后重试
+                            val retryDelay = 5000L // 返回零能量时保留五秒状态回查缓冲，避免立即再次收取
                             Log.forest("  → 5秒后重试(${retryTask.retryCount}/${task.maxRetries})")
 
                             scheduleWaitingRetry(retryTask, retryDelay)
@@ -1350,7 +1353,7 @@ object EnergyWaitingManager {
                                 val retryTask = task.withRetry()
                                 waitingTasks[task.taskId] = retryTask
                                 syncPersistentWaitingSchedules()
-                                val retryDelay = 5000L
+                                val retryDelay = 5000L // 未知失败保留五秒本地退避，并受 maxRetries 限制
                                 Log.forest("  → ${retryDelay / 1000}秒后重试(${retryTask.retryCount}/${task.maxRetries})")
                                 scheduleWaitingRetry(retryTask, retryDelay)
                             } else {
@@ -1527,7 +1530,7 @@ object EnergyWaitingManager {
         managerScope.launch {
             while (isActive) {
                 try {
-                    // 使用动态间隔进行清理
+                    // 后台清理按动态周期休眠，避免空转扫描过期任务；不延后正在执行的收取。
                     val cleanupInterval = getCleanupInterval()
                     delay(cleanupInterval)
                     cleanExpiredTasks()

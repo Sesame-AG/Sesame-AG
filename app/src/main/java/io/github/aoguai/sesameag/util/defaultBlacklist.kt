@@ -18,6 +18,7 @@ private val sesameCreditDefaultBlacklist =
         "玩游戏赢最高8888元红包", // 动态taskId每期变化，需游戏内事件，ILLEGAL_ARGUMENT promiseActivityExtCheck
         "AP17379724", // 芝麻树租绿任务，rentGreenTaskFinish 返回 20020012
         "zml_zmzl_xdrw_erfang", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实租赁下单
+        "zml_zfbhs_zhuanhua_erfang", // 旧衣回收任务的 pushActivity 被 promiseActivityExtCheck 明确拒绝
         "zml_tbbbnc_shifei_sanfang", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实淘宝行为
         "zmxy_zml_wannengxiaozujian", // pushActivity 返回 ILLEGAL_ARGUMENT，需真实桌面组件行为
         "zml_tbqd_qiandao_sanfang", // 需要淘宝签到结果
@@ -105,6 +106,8 @@ private val orchardDefaultBlacklist =
 private val goldenBeanDefaultBlacklist =
     setOf(
         "GOLDEN_BEAN_MASTER_TASK:TEST_PUSH_SUBSCRIBE", // 订阅依赖真实用户确认
+        "GOLDEN_BEAN_MASTER_TASK:FORTUNE_DRAW_KUAISHOU_PLUS", // 服务端明确返回400000040，不支持RPC完成
+        "GOLDEN_BEAN_MASTER_TASK:GOLDEN_BEAN_TASK_ZHUHUDNG", // 服务端明确返回400000040，不支持RPC完成
         "GOLDEN_BEAN_MASTER_TASK:GOLDEN_BEAN_TASK_XIANSHANGZHIFU", // 线上支付
         "GOLDEN_BEAN_MASTER_TASK:GOLDEN_BEAN_TASK_XIANXIAZHIFU", // 线下支付
         "GOLDEN_BEAN_MASTER_TASK:GOLDEN_BEAN_TASK_YUEBAO", // 余额宝真实业务动作
@@ -220,7 +223,6 @@ private val forestDefaultBlacklist =
         "FOREST_ACTIVITY_DRAW_LMCT_ZHWUFU", // finishTaskopengreen 返回 400000040
         "FOREST_NORMAL_DRAW_SHARE", // 森林抽抽乐分享任务
         "FOREST_ACTIVITY_DRAW_SHARE", // 森林抽抽乐活动分享任务
-        "ZHRW_HUIYUANjiaoshui_202608", // 每日浇水免费拿绿植：finishTask 返回 400000040
         "MHXCZ_RYCZ_HDCCL|玩梦幻消除战充值任意金额", // 森林抽抽乐充值任务，缺少稳定完成RPC闭环
         "RYCZ", // 森林抽抽乐充值类任务前缀，缺少稳定完成RPC闭环
         "SYH_51HLZ_zhuanhua202604", // 【抢金条】完成游戏任务：不支持rpc调用
@@ -234,9 +236,8 @@ private val forestDefaultBlacklist =
         "GYG_AQapp_202511|去蚂蚁阿福揭秘真相", // 不支持rpc调用，缺少稳定完成RPC闭环
         "BWXRK_TASK_QUDONG|保卫向日葵通过1关", // 不支持rpc调用，缺少稳定完成RPC闭环
         "GYG_TAOBAOzhibo_202606|去淘宝花花乐领红包", // 不支持rpc调用，缺少稳定完成RPC闭环
-        "GYG_taobaoqiandao_202603", // TODO 完成闭环未证实；不附带标题以免误挡已验证的 TBQD
-        "FOREST_ACTIVITY_DRAW_SQYT_1|去神奇鱼塘投喂动物", // 抽抽乐外部鱼塘任务，缺少稳定完成RPC闭环
-        "去神奇鱼塘投喂动物", // 抽抽乐标题兜底，缺少稳定完成RPC闭环
+        "FOREST_ACTIVITY_DRAW_SQYT_1|去神奇鱼塘投喂动物", // 已观察到页面访问后完成，当前适配器尚未接入该访问链
+        "去神奇鱼塘投喂动物", // 对应同一访问任务，接入后与任务条目一并移除
         "开宝箱", // 森林抽抽乐宝箱类任务不在本流程处理
         "抢金条", // 森林抽抽乐游戏类任务暂无稳定RPC闭环
         "去会员抢演唱会门票", // 活动已完结
@@ -244,6 +245,11 @@ private val forestDefaultBlacklist =
         "FOREST_PLAYGROUND_GAME_PASS", // 森林乐园通关类任务，缺少稳定完成闭环
         "充值任意金额",
         "通过5关",
+    )
+
+private val forestPatrolDefaultBlacklist =
+    setOf(
+        "XIANYU", // 当前任务完成接口明确返回400000040，不支持RPC调用
     )
 
 private val stallDefaultBlacklist =
@@ -256,7 +262,7 @@ private val stallDefaultBlacklist =
         "ANTSTALL_NORMAL_DAILY_DONATE_COUNT|助力就业岗位",
         "ANTSTALL_TASK_xcjmjyjuankuan2026|帮乡村姐妹家乡就业",
         "ANTSTALL_TASK_kuaishouhuanduan|去快手逛一逛",
-        "ANTSTALL_TASK_taojinbihuanduan|进入淘宝芭芭农场领免费水果",
+        "ANTSTALL_TASK_taojinbihuanduan|进入淘宝芭芭农场领免费水果", // 已观察到唤端访问后完成，当前适配器尚未接入该访问链
         "ANTSTALL_ELEME_VISIT|去饿了么果园逛一逛", // 外跳任务，需真实到饿了么果园页面浏览上报，无自动闭环（generateToken后服务端不翻转状态）
         "ANTSTALL_P2P_DAILY_SHARER|邀请好友助力",
         "ANTSTALL_TASK_XCXYX_langmancanting", // 需要完成游戏订单，普通finishTask返回400000040
@@ -278,6 +284,8 @@ private val yuebaoDefaultBlacklist =
     )
 
 private val goldTicketDefaultBlacklist = emptySet<String>()
+
+private val greenFinanceDefaultBlacklist = emptySet<String>()
 
 private val dodoDefaultBlacklist =
     setOf(
@@ -397,7 +405,6 @@ private val sportsDefaultBlacklist =
         "AP12300554",
         "AP13300501",
         "AP16300571",
-        "AP10344931|逛好运卡翻红包", // 路线复活入口 completeTask 返回 CAMP_TRIGGER_ERROR
     )
 
 private val myBankWelfareDefaultBlacklist =
@@ -421,8 +428,10 @@ val DEFAULT_BLACKLIST: Map<String, Set<String>> =
         "蚂蚁庄园" to farmDefaultBlacklist,
         "神奇海洋" to oceanDefaultBlacklist,
         "蚂蚁森林" to forestDefaultBlacklist,
+        "保护地巡护" to forestPatrolDefaultBlacklist,
         "余额宝" to yuebaoDefaultBlacklist,
         "黄金票" to goldTicketDefaultBlacklist,
+        "绿色经营" to greenFinanceDefaultBlacklist,
         "会员" to memberDefaultBlacklist,
         "蚂蚁保" to insuredDefaultBlacklist,
         "青春特权" to youthPrivilegeDefaultBlacklist,
