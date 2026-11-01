@@ -1,9 +1,12 @@
 package io.github.aoguai.sesameag.task.antDodo
 
-import io.github.aoguai.sesameag.util.RandomUtil
 
 import io.github.aoguai.sesameag.task.antFarm.AntFarmRpcCall
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.runInterruptible
 import org.json.JSONException
 import org.json.JSONArray
 import org.json.JSONObject
@@ -26,6 +29,7 @@ import io.github.aoguai.sesameag.model.modelFieldExt.ChoiceModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.FriendSelectionModelField
 import io.github.aoguai.sesameag.task.ModelTask
 import io.github.aoguai.sesameag.task.TaskCommon
+import io.github.aoguai.sesameag.task.TaskExecutionOutcome
 import io.github.aoguai.sesameag.task.TaskStatus
 import io.github.aoguai.sesameag.task.common.DeferredReason
 import io.github.aoguai.sesameag.task.common.TaskFlowAction
@@ -35,6 +39,7 @@ import io.github.aoguai.sesameag.task.common.TaskFlowEngine
 import io.github.aoguai.sesameag.task.common.TaskFlowExecutionState
 import io.github.aoguai.sesameag.task.common.TaskFlowSnapshot
 import io.github.aoguai.sesameag.task.common.TaskFlowItem
+import io.github.aoguai.sesameag.task.common.TaskFlowRunResult
 import io.github.aoguai.sesameag.task.common.TaskFlowPhase
 import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
 import io.github.aoguai.sesameag.task.common.GameCenterPlayRpcCall
@@ -42,12 +47,11 @@ import io.github.aoguai.sesameag.task.exchange.ExchangeEffectNeed
 import io.github.aoguai.sesameag.task.exchange.ExchangeReplenishResult
 import io.github.aoguai.sesameag.task.exchange.ExchangeReplenisher
 import io.github.aoguai.sesameag.util.FriendGuard
-import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.Log
-import io.github.aoguai.sesameag.util.WakeLockManager
 import io.github.aoguai.sesameag.util.maps.UserMap
 import io.github.aoguai.sesameag.util.ResChecker
 import io.github.aoguai.sesameag.util.UserDataStoreManager
+import io.github.aoguai.sesameag.util.SerialTaskQueue
 import io.github.aoguai.sesameag.util.friend.FriendCapabilityRecorder
 
 class AntDodo : ModelTask() {
@@ -71,6 +75,7 @@ class AntDodo : ModelTask() {
     private var scratchCard: BooleanModelField? = null
     private val loggedTaskProgressHints = LinkedHashSet<String>()
     private var taskListRefreshNeeded = false
+    private val taskWorkflowQueue = SerialTaskQueue()
 
     override fun getName(): String = "神奇物种"
 
@@ -156,7 +161,7 @@ class AntDodo : ModelTask() {
         }
     }
 
-    override fun runJava() {
+    override fun runJava(): Unit = taskWorkflowQueue.execute {
         try {
             Log.dodo("执行开始-${getName()}")
             loggedTaskProgressHints.clear()
@@ -191,11 +196,11 @@ class AntDodo : ModelTask() {
                 }
             }
             sendAntDodoCard()
-            if (taskListRefreshNeeded) receiveTaskAward(executionState)
             propList()
             if (autoGenerateBook?.value == true) {
                 autoGenerateBook()
             }
+            if (taskListRefreshNeeded) receiveTaskAward(executionState)
         } catch (t: Throwable) {
             Log.runtime(TAG, "start.run err:")
             Log.printStackTrace(TAG, t)
@@ -293,7 +298,6 @@ class AntDodo : ModelTask() {
                 }
                 rewards[key] = (result.optJSONObject("data")?.opt("energyGram") as? Number)?.toInt() ?: -1
                 store.put(pendingKey, rewards)
-                GlobalThreadPools.sleepCompat(RandomUtil.nextLong(425, 501))
             }
             val refreshed = JSONObject(AntDodoRpcCall.homePage())
             if (!ResChecker.checkRes(TAG, "神奇物种刮卡状态查询失败：", refreshed)) return false
@@ -428,16 +432,39 @@ class AntDodo : ModelTask() {
         }
     }
 
-    private fun receiveTaskAward(executionState: TaskFlowExecutionState = TaskFlowExecutionState()) {
-        try {
+    private fun receiveTaskAward(executionState: TaskFlowExecutionState = TaskFlowExecutionState()): TaskFlowRunResult? {
+        return try {
             taskListRefreshNeeded = false
             TaskFlowEngine(DodoTaskFlowAdapter(), roundSleepMs = 425L, executionState = executionState).run()
         } catch (e: JSONException) {
             Log.error(TAG, "JSON解析错误: ${e.message}")
             Log.printStackTrace(TAG, e)
+            null
         } catch (t: Throwable) {
+            if (t is CancellationException || t is InterruptedException) throw t
             Log.runtime(TAG, "AntDodo ReceiveTaskAward 错误:")
             Log.printStackTrace(TAG, t)
+            null
+        }
+    }
+
+    internal fun triggerPersistentTaskFlow(payloadJson: String, scheduleId: String, source: String): Boolean {
+        val payload = runCatching { JSONObject(payloadJson.ifBlank { "{}" }) }.getOrDefault(JSONObject())
+        return executePersistentChild(
+            scheduleId = scheduleId,
+            ownerUserId = payload.optString("owner_user_id").trim(),
+            sessionEpoch = payload.optLong("session_epoch", 0L),
+            source = "$PERSISTENT_CHILD_KIND:$source",
+            workflowQueue = taskWorkflowQueue,
+        ) {
+            if (!isEnable()) return@executePersistentChild TaskExecutionOutcome.SKIPPED
+            val result = receiveTaskAward() ?: return@executePersistentChild TaskExecutionOutcome.FAILED
+            when {
+                result.interrupted -> TaskExecutionOutcome.CANCELLED
+                result.failureCount > 0 -> TaskExecutionOutcome.FAILED
+                result.completed -> TaskExecutionOutcome.SUCCESS
+                else -> TaskExecutionOutcome.DEFERRED
+            }
         }
     }
 
@@ -522,7 +549,9 @@ class AntDodo : ModelTask() {
                                 .ifBlank { bizInfo.optString("actionType") },
                             blacklistKeys = listOf(taskType, taskTitle).filter { it.isNotBlank() },
                             raw = raw,
-                            progress = "award=$awardCount progress=${taskProgress ?: 0}/${taskRequire ?: 0}",
+                            progress = "award=$awardCount progress=${taskProgress ?: 0}/${taskRequire ?: 0} " +
+                                "entity=${taskBaseInfo.optLong("entityGenerateTime")}:${taskBaseInfo.optLong("entityExpireTime")}:" +
+                                "${taskBaseInfo.optString("taskMode")}:${taskBaseInfo.optBoolean("reDecision")}",
                             current = taskProgress,
                             limit = taskRequire
                         )
@@ -569,7 +598,7 @@ class AntDodo : ModelTask() {
             if (isDodoTaskRpcSuccess(result)) {
                 val awardCount = item.raw?.optString("awardCount", "1") ?: "1"
                 Log.dodo("任务奖励🎖️[${item.title}]#${awardCount}个")
-                return TaskFlowActionResult.success()
+                return TaskFlowActionResult.success(progressChanged = false)
             }
             return dodoActionFailureResult(
                 response = result,
@@ -581,7 +610,12 @@ class AntDodo : ModelTask() {
         override fun complete(item: TaskFlowItem): TaskFlowActionResult {
             val raw = item.raw ?: return missingRawResult(item, "finishTask")
             val taskBaseInfo = raw.optJSONObject("taskBaseInfo") ?: return missingRawResult(item, "finishTask")
-            if (shouldMaterializeManualTask(raw, taskBaseInfo)) {
+            val decision = GameCenterPlayRpcCall.resolveTaskAction(
+                taskBaseInfo, raw.optJSONObject("bizInfo"), directFinishSupported = true,
+            )
+            if (decision.action == GameCenterPlayRpcCall.TaskAction.DIRECT_FINISH &&
+                shouldMaterializeManualTask(raw, taskBaseInfo)
+            ) {
                 val groupId = raw.optString("taskGroupId").trim()
                 if (groupId.isBlank()) {
                     return missingRawResult(item, "reDecisionTaskOpenGreen")
@@ -597,7 +631,7 @@ class AntDodo : ModelTask() {
                 val result = JSONObject(response)
                 if (isDodoTaskRpcSuccess(result)) {
                     Log.dodo("物种任务显化🧾️[${item.title}]")
-                    return TaskFlowActionResult.success(refreshAfterAction = true)
+                    return TaskFlowActionResult.success(refreshAfterAction = true, progressChanged = false)
                 }
                 return dodoActionFailureResult(
                     response = result,
@@ -605,28 +639,34 @@ class AntDodo : ModelTask() {
                     detail = dodoActionDetail(item, "reDecisionTaskOpenGreen")
                 )
             }
-            val gameContract = dodoGamePlayContract(taskBaseInfo, raw.optJSONObject("bizInfo"))
-            gameContract?.let { contract ->
-                val ack = GameCenterPlayRpcCall.submitForAck(contract)
-                val response = ack.response
-                    ?: return TaskFlowActionResult.failure(
-                        failureType = ack.failureType,
-                        message = "时长动作响应无法解析",
-                        rpc = "GameCenterPlayRpcCall.submit",
-                        raw = ack.raw,
-                        detail = dodoActionDetail(item, "playDuration"),
+            when (decision.action) {
+                GameCenterPlayRpcCall.TaskAction.DURATION_ONLY -> {
+                    val contract = decision.contract ?: return missingRawResult(item, "playDuration")
+                    val duration = GameCenterPlayRpcCall.advanceDuration(
+                        "dodo_game:${item.sceneCode}:${item.id}:${item.progress}", contract,
                     )
-                if (!ack.accepted) {
-                    return TaskFlowActionResult.failure(
-                        failureType = ack.failureType,
-                        code = response.optString("resultCode"),
-                        message = response.optString("resultDesc", response.optString("desc", ack.raw)),
-                        rpc = "GameCenterPlayRpcCall.submit",
-                        raw = ack.raw,
-                        detail = dodoActionDetail(item, "playDuration"),
-                    )
+                    if (!duration.success || duration.deferredReason != null) return duration
                 }
-                Log.dodo("物种任务🧾️[${item.title}]时长上报已接受，继续物种任务完成闭环")
+                GameCenterPlayRpcCall.TaskAction.LEGACY_EXTERNAL_REPORT -> {
+                    val game = decision.mappedTask ?: return missingRawResult(item, "externalGame")
+                    val report = runBlocking {
+                        game.reportDetailed(1, includeSafetyReport = false) { Log.dodo(it) }
+                    }
+                    if (!report.completed) {
+                        return TaskFlowActionResult.failure(
+                            failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                            message = report.failureMessage,
+                            rpc = "GameTask.reportDetailed",
+                            detail = dodoActionDetail(item, "externalGame"),
+                            continueCurrentRoundOnFailure = true,
+                        )
+                    }
+                }
+                GameCenterPlayRpcCall.TaskAction.DEFERRED -> return TaskFlowActionResult.defer(
+                    DeferredReason.PREREQUISITE_PENDING, decision.reason,
+                    detail = dodoActionDetail(item, "finishTask"),
+                )
+                else -> Unit
             }
             val response = AntDodoRpcCall.finishTask(item.sceneCode, item.type)
             if (response.isNullOrEmpty()) {
@@ -635,14 +675,7 @@ class AntDodo : ModelTask() {
             val result = JSONObject(response)
             if (isDodoTaskRpcSuccess(result)) {
                 Log.dodo("物种任务🧾️[${item.title}]已提交，等待任务列表确认")
-                return TaskFlowActionResult.defer(
-                    deferredReason = DeferredReason.STATE_CONFIRMATION,
-                    message = "finishTask已返回成功，等待物种任务列表确认",
-                    rpc = "AntDodoRpcCall.finishTask",
-                    raw = result.toString(),
-                    detail = dodoActionDetail(item, "finishTask"),
-                    refreshAfterAction = true,
-                )
+                return TaskFlowActionResult.success(progressChanged = false)
             }
             val failure = dodoActionFailureResult(
                 response = result,
@@ -650,10 +683,27 @@ class AntDodo : ModelTask() {
                 detail = dodoActionDetail(item, "finishTask")
             )
             return if (failure.code == "400000040" && item.sceneCode.isNotBlank()) {
-                AntFarmRpcCall.doSceneTask(item.type, item.sceneCode) { fallback ->
+                AntFarmRpcCall.doSceneTask(item.type, item.sceneCode, failure) { fallback ->
                     dodoActionFailureResult(fallback, "AntFarmRpcCall.doFarmTask", dodoActionDetail(item, "finishTask"))
                 }
             } else failure
+        }
+
+        override fun afterDeferred(item: TaskFlowItem, action: TaskFlowAction, result: TaskFlowActionResult) {
+            val triggerAt = result.deferredUntil ?: return
+            val context = ApplicationHook.appContext ?: return
+            val owner = AccountSessionCoordinator.currentUserId()?.takeIf { it.isNotBlank() } ?: return
+            val epoch = AccountSessionCoordinator.currentSessionEpoch()
+            val waitKey = "${item.sceneCode}:${item.id}:${item.progress}"
+            val payload = JSONObject().put("child_kind", PERSISTENT_CHILD_KIND)
+                .put("child_id", TASK_FLOW_CHILD_ID).put("owner_user_id", owner)
+                .put("session_epoch", epoch).put("wait_key", waitKey)
+            UnifiedScheduler.schedulePersistentTrigger(
+                context = context, name = "神奇物种任务续接", kind = PersistentScheduleKind.MODULE_CHILD,
+                triggerAtMs = triggerAt, dedupeKey = "$PERSISTENT_CHILD_KIND:$owner:$waitKey:$triggerAt",
+                payloadJson = payload.toString(), toleranceMs = PersistentScheduleDefaults.DEFAULT_TOLERANCE_MS,
+                ownerUserId = owner, sessionEpoch = epoch,
+            )
         }
 
         override fun actionKey(item: TaskFlowItem, action: TaskFlowAction): String {
@@ -737,30 +787,14 @@ class AntDodo : ModelTask() {
 
     private fun classifyDodoTaskFailure(response: JSONObject): TaskRpcFailureType {
         val code = extractDodoTaskFailureCode(response)
-        val desc = extractDodoTaskFailureMessage(response)
         return when {
-            code in setOf("400000030", "400000012") ||
-                containsAny(desc, "已领取", "已经领取", "重复领取", "重复领奖", "重复完成", "已完成", "任务已完结", "任务已结束") ->
-                TaskRpcFailureType.TERMINAL_DONE
-
-            containsAny(desc, "权益获取次数超过上限", "上限", "不可领取", "资格不足", "风控", "风险") ||
-                code == "CAMP_TRIGGER_ERROR" ||
-                code.contains("LIMIT", ignoreCase = true) ->
-                TaskRpcFailureType.BUSINESS_LIMIT
-
-            code == "400000040" ||
-                containsAny(desc, "不支持rpc调用", "不支持RPC完成") ->
-                TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE
-
-            code in setOf("20020012", "TASK_ID_INVALID", "ILLEGAL_ARGUMENT", "PROMISE_TEMPLATE_NOT_EXIST") ||
-                containsAny(desc, "参数错误", "任务ID非法", "模板不存在") ->
+            code in setOf("400000030", "400000012") -> TaskRpcFailureType.TERMINAL_DONE
+            code == "CAMP_TRIGGER_ERROR" -> TaskRpcFailureType.BUSINESS_LIMIT
+            code == "400000040" -> TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE
+            code in setOf("20020012", "TASK_ID_INVALID", "ILLEGAL_ARGUMENT", "PROMISE_TEMPLATE_NOT_EXIST") ->
                 TaskRpcFailureType.NON_RETRYABLE_INVALID
-
             code in setOf("3000", "REMOTE_INVOKE_EXCEPTION", "OP_REPEAT_CHECK") ||
-                containsAny(desc, "系统出错", "系统繁忙", "稍后", "繁忙", "频繁", "重试") ||
-                isDodoFailureMarkedRetryable(response) ->
-                TaskRpcFailureType.RETRYABLE_RPC
-
+                isDodoFailureMarkedRetryable(response) -> TaskRpcFailureType.RETRYABLE_RPC
             else -> TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW
         }
     }
@@ -849,12 +883,6 @@ class AntDodo : ModelTask() {
         return result
     }
 
-    private fun dodoGamePlayContract(
-        taskBaseInfo: JSONObject,
-        bizInfo: JSONObject? = null,
-    ): GameCenterPlayRpcCall.Contract? =
-        GameCenterPlayRpcCall.resolveContract(taskBaseInfo, bizInfo)
-
     private fun propList(allowReplenish: Boolean = true) {
         try {
             th@ while (!Thread.currentThread().isInterrupted) {
@@ -938,7 +966,6 @@ class AntDodo : ModelTask() {
                         }
                         useResult?.let { scratchAnimalCards(it) }
                         logPropRefreshState(propType, propName, consumeTarget, animal)
-                        GlobalThreadPools.sleepCompat(RandomUtil.nextLong(255, 301))
                         continue@th
                     }
                     if (replenishDodoPropIfMissing(
@@ -1367,7 +1394,6 @@ class AntDodo : ModelTask() {
                     val animal = animalForUser.getJSONObject("animal")
                     for (j in 1 until count) {
                         sendCard(animal, targetUser)
-                        GlobalThreadPools.sleepCompat(RandomUtil.nextLong(425, 501))
                     }
                 }
             } else {
@@ -1512,6 +1538,7 @@ class AntDodo : ModelTask() {
                 Log.runtime(TAG, message)
             }
         } catch (t: Throwable) {
+            if (t is CancellationException || t is InterruptedException) throw t
             Log.runtime(TAG, "AntDodo CollectHelpFriend err:")
             Log.printStackTrace(TAG, t)
         }
@@ -1601,65 +1628,36 @@ class AntDodo : ModelTask() {
             )
             return true
         }
-        val worker =
-            runCatching {
-                GlobalThreadPools.execute {
-                    PersistentScheduleRegistry.markRunning(scheduleId, source = "dodo_worker_start:$source")
-                    val executionLease =
-                        ApplicationHook.appContext?.let { context ->
-                            WakeLockManager.acquire(
-                                context = context,
-                                timeoutMs = PersistentScheduleDefaults.TASK_EXECUTION_WAKELOCK_MS,
-                                source = "dodo_persistent_collect_to_friend",
-                                scheduleId = scheduleId,
-                            )
-                        }
-                    try {
-                        val result = collectToFriend(manageScheduledWakeup = false)
-                        if (result.completed) {
-                            PersistentScheduleRegistry.markFired(
-                                ApplicationHook.appContext,
-                                scheduleId,
-                                source = "dodo_worker_success:$source",
-                            )
-                        } else {
-                            PersistentScheduleRegistry.markFailed(
-                                ApplicationHook.appContext,
-                                scheduleId,
-                                "collect_to_friend_unfinished:remaining=${result.remainingCount ?: "unknown"}",
-                                source = "dodo_worker_incomplete:$source",
-                            )
-                        }
-                    } catch (t: Throwable) {
-                        Log.printStackTrace(TAG, "神奇物种持久帮抽卡执行失败", t)
-                        PersistentScheduleRegistry.markFailed(
-                            ApplicationHook.appContext,
-                            scheduleId,
-                            t.message ?: t.javaClass.name,
-                            source = "dodo_worker_exception:$source",
-                        )
-                    } finally {
-                        executionLease?.close()
+        return executePersistentChild(
+            scheduleId = scheduleId,
+            ownerUserId = ownerUserId,
+            sessionEpoch = sessionEpoch,
+            source = "dodo_collect_to_friend:$source",
+            workflowQueue = taskWorkflowQueue,
+        ) {
+            if (!isEnable() || collectToFriend?.value != true) {
+                return@executePersistentChild TaskExecutionOutcome.SKIPPED
+            }
+            runInterruptible(Dispatchers.IO) {
+                loggedTaskProgressHints.clear()
+                val result = collectToFriend(manageScheduledWakeup = false)
+                val rewardResult = if (result.progressed || result.completed || taskListRefreshNeeded) {
+                    // 次数已用尽时也补回查，覆盖抽卡成功后进程在领奖前退出的情况。
+                    Status.removeFlag(StatusFlags.FLAG_ANTDODO_TASKS_DONE)
+                    receiveTaskAward() ?: return@runInterruptible TaskExecutionOutcome.FAILED
+                } else null
+                when {
+                    rewardResult?.interrupted == true -> TaskExecutionOutcome.CANCELLED
+                    rewardResult != null && rewardResult.failureCount > 0 -> TaskExecutionOutcome.FAILED
+                    !result.completed -> {
+                        Log.error(TAG, "持久帮抽卡尚未完成 remaining=${result.remainingCount ?: "unknown"}")
+                        TaskExecutionOutcome.FAILED
                     }
+                    rewardResult?.completed == true -> TaskExecutionOutcome.SUCCESS
+                    else -> TaskExecutionOutcome.DEFERRED
                 }
-            }.onFailure { error ->
-                Log.printStackTrace(TAG, "神奇物种持久帮抽卡提交失败", error)
-                PersistentScheduleRegistry.markFailed(
-                    ApplicationHook.appContext,
-                    scheduleId,
-                    "worker_submit_failed:${error.javaClass.simpleName}",
-                    source = "dodo_worker_submit:$source",
-                )
-            }.getOrNull() ?: return false
-        worker.invokeOnCompletion { error ->
-            PersistentScheduleRegistry.markWorkerFailedIfActive(
-                ApplicationHook.appContext,
-                scheduleId,
-                "worker_completed_without_terminal_state:${error?.javaClass?.simpleName ?: "none"}",
-                source = "dodo_worker_completion:$source",
-            )
+            }
         }
-        return true
     }
 
     private fun collectToFriendDedupeKey(ownerUserId: String): String = "dodo_child_$ownerUserId::$COLLECT_TO_FRIEND_CHILD_ID"
@@ -2110,7 +2108,8 @@ class AntDodo : ModelTask() {
         private const val TASK_BLACKLIST_MODULE = "神奇物种"
         const val PERSISTENT_CHILD_KIND = "dodo_child_task"
         const val COLLECT_TO_FRIEND_CHILD_ID = "collect_to_friend"
-        private val BUSINESS_DRIVEN_TASK_TYPES = setOf("HELP_FRIEND_COLLECT")
+        const val TASK_FLOW_CHILD_ID = "task_flow"
+        private val BUSINESS_DRIVEN_TASK_TYPES = setOf("HELP_FRIEND_COLLECT", "SEND_FRIEND_CARD")
     }
 }
 

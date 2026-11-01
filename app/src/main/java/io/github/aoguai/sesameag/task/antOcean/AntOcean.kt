@@ -46,7 +46,6 @@ import io.github.aoguai.sesameag.util.maps.BeachMap
 import io.github.aoguai.sesameag.util.maps.IdMapManager
 import io.github.aoguai.sesameag.util.maps.UserMap
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.delay
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -874,13 +873,12 @@ class AntOcean : ModelTask() {
     private suspend fun runAiFish() {
         try {
             val statusJo = queryAiFishStatus() ?: return
-            if (statusJo.optString("fishStatus") == AI_FISH_STATUS_DEFAULT && drawAiFish()) {
-                delay(500)
+            if (statusJo.optString("fishStatus") == AI_FISH_STATUS_DEFAULT) {
+                drawAiFish()
             }
 
             var homeJo = queryAiFishHomepage(logSummary = true) ?: return
             if (extractAiFishInteractStatus(homeJo) == AI_FISH_STATUS_CAPTURED && rescueAiFish()) {
-                delay(500)
                 homeJo = queryAiFishHomepage(logSummary = true) ?: homeJo
             }
 
@@ -941,7 +939,6 @@ class AntOcean : ModelTask() {
             if (!ResChecker.checkRes(TAG, "海洋摸鱼证书兑换失败：", result)) return
             previousStates = states
             exchangeResult = result
-            delay(500)
         }
     }
 
@@ -1214,7 +1211,7 @@ class AntOcean : ModelTask() {
                 detail = aiFishTaskActionDetail(item, "finishTask"),
             )
             return if (failure.code == "400000040") {
-                AntFarmRpcCall.doSceneTask(item.type, "ANTAIFISH") { fallback ->
+                AntFarmRpcCall.doSceneTask(item.type, "ANTAIFISH", failure) { fallback ->
                     aiFishTaskActionFailureResult(item, fallback, "AntFarmRpcCall.doFarmTask", aiFishTaskActionDetail(item, "finishTask"))
                 }
             } else failure
@@ -1881,27 +1878,28 @@ class AntOcean : ModelTask() {
         return isOceanClean
     }
 
-    private fun giveFriendPiece(userId: String) {
+    private fun giveFriendPiece(friendIds: JSONArray) {
         try {
-            val jo = JsonUtil.parseJSONObjectOrNull(AntOceanRpcCall.giveFriendPiece(userId)) ?: return
-            if (isFriendPieceAlreadyGiven(jo)) {
-                return
-            }
-            if (!ResChecker.checkRes(TAG, jo)) {
-                if (isFriendPieceReceiveLimit(jo)) {
-                    Log.error(
-                        TAG,
-                        "神奇海洋🌊[送碎片]#好友=$userId 已被其他用户送过，跳过当前好友并继续后续选择",
-                    )
-                } else {
-                    Log.error(
-                        TAG,
-                        "神奇海洋🌊[送碎片]#好友=$userId 请求失败:" + extractOceanTaskFailureMessage(jo),
-                    )
+            for (index in 0 until friendIds.length()) {
+                val userId = friendIds.optString(index)
+                if (userId.isBlank()) continue
+                val jo = JsonUtil.parseJSONObjectOrNull(AntOceanRpcCall.giveFriendPiece(userId)) ?: return
+                if (isFriendPieceAlreadyGiven(jo)) {
+                    Log.ocean("神奇海洋🌊[本次碎片已送出，不重复赠送]")
+                    return
                 }
+                if (!ResChecker.checkRes(TAG, jo)) {
+                    if (isFriendPieceReceiveLimit(jo)) {
+                        Log.error(TAG, "神奇海洋🌊[送碎片]#好友=$userId 接收已达限，继续尝试本次其他候选 raw=$jo")
+                        continue
+                    }
+                    Log.error(TAG, "神奇海洋🌊[送碎片]#好友=$userId 请求失败:" + extractOceanTaskFailureMessage(jo) + " raw=$jo")
+                    return
+                }
+                Log.ocean("神奇海洋🌊[送碎片给:${UserMap.getMaskName(userId) ?: userId}]")
+                extractNestedJsonArray(jo, "normalRewardVOS")?.let { checkReward(it) }
                 return
             }
-            extractNestedJsonArray(jo, "normalRewardVOS")?.let { checkReward(it) }
         } catch (t: Throwable) {
             Log.runtime(TAG, "giveFriendPiece err:")
             Log.printStackTrace(TAG, t)
@@ -2002,7 +2000,7 @@ class AntOcean : ModelTask() {
             val maskName = UserMap.getMaskName(userId) ?: userId
             Log.ocean("神奇海洋🌊[帮助:${maskName}清理海域]")
             extractNestedJsonArray(jo, "cleanRewardVOS")?.let { checkReward(it) }
-            giveFriendPiece(userId)
+            extractNestedJsonArray(jo, "friendIds")?.let { giveFriendPiece(it) }
             markOceanHomeRefreshNeeded()
             return FriendCleanAttemptResult(cleaned = true)
         } catch (t: Throwable) {
@@ -2908,7 +2906,7 @@ class AntOcean : ModelTask() {
             detail = oceanTaskActionDetail(item, "finishTask"),
         )
         return if (failure.code == "400000040" && item.sceneCode.isNotBlank()) {
-            AntFarmRpcCall.doSceneTask(item.type, item.sceneCode) { fallback ->
+            AntFarmRpcCall.doSceneTask(item.type, item.sceneCode, failure) { fallback ->
                 oceanTaskActionFailureResult(item, fallback, "AntFarmRpcCall.doFarmTask", oceanTaskActionDetail(item, "finishTask"))
             }
         } else failure
@@ -3550,8 +3548,6 @@ class AntOcean : ModelTask() {
                     if (ResChecker.checkRes(TAG, exchangeResultObj)) {
                         // 输出日志信息
                         Log.ocean("神奇海洋🏖️[万能拼图]制作${exchangeNum}张,剩余${exchangedPieceNum}张碎片")
-                        // 连续兑换之间随机停顿
-                        delay(RandomUtil.nextLong(850, 1001))
                     }
                 } else {
                     // 如果未成功获取道具列表，停止循环
