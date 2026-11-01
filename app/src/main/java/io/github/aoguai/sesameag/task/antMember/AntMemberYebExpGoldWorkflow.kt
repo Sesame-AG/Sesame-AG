@@ -286,6 +286,7 @@ private fun handleYebExpGoldCertVouchers(): Boolean {
 
         val delayRefreshTime = convertResponse.optLong("delayRefreshTime", 0L)
         if (delayRefreshTime > 0L) {
+            // 券使用接口明确返回 delayRefreshTime，按该时长等待后再回查券状态，避免读到更新前的数据。
             CoroutineUtils.sleepCompat(delayRefreshTime)
         }
 

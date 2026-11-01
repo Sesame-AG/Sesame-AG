@@ -141,6 +141,7 @@ class MyBankWelfare : ModelTask() {
                 myBankWelfareExchange()
             }
         } catch (t: Throwable) {
+            if (t is InterruptedException || t is kotlinx.coroutines.CancellationException) throw t
             Log.printStackTrace(TAG, t)
         } finally {
             Log.mybank("执行结束-${getName()}")
@@ -790,6 +791,7 @@ class MyBankWelfare : ModelTask() {
                 Log.mybank("${BUSINESS_NAME}💰当前可用福利金${formatDecimalAmount(pointBalance)}")
             }
         } catch (t: Throwable) {
+            if (t is InterruptedException || t is kotlinx.coroutines.CancellationException) throw t
             Log.printStackTrace(TAG, "logPointBalance err:", t)
         }
     }
@@ -824,6 +826,7 @@ class MyBankWelfare : ModelTask() {
             }
             logs.filter { it.isNotBlank() }.forEach { Log.mybank("${BUSINESS_NAME}🎁$it") }
         } catch (t: Throwable) {
+            if (t is InterruptedException || t is kotlinx.coroutines.CancellationException) throw t
             Log.printStackTrace(TAG, "logVirtualProfits err:", t)
         }
     }
@@ -905,7 +908,9 @@ class MyBankWelfare : ModelTask() {
                 return TaskFlowPhase.UNSUPPORTED
             }
             return when (status) {
-                "NONE_SIGNUP" -> TaskFlowPhase.SIGNUP_REQUIRED
+                "NONE_SIGNUP", "SIGNUP_EXPIRED" ->
+                    if (item.raw?.optBoolean("canAccess") == true) TaskFlowPhase.SIGNUP_REQUIRED
+                    else TaskFlowPhase.BUSINESS_ACTION
                 "SIGNUP_COMPLETE" -> if (item.type == "EVENT_TRIGGER") {
                     TaskFlowPhase.BUSINESS_ACTION
                 } else {

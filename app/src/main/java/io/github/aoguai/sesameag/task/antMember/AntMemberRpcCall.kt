@@ -397,6 +397,19 @@ object AntMemberRpcCall {
             .put("taskConfigIdList", JSONArray(taskConfigIds))).toString(),
     )
 
+    fun applyAdTask(bizId: String, adId: String, awardNum: Int?, extMap: JSONObject): String =
+        RequestManager.requestString(
+            "com.alipay.amic.memtask.h5.MemTaskAdFacade.applyAdTask",
+            JSONArray().put(JSONObject()
+                .put("adBizId", bizId).put("bizNo", bizId).put("extMap", extMap)
+                .put("scene", "TASK_WALL").put("sourcePassMap", buildMemberSourcePassMap())
+                .put("spaceCode", "ant_member_xlight_task")
+                .apply {
+                    if (adId.isNotBlank()) put("adId", adId)
+                    if (awardNum != null) put("awardNum", awardNum)
+                }).toString(),
+        )
+
     @JvmStatic
     fun applyMemberTask(taskConfigId: String): String {
         val args =
