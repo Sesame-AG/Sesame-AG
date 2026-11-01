@@ -41,7 +41,6 @@ import io.github.aoguai.sesameag.task.common.TaskFlowPhase
 import io.github.aoguai.sesameag.task.common.TaskFlowSnapshot
 import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
 import io.github.aoguai.sesameag.util.FriendGuard
-import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.RandomUtil
@@ -49,7 +48,6 @@ import io.github.aoguai.sesameag.util.ResChecker
 import io.github.aoguai.sesameag.util.RpcOfflineRisk
 import io.github.aoguai.sesameag.util.TimeCounter
 import io.github.aoguai.sesameag.util.TimeUtil
-import io.github.aoguai.sesameag.util.WakeLockManager
 import io.github.aoguai.sesameag.util.friend.FriendCapabilityRecorder
 import io.github.aoguai.sesameag.util.friend.FriendRepository
 import io.github.aoguai.sesameag.util.maps.UserMap
@@ -165,7 +163,6 @@ class AntStall : ModelTask() {
         extraPayload: JSONObject = JSONObject(),
     ): PersistentSchedule? {
         val context = ApplicationHook.appContext ?: return null
-        if (triggerAtMs <= System.currentTimeMillis()) return null
         try {
             val ownerUserId =
                 AccountSessionCoordinator.currentUserId()?.takeIf { it.isNotBlank() }
@@ -203,6 +200,18 @@ class AntStall : ModelTask() {
 
     internal fun cancelPersistentChildTask(childId: String) {
         UnifiedScheduler.cancelPersistentByDedupeKey(ApplicationHook.appContext, persistentStallDedupeKey(childId))
+    }
+
+    internal fun resumeTasksAfterGoldenBeanProgress() {
+        if (!isEnable() || stallAutoTask.value != true) return
+        val schedule = registerPersistentChildTask(
+            childId = "TASK",
+            group = "TASK",
+            triggerAtMs = System.currentTimeMillis(),
+        )
+        if (schedule == null) {
+            Log.error(TAG, "金豆业务完成后登记新村任务续接失败，保留下轮回查")
+        }
     }
 
     internal fun triggerPersistentChildTask(
@@ -243,67 +252,17 @@ class AntStall : ModelTask() {
             )
             return true
         }
-        if (group == "SB") {
-            return executePersistentChild(
-                scheduleId = scheduleId,
-                ownerUserId = currentOwnerUserId,
-                sessionEpoch = payloadSessionEpoch,
-                source = "stall_send_back:$source",
-                workflowQueue = stallWorkflowQueue,
-            ) {
-                runInterruptible(Dispatchers.IO) { runSendBackPersistentTask(childId, payload) }
+        return executePersistentChild(
+            scheduleId = scheduleId,
+            ownerUserId = currentOwnerUserId,
+            sessionEpoch = payloadSessionEpoch,
+            source = "stall_$group:$source",
+            workflowQueue = stallWorkflowQueue,
+        ) {
+            runInterruptible(Dispatchers.IO) {
+                runPersistentChildTask(childId, group, payload, source, currentOwnerUserId, payloadSessionEpoch)
             }
         }
-        val worker =
-            runCatching {
-                GlobalThreadPools.execute {
-                    PersistentScheduleRegistry.markRunning(scheduleId, source = "stall_worker_start:$source")
-                    val executionLease =
-                        ApplicationHook.appContext?.let { context ->
-                            WakeLockManager.acquire(
-                                context = context,
-                                timeoutMs = PersistentScheduleDefaults.TASK_EXECUTION_WAKELOCK_MS,
-                                source = "stall_persistent_child",
-                                scheduleId = scheduleId,
-                            )
-                        }
-                    try {
-                        runPersistentChildTask(childId, group, payload, source, currentOwnerUserId.orEmpty(), payloadSessionEpoch)
-                        PersistentScheduleRegistry.markFired(
-                            ApplicationHook.appContext,
-                            scheduleId,
-                            source = "stall_worker_success:$source",
-                        )
-                    } catch (t: Throwable) {
-                        Log.printStackTrace(TAG, "新村持久子任务执行失败[$group][$childId]", t)
-                        PersistentScheduleRegistry.markFailed(
-                            ApplicationHook.appContext,
-                            scheduleId,
-                            t.message ?: t.javaClass.name,
-                            source = "stall_worker_exception:$source",
-                        )
-                    } finally {
-                        executionLease?.close()
-                    }
-                }
-            }.onFailure { error ->
-                Log.printStackTrace(TAG, "新村持久子任务提交失败[$group][$childId]", error)
-                PersistentScheduleRegistry.markFailed(
-                    ApplicationHook.appContext,
-                    scheduleId,
-                    "worker_submit_failed:${error.javaClass.simpleName}",
-                    source = "stall_worker_submit:$source",
-                )
-            }.getOrNull() ?: return false
-        worker.invokeOnCompletion { error ->
-            PersistentScheduleRegistry.markWorkerFailedIfActive(
-                ApplicationHook.appContext,
-                scheduleId,
-                "worker_completed_without_terminal_state:${error?.javaClass?.simpleName ?: "none"}",
-                source = "stall_worker_completion:$source",
-            )
-        }
-        return true
     }
 
     private fun isPersistentChildSessionCurrent(
@@ -321,16 +280,29 @@ class AntStall : ModelTask() {
         source: String,
         ownerUserId: String,
         sessionEpoch: Long,
-    ) {
+    ): TaskExecutionOutcome {
         if (!isPersistentChildSessionCurrent(ownerUserId, sessionEpoch)) {
             Log.stall("新村持久子任务[$group][$childId]会话已切换，取消执行: owner=$ownerUserId session=$sessionEpoch")
-            return
+            return TaskExecutionOutcome.CANCELLED
         }
         Log.stall("新村持久子任务触发[$group][$childId] source=$source")
-        when (group) {
+        return when (group) {
             "SB" -> runSendBackPersistentTask(childId, payload)
             "SH" -> runCloseShopPersistentTask(childId, payload)
-            else -> Log.stall("未知新村持久子任务[$group][$childId]，跳过")
+            "TASK" -> {
+                if (stallAutoTask.value != true) return TaskExecutionOutcome.SKIPPED
+                markStallTasksDoneInvalidated()
+                loggedTaskMessages.clear()
+                if (taskList(skipIfHandledToday = false)) {
+                    TaskExecutionOutcome.SUCCESS
+                } else {
+                    TaskExecutionOutcome.DEFERRED
+                }
+            }
+            else -> {
+                Log.stall("未知新村持久子任务[$group][$childId]，跳过")
+                TaskExecutionOutcome.SKIPPED
+            }
         }
     }
 
@@ -607,20 +579,11 @@ class AntStall : ModelTask() {
                     Status.hasFlagToday(StatusFlags.FLAG_ANTSTALL_TASKS_DONE) &&
                         !stallTasksDoneInvalidatedThisRun
                 if (!taskHandledToday) {
-                    val firstTaskRefreshMarkedDone =
-                        taskList(
-                            allowMarkDone = true,
-                            executionState = taskFlowExecutionState,
-                        )
-                    tc.countDebug("自动任务第一次")
-                    if (!firstTaskRefreshMarkedDone) {
-                        GlobalThreadPools.sleepCompat(500)
-                        taskList(
-                            allowMarkDone = true,
-                            executionState = taskFlowExecutionState,
-                        )
-                        tc.countDebug("自动任务第二次")
-                    }
+                    taskList(
+                        allowMarkDone = true,
+                        executionState = taskFlowExecutionState,
+                    )
+                    tc.countDebug("自动任务")
                 }
             }
 
@@ -648,9 +611,7 @@ class AntStall : ModelTask() {
                 tc.countDebug("自动进入下一村")
             }
 
-            if (stallAutoTask.value == true &&
-                (stallTasksDoneInvalidatedThisRun || !Status.hasFlagToday(StatusFlags.FLAG_ANTSTALL_TASKS_DONE))
-            ) {
+            if (stallAutoTask.value == true && stallTasksDoneInvalidatedThisRun) {
                 taskList(
                     skipIfHandledToday = false,
                     allowMarkDone = true,
@@ -799,8 +760,8 @@ class AntStall : ModelTask() {
                 }
                 reservedInviteShopUserIds.remove(friendUserId)
                 Log.stall(
-                    "邀请[${UserMap.getMaskName(friendUserId)}]开店失败: ${
-                        inviteJson.optString("errorMessage")
+                    "邀请[${UserMap.getMaskName(friendUserId)}]开店失败[${inviteJson.optString("resultCode")}]: ${
+                        inviteJson.optString("errorMessage").ifBlank { inviteJson.optString("resultDesc") }
                     }",
                 )
             }
@@ -1108,33 +1069,39 @@ class AntStall : ModelTask() {
                 } else {
                     val taskId = "SH|$shopId"
                     if (!hasChildTask(taskId)) {
+                        val session = AccountSessionCoordinator.currentSession() ?: continue
+                        val payload = JSONObject()
+                            .put("shop_id", shopId)
+                            .put("rent_last_bill", rentLastBill)
+                            .put("rent_last_user", rentLastUser)
+                            .put("gmt_last_rent", gmtLastRent)
+                        val schedule = registerPersistentChildTask(taskId, "SH", shopTime, payload)
                         addChildTask(
                             ChildModelTask(taskId, "SH", {
-                                cancelPersistentChildTask(taskId)
-                                if (stallAutoClose.value == true) {
-                                    shopClose(shopId, rentLastBill, rentLastUser)
-                                }
-                                GlobalThreadPools.sleepCompat(300L)
-                                if (stallAutoOpen.value == true) {
-                                    openShop()
+                                if (schedule != null) {
+                                    ApplicationHook.appContext?.let {
+                                        ScheduledTaskRouter.fire(it, schedule, "stall_memory_timer")
+                                    }
+                                } else {
+                                    executePersistentChild(
+                                        scheduleId = taskId,
+                                        ownerUserId = session.userId,
+                                        sessionEpoch = session.sessionEpoch,
+                                        source = "stall_memory_fallback",
+                                        workflowQueue = stallWorkflowQueue,
+                                        persistent = false,
+                                    ) {
+                                        runInterruptible(Dispatchers.IO) { runCloseShopPersistentTask(taskId, payload) }
+                                    }
                                 }
                             }, shopTime),
-                        )
-                        registerPersistentChildTask(
-                            taskId,
-                            "SH",
-                            shopTime,
-                            JSONObject()
-                                .put("shop_id", shopId)
-                                .put("rent_last_bill", rentLastBill)
-                                .put("rent_last_user", rentLastUser)
-                                .put("gmt_last_rent", gmtLastRent),
                         )
                         Log.stall("新村收摊已交给定时子任务⛪将在[${TimeUtil.getCommonDate(shopTime)}]执行")
                     }
                 }
             }
         } catch (t: Throwable) {
+            if (t is InterruptedException || t is CancellationException) throw t
             Log.printStackTrace(TAG, "closeShop err:", t)
         }
     }
@@ -1142,7 +1109,7 @@ class AntStall : ModelTask() {
     private fun runCloseShopPersistentTask(
         childId: String,
         payload: JSONObject,
-    ) {
+    ): TaskExecutionOutcome {
         val targetShopId =
             payload.optString("shop_id").trim().ifBlank {
                 childId.substringAfter("SH|", "")
@@ -1150,7 +1117,7 @@ class AntStall : ModelTask() {
         val expectedBillNo = payload.optString("rent_last_bill").trim()
         if (targetShopId.isBlank()) {
             Log.stall("新村持久收摊[$childId]缺少 shop_id，跳过")
-            return
+            return TaskExecutionOutcome.FAILED
         }
 
         if (stallAutoClose.value == true) {
@@ -1158,8 +1125,13 @@ class AntStall : ModelTask() {
             val json = JSONObject(response)
             if (!ResChecker.checkRes(TAG, json)) {
                 Log.error(TAG, "persistent closeShop err: $response")
+                return TaskExecutionOutcome.FAILED
             } else {
-                val shop = findOpenShopById(json.optJSONArray("astUserShopList"), targetShopId)
+                val shopList = json.optJSONArray("astUserShopList") ?: run {
+                    Log.error(TAG, "persistent closeShop missing astUserShopList: $response")
+                    return TaskExecutionOutcome.FAILED
+                }
+                val shop = findOpenShopById(shopList, targetShopId)
                 if (shop == null) {
                     Log.stall("新村持久收摊[$childId]小摊已非开启状态，跳过收摊")
                 } else {
@@ -1171,7 +1143,7 @@ class AntStall : ModelTask() {
                         val selfOpenMinutes = stallSelfOpenTime.value ?: 0
                         val shopTime = gmtLastRent + selfOpenMinutes * 60 * 1000L
                         if (shopTime > System.currentTimeMillis()) {
-                            registerPersistentChildTask(
+                            val schedule = registerPersistentChildTask(
                                 childId,
                                 "SH",
                                 shopTime,
@@ -1181,10 +1153,13 @@ class AntStall : ModelTask() {
                                     .put("rent_last_user", shop.optString("rentLastUser"))
                                     .put("gmt_last_rent", gmtLastRent),
                             )
+                            if (schedule == null) return TaskExecutionOutcome.FAILED
                             Log.stall("新村持久收摊[$childId]尚未到点，重排到[${TimeUtil.getCommonDate(shopTime)}]")
-                            return
+                            return TaskExecutionOutcome.DEFERRED
                         }
-                        shopClose(targetShopId, rentLastBill, shop.optString("rentLastUser"))
+                        if (!shopClose(targetShopId, rentLastBill, shop.optString("rentLastUser"))) {
+                            return TaskExecutionOutcome.FAILED
+                        }
                     }
                 }
             }
@@ -1192,10 +1167,10 @@ class AntStall : ModelTask() {
             Log.stall("新村持久收摊[$childId]触发时收摊功能已关闭，跳过收摊")
         }
 
-        GlobalThreadPools.sleepCompat(300L)
         if (stallAutoOpen.value == true) {
             openShop()
         }
+        return TaskExecutionOutcome.SUCCESS
     }
 
     private fun findOpenShopById(
@@ -1243,6 +1218,7 @@ class AntStall : ModelTask() {
             Log.stall("找到 ${shopIds.size} 个空闲小摊,开始寻找好友村庄...")
             rankDonateCount(shopIds)
         } catch (t: Throwable) {
+            if (t is InterruptedException || t is CancellationException) throw t
             Log.printStackTrace(TAG, "openShop err:", t)
         }
     }
@@ -1431,14 +1407,14 @@ class AntStall : ModelTask() {
         shopId: String,
         billNo: String,
         userId: String,
-    ) {
+    ): Boolean {
         try {
             val preResponse = AntStallRpcCall.preShopClose(shopId, billNo)
             val preJson = JSONObject(preResponse)
 
             if (!ResChecker.checkRes(TAG, preJson)) {
                 Log.error(TAG, "shopClose err: $preResponse")
-                return
+                return false
             }
 
             val income = preJson.getJSONObject("astPreviewShopSettleVO").getJSONObject("income")
@@ -1453,12 +1429,15 @@ class AntStall : ModelTask() {
                         )
                     }",
                 )
+                return true
             } else {
                 Log.error(TAG, "shopClose err: $closeResponse")
             }
         } catch (t: Throwable) {
+            if (t is InterruptedException || t is CancellationException) throw t
             Log.printStackTrace(TAG, "shopClose err:", t)
         }
+        return false
     }
 
     /**
@@ -1477,7 +1456,7 @@ class AntStall : ModelTask() {
                     roundSleepMs = 425L,
                     executionState = executionState,
                 ).run()
-            if (allowMarkDone && !result.stopped && adapter.canMarkTasksDone()) {
+            if (allowMarkDone && result.completed && !result.stopped && adapter.canMarkTasksDone()) {
                 Status.setFlagToday(StatusFlags.FLAG_ANTSTALL_TASKS_DONE)
                 stallTasksDoneInvalidatedThisRun = false
                 return true
@@ -1644,11 +1623,33 @@ class AntStall : ModelTask() {
                 else -> {
                     when (resolveStallTaskCompleteRoute(item)) {
                         StallTaskCompleteRoute.GAME_PLAY_DURATION -> completeGamePlayDurationTask(item)
-                        StallTaskCompleteRoute.BUSINESS_ACTION -> TaskFlowActionResult.defer(
-                            DeferredReason.PREREQUISITE_PENDING,
-                            message = "等待游戏业务完成确认，进度=${item.current ?: "未知"}/${item.limit}",
-                            detail = stallTaskActionDetail(item, "business"),
-                        )
+                        StallTaskCompleteRoute.BUSINESS_ACTION -> {
+                            val decision = GameCenterPlayRpcCall.resolveTaskAction(item.raw)
+                            if (decision.action == GameCenterPlayRpcCall.TaskAction.LEGACY_EXTERNAL_REPORT) {
+                                val game = requireNotNull(decision.mappedTask)
+                                val report = kotlinx.coroutines.runBlocking {
+                                    game.reportDetailed(
+                                        1,
+                                        actionFinishChannel = GameCenterPlayRpcCall.describeTask(item.raw).urlParameters["channel"]
+                                            ?.takeIf { it.isNotBlank() } ?: game.channel,
+                                        includeSafetyReport = false,
+                                    ) { Log.stall(it) }
+                                }
+                                if (!report.completed) TaskFlowActionResult.failure(
+                                    failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                                    message = report.failureMessage,
+                                    rpc = "GameTask.reportDetailed",
+                                    detail = stallTaskActionDetail(item, "gameReport"),
+                                    continueCurrentRoundOnFailure = true,
+                                ) else TaskFlowActionResult.defer(
+                                    DeferredReason.STATE_CONFIRMATION,
+                                    message = "游戏业务已上报，回查新村任务进度",
+                                    refreshAfterAction = true,
+                                )
+                            } else {
+                                finishTask(item)
+                            }
+                        }
                         StallTaskCompleteRoute.DAILY_QA -> {
                             completeDailyQuestionTask(item)
                         }
@@ -2056,7 +2057,6 @@ class AntStall : ModelTask() {
                 processedEventKeys.add(eventKey)
                 finishedCount++
                 if (config.usePagedSearchInfo && nextPlayingPageInfo != null && finishedCount < config.rounds) {
-                    GlobalThreadPools.sleepCompat(RandomUtil.nextLong(4250, 5001))
                     playingPageInfo = nextPlayingPageInfo
                     pageNo++
                     advanceToNextPage = true
@@ -2173,7 +2173,7 @@ class AntStall : ModelTask() {
                 detail = stallTaskActionDetail(item, "finishTask"),
             )
             if (failure.code == "400000040") {
-                AntFarmRpcCall.doSceneTask(item.type, "ANTSTALL_TASK") { fallback ->
+                AntFarmRpcCall.doSceneTask(item.type, "ANTSTALL_TASK", failure) { fallback ->
                     stallTaskActionFailureResult(fallback, "AntFarmRpcCall.doFarmTask", stallTaskActionDetail(item, "finishTask"))
                 }
             } else failure
@@ -2262,9 +2262,6 @@ class AntStall : ModelTask() {
 
     private fun refreshStallTaskState(taskType: String): StallTaskRefreshResult {
         for (attempt in 0 until STALL_TASK_REFRESH_ATTEMPTS) {
-            if (attempt > 0) {
-                GlobalThreadPools.sleepCompat(STALL_TASK_REFRESH_DELAY_MS)
-            }
 
             val responseText = AntStallRpcCall.taskList()
             val response =
@@ -2561,7 +2558,8 @@ class AntStall : ModelTask() {
                         (bizInfo?.optInt("countDownSeconds") ?: 0) > 0 -> StallTaskCompleteRoute.FINISH
                     descriptor.contract != null -> StallTaskCompleteRoute.GAME_PLAY_DURATION
                     item.actionType == "VISIT_AUTO_FINISH" -> StallTaskCompleteRoute.FINISH
-                    descriptor.isGameTask && (item.limit ?: 0) > 0 -> StallTaskCompleteRoute.BUSINESS_ACTION
+                    descriptor.isGameTask && (descriptor.mappedTask != null || (item.limit ?: 0) > 0) ->
+                        StallTaskCompleteRoute.BUSINESS_ACTION
                     else -> StallTaskCompleteRoute.FINISH
                 }
             }
@@ -2592,27 +2590,12 @@ class AntStall : ModelTask() {
                 rpc = "GameCenterPlayRpcCall.submit",
                 detail = stallTaskActionDetail(item, "playDuration"),
             )
-        val ack = GameCenterPlayRpcCall.submitForAck(contract)
-        val response = ack.response
-            ?: return TaskFlowActionResult.failure(
-                failureType = ack.failureType,
-                message = "时长动作响应无法解析",
-                rpc = "GameCenterPlayRpcCall.submit",
-                raw = ack.raw,
-                detail = stallTaskActionDetail(item, "playDuration"),
-            )
-        if (ack.accepted) {
-            Log.stall("新村游戏任务⛪[${item.title}]时长上报已接受，继续任务完成闭环")
-            return finishTask(item)
-        }
-        return TaskFlowActionResult.failure(
-            failureType = ack.failureType,
-            code = response.optString("resultCode"),
-            message = response.optString("resultDesc", response.optString("desc", ack.raw)),
-            rpc = "GameCenterPlayRpcCall.submit",
-            raw = ack.raw,
-            detail = stallTaskActionDetail(item, "playDuration"),
+        val result = GameCenterPlayRpcCall.advanceDuration(
+            "stall_game:${item.sceneCode}:${item.id}:${item.progress}", contract,
         )
+        if (!result.success || result.deferredReason != null) return result
+        Log.stall("新村游戏任务⛪[${item.title}]时长上报已接受，继续任务完成闭环")
+        return finishTask(item)
     }
 
     private fun stallGamePlayContract(item: TaskFlowItem): GameCenterPlayRpcCall.Contract? =
@@ -2927,7 +2910,6 @@ class AntStall : ModelTask() {
 
                 Log.stall("新村助力🎉成功[$name]")
                 progressed = true
-                GlobalThreadPools.sleepCompat(RandomUtil.nextLong(4250, 5001))
             }
 
             Status.antStallAssistFriendToday()
@@ -3294,92 +3276,84 @@ class AntStall : ModelTask() {
             Log.stall("开始巡逻,寻找可贴罚单的好友...")
 
             while (!Thread.currentThread().isInterrupted) {
-                try {
-                    val response = AntStallRpcCall.nextTicketFriend()
-                    val json = JSONObject(response)
+                val response = AntStallRpcCall.nextTicketFriend()
+                val json = JSONObject(response)
 
-                    if (!json.optBoolean("success")) {
+                if (!json.optBoolean("success")) {
+                    Log.error(
+                        TAG,
+                        "pasteTicket.nextTicketFriend err: ${json.optString("resultDesc")}",
+                    )
+                    return
+                }
+
+                if (json.getInt("canPasteTicketCount") == 0) {
+                    Log.stall("蚂蚁新村👍[今日罚单已贴完]")
+                    Status.pasteTicketTime()
+                    return
+                }
+
+                val friendId = json.optString("friendUserId")
+                if (friendId.isEmpty()) {
+                    Log.stall("没有更多可贴罚单的好友了。")
+                    return
+                }
+
+                var isStallTicket = stallTicketList.contains(friendId)
+                if (stallTicketType.value == StallTicketType.DONT_TICKET) {
+                    isStallTicket = !isStallTicket
+                }
+
+                if (!isStallTicket) continue
+
+                // 访问好友主页
+                val homeJson = queryFriendHomeIfAvailable(friendId, "新村贴罚单") ?: continue
+
+                val seatsMap = homeJson.getJSONObject("seatsMap")
+                val keys = seatsMap.keys()
+
+                while (keys.hasNext()) {
+                    if (Thread.currentThread().isInterrupted) return
+                    val key = keys.next()
+                    val propertyValue = seatsMap.get(key)
+
+                    if (propertyValue !is JSONObject || propertyValue.length() == 0) {
+                        continue
+                    }
+
+                    if (propertyValue.getBoolean("canOpenShop") ||
+                        propertyValue.getString("status") != "BUSY" ||
+                        !propertyValue.getBoolean("overTicketProtection")
+                    ) {
+                        continue
+                    }
+
+                    val rentLastUser = propertyValue.getString("rentLastUser")
+                    val ticketResponse =
+                        AntStallRpcCall.ticket(
+                            propertyValue.getString("rentLastBill"),
+                            propertyValue.getString("seatId"),
+                            propertyValue.getString("rentLastShop"),
+                            rentLastUser,
+                            propertyValue.getString("userId"),
+                        )
+
+                    val ticketJson = JSONObject(ticketResponse)
+                    if (!ticketJson.optBoolean("success")) {
+                        val failureText = pasteTicketFailureText(ticketJson)
+                        if (isPasteTicketLimitReached(failureText)) {
+                            Log.stall("蚂蚁新村👍[今日罚单已贴完]")
+                            Status.pasteTicketTime()
+                            return
+                        }
                         Log.error(
                             TAG,
-                            "pasteTicket.nextTicketFriend err: ${json.optString("resultDesc")}",
+                            "pasteTicket.ticket err: $failureText",
                         )
                         return
                     }
 
-                    if (json.getInt("canPasteTicketCount") == 0) {
-                        Log.stall("蚂蚁新村👍[今日罚单已贴完]")
-                        Status.pasteTicketTime()
-                        return
-                    }
-
-                    val friendId = json.optString("friendUserId")
-                    if (friendId.isEmpty()) {
-                        Log.stall("没有更多可贴罚单的好友了。")
-                        return
-                    }
-
-                    var isStallTicket = stallTicketList.contains(friendId)
-                    if (stallTicketType.value == StallTicketType.DONT_TICKET) {
-                        isStallTicket = !isStallTicket
-                    }
-
-                    if (!isStallTicket) continue
-
-                    // 访问好友主页
-                    val homeJson = queryFriendHomeIfAvailable(friendId, "新村贴罚单") ?: continue
-
-                    val seatsMap = homeJson.getJSONObject("seatsMap")
-                    val keys = seatsMap.keys()
-
-                    while (keys.hasNext()) {
-                        if (Thread.currentThread().isInterrupted) return
-                        try {
-                            val key = keys.next()
-                            val propertyValue = seatsMap.get(key)
-
-                            if (propertyValue !is JSONObject || propertyValue.length() == 0) {
-                                continue
-                            }
-
-                            if (propertyValue.getBoolean("canOpenShop") ||
-                                propertyValue.getString("status") != "BUSY" ||
-                                !propertyValue.getBoolean("overTicketProtection")
-                            ) {
-                                continue
-                            }
-
-                            val rentLastUser = propertyValue.getString("rentLastUser")
-                            val ticketResponse =
-                                AntStallRpcCall.ticket(
-                                    propertyValue.getString("rentLastBill"),
-                                    propertyValue.getString("seatId"),
-                                    propertyValue.getString("rentLastShop"),
-                                    rentLastUser,
-                                    propertyValue.getString("userId"),
-                                )
-
-                            val ticketJson = JSONObject(ticketResponse)
-                            if (!ticketJson.optBoolean("success")) {
-                                val failureText = pasteTicketFailureText(ticketJson)
-                                if (isPasteTicketLimitReached(failureText)) {
-                                    Log.stall("蚂蚁新村👍[今日罚单已贴完]")
-                                    Status.pasteTicketTime()
-                                    return
-                                }
-                                Log.error(
-                                    TAG,
-                                    "pasteTicket.ticket err: $failureText",
-                                )
-                                return
-                            }
-
-                            Log.stall("蚂蚁新村🚫在[${UserMap.getMaskName(friendId)}]贴罚单")
-                        } finally {
-                            GlobalThreadPools.sleepCompat(RandomUtil.nextLong(850, 1001))
-                        }
-                    }
-                } finally {
-                    GlobalThreadPools.sleepCompat(RandomUtil.nextLong(1275, 1501))
+                    Log.stall("蚂蚁新村🚫在[${UserMap.getMaskName(friendId)}]贴罚单")
                 }
             }
         } catch (t: Throwable) {
@@ -3456,7 +3430,6 @@ class AntStall : ModelTask() {
         private const val STALL_OPEN_SHOP_TASK_TYPE = "ANTSTALL_NORMAL_DAILY_OPENSHOP"
         private const val STALL_XLIGHT_PAGE_FROM = "ch_url-https://68687809.h5app.alipay.com/www/game.html"
         private const val STALL_TASK_REFRESH_ATTEMPTS = 3
-        private const val STALL_TASK_REFRESH_DELAY_MS = 600L
         const val PERSISTENT_CHILD_KIND = "stall_child_task"
 
     }
