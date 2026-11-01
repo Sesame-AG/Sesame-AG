@@ -40,6 +40,7 @@ object LegacyStorageMigration {
             }
             val process = checkNotNull(startRoot) { "迁移 Root 通道未建立" }(command)
             try {
+                // 读完输出后仍需等待命令退出并核对退出码，避免把失败或未完成的迁移读取当成成功。
                 return process.inputStream.use(action).also { check(process.waitFor() == 0) { "旧目录读取或维护失败" } }
             } finally { process.destroy() }
         }
@@ -73,6 +74,7 @@ object LegacyStorageMigration {
                 }
                 try {
                     Shizuku.bindUserService(args, connection)
+                    // 迁移只能在 Shizuku 服务连接回调后继续；十秒是连接上限，连接成功即返回。
                     return Reader(kotlinx.coroutines.withTimeout(10_000L) { result.await() }, connection, args)
                 } catch (failure: Exception) {
                     runCatching { Shizuku.unbindUserService(args, connection, true) }

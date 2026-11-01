@@ -215,6 +215,7 @@ object RequestManager {
     private fun getRpcBridge(): RpcBridge? {
         if (!NetworkUtils.isNetworkAvailable()) {
             Log.record(TAG, "网络不可用，尝试等待 5秒...")
+            // 公共入口仅在断网时保留一次五秒恢复窗口，复查仍不可用就退出，不对正常请求加等待。
             CoroutineUtils.sleepCompat(5000)
             if (!NetworkUtils.isNetworkAvailable()) {
                 return null
@@ -224,6 +225,7 @@ object RequestManager {
         var bridge = ApplicationHook.rpcBridge
         if (bridge == null) {
             Log.record(TAG, "RpcBridge 未初始化，尝试等待 5秒...")
+            // 为宿主异步初始化 RPC 桥保留一次五秒窗口，随后只重新读取桥实例。
             CoroutineUtils.sleepCompat(5000)
             bridge = ApplicationHook.rpcBridge
         }

@@ -160,7 +160,7 @@ object GlobalThreadPools {
     }
 
     /**
-     * 协程兼容的暂停方法
+     * 协程兼容的暂停方法；保留现有通用入口，仅委托调用方给定时长，不自行追加间隔。
      */
     @JvmStatic
     fun sleepCompat(millis: Long) {

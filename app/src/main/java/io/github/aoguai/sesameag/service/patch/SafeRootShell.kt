@@ -44,6 +44,7 @@ internal class SafeRootShell : Shell {
         return withContext(Dispatchers.IO) {
             try {
                 if (timeoutMillis < Long.MAX_VALUE) {
+                    // 这是调用方指定的协程超时预算，不是命令执行前后附加的定长休眠。
                     withTimeout(timeoutMillis) { executeSu(cmd) }
                 } else {
                     executeSu(cmd)
@@ -146,6 +147,7 @@ internal class SafeRootShell : Shell {
         val process = Runtime.getRuntime().exec(arrayOf(suPath, "-c", command))
         val stdout = process.inputStream.bufferedReader().use { it.readText() }.trim()
         val stderr = process.errorStream.bufferedReader().use { it.readText() }.trim()
+        // 退出码必须等待子进程真正结束才能读取；这里是执行完成同步，没有固定睡眠时长。
         val exitCode = process.waitFor()
         return ShellResult(stdout, stderr, exitCode)
     }
@@ -161,6 +163,7 @@ internal class SafeRootShell : Shell {
             output.writeBytes("exit\n")
             output.flush()
 
+            // 已写入 exit 后等待交互 shell 完成，以取得本次命令的真实退出码和输出。
             val exitCode = process.waitFor()
             val stdout = process.inputStream.bufferedReader().use { it.readText() }.trim()
             val stderr = process.errorStream.bufferedReader().use { it.readText() }.trim()

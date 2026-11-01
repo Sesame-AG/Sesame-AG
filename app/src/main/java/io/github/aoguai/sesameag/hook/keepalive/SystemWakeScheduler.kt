@@ -164,6 +164,7 @@ object SystemWakeScheduler {
         localSchedule = next
         if (next == null) return schedules.isEmpty()
         val job = timerScope.launch(start = CoroutineStart.LAZY) {
+            // 进程内计时器只补足最近持久任务的剩余时间，与其 triggerAtMs 对齐。
             delay((next.triggerAtMs - System.currentTimeMillis()).coerceAtLeast(0L))
             val current = planner.submit {
                 if (localSchedule != next) false else {
@@ -231,6 +232,7 @@ object SystemWakeScheduler {
             "--el", EXTRA_CONFIRMATION_AT, schedule.updatedAtMs.toString(),
         ).joinToString(" ")
         return try {
+            // 五秒是拉起目标应用命令的等待上限，避免调度被卡住；命令提前返回就立即继续。
             withTimeoutOrNull(5_000L) {
                 val output = CommandUtil.executeCommand(context, command)
                 if (output == null) {

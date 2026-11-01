@@ -292,6 +292,7 @@ class OfficialAIService(
                 }
                 Log.error(TAG, "AI请求网络异常，将重试一次：${apiFormat.displayName} / ${e.message}")
             }
+            // 仅对允许重试的 HTTP/网络失败保留 800ms 退避，避免错误后立即再次冲击 AI 接口。
             Thread.sleep(AI_HTTP_RETRY_DELAY_MS)
         }
 

@@ -505,6 +505,7 @@ object ApplicationHookConstants {
 
         val job =
             GlobalThreadPools.execute(entryDispatcher + CoroutineName("Entry:$name")) {
+                // 同名入口取消旧任务后等待防抖窗口，只执行最后一次触发，避免重复信号启动相同工作流。
                 if (debounceMs > 0) delay(debounceMs)
                 block()
             }

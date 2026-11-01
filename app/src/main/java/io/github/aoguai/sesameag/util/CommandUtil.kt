@@ -326,6 +326,7 @@ object CommandUtil {
                     identityOnlyBinding = identityOnly
                     if (!identityOnly) startCommandService(appContext, intent)
                     if (attempt > 0) {
+                        // 命令服务绑定失败后按公共重试间隔退避，让前次绑定/解绑有机会完成，避免连续重绑。
                         delay(BIND_RETRY_DELAY_MS)
                     }
 
@@ -336,6 +337,7 @@ object CommandUtil {
                     )
 
                     if (bindResult) {
+                        // bindService 异步回调确认连接，最多等到绑定超时；连接完成会立即唤醒。
                         val success = withTimeoutOrNull(BIND_TIMEOUT_MS) {
                             connectionDeferred?.await()
                         } ?: false
@@ -397,6 +399,7 @@ object CommandUtil {
                 }
             }
             service.executeCommand(command, callback)
+            // 等待跨进程命令回调并设执行上限；收到成功/失败结果立即返回，不固定等满超时。
             withTimeoutOrNull(EXEC_TIMEOUT_MS) { resultDeferred.await() }
         } catch (e: CancellationException) {
             throw e
@@ -427,6 +430,7 @@ object CommandUtil {
                     response.complete(Result.failure(java.io.IOException(error.take(256))))
                 }
             })
+            // 诊断读取同样等待命令回调；超时仅限制无响应命令，不额外延后读取结果。
             withTimeout(EXEC_TIMEOUT_MS) { response.await() }
         } catch (e: CancellationException) {
             throw e
@@ -535,6 +539,7 @@ object CommandUtil {
             return@withContext currentStatus
         }
 
+        // 只等 Loading 状态落定，超时后返回当前状态，避免调用方无限等待服务。
         return@withContext withTimeoutOrNull(timeoutMs) {
             serviceStatus.first { it !is ServiceStatus.Loading }
         } ?: _serviceStatus.value

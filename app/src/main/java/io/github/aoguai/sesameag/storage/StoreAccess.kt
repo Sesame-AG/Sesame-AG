@@ -87,6 +87,7 @@ object StoreAccess {
                 } finally { remoteClient.remove() }
             }
             PrivateStorage.requireReady()
+            // 本地存储事务互斥以避免交叉写入；最多等待五秒争用许可，获得后立即执行。
             if (!permit.tryAcquire(5L, java.util.concurrent.TimeUnit.SECONDS)) {
                 throw IOException("模块存储正忙，请稍后重试")
             }
@@ -289,6 +290,7 @@ object StoreAccess {
     }
 
     internal fun installSnapshot(snapshot: File) {
+        // 恢复快照需排除并发事务；五秒为获取独占许可的上限，不是固定恢复延迟。
         if (!permit.tryAcquire(5L, java.util.concurrent.TimeUnit.SECONDS)) {
             throw IOException("模块存储正忙，未开始恢复，请稍后重试")
         }

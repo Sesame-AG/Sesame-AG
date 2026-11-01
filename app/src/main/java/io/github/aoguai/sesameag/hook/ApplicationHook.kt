@@ -1717,6 +1717,7 @@ class ApplicationHook {
 
         fun reOpenApp() {
             ensureScheduler()
+            // 公共离线恢复沿用二十秒本地缓冲，避免触发后立即重新拉起；到点仍复核权限、前台状态和频控。
             UnifiedScheduler.scheduleLongDelay(20000L, "重新登录") {
                 if (!WorkflowRootGuard.isExecutionAllowed()) {
                     record(TAG, "必需权限或使用协议未就绪，已取消重新登录")
@@ -1782,6 +1783,7 @@ class ApplicationHook {
                     if (PersistentLaunchPolicy.isFrontLaunchDisabled(midnightSchedule.lastError)) {
                         record(TAG, "已禁止系统调度前台拉起目标应用，每日0点任务降级为仅进程存活时等待")
                     }
+                    // 持久调度不可用时仍须等到下一个零点，再执行跨日刷新，不能提前触发。
                     UnifiedScheduler.scheduleLongDelay(delayToMidnight, "每日0点任务") {
                         record(TAG, "⏰ 0点任务触发")
                         updateDay()
@@ -1826,6 +1828,7 @@ class ApplicationHook {
                 if (PersistentLaunchPolicy.isFrontLaunchDisabled(customWakeSchedule.lastError)) {
                     record(TAG, "已禁止系统调度前台拉起目标应用，自定义唤醒任务降级为仅进程存活时等待[$timeToken]")
                 }
+                // 进程内降级计时仍对齐用户配置的下次唤醒时间，不额外增加业务等待。
                 UnifiedScheduler.scheduleLongDelay(delay, "自定义唤醒任务") {
                     record(TAG, "? 自定义触发: $timeToken")
                     ApplicationHookEntry.onWakeupCustom(timeToken)

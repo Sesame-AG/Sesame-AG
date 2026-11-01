@@ -733,6 +733,7 @@ abstract class ModelTask : Model() {
                     // 程序计时模式下注册空调度任务作为保活；系统计时模式只保留普通 delay 等待。
                     schedulerId = UnifiedScheduler.scheduleKeepAlive(delayTime, "WakeLock:$id")
 
+                    // 公共子任务计时：等待调用方指定的 execTime 到点，不提前执行尚未到窗口的任务。
                     delay(delayTime)
 
                     waitingTasks.remove(id)

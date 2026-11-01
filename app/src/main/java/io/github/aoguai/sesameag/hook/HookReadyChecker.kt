@@ -99,6 +99,7 @@ object HookReadyChecker {
                 putExtra("requestToken", requestToken)
                 putExtra("replyPackage", appContext.packageName)
             })
+            // 等待宿主 Hook 就绪广播的关联回包；超时是上限，收到响应后立即结束等待。
             latch.await(timeoutMs.coerceAtLeast(100L), TimeUnit.MILLISECONDS)
             result.get()
         } catch (t: Throwable) {

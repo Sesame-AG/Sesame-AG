@@ -95,6 +95,7 @@ object SmartSchedulerManager {
             Log.record( ">".repeat(40))
 
             try {
+                // 公共定时器等待调用方指定的触发间隔，保留到点执行语义；不是额外业务限速。
                 delay(finalDelay)
 
                 if (isActive) {

@@ -291,6 +291,7 @@ internal object ApplicationBroadcastDispatcher {
                 }
                 val delayMillis = execTime - now
                 record(TAG, "持久预唤醒注册失败，回退进程内等待 ${TimeUtil.formatDuration(delayMillis)}")
+                // 预唤醒只提前准备进程；降级后仍须等到 execTime 才启动工作流，不能把预唤醒当成正式执行。
                 UnifiedScheduler.scheduleLongDelay(delayMillis, "prewakeup_execute") {
                     ApplicationHookCore.requestExecution(triggerAtExecTime)
                 }

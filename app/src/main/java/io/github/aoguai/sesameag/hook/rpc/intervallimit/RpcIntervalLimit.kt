@@ -67,6 +67,7 @@ object RpcIntervalLimit {
             dispatchQueues.computeIfAbsent(intervalLimit) { SerialTaskQueue() }.submit {
                 val interval = intervalLimit.interval ?: DEFAULT_INTERVAL_LIMIT.interval
                 val remaining = interval - (System.currentTimeMillis() - intervalLimit.time)
+                // 公共 RPC 限速：只补足当前方法配置间隔的剩余时间，避免同一限速队列连续突发请求。
                 if (remaining > 0) delay(remaining)
                 intervalLimit.time = System.currentTimeMillis()
                 send()

@@ -17,7 +17,8 @@ object CoroutineUtils {
     /**
      * 兼容性延迟方法（同步版本）
      *
-     * 在当前线程中执行延迟，自动处理协程和非协程环境
+     * 在当前线程中执行延迟，自动处理协程和非协程环境。
+     * 保留通用暂停适配，时长和业务理由由调用方决定；runBlocking 会阻塞调用线程。
      *
      * @param millis 延迟毫秒数
      */
@@ -33,7 +34,7 @@ object CoroutineUtils {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            // 降级到传统的 Thread.sleep()
+            // 协程暂停异常时由传统线程暂停承接同一 millis 请求；正常路径不会重复执行此等待。
             Log.printStackTrace("协程延迟异常,已尝试降级到 Thread.sleep()", e)
             try {
                 Thread.sleep(millis)
@@ -56,6 +57,7 @@ object CoroutineUtils {
     ): T? {
         return try {
             runBlocking {
+                // 同步桥接必须有执行超时上限，防止调用线程永久阻塞；代码块完成后立即返回。
                 withTimeout(timeout) {
                     block()
                 }

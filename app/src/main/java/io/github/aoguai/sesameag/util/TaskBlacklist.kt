@@ -15,15 +15,22 @@ object TaskBlacklist {
     private fun canonicalModuleName(moduleName: String): String =
         when (moduleName) {
             LEGACY_MYBANK_WELFARE_MODULE_NAME -> MYBANK_MODULE_NAME
+            "AntForestPatrol" -> "保护地巡护"
+            "AntFarm" -> "蚂蚁庄园"
+            "AntForest" -> "蚂蚁森林"
+            "AntMember" -> "会员"
             else -> moduleName
         }
 
     private fun relatedModuleNames(moduleName: String): LinkedHashSet<String> {
         val canonicalName = canonicalModuleName(moduleName)
-        return if (canonicalName == MYBANK_MODULE_NAME) {
-            linkedSetOf(MYBANK_MODULE_NAME, LEGACY_MYBANK_WELFARE_MODULE_NAME)
-        } else {
-            linkedSetOf(canonicalName)
+        return when (canonicalName) {
+            MYBANK_MODULE_NAME -> linkedSetOf(MYBANK_MODULE_NAME, LEGACY_MYBANK_WELFARE_MODULE_NAME)
+            "保护地巡护" -> linkedSetOf("保护地巡护", "AntForestPatrol")
+            "蚂蚁庄园" -> linkedSetOf("蚂蚁庄园", "AntFarm")
+            "蚂蚁森林" -> linkedSetOf("蚂蚁森林", "AntForest")
+            "会员" -> linkedSetOf("会员", "AntMember")
+            else -> linkedSetOf(canonicalName)
         }
     }
 

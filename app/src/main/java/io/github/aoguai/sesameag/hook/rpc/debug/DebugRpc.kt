@@ -108,6 +108,7 @@ class DebugRpc {
                     val projectId = item.optString("itemId")
                     val itemName = item.optString("itemName")
                     getTreeCurrentBudget(projectId, itemName)
+                    // 调试批量预算查询沿用 100ms 本地节流，避免对多个项目无间隔连续查询。
                     GlobalThreadPools.sleepCompat(100)
                 }
             } else {
@@ -168,7 +169,6 @@ class DebugRpc {
                     val gameId = miniGameInfo.optString("gameId")
                     val key = miniGameInfo.optString("key")
                     
-                    GlobalThreadPools.sleepCompat(4000L)
                     val gameResultStr = DebugRpcCall.miniGameFinish(gameId, key) ?: return
                     val gameResult = JSONObject(gameResultStr)
                     
@@ -195,7 +195,6 @@ class DebugRpc {
                 
                 val leftCount = data.getInt("leftCount")
                 if (leftCount > 0) {
-                    GlobalThreadPools.sleepCompat(3000L)
                     walkGrid() // 递归调用，继续行走
                 }
             } else {

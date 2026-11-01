@@ -468,6 +468,7 @@ object PersistentScheduleRegistry {
                 current.triggerAtMs > now || now > current.deadlineAtMs()
             ) return@withRegistryLock null
             val waiting = current.copy(
+                // 为启动/投递确认预留最多三十秒，避免未确认时反复拉起；不得跨过原任务截止时间。
                 triggerAtMs = minOf(now + 30_000L, current.deadlineAtMs()),
                 lastFireAtMs = current.firstDueAtMs(),
                 updatedAtMs = now,
@@ -517,6 +518,7 @@ object PersistentScheduleRegistry {
                 return@withRegistryLock null
             }
             val nextAttempt = schedule.attemptCount + 1
+            // 持久任务投递失败按 15/30/60 秒递增退避，避免唤醒失败造成循环重投，并受次数和截止时间限制。
             val delayMs = when (nextAttempt) {
                 1 -> 15_000L
                 2 -> 30_000L

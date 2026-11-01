@@ -60,6 +60,7 @@ object UnifiedScheduler {
         if (BaseModel.timedTaskModel.value != BaseModel.TimedTaskModel.PROGRAM) {
             return -1
         }
+        // 为现有长等待登记同一到期点的调度占位；空回调不执行额外业务，也不叠加第二段等待。
         return scheduleLongDelay(delayMillis, taskName) {}
     }
 
@@ -193,6 +194,7 @@ object UnifiedScheduler {
         val job = scope.launch(start = CoroutineStart.LAZY) {
             Log.record(TAG, "⏳ 系统计时任务: [$taskName] | ID:$taskId | 延迟: ${TimeUtil.formatDuration(finalDelay)}")
             try {
+                // 系统计时路径同样等待调用方指定的期限，避免持久任务或定时回调提前运行。
                 delay(finalDelay)
                 if (isActive) {
                     // 调度回调不触碰 UI，保持在后台调度执行，避免占用宿主主线程造成 ANR。

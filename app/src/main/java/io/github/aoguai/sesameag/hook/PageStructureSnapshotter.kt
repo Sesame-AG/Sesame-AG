@@ -65,6 +65,7 @@ object PageStructureSnapshotter {
             result = captureOnMainThread(reason)
             latch.countDown()
         }
+        // 页面结构必须在主线程读取；后台最多等待两秒获得快照，避免主线程不可用时无限阻塞。
         if (!latch.await(2, TimeUnit.SECONDS)) {
             result = "页面结构抓取失败：主线程执行超时"
             Log.capture(TAG, result)

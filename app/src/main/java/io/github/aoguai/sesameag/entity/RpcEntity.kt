@@ -39,10 +39,11 @@ class RpcEntity @JvmOverloads constructor(
      * @param resultStr 响应的字符串形式
      */
     fun setResponseObject(result: Any?, resultStr: String?) {
-        this.hasResult = true // 标记请求有结果
+        this.hasError = false
         this.responseObject = result
         // 确保 responseString 不为 null，避免上层 NPE
         this.responseString = resultStr ?: ""
+        this.hasResult = true // 响应内容就绪后再发布结果
     }
 
     /**

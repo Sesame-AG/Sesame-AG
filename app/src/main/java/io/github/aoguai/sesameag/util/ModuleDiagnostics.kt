@@ -133,6 +133,7 @@ object ModuleDiagnostics {
                 event("logcat", "executor_unavailable", "trigger=$reason")
                 return@submit
             }
+            // 六秒为诊断日志采集的等待预算，避免诊断长期占用采集队列；结果先到就立即继续。
             val result = withTimeoutOrNull(6_000) { CommandUtil.readDiagnosticLogcat() }
             if (result == null) {
                 event("logcat", "timeout", "executor=$executor limitMs=6000")

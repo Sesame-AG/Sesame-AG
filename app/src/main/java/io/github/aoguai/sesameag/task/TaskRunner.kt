@@ -594,6 +594,7 @@ class CoroutineTaskRunner(allModels: List<Model>) {
 
     private suspend fun awaitTaskOutcome(job: Deferred<TaskExecutionOutcome>, taskId: String): TaskExecutionOutcome =
         try {
+            // 等待前置任务的真实完成结果后再衔接依赖任务；没有人为固定睡眠时长。
             job.await()
         } catch (e: CancellationException) {
             currentCoroutineContext().ensureActive()

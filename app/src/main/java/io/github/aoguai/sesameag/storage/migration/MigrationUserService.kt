@@ -23,6 +23,7 @@ class MigrationUserService(context: Context) : IMigrationReader.Stub() {
             try {
                 process = ProcessBuilder("/system/bin/sh", "-c", command).redirectError(java.io.File("/dev/null")).start()
                 process.inputStream.use { it.copyTo(output) }
+                // 管道数据传输结束后核对进程退出码，确认读取/维护真正成功再正常关闭结果通道。
                 check(process.waitFor() == 0) { "旧目录读取或维护失败" }
                 output.close()
             } catch (failure: Exception) {

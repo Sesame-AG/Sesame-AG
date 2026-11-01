@@ -123,7 +123,7 @@ class CommandService : Service() {
                                 }
                             }
 
-                            // 执行
+                            // 命令执行设协程超时预算，避免无响应任务长期占用串行队列；不是执行前后的固定等待。
                             val result = withTimeout(COMMAND_TIMEOUT_MS) {
                                 shellManager!!.exec(
                                     command,

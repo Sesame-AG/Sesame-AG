@@ -135,6 +135,7 @@ object ExchangeOptionsRefreshBridge {
                         "连续 ${TimeUnit.MILLISECONDS.toSeconds(idleTimeoutMs)} 秒无新进展，已结束等待；${lastProgress.get()}。目标应用查询未被取消，已保存页可供后续续查。",
                         requestedUserId)
                 }
+                // 等待跨进程刷新结果；remaining 是无新进展超时的剩余额度，回包会提前唤醒，不固定等满。
                 latch.await(remaining, TimeUnit.MILLISECONDS)
             }
             resultRef.get()

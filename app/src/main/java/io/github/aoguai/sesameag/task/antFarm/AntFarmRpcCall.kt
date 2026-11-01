@@ -730,31 +730,43 @@ object AntFarmRpcCall {
     fun doSceneTask(
         bizKey: String,
         taskSceneCode: String,
+        originalFailure: TaskFlowActionResult,
         onFailure: (JSONObject) -> TaskFlowActionResult,
     ): TaskFlowActionResult {
         val rpc = "AntFarmRpcCall.doFarmTask"
+        val originalDetail = "originalRpc=${originalFailure.rpc} originalCode=${originalFailure.code} originalRaw=${originalFailure.raw}"
         val raw = doFarmTask(bizKey, taskSceneCode, "RPC")
         val response = JsonUtil.parseJSONObjectOrNull(raw) ?: return TaskFlowActionResult.failure(
             TaskRpcFailureType.RETRYABLE_RPC,
             message = "场景任务请求返回空或无法解析",
             rpc = rpc,
             raw = raw,
+            detail = originalDetail,
             continueCurrentRoundOnFailure = true,
         ).copy(refreshAfterAction = true)
         if (!ResChecker.checkRes(TAG, response)) {
-            val failure = onFailure(response).copy(rpc = rpc, raw = raw, refreshAfterAction = true)
+            val failure = onFailure(response).copy(
+                rpc = rpc, raw = raw, refreshAfterAction = true, detail = originalDetail,
+            )
             if (failure.code == "1009" || failure.code == "331") {
                 return failure.copy(failureType = TaskRpcFailureType.BUSINESS_LIMIT)
+            }
+            if (failure.code == "400000040") {
+                return failure.copy(
+                    failureType = TaskRpcFailureType.NON_RETRYABLE_INVALID,
+                    continueCurrentRoundOnFailure = true,
+                    stopCurrentRound = false,
+                )
             }
             // 保留失败语义；后续列表确认进展时由统一任务执行流程消解失败。
             return failure
         }
         return TaskFlowActionResult.defer(
             DeferredReason.STATE_CONFIRMATION,
-            message = "场景任务请求已发送，等待所属任务列表确认",
+            message = "场景任务已受理，等待所属任务列表确认",
             rpc = rpc,
             raw = raw,
-            detail = "taskSceneCode=$taskSceneCode bizKey=$bizKey",
+            detail = "$originalDetail taskSceneCode=$taskSceneCode bizKey=$bizKey",
             refreshAfterAction = true,
         )
     }

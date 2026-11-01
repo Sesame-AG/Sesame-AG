@@ -56,6 +56,7 @@ class ScheduleReconcileReceiver : BroadcastReceiver() {
             )
         receiverScope.launch {
             try {
+                // 异步广播恢复工作设超时预算，便于结束广播和释放唤醒锁；成功完成后不等满预算。
                 withTimeout(RECEIVER_TIMEOUT_MS) {
                     Log.record(TAG, "收到系统恢复广播: $action")
                     val result =

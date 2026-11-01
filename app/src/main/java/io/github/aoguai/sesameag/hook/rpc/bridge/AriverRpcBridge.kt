@@ -146,6 +146,7 @@ class AriverRpcBridge : RpcBridge {
         io.github.aoguai.sesameag.hook.ApplicationHookConstants
             .getOfflineCooldownMs()
 
+    // 公共失败退避：使用显式基础间隔或默认随机抖动，随错误数/尝试次数增长，最多十五秒，避免错误后连续重试。
     private fun computeRetryDelayMs(
         retryInterval: Int,
         attempt: Int,
@@ -413,6 +414,10 @@ class AriverRpcBridge : RpcBridge {
             var count = 0
             requestLoop@ do {
                 count++
+                rpcEntity.hasResult = false
+                rpcEntity.hasError = false
+                rpcEntity.responseObject = null
+                rpcEntity.responseString = null
                 try {
                     val requestMethod =
                         rpcEntity.requestMethod ?: run {
@@ -506,6 +511,7 @@ class AriverRpcBridge : RpcBridge {
                                                     callMethod(obj, "toJSONString") as String
                                                 } catch (e: Exception) {
                                                     try {
+                                                        // 宿主响应序列化失败时只保留一次 100ms 本地重试缓冲，仍失败则交给外层 RPC 失败处理。
                                                         GlobalThreadPools.sleepCompat(100L)
                                                         callMethod(obj, "toJSONString") as String
                                                     } catch (retryException: Exception) {
@@ -587,6 +593,7 @@ class AriverRpcBridge : RpcBridge {
                         rpcEntity.settingsRefresh?.failed = true
                         logNullResponse(rpcEntity, "无响应结果", count)
                         if (count < normalizedTryCount) {
+                            // RPC 未返回结果时采用公共指数退避，避免无响应情况下立即连发。
                             CoroutineUtils.sleepCompat(computeRetryDelayMs(retryInterval, count))
                             continue@requestLoop
                         }
@@ -613,7 +620,32 @@ class AriverRpcBridge : RpcBridge {
                         return rpcEntity
                     }
 
-                    if (!rpcEntity.hasError) {
+                    val responseCode = rawResponse.optString("resultCode")
+                    val businessResult = when (rpcEntity.requestMethod) {
+                        "alipay.antocean.ocean.h5.giveFriendPiece" -> when (responseCode) {
+                            "PIECE_HAVE_GAVE" -> "TERMINAL_DONE"
+                            "RECEIVE_PIECE_LIMIT" -> "BUSINESS_LIMIT"
+                            else -> null
+                        }
+                        "alipay.antocean.ocean.h5.cleanFriendOcean" ->
+                            if (responseCode == "HELP_CLEAN_ALL_FRIEND_LIMIT") "BUSINESS_LIMIT" else null
+                        else -> null
+                    }
+                    if (businessResult != null && rawResponse.opt("success") == false) {
+                        maxErrorCount.set(0)
+                        rpcEntity.setError()
+                        Log.error(
+                            TAG,
+                            "RPC业务状态 classification=$businessResult method=${rpcEntity.requestMethod} " +
+                                "code=$responseCode raw=$rawResponse",
+                        )
+                        captureSucceeded = true
+                        return rpcEntity
+                    }
+                    val explicitRetryable = rawResponse.opt("retryable") as? Boolean
+                        ?: rawResponse.opt("retriable") as? Boolean
+                    val explicitFailure = rawResponse.opt("success") == false || rawResponse.opt("isSuccess") == false
+                    if (!rpcEntity.hasError && !(explicitRetryable != null && explicitFailure)) {
                         maxErrorCount.set(0)
                         captureSucceeded = true
                         return rpcEntity
@@ -647,6 +679,16 @@ class AriverRpcBridge : RpcBridge {
                             )
                         }
 
+                        if (explicitRetryable != null) {
+                            rpcEntity.setError()
+                            Log.error(TAG, "RPC业务失败 method=$methodName retryable=$explicitRetryable raw=$response")
+                            if (explicitRetryable && count < normalizedTryCount) {
+                                // 仅在响应明确允许重试且次数未耗尽时退避，给可恢复的业务失败留出恢复窗口。
+                                CoroutineUtils.sleepCompat(computeRetryDelayMs(retryInterval, count))
+                                continue@requestLoop
+                            }
+                            return rpcEntity
+                        }
                         if (isRetryableRpcError(errorCode, errorMessage)) {
                             val currentErrorCount = maxErrorCount.incrementAndGet()
                             if (!io.github.aoguai.sesameag.hook.ApplicationHookConstants.offline) {
@@ -685,6 +727,7 @@ class AriverRpcBridge : RpcBridge {
 
                             logNullResponse(rpcEntity, "网络错误: $errorCode/$errorMessage", count)
                             if (count < normalizedTryCount) {
+                                // 网络类错误采用公共退避，避免故障期间连续重发请求。
                                 CoroutineUtils.sleepCompat(computeRetryDelayMs(retryInterval, count))
                                 continue@requestLoop
                             }
@@ -707,6 +750,7 @@ class AriverRpcBridge : RpcBridge {
                     }
 
                     if (count < normalizedTryCount) {
+                        // 响应解析异常后按公共重试策略等待，再重新请求，而非对成功响应加延迟。
                         CoroutineUtils.sleepCompat(computeRetryDelayMs(retryInterval, count))
                     }
                 } catch (t: Throwable) {
@@ -725,6 +769,7 @@ class AriverRpcBridge : RpcBridge {
                     captureNote = "request_exception:${t.javaClass.simpleName}"
 
                     if (count < normalizedTryCount) {
+                        // 请求抛出异常后保留公共退避；取消和线程中断已在上方直接退出。
                         CoroutineUtils.sleepCompat(computeRetryDelayMs(retryInterval, count))
                     }
                 }

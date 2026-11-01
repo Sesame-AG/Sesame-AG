@@ -44,6 +44,7 @@ class ScheduledTriggerReceiver : BroadcastReceiver() {
             )
         receiverScope.launch {
             try {
+                // 限制单次闹钟广播的异步处理时间，便于结束广播和释放唤醒锁；不是业务睡眠。
                 withTimeout(RECEIVER_TIMEOUT_MS) {
                     val source = if (plannedBatch) "alarm_batch" else "alarm"
                     val dueCount = ScheduledTaskRouter.fireDueFromModule(ctx, source)

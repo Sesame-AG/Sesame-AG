@@ -140,12 +140,13 @@ object GameCenterPlayRpcCall {
         val mappedTask = GameTask.fromAppId(gameAppId)
         val isGameTask = mappedTask != null ||
             gameTaskType.isNotBlank() ||
-            originalMap?.optString("scene") == "outer_multi_type_task" ||
+            originalMap?.optString("scene") in setOf("outer_multi_type_task", "ladder_task") ||
             hasP2eFloatingBallProtocol(objects) ||
             urlParameters.valuesFor("gameAppId", "game_id").isNotEmpty() ||
             objects.any { objectValue ->
                 objectValue.optString("gameAppId").isNotBlank() ||
                     objectValue.optString("game_id").isNotBlank() ||
+                    objectValue.optString("type") in setOf("GAME_ZH", "GAME_MULTI_STAGE", "nongchangleyuan") ||
                     objectValue.optString("categorizationSecondLevel")
                     .equals("Game", ignoreCase = true) ||
                     objectValue.optJSONObject("taskCategorization")
@@ -440,6 +441,7 @@ object GameCenterPlayRpcCall {
                 "floatBallConfig",
                 "task",
                 "taskInfo",
+                "taskMaterial",
                 "taskBaseInfo",
                 "bizInfo",
                 "taskCategorization",
@@ -593,7 +595,7 @@ object GameCenterPlayRpcCall {
         )
     }
 
-    /** 分段计时只推进已到期的上报；模块通过 afterDeferred 安排原任务流续接。 */
+    /** 按原分段连续上报，仅在服务端确认后持久化完成进度。 */
     fun advanceDuration(
         stateKey: String,
         contract: Contract,
@@ -621,12 +623,17 @@ object GameCenterPlayRpcCall {
                 .put("source", contract.source).put("total", contract.playTime)
             var reported = state.optInt("reported")
             if (reported >= contract.playTime) return@execute TaskFlowActionResult.success(progressChanged = false)
-            if (!state.has("readyAt")) {
-                val chunk = minOf(firstChunkSeconds, contract.playTime)
-                state.put("chunk", chunk).put("readyAt", now + chunk * 1000L)
+            if (!state.has("chunk")) {
+                state.put("chunk", minOf(firstChunkSeconds, contract.playTime))
                 store.put(stateKey, state.toString(), requirePersistence = true)
             }
-            if (now >= state.getLong("readyAt")) {
+            while (reported < contract.playTime) {
+                check(store.uid == identity.userId && RpcDailyCircuit.isCurrent(identity)) { "游戏时长账号会话已变化" }
+                if (ApplicationHookConstants.isOffline() || Thread.currentThread().isInterrupted) {
+                    return@execute TaskFlowActionResult.defer(
+                        DeferredReason.STATE_CONFIRMATION, "游戏时长执行已中断", stopCurrentRound = true,
+                    )
+                }
                 val chunk = state.getInt("chunk")
                 val ack = submitForAck(contract.copy(playTime = chunk))
                 check(RpcDailyCircuit.isCurrent(identity)) { "游戏时长上报期间账号会话已变化" }
@@ -637,16 +644,11 @@ object GameCenterPlayRpcCall {
                 reported += chunk
                 state.put("reported", reported)
                 if (reported < contract.playTime) {
-                    val nextChunk = minOf(30, contract.playTime - reported)
-                    state.put("chunk", nextChunk).put("readyAt", System.currentTimeMillis() + nextChunk * 1000L)
+                    state.put("chunk", minOf(30, contract.playTime - reported))
                 }
                 store.put(stateKey, state.toString(), requirePersistence = true)
-                if (reported >= contract.playTime) return@execute TaskFlowActionResult.success(progressChanged = false)
             }
-            TaskFlowActionResult.defer(
-                DeferredReason.TIME_WINDOW, "游戏时长已上报${reported}/${contract.playTime}秒，等待下一段",
-                rpc = "GameCenterPlayRpcCall.submit", deferredUntil = state.getLong("readyAt"),
-            )
+            TaskFlowActionResult.success(progressChanged = false)
         }
     }
 
