@@ -131,6 +131,14 @@ internal suspend fun AntSesameCredit.finishSesameWorkflows(plan: AntSesameCredit
         }
     }
 
+    if (plan.allowed && sesameAlchemy?.value == true && !ApplicationHookConstants.isOffline()) {
+        finishSesameAlchemy(plan.alchemyExecutionState)
+        if (!hasFlagToday(StatusFlags.FLAG_SESAME_ALCHEMY_NEXT_DAY_AWARD)) {
+            doSesameAlchemyNextDayAward()
+        }
+    }
+
+    // 消费、精力瓶任务及次日奖励均已处理后，再收取本轮新生成的反馈并判定领取完成。
     if (plan.claimSesame) {
         if (ApplicationHookConstants.isOffline()) {
             Log.sesame("⏭️ 当前处于离线模式，跳过统一领取芝麻粒")
