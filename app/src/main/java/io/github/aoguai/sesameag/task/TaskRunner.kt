@@ -347,7 +347,7 @@ class CoroutineTaskRunner(allModels: List<Model>) {
             return matched
         }
 
-        // 批次限定依赖顺序，不因随机/手动排序跨批，也不清除每日标识或补跑模块。
+        // 默认依赖批次；手动模式据此重排并拆分，不扩大并发许可，也不清除每日标识或补跑模块。
         // 运动、森林、庄园保留长任务超时策略，本轮主流程结束后才允许后续依赖批次执行。
         val batches = buildList<List<ModelTask>> {
             // 1) 固定：运动优先更新步数，并处理森林可用道具兑换；不能随机到消费者之后。
@@ -406,31 +406,41 @@ class CoroutineTaskRunner(allModels: List<Model>) {
                 .takeIf { it.isNotEmpty() }
                 ?.let(::add)
 
-            // 12) 末批仅新村、绿色经营、网商福利金允许随机/手动交换位置及跨批补位：
+            // 12) 默认末批仅新村、绿色经营、网商福利金允许随机交换位置及跨批补位：
             // 新村金币/肥料、经营金币、网商福利金分别独立；
             // 合种、古树、保护地共用森林能量，不纳入候选，保持原槽位和相对入队顺序；
             // 同批仍受原并发控制，这不代表三者严格串行，也不改变它们已有的消费额度。
-            // 未明确列入 taskOrderModelClasses 的其他模块同样不移动，避免将新增模块默认视为独立。
+            // 默认模式不移动未列入 taskOrderModelClasses 的模块；手动排序也不将其视为独立补位任务。
             if (remainingTasks.isNotEmpty()) {
                 add(remainingTasks.toList())
             }
         }
 
-        val manualOrder = BaseModel.taskOrderMode.value == BaseModel.TaskOrderMode.MANUAL
-        val priorities = BaseModel.taskOrderPriority.value.orEmpty().toMap()
+        if (BaseModel.taskOrderMode.value == BaseModel.TaskOrderMode.MANUAL) {
+            val priorities = BaseModel.taskOrderPriority.value.orEmpty().toMap()
+            val orderedTasks = batches.flatMapIndexed { batchIndex, batch ->
+                batch.map { task -> batchIndex to task }
+            }.sortedBy { (_, task) ->
+                priorities[task.javaClass.simpleName]?.takeIf { it > 0 }?.toLong() ?: Long.MAX_VALUE
+            }
+            val orderedBatches = mutableListOf<MutableList<ModelTask>>()
+            var previousBatchIndex: Int? = null
+            for ((batchIndex, task) in orderedTasks) {
+                // 只合并相邻的同源批次任务，保留手动顺序，不新增原本跨批的并发组合。
+                if (batchIndex != previousBatchIndex) {
+                    orderedBatches.add(mutableListOf())
+                }
+                orderedBatches.last().add(task)
+                previousBatchIndex = batchIndex
+            }
+            return orderedBatches
+        }
+
         return batches.map { batch ->
             val positions = batch.indices.filter { batch[it].javaClass in BaseModel.taskOrderModelClasses }
             if (positions.size < 2) return@map batch
-            val movableTasks = positions.map { batch[it] }
-            val orderedTasks = if (manualOrder) {
-                movableTasks.sortedBy {
-                    priorities[it.javaClass.simpleName]?.takeIf { priority -> priority > 0 }?.toLong()
-                        ?: Long.MAX_VALUE
-                }
-            } else {
-                movableTasks.shuffled()
-            }
-            // 只重排同批独立模块，保留依赖批次和资源消费模块的原位置。
+            val orderedTasks = positions.map { batch[it] }.shuffled()
+            // 默认只重排同批独立模块，保留依赖批次和资源消费模块的原位置。
             batch.toMutableList().apply {
                 positions.forEachIndexed { index, position -> this[position] = orderedTasks[index] }
             }

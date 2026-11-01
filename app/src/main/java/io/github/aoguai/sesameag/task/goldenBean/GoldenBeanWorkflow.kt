@@ -55,7 +55,18 @@ internal suspend fun GoldenBeanTreasure.runGoldenBeanTreasure() {
                 Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "金豆求签入口查询失败 raw=${indexResponse ?: "EMPTY"}")
             }
         }
-        Log.goldenBean("金豆夺宝[今日已处理，跳过]")
+        // 任务列表完成不代表当天后续到账的肥料、芝麻粒已兑换。
+        val entryRuns = GoldenBeanRpcCall.ENTRIES.map { entry ->
+            GoldenBeanEntryRun(entry, GoldenBeanTaskFlowAdapter(this, entry))
+        }
+        val exchangedEntries = runGoldenBeanExchanges(entryRuns)
+        if (exchangedEntries.isNotEmpty()) {
+            exchangedEntries.forEach { it.runTaskFlow(executeIntervalInt) }
+            GoldenBeanTreasureSupport.collectFloatingBeans()
+            Model.getModel(AntOrchard::class.java)?.resumeTasksAfterGoldenBeanProgress()
+            Model.getModel(AntStall::class.java)?.resumeTasksAfterGoldenBeanProgress()
+        }
+        Log.goldenBean("金豆夺宝[今日任务已处理，保留资源兑换与求签检查]")
         return
     }
 

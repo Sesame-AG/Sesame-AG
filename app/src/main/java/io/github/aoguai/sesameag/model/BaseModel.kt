@@ -9,7 +9,9 @@ import io.github.aoguai.sesameag.model.modelFieldExt.SelectAndCountModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.StringModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.TimePointListModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.TimeWindowListModelField
+import io.github.aoguai.sesameag.task.ModelTask
 import io.github.aoguai.sesameag.task.antStall.AntStall
+import io.github.aoguai.sesameag.task.customTasks.ManualTaskModel
 import io.github.aoguai.sesameag.task.greenFinance.GreenFinance
 import io.github.aoguai.sesameag.task.myBankWelfare.MyBankWelfare
 import io.github.aoguai.sesameag.util.Log
@@ -80,7 +82,7 @@ class BaseModel : Model() {
         companion object {
             const val RANDOM = 0
             const val MANUAL = 1
-            val nickNames = arrayOf("每轮随机", "手动优先级")
+            val nickNames = arrayOf("默认排序（独立模块随机）", "手动优先级")
         }
     }
 
@@ -141,7 +143,7 @@ class BaseModel : Model() {
                 "控制全局最多同时运行的模块数；空闲槽位可提前执行独立普通模块；默认 2，调高会增加请求频率和风控概率。",
             )
 
-        // 这些独立模块允许同批换序和跨批补位；约束模块见 TaskRunner.buildExecutionBatches。
+        // 仅这些独立模块允许默认同批随机和跨批补位；全模块手动排序不扩大此并发许可。
         internal val taskOrderModelClasses: Set<Class<out Model>> = setOf(
             AntStall::class.java,
             GreenFinance::class.java,
@@ -149,16 +151,16 @@ class BaseModel : Model() {
         )
 
         val taskOrderMode: ChoiceModelField = ChoiceModelField(
-            "taskOrderMode", "同批模块顺序", TaskOrderMode.RANDOM, TaskOrderMode.nickNames,
-        ).withDesc("仅调整同批可独立执行模块的入队顺序；默认每轮随机，也可设置手动优先级。")
+            "taskOrderMode", "模块执行顺序", TaskOrderMode.RANDOM, TaskOrderMode.nickNames,
+        ).withDesc("默认保留依赖顺序，仅独立模块随机；手动模式可调整全部自动模块顺序，可能减少联动收益。")
 
         val taskOrderPriority: SelectAndCountModelField = SelectAndCountModelField(
             "taskOrderPriority",
             "模块顺序",
             linkedMapOf(),
             SelectAndCountModelField.SelectListFunc {
-                Model.modelArray.filterNotNull()
-                    .filter { it.javaClass in taskOrderModelClasses }
+                Model.modelArray.filterIsInstance<ModelTask>()
+                    .filterNot { it is ManualTaskModel }
                     .map { model ->
                         object : MapperEntity() {
                             init {
@@ -168,7 +170,7 @@ class BaseModel : Model() {
                         }
                     }
             },
-        ).withDesc("手动优先级模式生效：正整数越小越先入队；未设置的模块随后入队，同值保持原序。并发执行不保证完成顺序。")
+        ).withDesc("手动优先级模式生效：正整数越小越优先；未设置的模块随后入队，同值保持默认顺序。并发时独立模块可提前补位；需严格顺序请将任务并发数设为 1。")
 
         /**
          * 单任务超时时间（分钟）
