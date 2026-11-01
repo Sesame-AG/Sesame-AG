@@ -267,7 +267,7 @@ object EnergyWaitingPersistence {
         if (verifyRemoteHome) {
             Log.forest("🔄 开始验证${tasks.size}个恢复的蹲点任务...")
         } else {
-            Log.forest("🔄 开始恢复${tasks.size}个蹲点任务：收集能量未开启，跳过好友主页验证")
+            Log.forest("🔄 开始恢复${tasks.size}个蹲点任务：蹲点收取暂停，跳过好友主页验证")
         }
 
         var restoredCount = 0
@@ -286,7 +286,7 @@ object EnergyWaitingPersistence {
                     val success = addTaskCallback(task)
                     if (success) {
                         restoredCount++
-                        val actionText = if (verifyRemoteHome) "到时间直接收取" else "收集能量未开启，暂停等待"
+                        val actionText = if (verifyRemoteHome && EnergyWaitingManager.isWaitingCollectionAllowed()) "到时间直接收取" else "蹲点收取暂停，保留等待"
                         Log.forest("  ⭐️ 恢复[${task.getUserTypeTag()}${task.userName}]球[${task.bubbleId}]：能量${TimeUtil.getCommonDate(task.produceTime)}成熟，$actionText"
                         )
                     } else {
@@ -312,11 +312,11 @@ object EnergyWaitingPersistence {
                     return@forEach
                 }
 
-                if (!verifyRemoteHome) {
+                if (!verifyRemoteHome || !EnergyWaitingManager.isWaitingCollectionAllowed()) {
                     val success = addTaskCallback(task)
                     if (success) {
                         restoredCount++
-                        Log.forest("  ⏸ 恢复[${task.getUserTypeTag()}${task.userName}]球[${task.bubbleId}]：收集能量未开启，跳过好友主页验证")
+                        Log.forest("  ⏸ 恢复[${task.getUserTypeTag()}${task.userName}]球[${task.bubbleId}]：蹲点收取暂停，跳过好友主页验证")
                     } else {
                         skippedCount++
                     }

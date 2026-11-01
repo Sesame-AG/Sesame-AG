@@ -3535,11 +3535,15 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     val sleep = interval - (System.currentTimeMillis() - lastCollectEnergyTime)
                     // 补足普通收取、双击或重试各自配置的请求间隔；已耗时会扣除，不再额外整段等待。
                     if (sleep > 0) GlobalThreadPools.sleepCompat(sleep)
+                    if (BaseModel.modelSleepTime.isActive(System.currentTimeMillis())) {
+                        Log.forest("💤 模块休眠时间【${BaseModel.modelSleepTime.value}】停止发送能量收取请求！")
+                        return@execute null
+                    }
                     val startedAt = System.currentTimeMillis()
                     lastCollectEnergyTime = startedAt
                     requestString(rpcEntity, 0, 0)
                     startedAt
-                }
+                } ?: return@Runnable
                 val spendTime = System.currentTimeMillis() - startTime
                 if (balanceNetworkDelay?.value == true) {
                     delayTimeMath.nextInteger((spendTime / 3).toInt())
@@ -8874,6 +8878,14 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             // 记录收取前的总能量
             val beforeTotal = totalCollected
 
+            if (!canRunWaitingCollection()) {
+                return CollectResult(
+                    success = false,
+                    userName = userName,
+                    message = "收集能量关闭或模块休眠，暂停蹲点收取",
+                    paused = true,
+                )
+            }
             // 蹲点任务只允许提交自身目标，不能携带同主页的其他气泡。
             val collectVivaResult = collectVivaEnergy(
                 userId,
@@ -8898,6 +8910,13 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     message = "收取目标能量球[$targetBubbleId]成功，${collectedEnergy}g能量",
                     failedBubbleIds = failedBubbleIds,
                     waitingOutcome = WaitingCollectOutcome.SUCCESS
+                )
+            } else if (!canRunWaitingCollection()) {
+                CollectResult(
+                    success = false,
+                    userName = userName,
+                    message = "收集能量关闭或模块休眠，暂停蹲点收取",
+                    paused = true,
                 )
             } else if (allRequestedFailed) {
                 CollectResult(
@@ -9113,20 +9132,11 @@ class AntForest : ModelTask(), EnergyCollectCallback {
     }
 
     override fun canRunWaitingCollection(): Boolean {
-        return isCollectEnergyEnabled()
+        // 蹲点独立于主任务运行，必须按执行时刻判断，不能依赖轮询更新的缓存状态。
+        return isCollectEnergyEnabled() && !BaseModel.modelSleepTime.isActive(System.currentTimeMillis())
     }
 
     override suspend fun collectUserEnergyForWaiting(task: EnergyWaitingManager.WaitingTask): CollectResult {
-        if (!isCollectEnergyEnabled()) {
-            Log.forest("收集能量开关关闭，暂停蹲点收取")
-            return CollectResult(
-                success = false,
-                userName = task.userName,
-                message = EnergyWaitingManager.WAITING_PAUSED_COLLECT_DISABLED,
-                paused = true,
-                waitingOutcome = WaitingCollectOutcome.SUCCESS
-            )
-        }
         if (jsonCollectMap.contains(task.userId)) {
             Log.forest("蹲点收取[${task.userName}]在不收能量名单中，已暂停")
             return CollectResult(
@@ -9139,7 +9149,15 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         }
         return try {
             withContext(Dispatchers.Default) {
+                val pausedResult = CollectResult(
+                    success = false,
+                    userName = task.userName,
+                    message = "收集能量关闭或模块休眠，暂停蹲点收取",
+                    paused = true,
+                )
+                if (!canRunWaitingCollection()) return@withContext pausedResult
                 val friendHomeObj = queryWaitingTargetHome(task)
+                if (!canRunWaitingCollection()) return@withContext pausedResult
                 if (friendHomeObj != null) {
                     // 获取真实用户名
                     val realUserName = getAndCacheUserName(task.userId, friendHomeObj, task.fromTag)
@@ -9147,14 +9165,14 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     Log.forest("蹲点收取：用户[${realUserName}] userId=${task.userId} currentUid=${UserMap.currentUid} isSelf=${isSelf}")
                     // 蹲点路径独立检查保护状态，并且只提交当前任务的目标能量球。
                     val result = collectEnergyForWaiting(task, friendHomeObj, realUserName)
-                    if (result.success && result.energyCount > 0) {
+                    if (result.success && result.energyCount > 0 && canRunWaitingCollection()) {
                         runCatching {
                             updateSelfHomePage(collectRobMultiplierEnergy = true)
                         }.onFailure {
                             Log.printStackTrace(TAG, "蹲点后领取N倍卡能量失败", it)
                         }
                     }
-                    val finalResult = if (result.allRequestedBubblesFailed) {
+                    val finalResult = if (result.allRequestedBubblesFailed && canRunWaitingCollection()) {
                         val recheckResult = recheckWaitingBubblesAfterFailedCollect(
                             task,
                             realUserName,

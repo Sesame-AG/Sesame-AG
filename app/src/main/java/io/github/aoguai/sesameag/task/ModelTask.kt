@@ -346,8 +346,6 @@ abstract class ModelTask : Model() {
                 report.executionJob = currentCoroutineContext()[Job]
                 var lease: WakeLockManager.WakeLockLease? = null
                 try {
-                    lease = WakeLockManager.acquire(context, PersistentScheduleDefaults.TASK_EXECUTION_WAKELOCK_MS,
-                        source = source, scheduleId = scheduleId)
                     workflowQueue.submit {
                         ensureActive()
                         if (!AccountSessionCoordinator.isCurrentSession(ownerUserId, sessionEpoch) ||
@@ -358,7 +356,15 @@ abstract class ModelTask : Model() {
                             Log.error(TAG, "持久任务等待执行时超过截止时间[${getName()}] id=$scheduleId")
                             return@submit
                         }
-                        val result = withContext(report.context) { block() }
+                        // 排队期间可能进入休眠；只在真正执行前判断并获取唤醒锁。
+                        val result = if (BaseModel.modelSleepTime.isActive(System.currentTimeMillis())) {
+                            recordModuleCheckMessage("💤 模块休眠时间【${BaseModel.modelSleepTime.value}】停止执行${getName()}持久子任务！")
+                            TaskExecutionOutcome.SKIPPED
+                        } else {
+                            lease = WakeLockManager.acquire(context, PersistentScheduleDefaults.TASK_EXECUTION_WAKELOCK_MS,
+                                source = source, scheduleId = scheduleId)
+                            withContext(report.context) { block() }
+                        }
                         ensureActive()
                         if (!AccountSessionCoordinator.isCurrentSession(ownerUserId, sessionEpoch) ||
                             ApplicationHookConstants.isOffline()
@@ -746,6 +752,11 @@ abstract class ModelTask : Model() {
                 }
 
                 executionReport.ensureCurrent()
+                if (BaseModel.modelSleepTime.isActive(System.currentTimeMillis())) {
+                    Log.record("💤 模块休眠时间【${BaseModel.modelSleepTime.value}】停止执行子任务[${modelTask?.getName()}-$id]！")
+                    isCancelled = true
+                    return
+                }
                 // 执行任务逻辑
                 suspendRunnable?.invoke() ?: defaultRun()
                 isSuccess = true // 标记为成功执行

@@ -1279,6 +1279,15 @@ class AntSports : ModelTask() {
             runCatching {
                 GlobalThreadPools.execute {
                     PersistentScheduleRegistry.markRunning(scheduleId, source = "sports_worker_start:$source")
+                    if (BaseModel.modelSleepTime.isActive(System.currentTimeMillis())) {
+                        Log.sports("💤 模块休眠时间【${BaseModel.modelSleepTime.value}】停止执行运动持久子任务[$group][$childId]！")
+                        PersistentScheduleRegistry.markFired(
+                            ApplicationHook.appContext,
+                            scheduleId,
+                            source = "sports_module_sleep:$source",
+                        )
+                        return@execute
+                    }
                     val executionLease = ApplicationHook.appContext?.let { context ->
                         WakeLockManager.acquire(
                             context = context,
