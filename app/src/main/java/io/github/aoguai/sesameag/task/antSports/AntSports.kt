@@ -36,6 +36,7 @@ import io.github.aoguai.sesameag.model.modelFieldExt.StringModelField
 import io.github.aoguai.sesameag.task.AnswerAI.AnswerAI
 import io.github.aoguai.sesameag.task.ModelTask
 import io.github.aoguai.sesameag.task.TaskCommon
+import io.github.aoguai.sesameag.task.TaskExecutionReport
 import io.github.aoguai.sesameag.task.common.DeferredReason
 import io.github.aoguai.sesameag.task.common.TaskFlowExecutionState
 import io.github.aoguai.sesameag.task.common.TaskFlowAction
@@ -46,6 +47,7 @@ import io.github.aoguai.sesameag.task.common.TaskFlowEngine
 import io.github.aoguai.sesameag.task.common.TaskFlowItem
 import io.github.aoguai.sesameag.task.common.TaskFlowPhase
 import io.github.aoguai.sesameag.task.common.TaskFlowSnapshot
+import io.github.aoguai.sesameag.task.common.TaskFlowRunResult
 import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
 import io.github.aoguai.sesameag.task.exchange.ExchangeCost
 import io.github.aoguai.sesameag.task.exchange.ExchangeEffectCatalog
@@ -1406,7 +1408,7 @@ class AntSports : ModelTask() {
                                 val confirmationRegistered = registerPersistentChildTask(
                                     childId = SYNC_STEP_CONFIRM_CHILD_TASK_ID,
                                     group = SYNC_STEP_CONFIRM_CHILD_TASK_ID,
-                                    triggerAtMs = System.currentTimeMillis() + PersistentScheduleDefaults.DEFAULT_TOLERANCE_MS,
+                                    triggerAtMs = System.currentTimeMillis(),
                                     extraPayload = JSONObject().put(SYNC_STEP_CONFIRM_TARGET_STEP_KEY, targetStep),
                                 )
                                 val confirmationStatus = if (confirmationRegistered) "已登记一次持久确认" else "持久确认注册失败"
@@ -1823,7 +1825,7 @@ class AntSports : ModelTask() {
             // 只有具体资产的到账结果才能补足领奖后被面板移除或尚未刷新的任务。
             for (index in items.indices) {
                 val item = items[index]
-                val received = receivedItems[item.id] ?: continue
+                val received = receivedItems[actionKey(item, TaskFlowAction.RECEIVE)] ?: continue
                 if (item.status == "WAIT_RECEIVE" && item.progress == received.progress &&
                     item.raw?.optString("assetId") == received.raw?.optString("assetId")
                 ) items[index] = received
@@ -1844,6 +1846,34 @@ class AntSports : ModelTask() {
                     TaskFlowPhase.READY_TO_COMPLETE
                 }
                 else -> TaskFlowPhase.UNKNOWN
+            }
+        }
+
+        override fun isSameTask(previous: TaskFlowItem, current: TaskFlowItem): Boolean {
+            if (!super<TaskFlowAdapter>.isSameTask(previous, current)) return false
+            if (previous.status != "WAIT_RECEIVE") return true
+            val assetId = previous.raw?.optString("assetId").orEmpty()
+            val currentAssetId = current.raw?.optString("assetId").orEmpty()
+            return assetId.isBlank() || currentAssetId == assetId ||
+                (currentAssetId.isBlank() && current.status == "HAS_RECEIVED" && current.current == previous.current)
+        }
+
+        override fun isPendingActionResolved(
+            item: TaskFlowItem,
+            action: TaskFlowAction,
+            response: JSONObject,
+            items: List<TaskFlowItem>,
+        ): Boolean {
+            if (action != TaskFlowAction.RECEIVE) return false
+            if (receivedItems.containsKey(actionKey(item, action))) return true
+            return items.any { current ->
+                current.status == "HAS_RECEIVED" && (
+                    isSameTask(item, current) ||
+                        (super<TaskFlowAdapter>.isSameTask(item, current) &&
+                            item.limit != null && item.limit > 0 && current.limit == item.limit &&
+                            current.current == current.limit && item.current != null &&
+                            item.current in 0..item.limit)
+                    )
             }
         }
 
@@ -1877,7 +1907,8 @@ class AntSports : ModelTask() {
                 (result.success && prizeAmount != null && prizeAmount.signum() > 0 &&
                     changeAmount != null && changeAmount >= prizeAmount)
             ) {
-                receivedItems[item.id] = item.copy(status = "HAS_RECEIVED")
+                receivedItems[actionKey(item, TaskFlowAction.RECEIVE)] = item.copy(status = "HAS_RECEIVED")
+                if (result.success) return result.copy(progressChanged = true)
             }
             return result
         }
@@ -1977,6 +2008,7 @@ class AntSports : ModelTask() {
     }
 
     private fun motionDailyQuiz() {
+        if (Status.hasFlagToday(StatusFlags.FLAG_ANTSPORTS_MOTION_DAILY_QUIZ_DONE)) return
         try {
             val gmtStartAnswer = System.currentTimeMillis()
             val queryResponse = JSONObject(AntSportsRpcCall.queryMotionQuizBlockDetail(gmtStartAnswer))
@@ -2145,6 +2177,7 @@ class AntSports : ModelTask() {
             var greenConfirmed = Status.hasFlagToday(StatusFlags.FLAG_ANTSPORTS_MOTION_QUIZ_GREEN_CONFIRMED)
             var greenFound = false
             var welfareConfirmed = Status.hasFlagToday(StatusFlags.FLAG_ANTSPORTS_MOTION_QUIZ_WELFARE_CONFIRMED)
+            var welfareLimited = Status.hasFlagToday(StatusFlags.FLAG_ANTSPORTS_MOTION_QUIZ_WELFARE_LIMITED)
             var welfareFound = false
             var failed = false
             val attempted = mutableSetOf<String>()
@@ -2161,7 +2194,9 @@ class AntSports : ModelTask() {
                 if (isHealth) healthFound = true
                 if (isGreen) greenFound = true
                 if (isWelfare) welfareFound = true
-                if (isHealth && healthConfirmed || isGreen && greenConfirmed || isWelfare && welfareConfirmed) continue
+                if (isHealth && healthConfirmed || isGreen && greenConfirmed ||
+                    isWelfare && (welfareConfirmed || welfareLimited)
+                ) continue
                 val creativityId = prize.optString("id")
                 if (creativityId.isBlank()) {
                     Log.error(TAG, "运动问答奖励缺少id taskId=$taskId appId=$appId")
@@ -2190,7 +2225,12 @@ class AntSports : ModelTask() {
                         val prizeId = query.getQueryParameter("prizeId").orEmpty()
                         check(campId.isNotBlank() && prizeId.isNotBlank()) { "福利金奖励缺少campId或prizeId" }
                         val received = JSONObject(AntSportsRpcCall.receiveMotionQuizWelfare(campId, prizeId))
-                        if (ResChecker.checkRes(TAG, received)) {
+                        if (received.optString("errorCode") == "10001011") {
+                            welfareLimited = true
+                            Status.setFlagToday(StatusFlags.FLAG_ANTSPORTS_MOTION_QUIZ_WELFARE_LIMITED,
+                                Status.TodayFlagState.NO_MORE_ACTION_TODAY)
+                            Log.error(TAG, "运动问答福利金今日领取达限，停止本项领奖[quizId=$quizId] classification=BUSINESS_LIMIT code=10001011 raw=$received")
+                        } else if (ResChecker.checkRes(TAG, received)) {
                             val receipts = received.optJSONObject("result")?.optJSONArray("prizes")
                             welfareConfirmed = (0 until (receipts?.length() ?: 0)).any { i ->
                                 receipts?.optJSONObject(i)?.let {
@@ -2202,7 +2242,7 @@ class AntSports : ModelTask() {
                         if (welfareConfirmed) {
                             Status.setFlagToday(StatusFlags.FLAG_ANTSPORTS_MOTION_QUIZ_WELFARE_CONFIRMED)
                             Log.sports("运动问答福利金已确认领取")
-                        } else {
+                        } else if (!welfareLimited) {
                             failed = true
                             Log.error(TAG, "运动问答福利金尚未确认发放[quizId=$quizId] raw=$received")
                         }
@@ -2229,11 +2269,11 @@ class AntSports : ModelTask() {
                 return
             }
             if ((healthFound || greenFound || welfareFound) && (!healthFound || healthConfirmed) &&
-                (!greenFound || greenConfirmed) && (!welfareFound || welfareConfirmed) && !failed
+                (!greenFound || greenConfirmed) && (!welfareFound || welfareConfirmed || welfareLimited) && !failed
             ) {
-                markMotionDailyQuizDone("可领取奖励已确认")
+                markMotionDailyQuizDone(if (welfareLimited) "福利金今日达限，其余可领取奖励已确认" else "可领取奖励已确认")
             } else {
-                Log.error(TAG, "运动问答奖励尚未全部确认[quizId=$quizId][health=$healthConfirmed][green=$greenConfirmed][welfare=$welfareConfirmed]，保留后续处理")
+                Log.error(TAG, "运动问答奖励尚未全部确认[quizId=$quizId][health=$healthConfirmed][green=$greenConfirmed][welfare=$welfareConfirmed][welfareLimited=$welfareLimited]，保留后续处理")
             }
         } catch (t: Throwable) {
             if (t is CancellationException || t is InterruptedException) throw t
@@ -2540,7 +2580,15 @@ class AntSports : ModelTask() {
                 val errorMsg = extractSportsRpcErrorMessage(result)
                 val sceneCode = taskDetail.optString("sceneCode")
                 if (errorCode == "400000040" && sceneCode.isNotBlank()) {
-                    return AntFarmRpcCall.doSceneTask(taskId, sceneCode) { fallback ->
+                    val failure = TaskFlowActionResult.failure(
+                        failureType = classifySportsTaskFailure(result),
+                        code = errorCode,
+                        message = errorMsg,
+                        rpc = if (useAdTaskFinishRpc) "AntSportsRpcCall.finishAdTask" else "AntSportsRpcCall.completeTask",
+                        raw = result.toString(),
+                        detail = "progress=$progressText",
+                    )
+                    return AntFarmRpcCall.doSceneTask(taskId, sceneCode, failure) { fallback ->
                         TaskFlowActionResult.failure(
                             failureType = classifySportsTaskFailure(fallback),
                             code = extractSportsRpcErrorCode(fallback),
@@ -3493,6 +3541,7 @@ class AntSports : ModelTask() {
                 round++
             }
         } catch (t: Throwable) {
+            if (t is InterruptedException || t is kotlinx.coroutines.CancellationException) throw t
             Log.printStackTrace(TAG, "sportsEnergyBubbleTask err:", t)
         }
     }
@@ -3663,13 +3712,11 @@ class AntSports : ModelTask() {
                     when (executeCurrentRouteWalk(currentPathData)) {
                         RouteWalkOutcome.MOVED,
                         RouteWalkOutcome.COMPLETED -> {
-                            GlobalThreadPools.sleepCompat(500)
                             continue
                         }
 
                         RouteWalkOutcome.NO_STEPS -> {
                             if (tryReviveRouteSteps(config, currentPathData)) {
-                                GlobalThreadPools.sleepCompat(500)
                                 continue
                             }
                             Log.sports("行走路线🚶🏻‍♂️今日无可用步数，结束本轮路线流程")
@@ -3709,7 +3756,6 @@ class AntSports : ModelTask() {
                         if (shouldTryReviveAfterRepeat && tryReviveRouteSteps(config, currentPathData)) {
                             repeatedTerminalJoinCount = 0
                             lastTerminalJoinRouteKey = null
-                            GlobalThreadPools.sleepCompat(500)
                             continue
                         }
                         Log.sports("行走路线🚶🏻‍♂️终态路线重复加入仍未切换[${decision.candidate.name.ifBlank { decision.candidate.pathId }}]，结束本轮以避免无效循环"
@@ -3723,7 +3769,6 @@ class AntSports : ModelTask() {
                 if (!joinPath(decision.candidate.pathId)) {
                     return
                 }
-                GlobalThreadPools.sleepCompat(500)
             }
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "walk err:", t)
@@ -4792,26 +4837,22 @@ class AntSports : ModelTask() {
                 )
                 continue
             }
-            GlobalThreadPools.sleepCompat(500)
             if (isAdTask) {
                 val adFinishResp = JSONObject(AntSportsRpcCall.finishAdTask(taskBizId))
                 if (isSportsRpcSuccess(adFinishResp)) {
                     Log.sports("行走路线复活广告任务完成[$taskName][taskId=$taskId][bizId=$taskBizId]")
-                    GlobalThreadPools.sleepCompat(500)
                     refreshRouteReviveTaskFinishStatus(taskName, taskId)
                 } else {
                     Log.error(
                         TAG,
                         "行走路线复活广告任务完成失败[$taskName][taskId=$taskId][bizId=$taskBizId][code=${extractSportsRpcErrorCode(adFinishResp).ifEmpty { "UNKNOWN" }}][msg=${extractSportsRpcErrorMessage(adFinishResp)}] raw=$adFinishResp"
                     )
-                    GlobalThreadPools.sleepCompat(500)
                 }
                 continue
             }
             val completeResp = JSONObject(AntSportsRpcCall.completeReviveTask(taskId))
             if (isSportsRpcSuccess(completeResp)) {
                 Log.sports("行走路线复活任务完成[$taskName][taskId=$taskId]")
-                GlobalThreadPools.sleepCompat(500)
                 refreshRouteReviveTaskFinishStatus(taskName, taskId)
             } else {
                 val errorCode = extractSportsRpcErrorCode(completeResp)
@@ -4826,7 +4867,6 @@ class AntSports : ModelTask() {
                     TAG,
                     "行走路线复活任务完成失败[$taskName][taskId=$taskId][code=${errorCode.ifEmpty { "UNKNOWN" }}][msg=$errorMsg] raw=$completeResp"
                 )
-                GlobalThreadPools.sleepCompat(500)
             }
         }
         return true
@@ -6050,7 +6090,6 @@ class AntSports : ModelTask() {
                     }
                 }
 
-                GlobalThreadPools.sleepCompat(RandomUtil.nextLong(850, 1001))
             }
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "collectClubBubbleRewardsFromRoom 异常:", t)
@@ -6146,6 +6185,7 @@ class AntSports : ModelTask() {
                             Log.sports("训练好友[CLUB_MEMBER_CHANGED重试已达上限，结束本轮训练]")
                             return
                         }
+                        // 保留此间隔，避免目标变化后密集重试触发风控限流。
                         GlobalThreadPools.sleepCompat(500)
                         continue
                     }
@@ -6155,6 +6195,7 @@ class AntSports : ModelTask() {
                             "训练好友[当前目标不可训练，跳过继续寻找][friend=${trainTarget.userName}]" +
                                 "[code=${errorCode.ifEmpty { "UNKNOWN" }}][msg=$errorMsg]"
                         )
+                        // 保留此间隔，避免连续切换训练目标过快触发风控限流。
                         GlobalThreadPools.sleepCompat(500)
                         continue
                     }
@@ -6187,6 +6228,13 @@ class AntSports : ModelTask() {
                                 "[code=${extractSportsRpcErrorCode(taskResponse)}]")
                         } else {
                             associatedTaskFailed = true
+                            TaskExecutionReport.current()?.recordFlow(
+                                TaskFlowExecutionState(), SPORTS_TASK_BLACKLIST_MODULE, "训练好友关联任务",
+                                TaskFlowRunResult(
+                                    completed = false, progressed = false, stopped = true, rounds = 1,
+                                    actionAttempted = true, failureCount = 1,
+                                ),
+                            )
                             Log.error(TAG, "训练好友[关联任务失败，停止本轮训练]" +
                                 "[taskId=${trainItemSelection.taskId}][bizId=${trainItemSelection.bizId}]" +
                                 "[classification=$failureType][code=${extractSportsRpcErrorCode(taskResponse)}]" +
@@ -6194,6 +6242,7 @@ class AntSports : ModelTask() {
                         }
                     }
                 }
+                // 保留此间隔，避免连续训练及关联领奖过快触发“手速过快”风控。
                 GlobalThreadPools.sleepCompat(1000)
                 val refreshedHome = queryClubHomeForTraining() ?: return
                 refreshedClubHome = refreshedHome
@@ -6224,6 +6273,7 @@ class AntSports : ModelTask() {
             Thread.currentThread().interrupt()
             throw e
         } catch (t: Throwable) {
+            TaskExecutionReport.current()?.recordException()
             Log.printStackTrace(TAG, "queryTrainItem err:", t)
         }
     }
@@ -6301,7 +6351,6 @@ class AntSports : ModelTask() {
                             roomId
                         )
                     )
-                    GlobalThreadPools.sleepCompat(500)
 
                     if (isSportsRpcSuccess(buyMemberResponse)) {
                         boughtAny = true
@@ -6383,7 +6432,6 @@ class AntSports : ModelTask() {
             }
 
             val response = JSONObject(AntSportsRpcCall.buyBackMember(memberId, JSONObject(priceInfo.toString())))
-            GlobalThreadPools.sleepCompat(500)
             if (!isSportsRpcSuccess(response)) {
                 Log.error(
                     TAG,
@@ -6459,7 +6507,6 @@ class AntSports : ModelTask() {
             }
 
             val unlockResp = JSONObject(AntSportsRpcCall.unlockNextRoom(energyBalance))
-            GlobalThreadPools.sleepCompat(500)
             if (isSportsRpcSuccess(unlockResp)) {
                 unlockCount++
                 Log.sports("抢好友大战🧑‍🤝‍🧑解锁新场地成功[price=$unlockPrice,balanceBefore=$energyBalance,nextPrice=${unlockResp.optInt("nextRoomUnlockPrice", 0)}]"
@@ -6646,8 +6693,6 @@ class AntSports : ModelTask() {
             if (v > 0) v else 5
         }
 
-        /** @brief 任务循环间隔（毫秒） */
-        private val TASK_LOOP_DELAY: Long = 1000
         // 任务大厅/签到/建造按最新抓包固定运动首页 source；泡泡可独立记忆可用辅助 source。
         private var activeNeverlandSource: String = NEVERLAND_SOURCE_SPORT_HOME
         private var activeNeverlandAuxSource: String = NEVERLAND_SOURCE_SPORT_HOME
@@ -6894,7 +6939,6 @@ class AntSports : ModelTask() {
                         taskCenterResp.optJSONObject("data") == null
                     ) {
                         errorCount++
-                        GlobalThreadPools.sleepCompat(TASK_LOOP_DELAY)
                         continue
                     }
 
@@ -6989,7 +7033,6 @@ class AntSports : ModelTask() {
                     for (task in pendingTasks) {
                         val ok = handleSingleTask(task)
                         if (!ok) currentBatchError++
-                        GlobalThreadPools.sleepCompat(RandomUtil.nextLong(2550, 3001))
                     }
 
                     errorCount += currentBatchError
@@ -7001,7 +7044,6 @@ class AntSports : ModelTask() {
                         )
                     }
                     Log.sports("当前批次执行完毕，准备下一次刷新检查")
-                    GlobalThreadPools.sleepCompat(RandomUtil.nextLong(850, 1001))
                 } catch (t: Throwable) {
                     if (t is CancellationException || t is InterruptedException) throw t
                     errorCount++
@@ -7537,7 +7579,6 @@ class AntSports : ModelTask() {
                             )
                         }
 
-                        GlobalThreadPools.sleepCompat(RandomUtil.nextLong(850, 1001))
                     }
                 }
             } catch (t: Throwable) {
@@ -8487,7 +8528,6 @@ class AntSports : ModelTask() {
                         chooseAvailableMap(source = source)
                         break
                     }
-                    GlobalThreadPools.sleepCompat(RandomUtil.nextLong(755, 889))
                 }
                 Log.sports("自动走路任务完成 ✓")
             } catch (t: Throwable) {
@@ -8926,7 +8966,6 @@ class AntSports : ModelTask() {
                     val buildData = buildResp.optJSONObject("data")
                     if (buildData == null || buildData.length() == 0) {
                         Log.sports("build响应数据为空，刷新地图状态后继续判断")
-                        GlobalThreadPools.sleepCompat(500)
                         continue
                     }
 
@@ -8951,7 +8990,6 @@ class AntSports : ModelTask() {
                     if (isBuildDataMapFinished(buildData)) {
                         neverlandPickAllBubble(source)
                     }
-                    GlobalThreadPools.sleepCompat(RandomUtil.nextLong(850, 1001))
                 }
                 handleFinishedMapAfterBuildLimit(branchId, mapId, currentMapName, source)
                 Log.sports("自动建造任务完成 ✓")

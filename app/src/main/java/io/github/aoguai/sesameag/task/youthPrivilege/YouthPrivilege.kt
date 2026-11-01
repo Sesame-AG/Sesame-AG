@@ -335,10 +335,26 @@ class YouthPrivilege : ModelTask() {
 
         override fun isQuerySuccess(response: JSONObject): Boolean = isYouthSuccess(response)
 
+        override fun isQueryComplete(response: JSONObject): Boolean {
+            val module = response.optJSONObject("studentTaskModule") ?: return false
+            val groups = module.optJSONArray("taskGroupList") ?: return false
+            val tasks = mutableListOf<JSONObject>()
+            for (index in 0 until groups.length()) {
+                val list = groups.optJSONObject(index)?.optJSONArray("taskList") ?: return false
+                for (taskIndex in 0 until list.length()) {
+                    tasks.add(list.optJSONObject(taskIndex) ?: return false)
+                }
+            }
+            module.optJSONObject("checkInRecommendTask")?.let(tasks::add)
+            return tasks.all { task ->
+                listOf("taskCode", "taskSource", "taskType").all { task.optString(it).isNotBlank() }
+            }
+        }
+
         override fun extractItems(response: JSONObject): List<TaskFlowItem> {
             val module = response.optJSONObject("studentTaskModule") ?: JSONObject()
-            val rawTasks = linkedMapOf<String, JSONObject>()
-            fun appendTask(task: JSONObject?) {
+            val rawTasks = linkedMapOf<String, Pair<JSONObject, String>>()
+            fun appendTask(task: JSONObject?, groupCode: String = "") {
                 val safeTask = task ?: return
                 val taskCode = safeTask.optString("taskCode")
                 val taskSource = safeTask.optString("taskSource")
@@ -347,7 +363,7 @@ class YouthPrivilege : ModelTask() {
                     Log.error(TAG, "青春特权任务缺少服务端执行参数:$safeTask")
                     return
                 }
-                rawTasks.putIfAbsent(taskCode, safeTask)
+                rawTasks.putIfAbsent(taskCode, safeTask to groupCode)
             }
             val groups = module.optJSONArray("taskGroupList")
             if (groups != null) {
@@ -359,15 +375,16 @@ class YouthPrivilege : ModelTask() {
                         for (key in listOf("currentCount", "totalCount")) {
                             if (!task.has(key) && group.has(key)) task.put(key, group.get(key))
                         }
-                        appendTask(task)
+                        appendTask(task, group.optString("groupCode"))
                     }
                 }
             }
             appendTask(module.optJSONObject("checkInRecommendTask"))
 
-            val items = rawTasks.values.map { task ->
+            val items = rawTasks.values.map { (task, groupCode) ->
                 TaskFlowItem(
                     id = task.optString("taskCode"),
+                    sceneCode = groupCode,
                     title = task.optString("taskName").ifBlank { task.optString("taskCode") },
                     status = task.optString("taskStatus"),
                     type = task.optString("taskType"),
@@ -400,7 +417,27 @@ class YouthPrivilege : ModelTask() {
                 else -> TaskFlowPhase.UNKNOWN
             }
 
-        override fun isFlowHandledToday(): Boolean = false
+        override fun isPendingActionResolved(
+            item: TaskFlowItem,
+            action: TaskFlowAction,
+            response: JSONObject,
+            items: List<TaskFlowItem>,
+        ): Boolean {
+            if (action != TaskFlowAction.SEND || item.type != TASK_TYPE_BROWSER || item.sceneCode.isBlank()) return false
+            val previousCount = item.current ?: return false
+            val totalCount = item.limit?.takeIf { it > 0 } ?: return false
+            val taskSource = item.raw?.optString("taskSource").orEmpty()
+            if (taskSource.isBlank()) return false
+            // 换卡后任务编号会变化，以同组同来源的累计进度确认前一张卡。
+            return items.any { current ->
+                current.sceneCode == item.sceneCode && current.type == item.type &&
+                    current.raw?.optString("taskSource") == taskSource && current.limit == totalCount &&
+                    current.current?.let { it > previousCount } == true
+            }
+        }
+
+        override fun isFlowHandledToday(): Boolean =
+            Status.hasFlagToday(StatusFlags.FLAG_YOUTH_PRIVILEGE_TASKS_DONE)
 
         override fun shouldSkip(item: TaskFlowItem): Boolean {
             if (item.type.isBlank() || item.type == TASK_TYPE_BROWSER || item.type == "FEEDS") {

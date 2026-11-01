@@ -268,6 +268,7 @@ object StatusFlags {
     /** 运动问答：绿色能量已取得收取回执 */
     const val FLAG_ANTSPORTS_MOTION_QUIZ_GREEN_CONFIRMED = "AntSports::motionQuizGreenConfirmed"
     const val FLAG_ANTSPORTS_MOTION_QUIZ_WELFARE_CONFIRMED = "AntSports::motionQuizWelfareConfirmed"
+    const val FLAG_ANTSPORTS_MOTION_QUIZ_WELFARE_LIMITED = "AntSports::motionQuizWelfareLimited"
 
     /** 运动签到：今日已处理或已进入业务止损 */
     const val FLAG_ANTSPORTS_CHECK_IN_HANDLED_TODAY: String = "AntSports::checkInHandledToday"
