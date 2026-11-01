@@ -4,6 +4,7 @@ import io.github.aoguai.sesameag.entity.RpcEntity
 import io.github.aoguai.sesameag.hook.RequestManager
 import io.github.aoguai.sesameag.task.antForest.AntForestRpcCall
 import io.github.aoguai.sesameag.util.RandomUtil
+import io.github.aoguai.sesameag.util.ResChecker
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -49,6 +50,12 @@ internal object AntForestPatrolRpcCall {
     fun queryMonopolyRanking(rankType: String): String = RequestManager.requestString(
         "alipay.antisle.monopoly.h5.queryMonopolyRanking",
         JSONArray().put(JSONObject().put("rankType", rankType).put("source", "monopoly_home_animal")
+            .put("uniqueId", RandomUtil.getRandomTag())).toString(),
+    )
+
+    fun switchMonopolyRegion(regionCode: String): String = RequestManager.requestString(
+        "alipay.antisle.monopoly.h5.switchMonopolyRegion",
+        JSONArray().put(JSONObject().put("regionCode", regionCode).put("source", "monopoly_home_animal")
             .put("uniqueId", RandomUtil.getRandomTag())).toString(),
     )
 
@@ -195,11 +202,32 @@ internal object AntForestPatrolRpcCall {
     @JvmStatic
     @Throws(JSONException::class)
     fun queryAnimalPropList(): String {
-        val jo =
-            JSONObject().apply {
-                put("source", "chInfo_ch_appcenter__chsub_9patch")
+        val animals = JSONArray()
+        val cursors = mutableSetOf<String>()
+        var nextCursor: String? = null
+        while (true) {
+            val payload = JSONObject()
+                .put("source", "chInfo_ch_appcenter__chsub_9patch")
+                .put("pageQuery", true)
+            nextCursor?.let {
+                payload.put("nextCursor", it).put("excludePropTypes", JSONArray())
             }
-        return RequestManager.requestString("alipay.antforest.forest.h5.queryAnimalPropList", JSONArray().put(jo).toString())
+            val response = parsePatrolResponse(RequestManager.requestString(
+                "alipay.antforest.forest.h5.queryAnimalPropList",
+                JSONArray().put(payload).toString(),
+            ))
+            if (!ResChecker.checkRes("AntForestPatrol", "查询动物分页失败:", response)) return response.toString()
+            val page = response.getJSONArray("animalProps")
+            for (index in 0 until page.length()) animals.put(page.getJSONObject(index))
+            if (!response.optBoolean("hasMore")) {
+                return response.put("animalProps", animals).toString()
+            }
+            val cursor = response.getString("nextCursor")
+            if (page.length() == 0 || cursor.isBlank() || !cursors.add(cursor)) {
+                throw JSONException("动物列表分页未完成，未使用部分背包")
+            }
+            nextCursor = cursor
+        }
     }
 
     fun consumeAnimalProp(propGroup: String, propType: String): String = AntForestRpcCall.consumeProp(
@@ -236,7 +264,7 @@ internal object AntForestPatrolRpcCall {
 
     fun listMonopolyTasks(regionCode: String, sceneCode: String): String = RequestManager.requestString(
         "com.alipay.antieptask.listTaskopengreen",
-        JSONArray().put(JSONObject().put("regionCode", regionCode).put("sceneCode", sceneCode)
+        JSONArray().put(JSONObject().put("extend", JSONObject().put("regionCode", regionCode)).put("sceneCode", sceneCode)
             .put("source", "ANTFOREST").put("requestType", "RPC").put("zoneId", PATROL_TIMEZONE)
             .put("uniqueId", RandomUtil.getRandomTag())).toString(),
     )

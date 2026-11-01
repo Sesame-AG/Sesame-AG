@@ -2,6 +2,8 @@ package io.github.aoguai.sesameag.task.reserve
 
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.entity.ReserveEntity
+import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
+import io.github.aoguai.sesameag.hook.AccountSessionCheck
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.hook.ExchangeOptionsRefreshBridge
 import io.github.aoguai.sesameag.model.BaseModel
@@ -18,6 +20,9 @@ import io.github.aoguai.sesameag.task.exchange.ExchangeOptionsSnapshot
 import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.ResChecker
+import io.github.aoguai.sesameag.util.SerialTaskQueue
+import io.github.aoguai.sesameag.util.TimeUtil
+import io.github.aoguai.sesameag.util.UserDataStoreManager
 import io.github.aoguai.sesameag.util.maps.IdMapManager
 import io.github.aoguai.sesameag.util.maps.ReserveaMap
 import io.github.aoguai.sesameag.util.maps.UserMap
@@ -156,6 +161,7 @@ class Reserve : ModelTask() {
 
     companion object {
         private val TAG = Reserve::class.java.simpleName
+        private val exchangeQueue = SerialTaskQueue()
 
         internal fun exchangeTree(
             projectId: String,
@@ -164,68 +170,108 @@ class Reserve : ModelTask() {
             targetCount: Int? = null,
             energyReserve: Int = 0,
             initialDetail: JSONObject? = null,
-        ): Boolean {
-            if (count <= 0 || energyReserve < 0 || (targetCount != null && targetCount <= 0)) return false
+        ): Boolean = exchangeQueue.execute {
+            if (count <= 0 || energyReserve < 0 || (targetCount != null && targetCount <= 0)) return@execute false
+            val store = UserDataStoreManager.getCurrentInstance() ?: return@execute false
+            val epoch = AccountSessionCoordinator.currentSessionEpoch()
+            val pendingKey = "reserve_pending:$projectId"
             try {
-                var detail = initialDetail ?: JSONObject(ReserveRpcCall.queryTreeForExchange(projectId)).let { it.optJSONObject("resData") ?: it }
+                var pending = store.get(pendingKey, String::class.java)?.let(::JSONObject)
+                var detail = if (pending == null && initialDetail != null) initialDetail else {
+                    JSONObject(ReserveRpcCall.queryTreeForExchange(projectId)).let { it.optJSONObject("resData") ?: it }
+                }
                 while (!ApplicationHookConstants.isOffline() && !Thread.currentThread().isInterrupted) {
+                    if (AccountSessionCoordinator.checkCurrentSession(store.uid, epoch) !is AccountSessionCheck.Current) return@execute false
                     if (!ResChecker.checkRes(TAG, detail)) {
                         Log.error(TAG, "保护项目查询失败[$itemName] raw=$detail")
-                        return false
+                        return@execute false
                     }
                     val tree = detail.getJSONObject("exchangeableTree")
                     val type = tree.getString("type")
                     val owned = tree.getInt("certCount")
                     if (owned < 0 || type !in setOf("RESERVE", "TREE", "ANIMAL", "MONOPOLY")) {
                         Log.error(TAG, "保护项目类型或证书数量无效[$itemName] raw=$detail")
-                        return false
+                        return@execute false
                     }
-                    if (targetCount != null && owned >= targetCount) return true
-                    if (type == "ANIMAL" && owned > 0) return targetCount == null || owned >= targetCount
                     val aliases = if (type == "ANIMAL") detail.getJSONArray("subTreeVOs") else null
                     val aliasCounts = aliases?.let { list -> (0 until list.length()).map { list.getJSONObject(it).getInt("certCountForAlias") } }
                     if (aliasCounts != null && (aliasCounts.isEmpty() || aliasCounts.any { it < 0 })) {
                         Log.error(TAG, "动物项目缺少有效基础证书进度[$itemName] raw=$detail")
-                        return false
+                        return@execute false
                     }
+                    pending?.let { previous ->
+                        val confirmed = if (previous.getBoolean("golden") || !previous.getBoolean("animal")) {
+                            owned > previous.getInt("certCount")
+                        } else {
+                            aliasCounts != null && aliasCounts.sum() > previous.getInt("aliasCount")
+                        }
+                        if (!confirmed) {
+                            Log.forest("保护项目🏕️[$itemName]上次申请尚未确认，保留回查，不重复消耗")
+                            return@execute false
+                        }
+                        if (!previous.getBoolean("golden") && TimeUtil.isSameDay(previous.getLong("submittedAt"), System.currentTimeMillis())) {
+                            val recorded = Status.getReserveTimes(projectId)
+                            if (recorded <= previous.getInt("recordedCount")) Status.reserveToday(projectId, 1)
+                        }
+                        store.remove(pendingKey)
+                        pending = null
+                        Log.forest("保护项目🏕️[$itemName]已回查确认上次申请")
+                    }
+                    if (targetCount != null && owned >= targetCount) return@execute true
+                    if (type == "ANIMAL" && owned > 0) return@execute targetCount == null || owned >= targetCount
                     val golden = aliasCounts != null && aliasCounts.all { it > 0 }
                     if (!golden) {
-                        if (!Status.canReserveToday(projectId, count)) return targetCount == null
+                        if (!Status.canReserveToday(projectId, count)) return@execute targetCount == null
                         when (val action = detail.getString("applyAction")) {
                             "AVAILABLE" -> Unit
                             "LIMITED", "NO_STOCK", "ENERGY_LACK", "COMING" -> {
                                 Log.forest("保护项目🏕️[$itemName] 当前不可申请[$action]")
-                                return false
+                                return@execute false
                             }
                             else -> {
                                 Log.error(TAG, "保护项目申请状态未知[$itemName] action=$action raw=$detail")
-                                return false
+                                return@execute false
                             }
                         }
                         if (tree.optBoolean("overLimit") || !tree.optBoolean("hasBudget", true)) {
                             Log.forest("保护项目🏕️[$itemName]已达上限或项目预算不足，停止申请")
-                            return false
+                            return@execute false
                         }
                         val cost = tree.getLong("energy")
                         val balance = detail.getLong("currentEnergy")
                         if (cost < 0L || balance < 0L) {
                             Log.error(TAG, "保护项目成本或余额无效[$itemName] raw=$detail")
-                            return false
+                            return@execute false
                         }
                         if (balance - cost < energyReserve) {
                             Log.forest("保护项目🏕️[$itemName] 能量不足或需要保留${energyReserve}g，停止申请")
-                            return false
+                            return@execute false
                         }
                     }
-                    val response = JSONObject(
-                        if (golden) ReserveRpcCall.applyGoldAnimalCert(projectId) else ReserveRpcCall.exchangeTree(projectId),
-                    ).let { it.optJSONObject("resData") ?: it }
-                    val accepted = ResChecker.checkRes(TAG, response)
-                    if (!accepted) Log.error(TAG, "保护项目申请返回失败[$itemName] raw=$response")
+                    val submittedAt = System.currentTimeMillis()
+                    val recordedCount = Status.getReserveTimes(projectId)
+                    store.put(pendingKey, JSONObject().put("certCount", owned).put("aliasCount", aliasCounts?.sum() ?: 0)
+                        .put("animal", aliasCounts != null).put("golden", golden).put("submittedAt", submittedAt)
+                        .put("recordedCount", recordedCount).toString(), requirePersistence = true)
+                    var response: JSONObject? = null
+                    try {
+                        response = JSONObject(
+                            if (golden) ReserveRpcCall.applyGoldAnimalCert(projectId) else ReserveRpcCall.exchangeTree(projectId),
+                        ).let { it.optJSONObject("resData") ?: it }
+                    } catch (t: Throwable) {
+                        if (t is kotlinx.coroutines.CancellationException || t is InterruptedException) throw t
+                        Log.printStackTrace(TAG, "保护项目申请结果不确定[$itemName]，先回查", t)
+                    }
+                    val accepted = response?.let { ResChecker.checkRes(TAG, it) } == true
+                    if (response != null && !accepted) Log.error(TAG, "保护项目申请返回失败[$itemName] raw=$response")
+                    if (ApplicationHookConstants.isOffline() ||
+                        AccountSessionCoordinator.checkCurrentSession(store.uid, epoch) !is AccountSessionCheck.Current
+                    ) return@execute false
                     val refreshed = JSONObject(ReserveRpcCall.queryTreeForExchange(projectId)).let { it.optJSONObject("resData") ?: it }
+                    if (AccountSessionCoordinator.checkCurrentSession(store.uid, epoch) !is AccountSessionCheck.Current) return@execute false
                     if (!ResChecker.checkRes(TAG, refreshed)) {
                         Log.error(TAG, "保护项目申请后回查失败[$itemName] raw=$refreshed")
-                        return false
+                        return@execute false
                     }
                     val after = refreshed.getJSONObject("exchangeableTree").getInt("certCount")
                     val afterAliases = if (aliasCounts != null && !golden) {
@@ -234,21 +280,25 @@ class Reserve : ModelTask() {
                     } else 0
                     val progressed = if (aliasCounts != null && !golden) afterAliases > aliasCounts.sum() else after > owned
                     if (!progressed) {
+                        if (!accepted && response?.opt("success") == false && !response.has("rpcMethod")) {
+                            store.remove(pendingKey)
+                        }
                         Log.error(TAG, "保护项目申请后证书数量未确认[$itemName] raw=$refreshed")
-                        return false
+                        return@execute false
                     }
-                    if (!golden) Status.reserveToday(projectId, 1)
-                    val vitality = response.optInt("vitalityAmount", 0)
+                    if (!golden && TimeUtil.isSameDay(submittedAt, System.currentTimeMillis())) Status.reserveToday(projectId, 1)
+                    store.remove(pendingKey)
+                    val vitality = response?.optInt("vitalityAmount", 0) ?: 0
                     val progress = if (aliasCounts != null && !golden) "基础证书${aliasCounts.sum()}→$afterAliases" else "证书$owned→$after"
                     Log.forest("保护项目🏕️[$itemName]${if (golden) "金色证书" else "申请确认"}#$progress${if (vitality > 0) "，活力值+$vitality" else ""}")
-                    if (!accepted) return targetCount != null && after >= targetCount
+                    if (!accepted) return@execute targetCount != null && after >= targetCount
                     detail = refreshed
                 }
             } catch (t: Throwable) {
                 if (t is kotlinx.coroutines.CancellationException || t is InterruptedException) throw t
                 Log.printStackTrace(TAG, "保护项目申请异常[$itemName]", t)
             }
-            return false
+            false
         }
 
         @JvmStatic

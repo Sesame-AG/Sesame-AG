@@ -2,6 +2,9 @@ package io.github.aoguai.sesameag.task.antForestPatrol
 
 import android.net.Uri
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
+import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
+import io.github.aoguai.sesameag.hook.AccountSessionCheck
+import io.github.aoguai.sesameag.util.UserDataStoreManager
 import io.github.aoguai.sesameag.task.common.TaskFlowAction
 import io.github.aoguai.sesameag.task.common.TaskFlowActionResult
 import io.github.aoguai.sesameag.task.common.TaskFlowAdapter
@@ -11,7 +14,6 @@ import io.github.aoguai.sesameag.task.common.TaskFlowItem
 import io.github.aoguai.sesameag.task.common.TaskFlowPhase
 import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
 import io.github.aoguai.sesameag.task.reserve.Reserve
-import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.ResChecker
 import io.github.aoguai.sesameag.util.Log
 import kotlinx.coroutines.CancellationException
@@ -139,7 +141,6 @@ internal object MonopolyPatrolWorkflow {
             }
             tasksMayHaveChanged = true
             Log.forestPatrol("新巡护掷骰🎲[${roll.optInt("diceNumber")}] 剩余${roll.optInt("totalDiceCount")}次")
-            GlobalThreadPools.sleepCompat(500L)
             state = parsePatrolResponse(AntForestPatrolRpcCall.queryMonopolyEntryInfo())
             if (!ResChecker.checkRes(TAG, "刷新新巡护掷骰状态失败:", state)) return
             pendingEvent = pendingEvent ?: state.optJSONObject("eventInfo")
@@ -147,13 +148,7 @@ internal object MonopolyPatrolWorkflow {
     }
 
     private fun runTasks(regionCode: String, executionState: TaskFlowExecutionState) {
-        val sceneCode = when (regionCode) {
-            "hongshandongwuyuan" -> "ANTFOREST_MONOPOLY_TASK_HSDWY"
-            else -> {
-                Log.forestPatrol("当前区域[$regionCode]没有任务场景，继续地图巡护")
-                return
-            }
-        }
+        val sceneCode = "ANTFOREST_MONOPOLY_TASK_HSDWY"
         try {
             TaskFlowEngine(MonopolyTaskAdapter(regionCode, sceneCode), executionState = executionState).run()
         } catch (e: CancellationException) {
@@ -163,6 +158,8 @@ internal object MonopolyPatrolWorkflow {
         }
     }
 
+    class RegionRestoreException(message: String, cause: Throwable? = null) : IllegalStateException(message, cause)
+
     fun updateMaps(
         exchangeEnabled: Boolean,
         earlyExchange: Boolean,
@@ -170,7 +167,82 @@ internal object MonopolyPatrolWorkflow {
         energyReserve: Int,
         showRanking: Boolean,
     ) {
-        var page = parsePatrolResponse(AntForestPatrolRpcCall.queryMonopolyMapPage())
+        val store = UserDataStoreManager.getCurrentInstance() ?: return
+        val epoch = AccountSessionCoordinator.currentSessionEpoch()
+        val pendingKey = "patrol_map_region"
+        try {
+            if (store.get(pendingKey, String::class.java).orEmpty().isNotBlank()) {
+                Log.forestPatrol("先恢复上次目录查询的巡护区域")
+                return
+            }
+            if (ApplicationHookConstants.isOffline() ||
+                AccountSessionCoordinator.checkCurrentSession(store.uid, epoch) !is AccountSessionCheck.Current
+            ) return
+            val page = parsePatrolResponse(AntForestPatrolRpcCall.queryMonopolyMapPage())
+            if (!ResChecker.checkRes(TAG, "查询巡护地图失败:", page)) return
+            val originalRegion = page.getString("currentRegionCode")
+            updateRegionMaps(page, exchangeEnabled, earlyExchange, switchEnabled, energyReserve, showRanking)
+            if (!exchangeEnabled) return
+            val regions = page.getJSONArray("regionList")
+            for (index in 0 until regions.length()) {
+                val region = regions.getJSONObject(index)
+                val regionCode = region.getString("regionCode")
+                if (regionCode == originalRegion || region.optString("regionAvailability") != "AVAILABLE") continue
+                if (ApplicationHookConstants.isOffline() ||
+                    AccountSessionCoordinator.checkCurrentSession(store.uid, epoch) !is AccountSessionCheck.Current
+                ) return
+                store.put(pendingKey, originalRegion, requirePersistence = true)
+                val switched = parsePatrolResponse(AntForestPatrolRpcCall.switchMonopolyRegion(regionCode))
+                ResChecker.checkRes(TAG, "查询其他区域时切换失败:", switched)
+                if (ApplicationHookConstants.isOffline() ||
+                    AccountSessionCoordinator.checkCurrentSession(store.uid, epoch) !is AccountSessionCheck.Current
+                ) return
+                val regionPage = parsePatrolResponse(AntForestPatrolRpcCall.queryMonopolyMapPage())
+                check(ResChecker.checkRes(TAG, regionPage) && regionPage.optString("currentRegionCode") == regionCode) {
+                    "巡护区域切换未确认[$regionCode] raw=$regionPage"
+                }
+                updateRegionMaps(regionPage, exchangeEnabled, earlyExchange, false, energyReserve, showRanking)
+            }
+        } finally {
+            if (!ApplicationHookConstants.isOffline() && !Thread.currentThread().isInterrupted &&
+                AccountSessionCoordinator.checkCurrentSession(store.uid, epoch) is AccountSessionCheck.Current
+            ) {
+                val originalRegion = store.get(pendingKey, String::class.java).orEmpty()
+                if (originalRegion.isNotBlank()) {
+                    try {
+                        val restored = parsePatrolResponse(AntForestPatrolRpcCall.switchMonopolyRegion(originalRegion))
+                        ResChecker.checkRes(TAG, "恢复巡护区域返回失败:", restored)
+                        if (ApplicationHookConstants.isOffline() ||
+                            AccountSessionCoordinator.checkCurrentSession(store.uid, epoch) !is AccountSessionCheck.Current
+                        ) {
+                            throw RegionRestoreException("巡护区域[$originalRegion]尚待恢复")
+                        }
+                        val confirmed = parsePatrolResponse(AntForestPatrolRpcCall.queryMonopolyMapPage())
+                        if (!ResChecker.checkRes(TAG, confirmed) || confirmed.optString("currentRegionCode") != originalRegion) {
+                            throw RegionRestoreException("恢复巡护区域[$originalRegion]未确认 raw=$confirmed")
+                        }
+                        store.remove(pendingKey)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: InterruptedException) {
+                        throw e
+                    } catch (e: Exception) {
+                        throw RegionRestoreException("巡护区域恢复失败，停止本轮巡护", e)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun updateRegionMaps(
+        initialPage: JSONObject,
+        exchangeEnabled: Boolean,
+        earlyExchange: Boolean,
+        switchEnabled: Boolean,
+        energyReserve: Int,
+        showRanking: Boolean,
+    ) {
+        var page = initialPage
         if (!ResChecker.checkRes(TAG, "查询巡护地图失败:", page)) return
         val regionCode = page.getString("currentRegionCode")
         val mapCode = page.getString("currentMapCode")
@@ -349,7 +421,7 @@ internal object MonopolyPatrolWorkflow {
                 val rights = task.getJSONObject("taskRights")
                 val type = base.getString("taskType")
                 val taskScene = base.getString("sceneCode")
-                require(type.isNotBlank() && taskScene == sceneCode) { "巡护任务场景或标识无效:$task" }
+                require(type.isNotBlank() && taskScene.isNotBlank()) { "巡护任务场景或标识无效:$task" }
                 val bizInfo = base.optString("bizInfo").takeIf { it.isNotBlank() }?.let { JSONObject(it) }
                 TaskFlowItem(
                     id = type,
@@ -387,16 +459,21 @@ internal object MonopolyPatrolWorkflow {
 
         private fun actionResult(raw: String, rpc: String): TaskFlowActionResult {
             val response = parsePatrolResponse(raw)
-            if (response.optBoolean("success")) return TaskFlowActionResult.success()
+            if (response.optBoolean("success")) return TaskFlowActionResult.success(progressChanged = false)
+            val code = response.optString("resultCode").ifBlank { response.optString("errorCode") }
+                .ifBlank { response.optString("code") }
+            val message = response.optString("resultDesc").ifBlank { response.optString("errorMsg") }
+                .ifBlank { response.optString("desc") }
             val failure = when {
+                code == "400000040" -> TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE
                 response.optBoolean("retriable") || response.optBoolean("canRetry") -> TaskRpcFailureType.RETRYABLE_RPC
                 response.opt("retriable") == false || response.opt("canRetry") == false -> TaskRpcFailureType.NON_RETRYABLE_INVALID
                 else -> TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW
             }
             return TaskFlowActionResult.failure(
                 failureType = failure,
-                code = response.optString("resultCode", response.optString("errorCode")),
-                message = response.optString("resultDesc", response.optString("errorMsg")),
+                code = code,
+                message = message,
                 rpc = rpc,
                 raw = response.toString(),
                 continueCurrentRoundOnFailure = true,

@@ -6,7 +6,6 @@ import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.task.exchange.ExchangeEffectNeed
 import io.github.aoguai.sesameag.task.exchange.ExchangeReplenishResult
 import io.github.aoguai.sesameag.task.exchange.ExchangeReplenisher
-import io.github.aoguai.sesameag.util.GlobalThreadPools
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.ResChecker
 import kotlinx.coroutines.CancellationException
@@ -541,21 +540,28 @@ internal object LegacyPatrolWorkflow {
         val estimatedEnergy: Int,
     )
 
-    internal fun selectBestAnimalProp(animalProps: JSONArray): AnimalPropSelection? {
+    internal fun selectBestAnimalProp(animalProps: JSONArray, strategy: Int = 0): AnimalPropSelection? {
         var bestSelection: AnimalPropSelection? = null
         for (i in 0 until animalProps.length()) {
             val animalProp = animalProps.optJSONObject(i) ?: continue
             val holdsNum = getAnimalPropHoldsNum(animalProp)
-            if (holdsNum <= 0) {
-                continue
+            if (holdsNum <= 0) continue
+            val estimatedEnergy = if (strategy == 2) {
+                animalProp.optJSONObject("partner")?.optJSONObject("robAbility")?.optInt("robEnergyInDaily", 0) ?: 0
+            } else {
+                estimateAnimalPropRobEnergy(animalProp)
             }
-            val estimatedEnergy = estimateAnimalPropRobEnergy(animalProp)
+            val selection = AnimalPropSelection(animalProp, holdsNum, estimatedEnergy)
+            if (strategy == 1) return selection
             val currentBest = bestSelection
-            if (currentBest == null ||
+            if (currentBest == null || if (strategy == 2) {
+                estimatedEnergy > currentBest.estimatedEnergy ||
+                    estimatedEnergy == currentBest.estimatedEnergy && holdsNum > currentBest.holdsNum
+            } else {
                 holdsNum > currentBest.holdsNum ||
-                holdsNum == currentBest.holdsNum && estimatedEnergy > currentBest.estimatedEnergy
-            ) {
-                bestSelection = AnimalPropSelection(animalProp, holdsNum, estimatedEnergy)
+                    holdsNum == currentBest.holdsNum && estimatedEnergy > currentBest.estimatedEnergy
+            }) {
+                bestSelection = selection
             }
         }
         return bestSelection
@@ -625,7 +631,7 @@ internal object LegacyPatrolWorkflow {
     /**
      * 派遣伙伴进行巡护
      *
-     * @param selection 按库存优先、同库存收益优先选出的动物属性。
+     * @param selection 按当前派遣策略选出的动物属性。
      */
     internal fun consumeAnimalProp(selection: AnimalPropSelection?) {
         if (selection == null) return  // 如果没有可派遣的伙伴，则返回
@@ -775,7 +781,6 @@ internal object LegacyPatrolWorkflow {
                         Status.setIntFlagToday(StatusFlags.FLAG_ANTFOREST_PATROL_TARGET, 0)
                         Log.forestPatrol("成功合成动物💡[$name]")
                         animalId = id
-                        GlobalThreadPools.sleepCompat(100) // 等待一段时间再查询
                         continue
                     } else {
                         Log.forestPatrol(

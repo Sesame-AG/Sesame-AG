@@ -2,12 +2,14 @@ package io.github.aoguai.sesameag.task.antForestPatrol
 
 import io.github.aoguai.sesameag.data.Statistics
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
+import io.github.aoguai.sesameag.model.ConfigPortScope
 import io.github.aoguai.sesameag.model.ModelFields
 import io.github.aoguai.sesameag.model.ModelGroup
 import io.github.aoguai.sesameag.model.modelFieldExt.BooleanModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.ChoiceModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.IntegerModelField
 import io.github.aoguai.sesameag.model.withDesc
+import io.github.aoguai.sesameag.model.withPortScope
 import io.github.aoguai.sesameag.task.ModelTask
 import io.github.aoguai.sesameag.task.antForest.AntForestRpcCall
 import io.github.aoguai.sesameag.util.Log
@@ -34,6 +36,7 @@ class AntForestPatrol : ModelTask() {
     private lateinit var collectAnimalEnergy: BooleanModelField
     private lateinit var dispatchAnimal: BooleanModelField
     private lateinit var dispatchPriority: ChoiceModelField
+    private lateinit var dispatchStrategy: ChoiceModelField
     private lateinit var exchangeCertificate: BooleanModelField
     private lateinit var earlyExchangeCertificate: BooleanModelField
     private lateinit var autoSwitchMap: BooleanModelField
@@ -62,7 +65,16 @@ class AntForestPatrol : ModelTask() {
             .withDesc("空闲时选择伙伴，保留正在工作的动物；不强制替换。")
             .also { dispatchAnimal = it })
         addField(ChoiceModelField("dispatchPriority", "动物伙伴 | 派遣优先级", 0, arrayOf("新版优先", "旧版优先"))
+            .withDesc("空闲派遣时优先尝试指定版本，没有可用伙伴时再尝试另一版本；各版本内部按选择策略挑选。")
             .also { dispatchPriority = it })
+        addField(ChoiceModelField("dispatchStrategy", "动物伙伴 | 选择策略", 0, arrayOf("原策略", "服务端顺序", "能量优先"))
+            .withPortScope(ConfigPortScope.GENERIC)
+            .withDesc(
+                "原策略：新版优先初始产能，旧版优先库存、同库存再比较收益；" +
+                    "服务端顺序：选择列表中首个可用伙伴；" +
+                    "能量优先：新版按初始产能、旧版按每日产能。新版产能信息不全时按列表顺序。"
+            )
+            .also { dispatchStrategy = it })
         addField(BooleanModelField("exchangeCertificate", "新版巡护 | 自动兑换保护证书", false)
             .withDesc("按地图下发项目、实时资格和成本消耗森林能量，每张地图领取一份证书。")
             .also { exchangeCertificate = it })
@@ -116,6 +128,9 @@ class AntForestPatrol : ModelTask() {
                     runInterruptible(Dispatchers.IO) { action() }
                 } catch (e: CancellationException) {
                     throw e
+                } catch (e: MonopolyPatrolWorkflow.RegionRestoreException) {
+                    Log.printStackTrace(TAG, "巡护区域尚未恢复，结束本轮", e)
+                    return
                 } catch (e: Exception) {
                     Log.printStackTrace(TAG, "$name 失败", e)
                 }
@@ -144,15 +159,31 @@ class AntForestPatrol : ModelTask() {
             if (animal.optString("propGroup") != "animal") continue
             val ext = JSONObject(animal.getString("extInfo"))
             if (ext.optBoolean("isCollected")) continue
-            val response = parsePatrolResponse(AntForestPatrolRpcCall.collectAnimalRobEnergy(
-                animal.getString("propId"), animal.getString("propType"), ext.getString("shortDay"),
-            ))
-            if (ResChecker.checkRes(TAG, "收取旧版动物能量失败:", response)) {
-                val energy = ext.optInt("energy", 0)
-                if (energy > 0) Statistics.addData(uid, Statistics.DataType.COLLECTED, energy)
-                Log.forestPatrol("收取[${ext.optJSONObject("animal")?.optString("name")}]派遣能量[$energy g]")
+            var accepted = false
+            try {
+                val response = parsePatrolResponse(AntForestPatrolRpcCall.collectAnimalRobEnergy(
+                    animal.getString("propId"), animal.getString("propType"), ext.getString("shortDay"),
+                ))
+                accepted = ResChecker.checkRes(TAG, "收取旧版动物能量失败:", response)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: InterruptedException) {
+                throw e
+            } catch (e: Exception) {
+                Log.printStackTrace(TAG, "旧版动物领取结果不确定，先回查", e)
             }
-            if (!ApplicationHookConstants.isOffline()) queryLegacyAnimals()
+            if (ApplicationHookConstants.isOffline() || UserMap.currentUid != uid) return
+            val refreshed = queryLegacyAnimals() ?: return
+            val confirmed = (0 until refreshed.length()).mapNotNull { refreshed.optJSONObject(it) }
+                .firstOrNull { it.optString("propId") == animal.getString("propId") }
+                ?.optString("extInfo")?.takeIf { it.isNotBlank() }?.let(::JSONObject)
+            if (confirmed?.optString("shortDay") == ext.getString("shortDay") && confirmed.optBoolean("isCollected")) {
+                val energy = ext.optInt("energy", 0)
+                if (accepted && energy > 0) Statistics.addData(uid, Statistics.DataType.COLLECTED, energy)
+                Log.forestPatrol("已确认收取[${ext.optJSONObject("animal")?.optString("name")}]派遣能量${if (accepted) "[$energy g]" else "，本次响应未确认到账量"}")
+            } else {
+                Log.forestPatrol("旧版动物[${animal.getString("propId")}]能量尚未确认领取，留待下次查询")
+            }
             return
         }
     }
@@ -280,9 +311,23 @@ class AntForestPatrol : ModelTask() {
             Log.error(TAG, "旧版候选缺少 animalProps:$response")
             return null
         }
-        val selected = LegacyPatrolWorkflow.selectBestAnimalProp(animals) ?: return false
-        if (ApplicationHookConstants.isOffline()) return null
+        val selected = LegacyPatrolWorkflow.selectBestAnimalProp(animals, dispatchStrategy.value ?: 0) ?: return false
+        val uid = UserMap.currentUid.orEmpty()
+        if (uid.isBlank() || ApplicationHookConstants.isOffline()) return null
         LegacyPatrolWorkflow.consumeAnimalProp(selected)
+        if (ApplicationHookConstants.isOffline() || UserMap.currentUid != uid) return null
+        val refreshed = queryLegacyAnimals() ?: return null
+        val main = selected.animalProp.getJSONObject("main")
+        val propId = main.optString("propId")
+        val propType = main.getString("propType")
+        val confirmed = (0 until refreshed.length()).mapNotNull { refreshed.optJSONObject(it) }
+            .firstOrNull { it.optString("propGroup") == "animal" && it.optString("propType") == propType &&
+                (propId.isBlank() || it.optString("propId") == propId) }
+        if (confirmed == null) {
+            Log.error(TAG, "旧版动物派遣回查未确认目标[$propType/$propId]，不改派其他伙伴")
+            return null
+        }
+        Log.forestPatrol("已确认旧版动物派遣[${confirmed.getString("propId")}]，类型[$propType]")
         return true
     }
 
@@ -301,15 +346,34 @@ class AntForestPatrol : ModelTask() {
                 (energy == null || !energy.has("robRemainDays") || energy.optInt("robRemainDays") > 0) &&
                 (maxDays <= 0 || (energy?.optInt("alreadyWorkDays", 0) ?: 0) < maxDays)
         }
-        val selected = if (candidates.all { it.has("initialRobEnergy") && !it.isNull("initialRobEnergy") }) {
+        val selected = if (dispatchStrategy.value != 1 &&
+            candidates.all { it.has("initialRobEnergy") && !it.isNull("initialRobEnergy") }
+        ) {
             candidates.maxByOrNull { it.optInt("initialRobEnergy") }
         } else {
             candidates.firstOrNull()
         } ?: return false
-        if (ApplicationHookConstants.isOffline()) return null
-        if (assignMonopolyWithConfirm(selected.getString("creatureCode"))) {
-            Log.forestPatrol("派遣新版动物[${selected.optString("creatureName", selected.getString("creatureCode"))}]")
+        val uid = UserMap.currentUid.orEmpty()
+        if (uid.isBlank() || ApplicationHookConstants.isOffline()) return null
+        val code = selected.getString("creatureCode")
+        try {
+            assignMonopolyWithConfirm(code)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: InterruptedException) {
+            throw e
+        } catch (e: Exception) {
+            Log.printStackTrace(TAG, "新版动物派遣结果不确定[$code]，先回查", e)
         }
+        if (ApplicationHookConstants.isOffline() || UserMap.currentUid != uid) return null
+        val refreshed = queryUsingCreature(uid) ?: return null
+        val confirmed = refreshed.opt("usingMonopolyCreature") == true &&
+            refreshed.optJSONObject("userCreatureVO")?.optString("creatureCode") == code
+        if (!confirmed) {
+            Log.error(TAG, "新版动物派遣回查未确认目标[$code]，不改派其他伙伴")
+            return null
+        }
+        Log.forestPatrol("已确认派遣新版动物[${selected.optString("creatureName", code)}]")
         return true
     }
 
