@@ -254,7 +254,7 @@ open class ModelField<T> : Serializable {
      * 重置当前值为默认值
      */
     open fun reset() {
-        value = defaultValue // 设置当前值为默认值
+        value = defaultValue?.let { JsonUtil.parseObject(JsonUtil.formatJson(it), valueType) }
     }
 
 }

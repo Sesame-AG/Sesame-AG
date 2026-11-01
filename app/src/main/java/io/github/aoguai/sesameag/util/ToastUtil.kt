@@ -84,12 +84,14 @@ object ToastUtil {
         return makeText(context, message, duration)
     }
 
+    // 通用提示定时接口：按调用方指定时机展示 Toast，不阻塞调用线程或业务流程。
     fun showToastWithDelay(context: Context?, message: String?, delayMillis: Int) {
         Handler(Looper.getMainLooper()).postDelayed({
             makeText(context, message, Toast.LENGTH_SHORT).show()
         }, delayMillis.toLong())
     }
 
+    // 无显式 Context 的重载同样只安排提示展示时机，时长由调用方决定。
     fun showToastWithDelay(message: String?, delayMillis: Int) {
         Handler(Looper.getMainLooper()).postDelayed({
             makeText(message, Toast.LENGTH_SHORT).show()

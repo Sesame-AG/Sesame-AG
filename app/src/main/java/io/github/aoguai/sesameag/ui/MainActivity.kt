@@ -867,6 +867,7 @@ class MainActivity : ComponentActivity() {
             return false
         }
         lifecycleScope.launch {
+            // 权限快照广播的 350ms 超时兜底；仅对应请求仍未回包时刷新诊断，不延后正常回包处理。
             delay(350)
             if (pendingTargetPermissionSnapshotToken == requestToken) {
                 pendingTargetPermissionSnapshotToken = 0L

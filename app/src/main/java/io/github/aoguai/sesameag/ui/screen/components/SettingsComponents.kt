@@ -134,6 +134,7 @@ fun DelayedLoadingIndicator(
 ) {
     var visible by remember(delayMillis) { mutableStateOf(false) }
     LaunchedEffect(delayMillis) {
+        // 加载超过展示阈值才显示指示器，避免短操作闪现加载动画；不推迟实际加载工作。
         delay(delayMillis)
         visible = true
     }

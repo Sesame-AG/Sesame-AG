@@ -215,7 +215,7 @@ class RpcDebugViewModel : ViewModel() {
                 while (waitCount < maxWait) {
                     delay(100)
                     if (logFile.exists() && logFile.length() > 0) {
-                        // 日志文件有内容了，再等待一小段时间确保写入完成
+                        // 首批日志出现后保留 200ms 本地落盘缓冲，降低读到半批内容的概率；不代表 RPC 已完成。
                         delay(200)
                         break
                     }

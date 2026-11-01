@@ -11,6 +11,7 @@ import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.fasterxml.jackson.databind.node.ObjectNode
 import io.github.aoguai.sesameag.data.Config
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.TodayFlagClearResult
@@ -230,6 +231,44 @@ class AccountSettingsViewModel(
                         val refreshed = ExchangeOptionsRefreshBridge.requestRefreshOptions(target, userId, forceRefresh = forceRefresh)
                         check(refreshed.success) { refreshed.message.ifBlank { "兑换列表刷新失败" } }
                         check(refreshed.userId == userId) { "刷新结果账号与当前配置账号不一致" }
+                        if (forceRefresh) {
+                            val validIds = refreshed.options.mapTo(HashSet()) { it.id }
+                            val keys = fields.keys.filter { exchangeTargetFor(it) == target }
+                            val savedValues = Config.withLoadedAccount(userId) {
+                                val originals = keys.associateWith { fields.getValue(it).getConfigValue().orEmpty() }
+                                try {
+                                    var changed = false
+                                    for ((fieldKey, value) in originals) {
+                                        val node = JsonUtil.toNode(value.ifBlank { "{}" }) as? ObjectNode
+                                            ?: error("兑换选择格式无效：${fieldKey.fieldCode}")
+                                        val removed = node.fieldNames().asSequence().filterNot { it in validIds }.toList()
+                                        if (removed.isNotEmpty()) {
+                                            fields.getValue(fieldKey).setConfigValue(node.remove(removed).toString())
+                                            changed = true
+                                        }
+                                    }
+                                    if (changed) check(Config.save(userId, true)) { "清理失效兑换选择后保存失败" }
+                                    keys.associateWith { fields.getValue(it).getConfigValue().orEmpty() }
+                                } catch (error: Throwable) {
+                                    originals.forEach { (fieldKey, value) -> fields.getValue(fieldKey).setConfigValue(value) }
+                                    throw error
+                                }
+                            }
+                            _uiState.update { state ->
+                                val drafts = state.drafts.mapValues { (fieldKey, value) ->
+                                    if (fieldKey !in keys) return@mapValues value
+                                    val node = JsonUtil.toNode(value.ifBlank { "{}" }) as? ObjectNode
+                                        ?: return@mapValues value
+                                    val removed = node.fieldNames().asSequence().filterNot { it in validIds }.toList()
+                                    if (removed.isEmpty()) value else node.remove(removed).toString()
+                                }
+                                state.copy(savedValues = state.savedValues + savedValues, drafts = drafts)
+                            }
+                            for (fieldKey in keys) {
+                                val state = _uiState.value
+                                state.drafts[fieldKey]?.let { persistDraft(fieldKey, it, state) }
+                            }
+                        }
                         refreshed.options
                     }
                     rows.map { FieldOptionUiModel(it.id, it.name.ifBlank { it.id }) }

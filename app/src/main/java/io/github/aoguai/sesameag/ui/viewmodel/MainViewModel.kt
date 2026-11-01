@@ -426,6 +426,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun startConfigDirectoryObserver() {
         viewModelScope.launch(Dispatchers.IO) {
                 DirectoryWatcher.observeDirectoryChanges(Files.CONFIG_DIR)
+                // 合并同一轮配置写入产生的连续目录事件，避免反复刷新账号与配置列表。
                 .debounce(100)
                 .collectLatest {
                     refreshUserConfigs()

@@ -199,6 +199,7 @@ fun LogViewerScreen(
     // 自动聚焦
     LaunchedEffect(isSearchActive) {
         if (isSearchActive) {
+            // 搜索框刚进入组合时保留 100ms 本地布局缓冲，再请求焦点，避免控件尚未就绪。
             delay(100)
             focusRequester.requestFocus()
         }
@@ -643,6 +644,7 @@ fun DraggableScrollbar(
         if (listState.isScrollInProgress || isDragging) {
             isVisible = true
         } else {
+            // 停止滚动后保留滚动条 1.5 秒，便于用户继续拖动；仅控制显示，不阻塞日志读取。
             delay(1500); isVisible = false
         }
     }

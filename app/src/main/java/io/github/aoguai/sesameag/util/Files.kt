@@ -322,7 +322,7 @@ object Files {
     }
 
     @JvmStatic
-    fun exportFile(context: Context, file: File, hasTime: Boolean): File? {
+    fun exportFile(context: Context, file: File, hasTime: Boolean, mimeType: String = "text/plain"): File? {
         val fileName = file.name
         val dotIndex = fileName.lastIndexOf('.')
         val fileNameWithoutExtension = if (dotIndex != -1) fileName.take(dotIndex) else fileName
@@ -341,7 +341,7 @@ object Files {
             } else collectLogSensitiveKeywords()
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, newFileName)
-                put(MediaStore.MediaColumns.MIME_TYPE, "text/plain")
+                put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
                 put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
@@ -732,6 +732,7 @@ object Files {
             retryCount--
             if (retryCount > 0) {
                 Log.record(TAG, "删除失败，重试中: ${file.absolutePath}")
+                // 文件删除失败时保留 500ms 本地退避，给临时占用释放机会；成功和最后一次失败后不再等待。
                 CoroutineUtils.sleepCompat(500)
             }
         }

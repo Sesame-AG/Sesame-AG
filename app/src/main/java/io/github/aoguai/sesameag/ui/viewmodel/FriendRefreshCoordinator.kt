@@ -87,6 +87,7 @@ class FriendRefreshCoordinator(
         }
 
         coroutineScope.launch {
+            // Hook 可用性探测的两秒超时兜底；到点只处理仍等待同一回包的状态。
             delay(2_000L)
             val latestState = _state.value
             if (
@@ -177,6 +178,7 @@ class FriendRefreshCoordinator(
         }
 
         coroutineScope.launch {
+            // 手动好友刷新回执的十秒超时兜底，防止刷新指示器无限持续；不是宿主查询的固定等待。
             delay(10_000L)
             val latestState = _state.value
             if (!latestState.refreshing || refreshRequestToken != token || latestState.userId != userId) {

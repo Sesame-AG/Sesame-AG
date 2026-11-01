@@ -116,6 +116,7 @@ class LogViewerViewModel(
 
         updateJob = viewModelScope.launch {
             fileUpdateChannel.receiveAsFlow()
+                // 合并异步日志落盘产生的连续文件通知，避免每次小写入都重读列表。
                 .debounce(200)
                 .collectLatest {
                     reloadCurrentFile(forceFullReload.getAndSet(false))
@@ -358,6 +359,7 @@ class LogViewerViewModel(
         savedStateHandle[STATE_SEARCH_QUERY] = query
         _uiState.update { it.copy(searchQuery = query, isSearching = true) }
         searchJob = viewModelScope.launch {
+            // 搜索输入停止 300ms 后再过滤，避免每次击键扫描日志；清空搜索立即刷新。
             if (query.isNotEmpty()) delay(300)
             refreshList()
         }
@@ -405,7 +407,7 @@ class LogViewerViewModel(
                     return@launch
                 }
                 val exportedFile = withContext(Dispatchers.IO) {
-                    Files.exportFile(context, sourceFile, hasTime = true)
+                    Files.exportFile(context, sourceFile, hasTime = true, mimeType = "application/octet-stream")
                 } ?: error("无法保存到下载目录")
                 ModuleDiagnostics.event("export_log", "completed", "file=${exportedFile.name}")
                 val relativePath = exportedFile.relativeTo(android.os.Environment.getExternalStorageDirectory())

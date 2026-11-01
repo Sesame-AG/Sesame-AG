@@ -77,7 +77,7 @@ object NativeComposeBridge {
         // 1. 使用从 C++ 传入的参数显示对话框
         showAlertDialog(context, title, message, buttonText)
 
-        // 2. 使用从 C++ 传入的延迟时间来执行退出操作
+        // 保留 C++ 指定的提示展示时长，让用户读取对话框内容后再退出进程。
         Handler(Looper.getMainLooper()).postDelayed({
             exitProcess(0)
         }, delayMillis)
