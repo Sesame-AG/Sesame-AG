@@ -26,15 +26,15 @@ internal suspend fun AntFarm.runFarmLifecycleWorkflow(tc: TimeCounter): Boolean 
         tc.countDebug("特殊食品")
     }
 
+    if (shouldRunNpcAnimalLogic()) {
+        handleNpcAnimalLogic()
+        tc.countDebug("NPC小鸡任务")
+    }
+
     if (shouldHireAnimalNow()) {
         runHireAnimalFeedTaskFlow()
         tc.countDebug("雇佣小鸡饲料任务")
         hireAnimal()
-    }
-
-    if (shouldRunNpcAnimalLogic()) {
-        handleNpcAnimalLogic()
-        tc.countDebug("NPC小鸡任务")
     }
     return true
 }

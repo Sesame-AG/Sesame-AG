@@ -31,7 +31,9 @@ import java.time.temporal.TemporalAdjusters
 import kotlin.math.ceil
 
 private const val LOVE_CHICKEN_TASK_SCENE = "ANTFARM_PK_COMPETITION"
+// 普通活动状态按三十分钟低频回查；蹲点配置和活动边界会提前下一次唤醒。
 private const val LOVE_CHICKEN_POLL_MS = 30 * 60 * 1000L
+// 查询失败或状态待确认时保留十分钟本地退避，避免连续重试同一活动。
 private const val LOVE_CHICKEN_RETRY_MS = 10 * 60 * 1000L
 private const val LOVE_CHICKEN_FINISHED_PREFIX = "antFarmLoveChickenGathering::finished::"
 
@@ -122,9 +124,19 @@ private fun parseLoveChickenActivity(response: JSONObject): LoveChickenActivityS
 private fun AntFarm.queryLoveChickenActivity(): JSONObject? {
     val owner = AccountSessionCoordinator.currentUserId().orEmpty()
     val epoch = AccountSessionCoordinator.currentSessionEpoch()
-    val response = requireLoveChickenResponse("enterDonationCompetitionRank",
-        JSONObject(AntFarmRpcCall.enterDonationCompetitionRank()))
+    val response = JSONObject(AntFarmRpcCall.enterDonationCompetitionRank())
     if (!AccountSessionCoordinator.isCurrentSession(owner, epoch)) throw CancellationException("账号会话已变化")
+    when (response.optString("resultCode")) {
+        "DONATION_COMPETITION01" -> {
+            Log.error(TAG, "爱心鸡结号当前入口无活动，结束本次续调 rpc=enterDonationCompetitionRank classification=TERMINAL_DONE raw=$response")
+            return null
+        }
+        "DONATION_COMPETITION02" -> {
+            Log.error(TAG, "爱心鸡结号功能未开启，结束本次续调 rpc=enterDonationCompetitionRank classification=BUSINESS_LIMIT raw=$response")
+            return null
+        }
+    }
+    requireLoveChickenResponse("enterDonationCompetitionRank", response)
     if (response.optJSONObject("donationCompetitionActivityConf")?.has("projectId") != true) {
         Log.farm("当前入口不是爱心鸡结号活动，由对应玩法处理")
         return null
@@ -174,6 +186,13 @@ private class LoveChickenExecution(private val snapshot: LoveChickenActivitySnap
 
     fun isBlocked(action: String): Boolean {
         val failure = failures.optJSONObject(action) ?: return false
+        if (System.currentTimeMillis() >= snapshot.finalSettlementMs &&
+            ((action == "listCompetitionTask" && failure.optString("code") == "DONATION_COMPETITION04") ||
+                (action == "enterCompetitionAwardPage" && failure.optString("code") == "DONATION_COMPETITION01"))) {
+            failures.remove(action)
+            save()
+            return false
+        }
         val until = failure.optLong("until")
         if (until > System.currentTimeMillis()) {
             if (until != Long.MAX_VALUE) retryAt = minOf(retryAt ?: until, until)
@@ -234,9 +253,22 @@ private class LoveChickenTaskAdapter(
         }
     }
 
-    override fun isQuerySuccess(response: JSONObject) =
-        AccountSessionCoordinator.isCurrentSession(owner, epoch) && ResChecker.checkRes(TAG, response) &&
+    override fun isQuerySuccess(response: JSONObject): Boolean {
+        if (!AccountSessionCoordinator.isCurrentSession(owner, epoch)) return false
+        if (System.currentTimeMillis() >= snapshot.finalSettlementMs &&
+            response.optString("resultCode") == "DONATION_COMPETITION04") return true
+        return ResChecker.checkRes(TAG, response) &&
             response.optJSONArray("taskList") != null && response.optJSONObject("paramMap") != null
+    }
+
+    override fun isPendingActionResolved(
+        item: TaskFlowItem, action: TaskFlowAction, response: JSONObject, items: List<TaskFlowItem>,
+    ): Boolean {
+        val expiresAt = item.raw?.optLong("taskEntityExpireTime") ?: 0L
+        return (expiresAt > 0L && expiresAt <= System.currentTimeMillis()) ||
+            (System.currentTimeMillis() >= snapshot.finalSettlementMs &&
+                response.optString("resultCode") == "DONATION_COMPETITION04")
+    }
 
     override fun isQueryComplete(response: JSONObject) = execution.tasks.length() == 0
 
@@ -259,6 +291,14 @@ private class LoveChickenTaskAdapter(
     override fun isUnresolvedWhenSkipped(item: TaskFlowItem) = true
 
     override fun extractItems(response: JSONObject): List<TaskFlowItem> {
+        if (System.currentTimeMillis() >= snapshot.finalSettlementMs &&
+            response.optString("resultCode") == "DONATION_COMPETITION04") {
+            Log.error(TAG, "爱心鸡结号旧活动任务已下线 activity=${snapshot.activityId} classification=TERMINAL_DONE raw=$response")
+            execution.tasks.keys().asSequence().toList().forEach { execution.tasks.remove(it) }
+            execution.save()
+            lastPage = LoveChickenTaskPage(emptyList(), JSONObject())
+            return emptyList()
+        }
         val list = response.getJSONArray("taskList")
         val page = LoveChickenTaskPage((0 until list.length()).map { list.getJSONObject(it) }, response.getJSONObject("paramMap"))
         lastPage = page
@@ -326,7 +366,7 @@ private class LoveChickenTaskAdapter(
     }
 
     override fun mapPhase(item: TaskFlowItem) = when (item.status) {
-        "FINISHED" -> if (item.raw!!.optInt("canReceiveAwardCount") > 0) TaskFlowPhase.REWARD_READY else TaskFlowPhase.UNKNOWN
+        "FINISHED", "ENDED" -> if (item.raw!!.optInt("canReceiveAwardCount") > 0) TaskFlowPhase.REWARD_READY else TaskFlowPhase.TERMINAL
         "TODO", "RECEIVED" -> TaskFlowPhase.TERMINAL
         else -> TaskFlowPhase.UNKNOWN
     }
@@ -366,7 +406,17 @@ private fun AntFarm.receiveLoveChickenRewards(snapshot: LoveChickenActivitySnaps
     val epoch = AccountSessionCoordinator.currentSessionEpoch()
     while (!ApplicationHookConstants.isOffline()) {
         if (!AccountSessionCoordinator.isCurrentSession(owner, epoch)) throw CancellationException("账号会话已变化")
-        val response = requireLoveChickenResponse("enterCompetitionAwardPage", JSONObject(AntFarmRpcCall.enterCompetitionAwardPage()))
+        val response = JSONObject(AntFarmRpcCall.enterCompetitionAwardPage())
+        if (!AccountSessionCoordinator.isCurrentSession(owner, epoch)) throw CancellationException("账号会话已变化")
+        if (System.currentTimeMillis() >= snapshot.finalSettlementMs &&
+            response.optString("resultCode") == "DONATION_COMPETITION01") {
+            Log.error(TAG, "爱心鸡结号旧活动奖励入口已下线 activity=${snapshot.activityId} classification=TERMINAL_DONE raw=$response")
+            execution.rewards.keys().asSequence().toList().forEach { execution.rewards.remove(it) }
+            execution.data.remove("annGift")
+            execution.save()
+            return LoveChickenRewardSnapshot(0, emptyList(), emptyList())
+        }
+        requireLoveChickenResponse("enterCompetitionAwardPage", response)
         if (response.getJSONObject("donationCompetitionActivityConf").getString("activityId") != snapshot.activityId) return null
         val contribution = response.getJSONObject("userDonationLevelInfo").getInt("userContributionNum")
         val list = response.getJSONArray("levelAwardInfoList")
@@ -650,6 +700,7 @@ private fun AntFarm.selectLoveChickenDonation(
 private fun AntFarm.scheduleLoveChickenTask(snapshot: LoveChickenActivitySnapshot?, execution: LoveChickenExecution? = null, retryAt: Long? = null) {
     val now = System.currentTimeMillis()
     val nextDay = ZonedDateTime.now(FARM_ZONE).toLocalDate().plusDays(1).atStartOfDay(FARM_ZONE).toInstant().toEpochMilli()
+    // 已结束活动改为六小时低频回查，减少无进展查询；下方仍优先对齐明确的最终结算时间。
     var triggerAt = retryAt ?: execution?.retryAt ?: if (snapshot != null && now >= snapshot.endTimeMs)
         now + 6 * 60 * 60 * 1000L else now + LOVE_CHICKEN_POLL_MS
     if (snapshot != null) {
@@ -657,6 +708,7 @@ private fun AntFarm.scheduleLoveChickenTask(snapshot: LoveChickenActivitySnapsho
         else if (now < snapshot.endTimeMs) {
             val watchStart = loveChickenWatchStart(snapshot)
             val inWatch = now >= watchStart && now < snapshot.settleAtMs
+            // 蹲点窗口内改用用户配置的刷新间隔；显式失败退避优先，防止把失败重试变为高频轮询。
             if (inWatch && loveChickenWatchMode?.value == 1 && execution?.stopped != true &&
                 execution?.isBlocked("donation") != true && retryAt == null && execution?.retryAt == null
             ) triggerAt = minOf(triggerAt, now + (loveChickenRefreshInterval?.value ?: 10).coerceAtLeast(1) * 1000L)
@@ -694,7 +746,8 @@ internal suspend fun AntFarm.runLoveChickenGatheringWorkflow(initialResponse: JS
         if (!snapshot.participated && System.currentTimeMillis() < snapshot.endTimeMs) {
             if (execution.isBlocked("participateCompetition")) return false
             requireLoveChickenResponse("participateCompetition", JSONObject(AntFarmRpcCall.participateCompetition()))
-            response = queryLoveChickenActivity() ?: return false
+            response = queryLoveChickenActivity()
+            if (response == null) { schedule = false; return false }
             snapshot = parseLoveChickenActivity(response)
             progressed = snapshot.participated
             if (!snapshot.participated) { retryAt = System.currentTimeMillis() + LOVE_CHICKEN_RETRY_MS; return false }
@@ -704,7 +757,10 @@ internal suspend fun AntFarm.runLoveChickenGatheringWorkflow(initialResponse: JS
         var refreshHomeBeforeTasks = false
         while (!ApplicationHookConstants.isOffline() && AccountSessionCoordinator.isCurrentSession(owner, epoch)) {
             currentCoroutineContext().ensureActive()
-            if (refreshHomeBeforeTasks) response = queryLoveChickenActivity() ?: break
+            if (refreshHomeBeforeTasks) {
+                response = queryLoveChickenActivity()
+                if (response == null) { schedule = false; break }
+            }
             refreshHomeBeforeTasks = false
             val previous = snapshot ?: break
             val current = parseLoveChickenActivity(response ?: break)
@@ -725,20 +781,23 @@ internal suspend fun AntFarm.runLoveChickenGatheringWorkflow(initialResponse: JS
             val taskProgressed = taskResult.progressChanged || adapter.confirmedCount > confirmedBefore
             progressed = progressed || taskProgressed
             if (taskResult.interrupted || ApplicationHookConstants.isOffline()) break
-            val giftConfirmed = receiveLoveChickenAnnGift(response ?: break, state)
-            progressed = progressed || giftConfirmed
-            if (ApplicationHookConstants.isOffline()) break
             val rewards = receiveLoveChickenRewards(current, state)
             if (ApplicationHookConstants.isOffline()) break
+            val giftConfirmed = if (rewards == null || rewards.rewards.isNotEmpty())
+                receiveLoveChickenAnnGift(response ?: break, state) else false
+            progressed = progressed || giftConfirmed
+            if (ApplicationHookConstants.isOffline()) break
             val page = adapter.lastPage
-            response = queryLoveChickenActivity() ?: break
+            response = queryLoveChickenActivity()
+            if (response == null) { schedule = false; break }
             val refreshed = parseLoveChickenActivity(response)
             if (refreshed.activityId != current.activityId || refreshed.rankRoundId != current.rankRoundId ||
                 refreshed.projectId != current.projectId || refreshed.endTimeMs != current.endTimeMs
             ) continue
             snapshot = refreshed
             val giftAttempted = "getAnnGift" in state.attemptedRewards
-            val giftConfirmedAfterRefresh = receiveLoveChickenAnnGift(response, state)
+            val giftConfirmedAfterRefresh = if (rewards == null || rewards.rewards.isNotEmpty())
+                receiveLoveChickenAnnGift(response, state) else false
             progressed = progressed || giftConfirmedAfterRefresh
             if (ApplicationHookConstants.isOffline()) break
             if (!giftAttempted && "getAnnGift" in state.attemptedRewards) {
@@ -746,7 +805,8 @@ internal suspend fun AntFarm.runLoveChickenGatheringWorkflow(initialResponse: JS
                 continue
             }
             val gift = response.optJSONObject("ann9thCompetitionInfo")
-            val giftUnclaimed = gift != null && gift.optBoolean("ann9thActivitySwitch") && gift.optString("ann9thCakeStatus") == "PENDING"
+            val giftUnclaimed = (rewards == null || rewards.rewards.isNotEmpty()) && gift != null &&
+                gift.optBoolean("ann9thActivitySwitch") && gift.optString("ann9thCakeStatus") == "PENDING"
             val now = System.currentTimeMillis()
             if (rewards == null || page == null || !taskResult.completed || state.hasPending || giftUnclaimed ||
                 rewards.rewards.any { it.status == "unclaimed" }
@@ -755,7 +815,8 @@ internal suspend fun AntFarm.runLoveChickenGatheringWorkflow(initialResponse: JS
                 if (state.retryAt == null) state.retryAt = now + LOVE_CHICKEN_RETRY_MS
                 break
             }
-            if (response.optJSONObject("competitionTaskInfo")?.optBoolean("hasNewAwardReceive") == true) {
+            if (now < current.endTimeMs &&
+                response.optJSONObject("competitionTaskInfo")?.optBoolean("hasNewAwardReceive") == true) {
                 if (!homeHintRechecked || taskProgressed) {
                     homeHintRechecked = true
                     continue
@@ -768,8 +829,7 @@ internal suspend fun AntFarm.runLoveChickenGatheringWorkflow(initialResponse: JS
             if (now >= snapshot.endTimeMs) {
                 finished = now >= snapshot.finalSettlementMs
                 if (finished) {
-                    store?.put("$LOVE_CHICKEN_FINISHED_PREFIX${snapshot.activityId}::${snapshot.endTimeMs}", true)
-                    Log.farm("爱心鸡结号活动结束，最终任务及奖励已确认")
+                    Log.farm("爱心鸡结号活动结束，最终任务及奖励已处理")
                 }
                 break
             }
@@ -843,6 +903,12 @@ internal suspend fun AntFarm.runLoveChickenGatheringWorkflow(initialResponse: JS
     } finally {
         if (!cancelled && currentCoroutineContext().isActive &&
             AccountSessionCoordinator.isCurrentSession(owner, epoch) && !ApplicationHookConstants.isOffline()) {
+            if (finished) {
+                snapshot?.let {
+                    store?.put("$LOVE_CHICKEN_FINISHED_PREFIX${it.activityId}::${it.endTimeMs}", true)
+                    store?.remove("antFarmLoveChickenGathering::pending::${it.activityId}::${it.endTimeMs}")
+                }
+            }
             if (finished || !schedule) cancelLoveChickenSchedule()
             else if (loveChickenGathering?.value == true) scheduleLoveChickenTask(snapshot, execution, retryAt)
         }
@@ -874,7 +940,7 @@ internal suspend fun AntFarm.runLoveChickenGatheringPersistentTask(payload: JSON
         payload.optLong("end_time_ms") != snapshot.endTimeMs
     ) {
         Log.farm("爱心鸡结号旧载荷已失效，替换为当前轮次查询计划")
-        scheduleLoveChickenTask(snapshot, retryAt = System.currentTimeMillis() + 1000L)
+        scheduleLoveChickenTask(snapshot, retryAt = System.currentTimeMillis())
         return
     }
     runFarmPriorityDonations()

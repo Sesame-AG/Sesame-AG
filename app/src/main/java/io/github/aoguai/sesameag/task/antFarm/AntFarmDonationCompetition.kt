@@ -726,6 +726,7 @@ private suspend fun AntFarm.runDonationCompetitionChildTask(
     }
     if (isDonationCompetitionUnavailableToday()) return
 
+    // 等赛事结束后再领取奖励、读取战报；额外十秒沿用本地结算缓冲，并非接口返回的强制时长。
     val reportTime = endTimeMs + 10000L
     val waitToReport = reportTime - System.currentTimeMillis()
     if (waitToReport > 0) {
@@ -783,6 +784,7 @@ private suspend fun AntFarm.runDonationRankWatchLoop(endTimeMs: Long) {
             val waitToFinal = lastRefreshTime - System.currentTimeMillis()
             if (waitToFinal > 0) {
                 Log.record(TAG, "⏳ 等待最后一次刷新 (距离结束 $lastGapSec 秒)")
+                // 对齐配置的收官刷新时点，避免普通轮询间隔跨过最后一次捐赠窗口。
                 delay(waitToFinal)
 
                 if (AccountSessionCoordinator.isCurrentSession(executionOwner, executionEpoch) &&
@@ -800,6 +802,7 @@ private suspend fun AntFarm.runDonationRankWatchLoop(endTimeMs: Long) {
             }
             break // 执行完收官动作后退出循环
         } else {
+            // 尊重 watchDonationRefreshInterval 配置的蹲点刷新频率，避免无间隔轮询排名。
             delay(refreshSec * 1000L)
         }
     }

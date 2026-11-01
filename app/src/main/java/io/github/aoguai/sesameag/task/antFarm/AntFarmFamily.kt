@@ -10,7 +10,12 @@ import io.github.aoguai.sesameag.task.antFarm.AntFarm.AnimalInteractStatus
 import io.github.aoguai.sesameag.task.antFarm.AntFarm.FamilyAssignStrategy
 import io.github.aoguai.sesameag.task.antFarm.AntFarm.FamilyShareMode
 import io.github.aoguai.sesameag.task.antSports.AntSportsRpcCall
-import io.github.aoguai.sesameag.util.GlobalThreadPools
+import io.github.aoguai.sesameag.task.common.TaskFlowActionResult
+import io.github.aoguai.sesameag.task.common.TaskFlowAdapter
+import io.github.aoguai.sesameag.task.common.TaskFlowEngine
+import io.github.aoguai.sesameag.task.common.TaskFlowItem
+import io.github.aoguai.sesameag.task.common.TaskFlowPhase
+import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.RandomUtil
 import io.github.aoguai.sesameag.util.ResChecker
@@ -442,6 +447,7 @@ data object AntFarmFamily {
                     return
                 }
 
+                runFamilyTaskFlow()
                 if (assignFamilyMemberInfo != null &&
                     hasFamilyOption(familyOptions, "assignRights")
                 ) {
@@ -461,7 +467,12 @@ data object AntFarmFamily {
                 }
 
                 if (hasFamilyOption(familyOptions, "feedFamilyAnimal") && familyAnimals.length() > 0) {
-                    familyFeedFriendAnimal(familyAnimals)
+                    if (enterRes.optBoolean("feedFriendLimit", false)) {
+                        Status.setFlagToday(StatusFlags.FLAG_FARM_FEED_FRIEND_LIMIT)
+                        Log.farm("家庭任务[服务端已确认今日帮喂上限]")
+                    } else {
+                        familyFeedFriendAnimal(familyAnimals)
+                    }
                 }
 
                 if (hasFamilyOption(familyOptions, "eatTogetherConfig") && eatTogetherConfig.length() > 0) {
@@ -482,11 +493,67 @@ data object AntFarmFamily {
                 if (hasFamilyOption(familyOptions, "ExchangeFamilyDecoration")) {
                     autoExchangeFamilyDecoration()
                 }
+                runFamilyTaskFlow()
                 familyClaimRewardList()
             }
         } catch (e: Exception) {
             Log.printStackTrace(TAG, e)
         }
+    }
+
+    private fun runFamilyTaskFlow() {
+        TaskFlowEngine(object : TaskFlowAdapter {
+            override val moduleName = "AntFarm"
+            override val flowName = "庄园家庭任务"
+            override fun query() = JSONObject(AntFarmRpcCall.listFamilyTask())
+            override fun isQuerySuccess(response: JSONObject): Boolean =
+                ResChecker.checkRes(TAG, response) && response.optJSONArray("familyTasks") != null
+
+            override fun extractItems(response: JSONObject): List<TaskFlowItem> {
+                val tasks = response.getJSONArray("familyTasks")
+                return (0 until tasks.length()).map { index ->
+                    val task = tasks.getJSONObject(index)
+                    TaskFlowItem(
+                        id = task.getString("taskId"), title = task.optString("title"),
+                        status = task.optString("taskStatus"), type = task.optString("taskMode"),
+                        sceneCode = "ANTFARM_FAMILY_TASK", raw = task,
+                    )
+                }
+            }
+
+            override fun mapPhase(item: TaskFlowItem): TaskFlowPhase = when (item.status) {
+                "RECEIVED" -> TaskFlowPhase.TERMINAL
+                "FINISHED" -> TaskFlowPhase.REWARD_READY
+                "TODO" -> if (item.type in setOf("JUMP", "VIEW")) TaskFlowPhase.READY_TO_COMPLETE
+                    else TaskFlowPhase.BUSINESS_ACTION
+                else -> TaskFlowPhase.UNKNOWN
+            }
+
+            override fun complete(item: TaskFlowItem): TaskFlowActionResult {
+                val raw = AntFarmRpcCall.doFarmTask(item.raw?.optString("bizKey")?.ifBlank { item.id } ?: item.id, item.sceneCode)
+                val response = JSONObject(raw)
+                if (ResChecker.checkRes(TAG, response)) return TaskFlowActionResult.success(progressChanged = false)
+                return TaskFlowActionResult.failure(
+                    TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW, code = response.optString("resultCode"),
+                    message = formatFamilyTaskFailure(response), rpc = "AntFarmRpcCall.doFarmTask", raw = raw,
+                    continueCurrentRoundOnFailure = true,
+                )
+            }
+
+            override fun receive(item: TaskFlowItem): TaskFlowActionResult {
+                val raw = AntFarmRpcCall.familyReceiveFarmTaskAward(item.id)
+                val response = JSONObject(raw)
+                if (ResChecker.checkRes(TAG, response)) return TaskFlowActionResult.success(progressChanged = false)
+                return TaskFlowActionResult.failure(
+                    TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW, code = response.optString("resultCode"),
+                    message = formatFamilyTaskFailure(response), rpc = "AntFarmRpcCall.familyReceiveFarmTaskAward", raw = raw,
+                    continueCurrentRoundOnFailure = true,
+                )
+            }
+
+            override fun logInfo(message: String) = Log.farm(message)
+            override fun logError(message: String) = Log.error(TAG, message)
+        }).run()
     }
 
     /**
@@ -739,7 +806,6 @@ data object AntFarmFamily {
             AntFarm.instance?.specialFoodCuisineSnapshot = null
             if (ResChecker.checkRes(TAG, jo)) {
                 Log.farm("家庭任务🏠请客" + periodName + "#消耗美食" + familyUserIds.size + "份（最近美食库存与特殊食品/补蛋共用）")
-                GlobalThreadPools.sleepCompat(500L)
                 syncFamilyStatusIntimacy(groupId)
                 val after = JSONObject(AntFarmRpcCall.enterFamily())
                 val actions = after.optJSONArray("familyInteractActions")
@@ -1445,7 +1511,6 @@ data object AntFarmFamily {
                                     purchasedCount++
                                     currentBalance = confirmation.balanceCent ?: (currentBalance - price)
                                 }
-                                GlobalThreadPools.sleepCompat(RandomUtil.nextLong(1700, 2001))
                             } else {
                                 scanCompleted = false
                                 Log.error(TAG, "[家庭装扮] 未拥有家具[$spuName]缺少skuId，今日不落完成标识")
@@ -1488,7 +1553,6 @@ data object AntFarmFamily {
         price: Int,
     ): DecorationExchangeConfirmation {
         return try {
-            GlobalThreadPools.sleepCompat(500)
             val response = JSONObject(AntFarmRpcCall.getFitmentItemList(activityId, 10, label, startIndex))
             if (!ResChecker.checkRes(TAG, response)) {
                 return DecorationExchangeConfirmation(false, null)

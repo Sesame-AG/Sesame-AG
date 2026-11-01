@@ -16,7 +16,6 @@ import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.ResChecker
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.delay
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -139,7 +138,6 @@ object FarmGame {
                     AntFarm.instance?.let { it.syncAnimalStatus(it.ownerFarmId) }
                     val awardStr = parseGameAward(joRecord)
                     Log.farm("庄园游戏🎮[${gameType.gameName()}]#$awardStr")
-                    delay(3000)
 
                     val afterSnapshot = queryFarmGameSnapshot(gameType) ?: return FarmGameCompletion.UNCONFIRMED
                     if (!hasConfirmedGameProgress(beforeSnapshot, afterSnapshot)) {
@@ -195,7 +193,6 @@ object FarmGame {
         }
         val award = parseGameAward(recordResponse)
         Log.farm("庄园游戏🎮[${gameType.gameName()}]#$award")
-        delay(3000)
 
         val afterSnapshot = queryFarmGameSnapshot(gameType) ?: return FarmGameCompletion.UNCONFIRMED
         return when (afterSnapshot.level3Get) {
