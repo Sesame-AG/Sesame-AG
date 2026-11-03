@@ -1,0 +1,94 @@
+package io.github.aoguai.sesameag.hook.keepalive
+
+import android.content.Context
+import io.github.aoguai.sesameag.data.Config
+import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
+import io.github.aoguai.sesameag.hook.AccountSlotRegistry
+import io.github.aoguai.sesameag.model.BaseModel
+import io.github.aoguai.sesameag.util.Files
+import io.github.aoguai.sesameag.util.maps.UserMap
+import org.json.JSONObject
+
+internal object PersistentLaunchPolicy {
+    const val FRONT_LAUNCH_DISABLED_ERROR = "front_launch_disabled"
+
+    private const val BASE_MODEL_CODE = "BaseModel"
+    private const val FIELD_CODE = "allowPersistentForegroundLaunch"
+    private const val LAUNCH_TARGET_KEY = "launch_target"
+
+    data class PreparationResult(
+        val schedule: PersistentSchedule,
+        val blockedReason: String? = null,
+    )
+
+    fun prepareScheduleForRegistration(
+        context: Context,
+        schedule: PersistentSchedule,
+    ): PreparationResult {
+        // 投递组件固定为模块 Receiver；此字段只表达是否允许无回复后的冷启动。
+        return PreparationResult(schedule.copy(
+            payloadJson = sanitizeLaunchTarget(schedule.payloadJson, isForegroundLaunchEnabled(schedule.ownerUserId)),
+        ))
+    }
+
+    fun shouldLaunchTarget(schedule: PersistentSchedule): Boolean =
+        AccountSlotRegistry.isExecutableUser(schedule.ownerUserId) &&
+            payloadRequestsTargetLaunch(schedule.payloadJson) &&
+            isForegroundLaunchEnabled(schedule.ownerUserId)
+
+    fun isFrontLaunchDisabled(error: String?): Boolean = error == FRONT_LAUNCH_DISABLED_ERROR
+
+    fun payloadRequestsTargetLaunch(payloadJson: String): Boolean = payloadToJson(payloadJson).optBoolean(LAUNCH_TARGET_KEY, false)
+
+    fun sanitizeLaunchTarget(
+        payloadJson: String,
+        enabled: Boolean,
+    ): String {
+        val payload = payloadToJson(payloadJson)
+        if (enabled) {
+            payload.put(LAUNCH_TARGET_KEY, true)
+        } else {
+            payload.remove(LAUNCH_TARGET_KEY)
+        }
+        return payload.toString()
+    }
+
+    fun isForegroundLaunchEnabled(ownerUserId: String?): Boolean {
+        val safeOwnerUserId = ownerUserId?.trim()?.takeIf { it.isNotEmpty() }
+        if (safeOwnerUserId == null || !AccountSlotRegistry.isExecutableUser(safeOwnerUserId)) {
+            return false
+        }
+        val currentUserId =
+            (AccountSessionCoordinator.currentUserId() ?: UserMap.currentUid)
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+        if (Config.isLoaded() && (currentUserId == null || safeOwnerUserId == currentUserId)) {
+            return BaseModel.allowPersistentForegroundLaunch.value != false
+        }
+        return readPersistedForegroundLaunchEnabled(safeOwnerUserId) ?: (BaseModel.allowPersistentForegroundLaunch.value != false)
+    }
+
+    private fun readPersistedForegroundLaunchEnabled(userId: String?): Boolean? {
+        val configFile =
+            if (userId.isNullOrBlank()) {
+                Files.getDefaultConfigV2File()
+            } else {
+                Files.getConfigV2File(userId)
+            }
+        if (!configFile.exists()) return null
+        val content = Files.readFromFile(configFile)?.trim().takeIf { !it.isNullOrEmpty() } ?: return null
+        return runCatching {
+            JSONObject(content)
+                .optJSONObject("modelFieldsMap")
+                ?.optJSONObject(BASE_MODEL_CODE)
+                ?.optJSONObject(FIELD_CODE)
+                ?.takeIf { it.has("value") }
+                ?.optBoolean("value")
+        }.getOrNull()
+    }
+
+    private fun payloadToJson(payloadJson: String): JSONObject {
+        val normalized = payloadJson.trim().ifBlank { "{}" }
+        return runCatching { JSONObject(normalized) }.getOrElse { JSONObject() }
+    }
+}

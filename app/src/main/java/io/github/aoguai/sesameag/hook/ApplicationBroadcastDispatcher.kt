@@ -1,0 +1,803 @@
+package io.github.aoguai.sesameag.hook
+
+import android.content.Context
+import android.content.Intent
+import androidx.core.content.IntentCompat
+import io.github.aoguai.sesameag.data.General
+import io.github.aoguai.sesameag.entity.MapperEntity
+import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
+import io.github.aoguai.sesameag.hook.keepalive.PersistentLaunchPolicy
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleDefaults
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleKind
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleRegistry
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleState
+import io.github.aoguai.sesameag.hook.keepalive.ScheduledTaskRouter
+import io.github.aoguai.sesameag.hook.keepalive.SystemWakeScheduler
+import io.github.aoguai.sesameag.hook.keepalive.UnifiedScheduler
+import io.github.aoguai.sesameag.model.BaseModel
+import io.github.aoguai.sesameag.model.Model
+import io.github.aoguai.sesameag.task.antFarm.AntFarm
+import io.github.aoguai.sesameag.task.antForest.AntForest
+import io.github.aoguai.sesameag.task.antMember.AntMember
+import io.github.aoguai.sesameag.task.antMember.refreshBillCoinOptionsForRemote
+import io.github.aoguai.sesameag.task.antSesameCredit.AntSesameCredit
+import io.github.aoguai.sesameag.task.antSports.AntSports
+import io.github.aoguai.sesameag.task.customTasks.CustomTask
+import io.github.aoguai.sesameag.task.customTasks.ManualTask
+import io.github.aoguai.sesameag.task.customTasks.ManualTaskModel
+import io.github.aoguai.sesameag.task.exchange.ExchangeFetchProgress
+import io.github.aoguai.sesameag.task.goldenBean.GoldenBeanTreasure
+import io.github.aoguai.sesameag.task.myBankWelfare.MyBankWelfare
+import io.github.aoguai.sesameag.task.reserve.Reserve
+import io.github.aoguai.sesameag.util.GlobalThreadPools.execute
+import io.github.aoguai.sesameag.util.JsonUtil
+import io.github.aoguai.sesameag.util.Log.capture
+import io.github.aoguai.sesameag.util.Log.record
+import io.github.aoguai.sesameag.util.TimeUtil
+import io.github.aoguai.sesameag.util.WorkflowRootGuard
+import io.github.aoguai.sesameag.util.maps.UserMap
+
+internal object ApplicationBroadcastDispatcher {
+    private const val TAG = ApplicationHook.TAG
+
+    fun handleReceive(
+        context: Context?,
+        intent: Intent?,
+    ) {
+        val safeIntent = intent ?: return
+        val action = safeIntent.action ?: return
+
+        val finalProcessName = ApplicationHook.finalProcessName
+        if (finalProcessName != null && finalProcessName.endsWith(":widgetProvider")) {
+            return
+        }
+        if (action != ApplicationHookConstants.BroadcastActions.HOOK_READY && !RuntimeIdentityGuard.isTrustedForExecution()) {
+            record(TAG, "execution_gate_denied: runtime_identity")
+            return
+        }
+        val nonBusinessActions = setOf(
+            ApplicationHookConstants.BroadcastActions.HOOK_READY,
+            ApplicationHookConstants.BroadcastActions.PERMISSION_SNAPSHOT,
+        )
+        if (action !in nonBusinessActions && !isCurrentAccountExecutable()) {
+            record(TAG, "execution_gate_denied: account_slot")
+            return
+        }
+
+        if (action !in nonBusinessActions &&
+            action != ApplicationHookConstants.BroadcastActions.RESTART &&
+            !WorkflowRootGuard.isExecutionAllowed()
+        ) {
+            record(TAG, "必需权限或使用协议未就绪，已拒绝执行: $action")
+            return
+        }
+
+        when (action) {
+            ApplicationHookConstants.BroadcastActions.RESTART -> handleRestartBroadcast(safeIntent)
+            ApplicationHookConstants.BroadcastActions.EXECUTE -> handleExecuteBroadcast(context, safeIntent)
+            ApplicationHookConstants.BroadcastActions.PRE_WAKEUP -> handlePreWakeupBroadcast(context, safeIntent)
+            ApplicationHookConstants.BroadcastActions.RE_LOGIN -> ApplicationHook.reOpenApp()
+            ApplicationHookConstants.BroadcastActions.RPC_TEST -> handleRpcTest(safeIntent)
+            ApplicationHookConstants.BroadcastActions.MANUAL_TASK -> handleManualTaskBroadcast(safeIntent)
+            ApplicationHookConstants.BroadcastActions.HOOK_READY -> handleHookReadyBroadcast(context, safeIntent)
+            ApplicationHookConstants.BroadcastActions.PERMISSION_SNAPSHOT -> handlePermissionSnapshotBroadcast(context, safeIntent)
+            ApplicationHookConstants.BroadcastActions.CAPTURE_PAGE_SNAPSHOT -> handleCapturePageSnapshotBroadcast(safeIntent)
+            ApplicationHookConstants.BroadcastActions.REFRESH_FRIENDS -> handleRefreshFriendsBroadcast(context, safeIntent)
+            ApplicationHookConstants.BroadcastActions.REFRESH_EXCHANGE_OPTIONS -> handleRefreshExchangeOptionsBroadcast(context, safeIntent)
+        }
+    }
+
+    private fun isCurrentAccountExecutable(): Boolean {
+        val loader = ApplicationHook.classLoader ?: return false
+        val userId = runCatching { HookUtil.getUserId(loader) }.getOrNull()
+        return AccountSlotRegistry.isExecutableUser(userId)
+    }
+
+    private fun handleRestartBroadcast(intent: Intent) {
+        val safeIntent = Intent(intent)
+        ApplicationHookConstants.submitEntry("broadcast_restart") {
+            val targetUserId = safeIntent.getStringExtra("userId")
+            val receiver = IntentCompat.getParcelableExtra(safeIntent, "configReloadResult", android.os.ResultReceiver::class.java)
+            val reply: (String) -> Unit = { message ->
+                runCatching { receiver?.send(0, android.os.Bundle().apply { putString("message", message) }) }
+                    .onFailure { record(TAG, "配置重载回执发送失败: ${it.message}") }
+            }
+            val currentUserId = ApplicationHook.classLoader?.let { HookUtil.getUserId(it) }
+            if (targetUserId != null && targetUserId != currentUserId) {
+                record(TAG, "忽略非当前用户的重启广播: target=$targetUserId, current=$currentUserId")
+                reply("设置已保存，切换到该账号后生效")
+                return@submitEntry
+            }
+            val restartReason =
+                if (safeIntent.getBooleanExtra("configReload", false)) {
+                    "config_reload"
+                } else {
+                    "broadcast_restart"
+                }
+            ApplicationHook.restartWorkflow(restartReason) { completed ->
+                val activeUserId = ApplicationHook.classLoader?.let { HookUtil.getUserId(it) }
+                reply(when {
+                    targetUserId != activeUserId -> "设置已保存，切换到该账号后生效"
+                    completed && io.github.aoguai.sesameag.data.Config.isLoadedFor(targetUserId) -> "设置已保存并生效"
+                    else -> "设置已保存，尚未确认运行态，请在目标应用中重新加载配置"
+                })
+            }
+        }
+    }
+
+    private fun handleExecuteBroadcast(
+        context: Context?,
+        intent: Intent,
+    ) {
+        val safeIntent = Intent(intent)
+        val appContext = context?.applicationContext ?: context ?: ApplicationHook.appContext
+        val isAlarmTriggered = safeIntent.getBooleanExtra("alarm_triggered", false)
+        val wakenAtTime = safeIntent.getBooleanExtra("waken_at_time", false)
+        val wakenTime = safeIntent.getStringExtra("waken_time")?.trim().takeIf { !it.isNullOrBlank() }
+        val normalizedWakenTime = if (wakenAtTime && wakenTime.isNullOrBlank()) "0000" else wakenTime
+        val persistentScheduleId =
+            safeIntent
+                .getStringExtra(ScheduledTaskRouter.EXTRA_PERSISTENT_ID)
+                ?.trim()
+                .orEmpty()
+        val persistentSchedule =
+            persistentScheduleId
+                .takeIf { it.isNotBlank() }
+                ?.let { PersistentScheduleRegistry.get(it) }
+        if (persistentScheduleId.isNotBlank() && persistentSchedule == null) {
+            record(TAG, "忽略不存在的持久执行广播: $persistentScheduleId")
+            return
+        }
+        if (persistentSchedule != null) {
+            val ctx = appContext ?: return
+            ApplicationHookConstants.submitEntry("persistent_broadcast_execute") {
+                ScheduledTaskRouter.confirmTargetLaunch(
+                    persistentSchedule.id,
+                    safeIntent.getLongExtra(SystemWakeScheduler.EXTRA_CONFIRMATION_AT, 0L),
+                )
+                PersistentScheduleRegistry.get(persistentSchedule.id)?.let {
+                    ScheduledTaskRouter.fire(ctx, it, "target_broadcast_execute")
+                }
+            }
+            return
+        }
+        val persistentKind =
+            persistentSchedule?.kind
+                ?: safeIntent.getStringExtra(ScheduledTaskRouter.EXTRA_PERSISTENT_KIND).orEmpty()
+        val triggerType =
+            when (persistentKind) {
+                PersistentScheduleKind.GLOBAL_POLL -> ApplicationHookConstants.TriggerType.ALARM_POLL
+                PersistentScheduleKind.GLOBAL_WAKEUP -> ApplicationHookConstants.TriggerType.ALARM_WAKEUP
+                else -> ApplicationHookConstants.TriggerType.BROADCAST_EXECUTE
+            }
+        val triggerPriority =
+            when (triggerType) {
+                ApplicationHookConstants.TriggerType.ALARM_POLL -> {
+                    ApplicationHookConstants.TriggerPriority.LOW
+                }
+
+                ApplicationHookConstants.TriggerType.BROADCAST_EXECUTE -> {
+                    if (isAlarmTriggered || wakenAtTime) {
+                        ApplicationHookConstants.TriggerPriority.HIGH
+                    } else {
+                        ApplicationHookConstants.TriggerPriority.NORMAL
+                    }
+                }
+
+                else -> {
+                    ApplicationHookConstants.TriggerPriority.HIGH
+                }
+            }
+        val triggerDedupeKey =
+            persistentSchedule?.dedupeKey?.takeIf { it.isNotBlank() } ?: when {
+                wakenAtTime && !normalizedWakenTime.isNullOrBlank() -> "wakeup_$normalizedWakenTime"
+                persistentKind == PersistentScheduleKind.GLOBAL_POLL -> "alarm_poll"
+                isAlarmTriggered -> "alarm_execute"
+                else -> "broadcast_execute"
+            }
+
+        val trigger =
+            ApplicationHookConstants.TriggerInfo(
+                type = triggerType,
+                priority = triggerPriority,
+                alarmTriggered = isAlarmTriggered,
+                wakenAtTime = wakenAtTime,
+                wakenTime = normalizedWakenTime,
+                reason = "broadcast_execute",
+                dedupeKey = triggerDedupeKey,
+                persistentScheduleId = persistentScheduleId.takeIf { it.isNotBlank() },
+                ownerUserId = persistentSchedule?.ownerUserId,
+                sessionEpoch = persistentSchedule?.sessionEpoch ?: 0L,
+            )
+
+        ApplicationHookConstants.submitEntry("broadcast_execute") {
+            if (!ApplicationHook.isReadyForExec()) {
+                record(TAG, "execute broadcast received but not ready: ${ApplicationHook.readinessSummary()}")
+            }
+            if (wakenAtTime) {
+                if (normalizedWakenTime == "0000") {
+                    ApplicationHook.updateDay()
+                }
+                ApplicationHook.setWakenAtTimeAlarm()
+            }
+            ApplicationHookCore.requestExecution(trigger)
+        }
+    }
+
+    private fun handlePreWakeupBroadcast(
+        context: Context?,
+        intent: Intent,
+    ) {
+        val ctx = context?.applicationContext ?: context ?: return
+        val safeIntent = Intent(intent)
+        val executionTimeMillis = safeIntent.getLongExtra("execution_time", 0L)
+        val forceExecute = safeIntent.getBooleanExtra("force_execute", false)
+        val persistentScheduleId =
+            safeIntent
+                .getStringExtra(ScheduledTaskRouter.EXTRA_PERSISTENT_ID)
+                ?.trim()
+                .orEmpty()
+        val persistentSchedule =
+            persistentScheduleId
+                .takeIf { it.isNotBlank() }
+                ?.let { PersistentScheduleRegistry.get(it) }
+        if (persistentScheduleId.isNotBlank() && persistentSchedule == null) {
+            record(TAG, "忽略不存在的持久预唤醒广播: $persistentScheduleId")
+            return
+        }
+        if (persistentSchedule != null) {
+            ApplicationHookConstants.submitEntry("persistent_broadcast_prewakeup") {
+                ScheduledTaskRouter.confirmTargetLaunch(
+                    persistentSchedule.id,
+                    safeIntent.getLongExtra(SystemWakeScheduler.EXTRA_CONFIRMATION_AT, 0L),
+                )
+                PersistentScheduleRegistry.get(persistentSchedule.id)?.let {
+                    ScheduledTaskRouter.fire(ctx, it, "target_broadcast_prewakeup")
+                }
+            }
+            return
+        }
+        val now = System.currentTimeMillis()
+        val execTime = if (executionTimeMillis > 0) executionTimeMillis else now
+        val triggerAtExecTime =
+            ApplicationHookConstants.TriggerInfo(
+                type = ApplicationHookConstants.TriggerType.BROADCAST_PREWAKEUP,
+                priority = ApplicationHookConstants.TriggerPriority.HIGH,
+                alarmTriggered = true,
+                reason = if (executionTimeMillis > 0) "prewakeup_to_${TimeUtil.getCommonDate(executionTimeMillis)}" else "prewakeup",
+                dedupeKey = if (executionTimeMillis > 0) "prewakeup_$executionTimeMillis" else "prewakeup",
+                persistentScheduleId = persistentScheduleId.takeIf { it.isNotBlank() },
+                ownerUserId = persistentSchedule?.ownerUserId,
+                sessionEpoch = persistentSchedule?.sessionEpoch ?: 0L,
+            )
+
+        UnifiedScheduler.initialize(ctx)
+        if (execTime > now && !forceExecute) {
+            val schedule =
+                UnifiedScheduler.schedulePersistentTrigger(
+                    context = ctx,
+                    name = "prewakeup_execute",
+                    kind = PersistentScheduleKind.GLOBAL_PREWAKEUP,
+                    triggerAtMs = execTime,
+                    dedupeKey = "prewakeup_$execTime",
+                    payloadJson = """{"execution_time":$execTime}""",
+                    toleranceMs = PersistentScheduleDefaults.DEFAULT_TOLERANCE_MS,
+                    ownerUserId = persistentSchedule?.ownerUserId ?: AccountSessionCoordinator.currentUserId(),
+                    sessionEpoch = persistentSchedule?.sessionEpoch ?: AccountSessionCoordinator.currentSessionEpoch(),
+                )
+            if (schedule.lastError != null) {
+                if (PersistentLaunchPolicy.isFrontLaunchDisabled(schedule.lastError)) {
+                    record(TAG, "已禁止系统调度前台拉起目标应用，预唤醒任务降级为仅进程存活时等待")
+                }
+                val delayMillis = execTime - now
+                record(TAG, "持久预唤醒注册失败，回退进程内等待 ${TimeUtil.formatDuration(delayMillis)}")
+                // 预唤醒只提前准备进程；降级后仍须等到 execTime 才启动工作流，不能把预唤醒当成正式执行。
+                UnifiedScheduler.scheduleLongDelay(delayMillis, "prewakeup_execute") {
+                    ApplicationHookCore.requestExecution(triggerAtExecTime)
+                }
+                return
+            }
+            if (persistentScheduleId.isNotBlank()) {
+                PersistentScheduleRegistry.markFired(context ?: ApplicationHook.appContext, persistentScheduleId)
+            }
+            UnifiedScheduler.cancelNamedTask("prewakeup_execute")
+            record(TAG, "收到 prewakeup，已注册持久预唤醒任务 ${TimeUtil.getCommonDate(schedule.triggerAtMs)}")
+            return
+        }
+
+        record(TAG, "收到 prewakeup，但 execution_time 无效/已过期，立即触发一次执行链路")
+        ApplicationHookCore.requestExecution(triggerAtExecTime)
+    }
+
+    private fun handleHookReadyBroadcast(
+        context: Context?,
+        intent: Intent,
+    ) {
+        val ctx = context?.applicationContext ?: context ?: ApplicationHook.appContext
+        val targetUserId = intent.getStringExtra("userId")?.trim().orEmpty()
+        if (!RuntimeIdentityGuard.isTrustedForExecution()) {
+            sendHookReadyResult(
+                ctx, targetUserId, ready = false, message = "运行环境尚未就绪", request = intent,
+                currentUserId = AccountSessionCoordinator.currentUserId().orEmpty(),
+            )
+            return
+        }
+        val loader = ApplicationHook.classLoader
+        if (loader == null) {
+            sendHookReadyResult(
+                ctx,
+                targetUserId,
+                ready = false,
+                message = "目标应用 Hook 尚未就绪",
+                request = intent,
+            )
+            return
+        }
+
+        val currentUserId = HookUtil.getUserId(loader)?.trim().orEmpty()
+        when {
+            currentUserId.isEmpty() -> {
+                sendHookReadyResult(
+                    ctx,
+                    targetUserId,
+                    ready = false,
+                    message = "当前目标应用账号未登录",
+                    request = intent,
+                )
+            }
+
+            targetUserId.isNotEmpty() && targetUserId != currentUserId -> {
+                sendHookReadyResult(
+                    ctx,
+                    targetUserId,
+                    ready = false,
+                    message = "当前目标应用账号与好友中心账号不一致: target=$targetUserId, current=$currentUserId",
+                    request = intent,
+                    currentUserId = currentUserId,
+                )
+            }
+
+            ApplicationHookConstants.shouldBlockRpc() -> {
+                sendHookReadyResult(
+                    ctx,
+                    targetUserId.ifBlank { currentUserId },
+                    ready = false,
+                    message = "目标应用 RPC 当前处于离线拦截状态",
+                    request = intent,
+                    currentUserId = currentUserId,
+                )
+            }
+
+            ApplicationHook.rpcBridge == null -> {
+                sendHookReadyResult(
+                    ctx,
+                    targetUserId.ifBlank { currentUserId },
+                    ready = false,
+                    message = "目标应用 RpcBridge 尚未就绪",
+                    request = intent,
+                    currentUserId = currentUserId,
+                )
+            }
+
+            else -> {
+                sendHookReadyResult(
+                    ctx,
+                    targetUserId.ifBlank { currentUserId },
+                    ready = true,
+                    message = "目标应用已就绪",
+                    request = intent,
+                    currentUserId = currentUserId,
+                )
+            }
+        }
+    }
+
+    private fun sendHookReadyResult(
+        context: Context?,
+        userId: String,
+        ready: Boolean,
+        message: String,
+        request: Intent,
+        currentUserId: String = "",
+    ) {
+        val ctx = context ?: ApplicationHook.appContext ?: return
+        ctx.sendBroadcast(
+            Intent(ApplicationHookConstants.BroadcastActions.HOOK_READY_RESULT).apply {
+                val replyPackage = request.getStringExtra("replyPackage")
+                setPackage(if (replyPackage == General.PACKAGE_NAME) General.PACKAGE_NAME else General.MODULE_PACKAGE_NAME)
+                putExtra("requestToken", request.getStringExtra("requestToken"))
+                putExtra("sessionEpoch", AccountSessionCoordinator.currentSessionEpoch())
+                putExtra("workflowReady", ApplicationHook.isReadyForExec() && WorkflowRootGuard.isExecutionAllowed())
+                putExtra("userId", userId)
+                putExtra("ready", ready)
+                putExtra("message", message)
+                putExtra("currentUserId", currentUserId)
+                putExtra("timestamp", System.currentTimeMillis())
+            },
+        )
+    }
+
+    private fun handlePermissionSnapshotBroadcast(
+        context: Context?,
+        intent: Intent,
+    ) {
+        val ctx = context?.applicationContext ?: context ?: ApplicationHook.appContext ?: return
+        val requestToken = intent.getLongExtra("requestToken", 0L)
+        val permissions =
+            ModuleStatusReporter
+                .getStatusSnapshot(refresh = true, reason = "permission_snapshot")
+                .get("permissions") as? Map<*, *>
+
+        ctx.sendBroadcast(
+            Intent(ApplicationHookConstants.BroadcastActions.PERMISSION_SNAPSHOT_RESULT).apply {
+                setPackage(General.MODULE_PACKAGE_NAME)
+                if (requestToken != 0L) {
+                    putExtra("requestToken", requestToken)
+                }
+                putExtra("available", permissions?.get("available") as? Boolean ?: false)
+                putExtra("contextPackage", permissions?.get("contextPackage") as? String ?: "")
+                putExtra("targetBatteryIgnored", permissions?.get("targetBatteryIgnored") as? Boolean ?: false)
+                (permissions?.get("targetExactAlarmAllowed") as? Boolean)?.let { putExtra("targetExactAlarmAllowed", it) }
+                putExtra("timestamp", System.currentTimeMillis())
+            },
+        )
+    }
+
+    private fun handleCapturePageSnapshotBroadcast(intent: Intent) {
+        if (BaseModel.debugMode.value != true) {
+            capture(TAG, "页面结构抓取被拒绝: debugMode=false")
+            return
+        }
+        val reason = intent.getStringExtra("reason")?.trim().takeUnless { it.isNullOrBlank() } ?: "broadcast_snapshot"
+        PageStructureSnapshotter.captureOnce(reason)
+    }
+
+    private fun handleRefreshFriendsBroadcast(
+        context: Context?,
+        intent: Intent,
+    ) {
+        val ctx = context?.applicationContext ?: context ?: ApplicationHook.appContext
+        val safeIntent = Intent(intent)
+        ApplicationHookConstants.submitEntry("refresh_friends") {
+            val targetUserId = safeIntent.getStringExtra("userId")?.trim().orEmpty()
+            val force = safeIntent.getBooleanExtra("manual", true)
+            val loader = ApplicationHook.classLoader
+            if (loader == null) {
+                sendRefreshFriendsResult(
+                    ctx,
+                    targetUserId,
+                    success = false,
+                    message = "刷新好友失败：Hook classLoader 不可用",
+                )
+                return@submitEntry
+            }
+
+            val currentUserId = HookUtil.getUserId(loader)?.trim().orEmpty()
+            if (currentUserId.isEmpty()) {
+                sendRefreshFriendsResult(
+                    ctx,
+                    targetUserId,
+                    success = false,
+                    message = "刷新好友失败：当前目标应用账号未登录",
+                )
+                return@submitEntry
+            }
+            if (targetUserId.isNotEmpty() && targetUserId != currentUserId) {
+                sendRefreshFriendsResult(
+                    ctx,
+                    targetUserId,
+                    success = false,
+                    message = "忽略非当前账号的好友刷新请求: target=$targetUserId, current=$currentUserId",
+                )
+                return@submitEntry
+            }
+
+            val result =
+                ApplicationHook.refreshFriendsFromAlipayIfNeeded(
+                    userId = currentUserId,
+                    force = force,
+                    source = if (force) "manual_refresh" else "broadcast_refresh",
+                )
+            sendRefreshFriendsResult(
+                ctx,
+                result.userId.ifBlank { currentUserId },
+                success = result.success,
+                message = result.message,
+                profiles = result.profiles,
+                groups = result.groups,
+            )
+        }
+    }
+
+    private fun sendRefreshFriendsResult(
+        context: Context?,
+        userId: String,
+        success: Boolean,
+        message: String,
+        profiles: Int = 0,
+        groups: Int = 0,
+    ) {
+        val ctx = context ?: ApplicationHook.appContext ?: return
+        ctx.sendBroadcast(
+            Intent(ApplicationHookConstants.BroadcastActions.REFRESH_FRIENDS_RESULT).apply {
+                putExtra("userId", userId)
+                putExtra("success", success)
+                putExtra("message", message)
+                putExtra("profiles", profiles)
+                putExtra("groups", groups)
+                putExtra("timestamp", System.currentTimeMillis())
+            },
+        )
+    }
+
+    private fun handleRefreshExchangeOptionsBroadcast(
+        context: Context?,
+        intent: Intent,
+    ) {
+        val ctx = context?.applicationContext ?: context ?: ApplicationHook.appContext
+        val safeIntent = Intent(intent)
+        execute {
+            val requestId = safeIntent.getStringExtra("requestId").orEmpty()
+            val target = safeIntent.getStringExtra("target").orEmpty()
+            val targetUserId = safeIntent.getStringExtra("userId")?.trim().orEmpty()
+            val forceRefresh = safeIntent.getBooleanExtra("forceRefresh", false)
+            val progressUserId = targetUserId.ifBlank { UserMap.currentUid.orEmpty() }
+            val subscription = ExchangeFetchProgress.subscribe(progressUserId, target) { event ->
+                sendRefreshExchangeOptionsResult(ctx, requestId, target, progressUserId,
+                    success = false, message = event.message, options = emptyList(),
+                    progress = true, advances = event.advances)
+            }
+            try {
+                val result = refreshExchangeOptionsInTarget(target, targetUserId, forceRefresh)
+                sendRefreshExchangeOptionsResult(
+                    ctx,
+                    requestId = requestId,
+                    target = target,
+                    userId = result.userId.ifBlank { targetUserId },
+                    success = result.success,
+                    message = result.message,
+                    options = result.options,
+                )
+            } finally {
+                subscription.close()
+            }
+        }
+    }
+
+    private data class ExchangeOptionsRefreshResult(
+        val success: Boolean,
+        val message: String,
+        val userId: String = "",
+        val options: List<MapperEntity> = emptyList(),
+    )
+
+    private fun refreshExchangeOptionsInTarget(
+        target: String,
+        targetUserId: String,
+        forceRefresh: Boolean,
+    ): ExchangeOptionsRefreshResult {
+        val loader =
+            ApplicationHook.classLoader
+                ?: return ExchangeOptionsRefreshResult(false, "目标应用 Hook 尚未就绪")
+        val currentUserId = HookUtil.getUserId(loader)?.trim().orEmpty()
+        if (currentUserId.isEmpty()) {
+            return ExchangeOptionsRefreshResult(false, "当前目标应用账号未登录")
+        }
+        if (targetUserId.isNotEmpty() && targetUserId != currentUserId) {
+            return ExchangeOptionsRefreshResult(
+                false,
+                "当前目标应用账号与配置账号不一致: target=$targetUserId, current=$currentUserId",
+                currentUserId,
+            )
+        }
+        if (ApplicationHookConstants.shouldBlockRpc()) {
+            return ExchangeOptionsRefreshResult(false, "目标应用 RPC 当前处于离线拦截状态", currentUserId)
+        }
+        if (ApplicationHook.rpcBridge == null) {
+            return ExchangeOptionsRefreshResult(false, "目标应用 RpcBridge 尚未就绪", currentUserId)
+        }
+
+        return try {
+            UserMap.setCurrentUserId(currentUserId)
+            val refresh = {
+                when (target) {
+                    ExchangeOptionsRefreshBridge.TARGET_MYBANK_WELFARE -> {
+                        Model.getModel(MyBankWelfare::class.java)?.refreshMyBankWelfareExchangeOptionsForRemote(forceRefresh)
+                            ?: error("网商银行模块未初始化")
+                    }
+
+                    ExchangeOptionsRefreshBridge.TARGET_MEMBER_POINT -> {
+                        Model.getModel(AntMember::class.java)?.refreshMemberPointExchangeOptionsForRemote(forceRefresh)
+                            ?: error("会员模块未初始化")
+                    }
+
+                    ExchangeOptionsRefreshBridge.TARGET_BILL_COIN -> {
+                    Model.getModel(AntMember::class.java)?.refreshBillCoinOptionsForRemote(forceRefresh)
+                        ?: error("会员模块未初始化")
+                }
+
+                ExchangeOptionsRefreshBridge.TARGET_BEAN_RIGHT -> {
+                        Model.getModel(AntMember::class.java)?.refreshBeanExchangeRightOptionsForRemote(forceRefresh)
+                            ?: error("会员模块未初始化")
+                    }
+
+                    ExchangeOptionsRefreshBridge.TARGET_FARM_PARADISE -> {
+                        Model.getModel(AntFarm::class.java)?.refreshParadiseCoinExchangeOptionsForRemote(forceRefresh)
+                            ?: error("庄园模块未初始化")
+                    }
+
+                    ExchangeOptionsRefreshBridge.TARGET_FARM_IP_CHOUCHOULE -> {
+                        Model.getModel(AntFarm::class.java)?.refreshIpChouChouLeExchangeOptionsForRemote(forceRefresh)
+                            ?: error("庄园模块未初始化")
+                    }
+
+                    ExchangeOptionsRefreshBridge.TARGET_SPORTS_ENERGY -> {
+                        Model.getModel(AntSports::class.java)?.refreshSportsEnergyExchangeOptionsForRemote(forceRefresh)
+                            ?: error("运动模块未初始化")
+                    }
+
+                    ExchangeOptionsRefreshBridge.TARGET_FOREST_VITALITY -> {
+                        Model.getModel(AntForest::class.java)?.refreshVitalityExchangeOptionsForRemote(forceRefresh)
+                            ?: error("森林模块未初始化")
+                    }
+
+                    ExchangeOptionsRefreshBridge.TARGET_RESERVE -> {
+                        Reserve.initReserve(forceRefresh)
+                    }
+
+                    ExchangeOptionsRefreshBridge.TARGET_GOLDEN_BEAN_MALL -> {
+                        Model.getModel(GoldenBeanTreasure::class.java)?.refreshGoldenBeanMallOptionsForRemote(forceRefresh)
+                            ?: error("金豆夺宝模块未初始化")
+                    }
+
+                    ExchangeOptionsRefreshBridge.TARGET_SESAME_GRAIN -> {
+                        Model.getModel(AntSesameCredit::class.java)?.refreshSesameGrainExchangeOptionsForRemote(forceRefresh)
+                            ?: error("芝麻信用模块未初始化")
+                    }
+
+                    else -> {
+                        error("未知兑换列表刷新目标: $target")
+                    }
+                }
+            }
+            val options = if (forceRefresh) RequestManager.withExchangeSettingsRefresh(refresh) else refresh()
+            ExchangeOptionsRefreshResult(true, "刷新完成: $target#${options.size}", currentUserId, options)
+        } catch (t: Throwable) {
+            io.github.aoguai.sesameag.util.Log
+                .printStackTrace(TAG, "refreshExchangeOptionsInTarget err:", t)
+            ExchangeOptionsRefreshResult(false, "刷新失败: ${t.message ?: t.javaClass.simpleName}", currentUserId)
+        }
+    }
+
+    private fun sendRefreshExchangeOptionsResult(
+        context: Context?,
+        requestId: String,
+        target: String,
+        userId: String,
+        success: Boolean,
+        message: String,
+        options: List<MapperEntity>,
+        progress: Boolean = false,
+        advances: Boolean = false,
+    ) {
+        val ctx = context ?: ApplicationHook.appContext ?: return
+        ctx.sendBroadcast(
+            Intent(ApplicationHookConstants.BroadcastActions.REFRESH_EXCHANGE_OPTIONS_RESULT).apply {
+                setPackage(General.MODULE_PACKAGE_NAME)
+                putExtra("requestId", requestId)
+                putExtra("target", target)
+                putExtra("userId", userId)
+                putExtra("success", success)
+                putExtra("message", message)
+                putExtra("progress", progress)
+                putExtra("advances", advances)
+                if (!progress) {
+                    putExtra("optionCount", options.size)
+                    putExtra("optionsJson", JsonUtil.formatJson(options, false))
+                }
+                putExtra("timestamp", System.currentTimeMillis())
+            },
+        )
+    }
+
+    private fun handleManualTaskBroadcast(intent: Intent) {
+        record(TAG, "🚀 收到手动庄园任务指令")
+        execute {
+            val taskName = intent.getStringExtra("task")
+            if (taskName != null) {
+                val normalizedTaskName = taskName.replace("+", "_")
+                try {
+                    val task = CustomTask.valueOf(normalizedTaskName)
+                    val extraParams = HashMap<String, Any>()
+                    when (task) {
+                        CustomTask.FOREST_WHACK_MOLE -> {
+                            Unit
+                        }
+
+                        CustomTask.FOREST_ENERGY_RAIN -> {
+                            extraParams["exchangeEnergyRainCard"] = intent.getBooleanExtra("exchangeEnergyRainCard", false)
+                        }
+
+                        CustomTask.FARM_SPECIAL_FOOD -> {
+                            extraParams["specialFoodCount"] = intent.getIntExtra("specialFoodCount", 0)
+                        }
+
+                        CustomTask.FARM_USE_TOOL -> {
+                            extraParams["toolType"] = intent.getStringExtra("toolType") ?: ""
+                            extraParams["toolCount"] = intent.getIntExtra("toolCount", 1)
+                        }
+
+                        // 任务模块整体手动触发，无需额外参数
+                        CustomTask.ANT_FOREST,
+                        CustomTask.ANT_FOREST_PATROL,
+                        CustomTask.ANT_FARM,
+                        CustomTask.ANT_OCEAN,
+                        CustomTask.ANT_STALL,
+                        CustomTask.ANT_DODO,
+                        CustomTask.ANT_COOPERATE,
+                        CustomTask.ANT_MEMBER,
+                        CustomTask.ANT_SESAME_CREDIT,
+                        CustomTask.ANT_ORCHARD,
+                        CustomTask.GOLDEN_BEAN_TREASURE,
+                        CustomTask.ANT_SPORTS,
+                        CustomTask.YOUTH_PRIVILEGE,
+                        CustomTask.ECO_PROTECTION,
+                        CustomTask.GREEN_FINANCE,
+                        CustomTask.MY_BANK_WELFARE,
+                        CustomTask.RESERVE -> {
+                            Unit
+                        }
+
+                        else -> {
+                            record(TAG, "❌ 无效的任务指令: $taskName")
+                        }
+                    }
+                    if (!WorkflowRootGuard.hasRoot(forceRefresh = true, reason = "manual_task")) {
+                        record(TAG, "⛔ 未检测到可用执行权限，忽略手动任务指令: $taskName")
+                        return@execute
+                    }
+                    if (!ApplicationHook.ensureLegalAcceptedForWorkflow()) {
+                        record(TAG, "⛔ 必需权限或使用协议未就绪，忽略手动任务指令: $taskName")
+                        return@execute
+                    }
+                    ManualTask.runSingle(task, extraParams)
+                } catch (e: Exception) {
+                    record(TAG, "❌ 无效的任务指令: $taskName -> ${e.message}")
+                }
+            } else {
+                if (!WorkflowRootGuard.hasRoot(forceRefresh = true, reason = "manual_task_model")) {
+                    record(TAG, "⛔ 未检测到可用执行权限，忽略手动模型任务指令")
+                    return@execute
+                }
+                if (!ApplicationHook.ensureLegalAcceptedForWorkflow()) {
+                    record(TAG, "⛔ 必需权限或使用协议未就绪，忽略手动模型任务指令")
+                    return@execute
+                }
+                for (model in Model.modelArray) {
+                    if (model is ManualTaskModel) {
+                        model.startTask(true, 1)
+                        break
+                    }
+                }
+            }
+        }
+    }
+
+    private fun handleRpcTest(intent: Intent) {
+        execute {
+            record(TAG, "RPC测试: $intent")
+            try {
+                val rpc =
+                    io.github.aoguai.sesameag.hook.rpc.debug
+                        .DebugRpc()
+                rpc.start(
+                    intent.getStringExtra("method") ?: "",
+                    intent.getStringExtra("data") ?: "",
+                    intent.getStringExtra("type") ?: "",
+                )
+            } catch (_: Throwable) {
+                // ignore
+            }
+        }
+    }
+}

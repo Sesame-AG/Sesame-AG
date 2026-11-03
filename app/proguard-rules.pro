@@ -1,7 +1,11 @@
 # ---------- 框架 ----------
--keep class de.robv.android.xposed.** { *; }
 -keep class io.github.libxposed.service.** { *; }
 -dontwarn io.github.libxposed.service.**
+-dontwarn io.github.libxposed.annotation.**
+-adaptresourcefilecontents META-INF/xposed/java_init.list
+-keep,allowoptimization,allowobfuscation public class * extends io.github.libxposed.api.XposedModule {
+    public <init>();
+}
 
 # ---------- Shizuku ----------
 -keep class dev.rikka.shizuku.** { *; }
@@ -18,7 +22,7 @@
 -dontwarn ch.qos.logback.**, org.slf4j.**
 
 # ---------- 本工程 ----------
--keep class fansirsqi.xposed.sesame.** { *; }
+-keep class io.github.aoguai.sesameag.** { *; }
 
 # ---------- Jackson（最小必要） ----------
 -keep class com.fasterxml.jackson.** { *; }

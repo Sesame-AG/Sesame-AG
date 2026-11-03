@@ -1,0 +1,404 @@
+package io.github.aoguai.sesameag.hook
+
+import android.content.Context
+import android.content.Intent
+import io.github.aoguai.sesameag.data.General
+import io.github.aoguai.sesameag.entity.UserEntity
+import io.github.aoguai.sesameag.hook.keepalive.PersistentSchedule
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleRegistry
+import io.github.aoguai.sesameag.util.DataStore
+import io.github.aoguai.sesameag.util.Log
+import io.github.aoguai.sesameag.util.WorkflowRootGuard
+import io.github.aoguai.sesameag.util.maps.UserMap
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
+import io.github.aoguai.sesameag.storage.StoreAccess
+
+data class ActiveAccountSession(
+    val userId: String,
+    val activeUserSnapshot: UserEntity?,
+    val legalAccepted: Boolean,
+    val workflowAllowed: Boolean,
+    val sessionEpoch: Long,
+    val switchedAtMs: Long
+)
+
+data class AccountSessionIdentity(
+    val userId: String,
+    val sessionEpoch: Long
+)
+
+sealed interface AccountSessionCheck {
+    data object NoCurrentSession : AccountSessionCheck
+
+    data class AccountMismatch(
+        val requestedUserId: String,
+        val currentUserId: String,
+    ) : AccountSessionCheck
+
+    data class EpochMismatch(
+        val requestedEpoch: Long,
+        val currentEpoch: Long,
+    ) : AccountSessionCheck
+
+    data object RuntimeIdentityUntrusted : AccountSessionCheck
+
+    data class AccountSlotInactive(val userId: String) : AccountSessionCheck
+
+    data object AccountSlotRegistryUnavailable : AccountSessionCheck
+
+    data class Current(val session: ActiveAccountSession) : AccountSessionCheck
+}
+
+private data class PersistedAccountSession(
+    val userId: String = "",
+    val sessionEpoch: Long = 0L,
+    val switchedAtMs: Long = 0L
+)
+
+object AccountSessionCoordinator {
+    private const val TAG = "AccountSessionCoordinator"
+    private const val SESSION_STORE_KEY = "activeAccountSession"
+
+    private val epochGenerator = AtomicLong(0L)
+
+    private data class SessionState(
+        val session: ActiveAccountSession? = null,
+        val switching: Boolean = false,
+        val pendingEpoch: Long = 0L,
+    )
+    private val state = AtomicReference(SessionState())
+    private val currentSession: ActiveAccountSession? get() = state.get().session
+    private val switchInProgress: Boolean get() = state.get().switching
+    private val pendingEpoch: Long get() = state.get().pendingEpoch
+
+    fun currentSession(): ActiveAccountSession? = currentSession
+
+    fun <T> withCurrentSession(identity: AccountSessionIdentity, action: () -> T): T = StoreAccess.transaction {
+        check(!switchInProgress && checkCurrentSession(identity.userId, identity.sessionEpoch) is AccountSessionCheck.Current) {
+            "账号会话已变化"
+        }
+        action()
+    }
+
+    fun currentUserId(): String? = currentSession?.userId
+
+    fun currentOrPersistedSessionIdentity(): AccountSessionIdentity? {
+        currentSession?.let { session ->
+            return AccountSessionIdentity(
+                userId = session.userId,
+                sessionEpoch = session.sessionEpoch
+            )
+        }
+        return readPersistedSession()
+            ?.let { session ->
+                AccountSessionIdentity(
+                    userId = session.userId.trim(),
+                    sessionEpoch = session.sessionEpoch
+                )
+            }
+    }
+
+    fun currentSessionEpoch(): Long {
+        val snapshot = state.get()
+        val current = snapshot.session
+        return when {
+            current != null -> current.sessionEpoch
+            snapshot.pendingEpoch > 0L -> snapshot.pendingEpoch
+            // Session has been invalidated and no switch is in progress.
+            // Returning 0 prevents stale tail callbacks from being rebound to
+            // the last live epoch during shutdown/restart windows.
+            else -> 0L
+        }
+    }
+
+    fun isSwitching(): Boolean = switchInProgress
+
+    fun beginSessionSwitch(
+        reason: String,
+        targetUserId: String?,
+        allowPersistedReuse: Boolean = false
+    ): Long = StoreAccess.transaction {
+        val safeTargetUserId = targetUserId?.trim().orEmpty()
+        val reusedEpoch = if (allowPersistedReuse && safeTargetUserId.isNotEmpty() && currentSession == null) {
+            readPersistedSession(safeTargetUserId)?.sessionEpoch ?: 0L
+        } else {
+            0L
+        }
+        if (reusedEpoch > 0L) {
+            synchronizeEpochGenerator(reusedEpoch)
+        }
+        val newEpoch = if (reusedEpoch > 0L) reusedEpoch else epochGenerator.incrementAndGet()
+        val now = System.currentTimeMillis()
+        state.set(SessionState(
+            session = currentSession?.copy(
+                workflowAllowed = false,
+                sessionEpoch = newEpoch,
+                switchedAtMs = now
+            ),
+            switching = true,
+            pendingEpoch = newEpoch,
+        ))
+        Log.record(
+            TAG,
+            "begin session switch: reason=$reason target=${targetUserId ?: "unknown"} epoch=$newEpoch current=${currentSession?.userId}"
+        )
+        newEpoch
+    }
+
+    fun clearRuntimeSession(reason: String): Unit = StoreAccess.transaction {
+        state.set(SessionState())
+        Log.record(TAG, "clear runtime session: reason=$reason")
+    }
+
+    fun cancelSessionSwitch(reason: String) {
+        clearRuntimeSession("cancel_session_switch:$reason")
+    }
+
+    fun ensureActiveUserSnapshot(userId: String, classLoader: ClassLoader?): UserEntity {
+        val safeUserId = userId.trim()
+        require(safeUserId.isNotEmpty()) { "userId must not be blank" }
+        val currentUserSnapshot = HookUtil.captureCurrentUserEntity(classLoader)
+            ?.takeIf { it.userId == safeUserId }
+        return UserMap.ensureActiveUserSnapshot(
+            safeUserId,
+            currentUserSnapshot ?: UserMap.readSelf(safeUserId)
+        )
+    }
+
+    fun applySession(
+        context: Context?,
+        userId: String,
+        activeUserSnapshot: UserEntity?,
+        legalAccepted: Boolean,
+        workflowAllowed: Boolean,
+        reason: String
+    ): ActiveAccountSession = StoreAccess.transaction {
+        val safeUserId = userId.trim()
+        require(safeUserId.isNotEmpty()) { "userId must not be blank" }
+        require(AccountSlotRegistry.isExecutableUser(safeUserId)) { "userId is not executable" }
+        require(RuntimeIdentityGuard.isTrustedForExecution()) { "runtime identity is not trusted" }
+        val now = System.currentTimeMillis()
+        val epoch = pendingEpoch.takeIf { it > 0L } ?: epochGenerator.incrementAndGet()
+        val snapshot = UserMap.ensureActiveUserSnapshot(safeUserId, activeUserSnapshot)
+        val session = ActiveAccountSession(
+            userId = safeUserId,
+            activeUserSnapshot = snapshot,
+            legalAccepted = legalAccepted,
+            workflowAllowed = workflowAllowed,
+            sessionEpoch = epoch,
+            switchedAtMs = now
+        )
+        if (context != null) {
+            PersistentScheduleRegistry.recoverInterruptedExecutions(safeUserId, epoch)
+        }
+        synchronizeEpochGenerator(epoch)
+        state.set(SessionState(session = session))
+        persistSession(session)
+        if (context != null) {
+            PersistentScheduleRegistry.activateSession(context, safeUserId, epoch)
+            StoreAccess.afterTransaction { publishAccountContextChanged(context, session) }
+        }
+        Log.record(
+            TAG,
+            "apply session: user=$safeUserId legalAccepted=$legalAccepted workflowAllowed=$workflowAllowed epoch=$epoch reason=$reason"
+        )
+        session
+    }
+
+    fun refreshWorkflowState(
+        context: Context?,
+        reason: String,
+        legalAccepted: Boolean? = null
+    ): ActiveAccountSession? {
+        val snapshot = state.get()
+        val current = snapshot.session ?: return null
+        if (snapshot.switching) return current
+        // 服务端权限检查会读取配置，必须在占用远程存储事务前完成。
+        val executionAllowed = WorkflowRootGuard.hasGrantedRoot() && WorkflowRootGuard.isExecutionAllowed()
+        return StoreAccess.transaction {
+            if (state.get() !== snapshot) return@transaction currentSession
+            val accepted = legalAccepted ?: current.legalAccepted
+            val sessionIsCurrent = UserMap.currentUid?.trim().orEmpty() == current.userId
+            val workflowAllowed =
+                executionAllowed &&
+                    accepted &&
+                    !ApplicationHookConstants.isOffline() &&
+                    sessionIsCurrent &&
+                    RuntimeIdentityGuard.isTrustedForExecution() &&
+                    AccountSlotRegistry.isExecutableUser(current.userId)
+            if (current.workflowAllowed == workflowAllowed && current.legalAccepted == accepted) {
+                return@transaction current
+            }
+            val updated = current.copy(
+                legalAccepted = accepted,
+                workflowAllowed = workflowAllowed
+            )
+            state.set(snapshot.copy(session = updated))
+            if (context != null) {
+                StoreAccess.afterTransaction { publishAccountContextChanged(context, updated) }
+            }
+            Log.record(
+                TAG,
+                "refresh workflow gate: user=${updated.userId} legalAccepted=$accepted allowed=$workflowAllowed reason=$reason"
+            )
+            updated
+        }
+    }
+
+    fun blockWorkflow(
+        context: Context?,
+        reason: String,
+        legalAccepted: Boolean? = null
+    ): ActiveAccountSession? = StoreAccess.transaction {
+        val current = currentSession ?: return@transaction null
+        val accepted = legalAccepted ?: current.legalAccepted
+        if (!current.workflowAllowed && current.legalAccepted == accepted) {
+            return@transaction current
+        }
+        val updated = current.copy(
+            legalAccepted = accepted,
+            workflowAllowed = false
+        )
+        state.set(state.get().copy(session = updated))
+        if (context != null) {
+            StoreAccess.afterTransaction { publishAccountContextChanged(context, updated) }
+        }
+        Log.record(
+            TAG,
+            "block workflow gate: user=${updated.userId} legalAccepted=$accepted allowed=false reason=$reason"
+        )
+        updated
+    }
+
+    fun bindTrigger(trigger: ApplicationHookConstants.TriggerInfo): ApplicationHookConstants.TriggerInfo {
+        val ownerUserId = trigger.ownerUserId?.trim()?.takeIf { it.isNotEmpty() }
+            ?: currentSession?.userId
+            ?: UserMap.currentUid?.trim()?.takeIf { it.isNotEmpty() }
+        val sessionEpoch = if (trigger.sessionEpoch > 0L) {
+            trigger.sessionEpoch
+        } else {
+            currentSession?.sessionEpoch ?: pendingEpoch.takeIf { it > 0L } ?: 0L
+        }
+        return trigger.copy(ownerUserId = ownerUserId, sessionEpoch = sessionEpoch)
+    }
+
+    fun shouldAcceptTrigger(trigger: ApplicationHookConstants.TriggerInfo): Boolean {
+        if (switchInProgress) {
+            return false
+        }
+        return checkCurrentSession(trigger.ownerUserId, trigger.sessionEpoch) is AccountSessionCheck.Current
+    }
+
+    internal fun checkSessionIdentity(
+        userId: String?,
+        sessionEpoch: Long,
+    ): AccountSessionCheck {
+        val snapshot = state.get()
+        if (snapshot.switching) return AccountSessionCheck.NoCurrentSession
+        val current = snapshot.session ?: return AccountSessionCheck.NoCurrentSession
+        val safeUserId = userId?.trim().orEmpty()
+        if (safeUserId.isEmpty() || current.userId != safeUserId) {
+            return AccountSessionCheck.AccountMismatch(safeUserId, current.userId)
+        }
+        if (current.sessionEpoch != sessionEpoch) {
+            return AccountSessionCheck.EpochMismatch(sessionEpoch, current.sessionEpoch)
+        }
+        if (!RuntimeIdentityGuard.isTrustedForExecution()) {
+            return AccountSessionCheck.RuntimeIdentityUntrusted
+        }
+        return AccountSessionCheck.Current(current)
+    }
+
+    fun checkCurrentSession(
+        userId: String?,
+        sessionEpoch: Long,
+    ): AccountSessionCheck {
+        val identityCheck = checkSessionIdentity(userId, sessionEpoch)
+        if (identityCheck !is AccountSessionCheck.Current) return identityCheck
+        val current = identityCheck.session
+        return when (val slotCheck = AccountSlotRegistry.checkExecutableUser(current.userId)) {
+            is AccountSlotExecutionCheck.Allowed -> AccountSessionCheck.Current(current)
+            is AccountSlotExecutionCheck.Inactive,
+            is AccountSlotExecutionCheck.InvalidUserId,
+            -> AccountSessionCheck.AccountSlotInactive(current.userId)
+            AccountSlotExecutionCheck.RegistryUnavailable -> AccountSessionCheck.AccountSlotRegistryUnavailable
+        }
+    }
+
+    fun isCurrentSession(userId: String?, sessionEpoch: Long): Boolean =
+        checkCurrentSession(userId, sessionEpoch) is AccountSessionCheck.Current
+
+    fun isScheduleRoutable(schedule: PersistentSchedule): Boolean =
+        checkCurrentSession(schedule.ownerUserId, schedule.sessionEpoch) is AccountSessionCheck.Current
+
+    private fun persistSession(session: ActiveAccountSession) {
+        runCatching {
+            DataStore.put(
+                SESSION_STORE_KEY,
+                PersistedAccountSession(
+                    userId = session.userId,
+                    sessionEpoch = session.sessionEpoch,
+                    switchedAtMs = session.switchedAtMs
+                )
+            )
+        }.onFailure {
+            Log.printStackTrace(TAG, "persist session failed", it)
+        }
+    }
+
+    private fun readPersistedSession(userId: String): PersistedAccountSession? {
+        return runCatching {
+            DataStore.get(SESSION_STORE_KEY, PersistedAccountSession::class.java)
+        }.onFailure {
+            Log.printStackTrace(TAG, "read persisted session failed", it)
+        }.getOrNull()
+            ?.takeIf { session ->
+                session.userId.trim() == userId && session.sessionEpoch > 0L
+            }
+    }
+
+    private fun readPersistedSession(): PersistedAccountSession? {
+        return runCatching {
+            DataStore.get(SESSION_STORE_KEY, PersistedAccountSession::class.java)
+        }.onFailure {
+            Log.printStackTrace(TAG, "read persisted session failed", it)
+        }.getOrNull()
+            ?.takeIf { session ->
+                session.userId.trim().isNotEmpty() && session.sessionEpoch > 0L
+            }
+    }
+
+    private fun synchronizeEpochGenerator(epoch: Long) {
+        if (epoch <= 0L) return
+        while (true) {
+            val current = epochGenerator.get()
+            if (current >= epoch) {
+                return
+            }
+            if (epochGenerator.compareAndSet(current, epoch)) {
+                return
+            }
+        }
+    }
+
+    private fun publishAccountContextChanged(context: Context, session: ActiveAccountSession) {
+        val snapshot = session.activeUserSnapshot
+        val intent = Intent(ApplicationHookConstants.BroadcastActions.ACCOUNT_CONTEXT_CHANGED).apply {
+            setPackage(General.MODULE_PACKAGE_NAME)
+            putExtra("userId", session.userId)
+            putExtra("legalAccepted", session.legalAccepted)
+            putExtra("workflowAllowed", session.workflowAllowed)
+            putExtra("sessionEpoch", session.sessionEpoch)
+            putExtra("switchedAtMs", session.switchedAtMs)
+            putExtra("activeUserId", snapshot?.userId)
+            putExtra("activeUserShowName", snapshot?.showName)
+            putExtra("activeUserNickName", snapshot?.nickName)
+            putExtra("activeUserRemarkName", snapshot?.remarkName)
+            putExtra("activeUserRealName", snapshot?.realName)
+            putExtra("activeUserAccount", snapshot?.account)
+            snapshot?.friendStatus?.let { putExtra("activeUserFriendStatus", it) }
+        }
+        context.sendBroadcast(intent)
+    }
+}

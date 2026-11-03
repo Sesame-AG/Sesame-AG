@@ -6,6 +6,7 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <!-- applist -->
@@ -18,6 +19,7 @@
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <!-- 添加唤醒锁权限（用于定期唤醒设备） -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- 添加前台服务权限 -->
     <uses-permission
         android:name="android.permission.FOREGROUND_SERVICE"
@@ -29,80 +31,29 @@
         android:name=".SesameApplication"
         android:description="@string/xposed_description"
         android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
 
-        <!-- 原有的元数据保持不变 -->
-        <meta-data
-            android:name="xposedmodule"
-            android:value="true" />
-        <meta-data
-            android:name="xposeddescription"
-            android:value="@string/xposed_description" />
-        <meta-data
-            android:name="xposedminversion"
-            android:value="54" />
-        <meta-data
-            android:name="xposedscope"
-            android:resource="@array/xposed_scopes" />
-
-        <!-- 主 Activity (隐藏的，不负责显示图标) -->
+        <!-- 主 Activity 由 launcher alias 或 LSPosed Manager 的设置页入口打开。 -->
         <activity
-            android:name="fansirsqi.xposed.sesame.ui.MainActivity"
-            android:exported="true">
+            android:name="io.github.aoguai.sesameag.ui.MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <!-- 仅用于 Manager 发现模块设置页；不参与旧 Xposed Hook 入口。 -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="de.robv.android.xposed.category.MODULE_SETTINGS" />
             </intent-filter>
         </activity>
 
-        <!-- 其他 Activity 保持不变 -->
-        <activity
-            android:name=".ui.ExtendActivity"
-            android:exported="false" />
-        <activity
-            android:name=".ui.WebSettingsActivity"
-            android:exported="false" />
-        <activity
-            android:name=".ui.SettingActivity"
-            android:exported="false" />
-        <!-- RPC 调试 Activity -->
-        <activity
-            android:name=".ui.RpcDebugActivity"
-            android:exported="false" />
-        <!-- 高性能日志查看器 (Compose) -->
-        <!-- theme 必须设置为 NoActionBar，因为 Compose 自带了 TopAppBar -->
-        <activity
-            android:name=".ui.LogViewerActivity"
-            android:exported="false" />
-
-        <activity
-            android:name=".ui.ManualTaskActivity"
-            android:exported="false"
-            android:label="手动任务" />
-
-
         <!-- for-hide-icon -->
         <activity-alias
             android:name=".ui.MainActivityAlias"
             android:enabled="true"
             android:exported="true"
-            android:targetActivity="fansirsqi.xposed.sesame.ui.MainActivity">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity-alias>
-
-        <!-- 圣诞图标 -->
-        <activity-alias
-            android:name=".ui.MainActivityAliasChristmas"
-            android:enabled="false"
-            android:exported="true"
-            android:icon="@drawable/ic_launcher_christmas"
-            android:label="@string/app_name"
-            android:targetActivity="fansirsqi.xposed.sesame.ui.MainActivity">
+            android:targetActivity="io.github.aoguai.sesameag.ui.MainActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -113,14 +64,34 @@
         <!-- exported=true 允许跨进程绑定 -->
         <!-- process=":command" 运行在独立进程中 -->
         <service
-            android:name="fansirsqi.xposed.sesame.service.CommandService"
+            android:name="io.github.aoguai.sesameag.service.CommandService"
             android:enabled="true"
             android:exported="true"
             android:foregroundServiceType="specialUse">
             <intent-filter>
-                <action android:name="fansirsqi.xposed.sesame.action.BIND_COMMAND_SERVICE" />
+                <action android:name="io.github.aoguai.sesameag.action.BIND_COMMAND_SERVICE" />
             </intent-filter>
         </service>
+
+        <receiver
+            android:name="io.github.aoguai.sesameag.hook.keepalive.ScheduledTriggerReceiver"
+            android:enabled="true"
+            android:exported="false" />
+
+        <receiver
+            android:name="io.github.aoguai.sesameag.hook.keepalive.ScheduleReconcileReceiver"
+            android:directBootAware="true"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
+            </intent-filter>
+        </receiver>
 
         <!-- 手动声明 Shizuku Provider，解决 provider is null 报错 -->
         <provider

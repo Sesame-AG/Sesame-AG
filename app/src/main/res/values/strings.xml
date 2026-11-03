@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Sesame-TK</string>
+    <string name="app_name">Sesame-AG</string>
     <string name="start_check_energy">Start check energy</string>
     <string name="start_message"><![CDATA[
 This APP is developed for learning and research,
@@ -11,7 +11,7 @@ Please uninstall this APP within 24 hours. </font>
 </b>
 If you purchased it, please contact the seller for a refund or report the seller on the platform.
 ]]></string>
-    <string name="app_disclaimer">本APP是为了学习研究而开发，免费开源，禁止用于任何商业用途，并禁止二次修改后闭源发布。<br/>请于24小时内卸载本APP。<br/>如果您是通过购买获得，请联系卖家退款或在平台举报卖家。⚠️</string>
+    <string name="app_disclaimer">This APP is developed for learning and research, free and open source. It is prohibited to use it for any commercial purpose or to release a closed-source version after secondary modification.<br/>Please uninstall this APP within 24 hours.<br/>If you purchased it, please contact the seller for a refund or report the seller on the platform.</string>
     <color name="color_alpha">#00000000</color>
     <color name="color_btn_down">#F0F0F0</color>
     <string name="hello_user">Hello User!</string>
@@ -71,22 +71,11 @@ If you purchased it, please contact the seller for a refund or report the seller
     <string name="enable_koubei">Enable Koubei</string>
     <string name="koubei_sign_in">Koubei sign in</string>
     <string name="more">MORE</string>
-    <string name="forest_log">Forest log</string>
-    <string name="farm_log">Farm log</string>
-    <string name="all_log">All log</string>
-    <string name="other_log">Other log</string>
-    <string name="runtime_log">Runtime log</string>
     <string name="unactivated">UNACTIVATED</string>
     <string name="tips">Tips</string>
     <string name="hide_the_application_icon">Hide the application icon</string>
-    <string name="view_error_log_file">View error log file</string>
-    <string name="export_error_log_file">Export error log file</string>
-    <string name="export_runtime_log_file">Export all log file</string>
-    <string name="view_all_log_file">View All log file</string>
     <string name="export_the_statistic_file">Export the statistic file</string>
     <string name="import_the_statistic_file">Import the statistic file</string>
-    <string name="view_runtim_log_file">View runtime log file</string>
-    <string name="view_capture">View debug</string>
     <string name="settings">Settings</string>
     <string name="extend">Extend options</string>
     <string name="limit_collect">Limit collect</string>
@@ -100,12 +89,8 @@ If you purchased it, please contact the seller for a refund or report the seller
     <string name="last">Last</string>
     <string name="next">Next</string>
     <string name="ok">OK</string>
-    <string name="clear_file">Clear file</string>
     <string name="open_with_other_browser">Open with other browser</string>
-    <string name="export_file">Export file</string>
     <string name="copy_the_url">Copy the url</string>
-    <string name="scroll_to_top">Scroll to top</string>
-    <string name="scroll_to_bottom">Scroll to bottom</string>
     <string name="choose_a_browser">Choose a browser</string>
     <string name="copy_success">Copy success</string>
     <string name="cancel">Cancel</string>
@@ -134,7 +119,6 @@ If you purchased it, please contact the seller for a refund or report the seller
     <string name="start_at_0_o_clock">Execute at 0 o\'clock</string>
     <string name="start_at_7_o_clock">Start before 7 o\'clock</string>
     <string name="tiyubiz">Tiyubiz</string>
-    <string name="friend_watch">Friend watch</string>
     <string name="user_patrol">User patrol</string>
     <string name="toast_vertical_offset">Toast vertical offset</string>
     <string name="animal_game_time">Animal game time</string>
@@ -143,8 +127,7 @@ If you purchased it, please contact the seller for a refund or report the seller
     <string name="ins_blue_bean_exchange">Ins blue bean exchange</string>
     <string name="enable_on_going">Enable on going</string>
     <string name="battery_perm">Request Battery Permission for Alipay</string>
-    <string name="new_rpc">Use New Api(minimum required v10.3.96.8100)</string>
-    <string name="debug_mode">Capture packets(base on New Api)</string>
+    <string name="debug_mode">Capture RPC traffic</string>
     <string name="language_simplified_chinese">Chinese Language</string>
     <string name="language_simplified_chinese_need_restart">Need to restart the app to take effect</string>
     <string name="ant_orchard">Ant orchard</string>
@@ -161,7 +144,6 @@ If you purchased it, please contact the seller for a refund or report the seller
     <string name="stall_auto_open">Stall auto open</string>
     <string name="stall_auto_task">Stall auto task</string>
     <string name="stall_receive_award">Stall receive award</string>
-    <string name="accept_gift">Accept gift</string>
     <string name="visit_friend_list">Visit friend list</string>
     <string name="stall_open_type">Stall open type</string>
     <string name="stall_open_list">Stall open list</string>
@@ -186,11 +168,9 @@ If you purchased it, please contact the seller for a refund or report the seller
     <string name="omegakoi_town">Omegakoi Town</string>
     <string name="consume_gold">Consume Gold</string>
     <string name="use_special_food">Use Special Food</string>
-    <string name="file_exported">The file has been exported to the: </string>
-    <string name="file_cleared">The file has been cleared</string>
+    <string name="file_exported">The file has been exported to: </string>
     <string name="file_not_support_open_with_browser">The file is not supported to open with browser</string>
     <string name="not_support_open_with_browser">Not supported to open with browser</string>
-    <string name="text_diary_toast">Test Toast String</string>
     <string name="normal_text">Data loading…</string>
     <string name="build_version_1_0_0">Build Version: </string>
     <string name="bulid_target">Build Target: </string>
@@ -199,11 +179,9 @@ If you purchased it, please contact the seller for a refund or report the seller
     <string name="search_for_unlocked_regions">search for unlocked regions</string>
     <string name="search_for_new_items_on_saplings">search for new items on saplings</string>
     <string name="query_the_remaining_amount_of_saplings">query the remaining amount of saplings</string>
-    <string name="extended_func">扩展功能</string>
+    <string name="extended_func">Extended features</string>
     <string name="debug_tips">Please check the results in the debug log!</string>
-    <string name="clear_photo">清空光盘行动图片💿</string>
-    <string name="all_log_file">全部日志</string>
-    <string name="error_log_file">异常日志</string>
-    <string name="xposed_description">大鹏一日同风起，扶摇直上九万里。</string>
+    <string name="clear_photo">Clear Clean Plate campaign photos</string>
+    <string name="xposed_description">Sow a grain in spring, reap ten thousand in autumn.</string>
 
 </resources>

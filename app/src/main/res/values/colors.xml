@@ -1,27 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 白天模式 -->
-    <color name="background">#F4F4F4</color>
-    <color name="base_color">#2489FD</color>
-    <color name="colorPrimary">#2489FD</color>
-    <color name="textColorPrimary">#000000</color>
-
-    <color name="selection_color">#2489FD</color>
-
-    <color name="main_button">#BCE1E9</color>
-    <color name="main_button_pressed">#2489FD</color>
-
-    <color name="orange">#E64000</color>
-
-    <color name="not_active_text">#e10000</color>
-    <color name="active_text">#DCDCDC</color>
-    <color name="load_active_text">#999999</color>
-
-    <color name="navigationBarColor">#AA000000</color>
-
-    <color name="toast_text_color">#090909</color>
-
-    <color name="switch_white">#FFFFFF</color>
-    <color name="switch_off">#DFDFDF</color>
-
+    <color name="splash_background">#F8F9FA</color>
 </resources>

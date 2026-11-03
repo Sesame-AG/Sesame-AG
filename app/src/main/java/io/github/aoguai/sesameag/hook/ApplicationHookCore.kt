@@ -1,0 +1,144 @@
+package io.github.aoguai.sesameag.hook
+
+import io.github.aoguai.sesameag.hook.ApplicationHookConstants.TriggerInfo
+import io.github.aoguai.sesameag.hook.ApplicationHookConstants.TriggerType
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleRegistry
+import io.github.aoguai.sesameag.util.Log.record
+import java.util.concurrent.atomic.AtomicBoolean
+
+object ApplicationHookCore {
+    private const val TAG = "ApplicationHookCore"
+
+    // 触发队列有容量上限，但入口协程没有；只保留一个检查工作并合并并发请求。
+    private val dispatchScheduled = AtomicBoolean(false)
+    private val dispatchRequested = AtomicBoolean(false)
+
+    fun requestExecution(trigger: TriggerInfo): Boolean {
+        val boundTrigger = AccountSessionCoordinator.bindTrigger(trigger)
+        if (!AccountSessionCoordinator.shouldAcceptTrigger(boundTrigger)) {
+            record(TAG, "ignore trigger due to stale/switching session: ${boundTrigger.summary()}")
+            return false
+        }
+        val queueResult = ApplicationHookConstants.setPendingTrigger(boundTrigger)
+        // 队列锁外收尾；同一个持久 ID 的重复入队不能提前结束其执行状态。
+        queueResult.replaced.forEach { previous ->
+            val scheduleId = previous.persistentScheduleId?.takeIf { it.isNotBlank() }
+                ?: return@forEach
+            if (scheduleId == boundTrigger.persistentScheduleId) return@forEach
+            val covered = previous.type in setOf(TriggerType.ALARM_POLL, TriggerType.ALARM_WAKEUP) &&
+                previous.type == boundTrigger.type &&
+                previous.ownerUserId == boundTrigger.ownerUserId &&
+                previous.sessionEpoch == boundTrigger.sessionEpoch &&
+                previous.alarmTriggered == boundTrigger.alarmTriggered &&
+                previous.wakenAtTime == boundTrigger.wakenAtTime &&
+                previous.wakenTime == boundTrigger.wakenTime
+            if (covered) {
+                PersistentScheduleRegistry.markFired(
+                    ApplicationHook.appContext, scheduleId, source = "trigger_coalesced",
+                )
+            } else {
+                PersistentScheduleRegistry.rescheduleDeferred(
+                    ApplicationHook.appContext, scheduleId, "trigger_replaced_without_coverage",
+                )
+            }
+        }
+        queueResult.displaced
+            ?.persistentScheduleId
+            ?.takeIf { it.isNotBlank() }
+            ?.let { scheduleId ->
+                // setPendingTrigger 已退出 triggerLock；持久化和 AlarmManager 操作不得在队列锁内执行。
+                PersistentScheduleRegistry.rescheduleDeferred(
+                    ApplicationHook.appContext,
+                    scheduleId,
+                    "trigger_queue_full",
+                )
+            }
+        dispatchIfNeeded()
+        return queueResult.accepted
+    }
+
+    fun dispatchIfNeeded() {
+        dispatchRequested.set(true)
+        scheduleDispatchIfPossible()
+    }
+
+    private fun scheduleDispatchIfPossible() {
+        if (!canScheduleDispatch() || !dispatchScheduled.compareAndSet(false, true)) {
+            return
+        }
+        ApplicationHookConstants.submitEntry("dispatch_pending_triggers") {
+            try {
+                dispatchRequested.set(false)
+                dispatchPendingTriggers()
+            } finally {
+                dispatchScheduled.set(false)
+                if (dispatchRequested.get()) {
+                    scheduleDispatchIfPossible()
+                }
+            }
+        }
+    }
+
+    private fun canScheduleDispatch(): Boolean {
+        if (!ApplicationHookConstants.hasPendingTriggers()) {
+            return false
+        }
+        if (ApplicationHook.mainTask?.isRunning == true) {
+            return false
+        }
+        return !PersistentScheduleRegistry.hasActiveModuleChild(
+            AccountSessionCoordinator.currentUserId(),
+            AccountSessionCoordinator.currentSessionEpoch(),
+        )
+    }
+
+    private fun dispatchPendingTriggers() {
+        ApplicationHook.discardCoveredAlarmPollTriggers()
+        ApplicationHookConstants.removePendingTriggers("stale_session_trigger") { trigger ->
+            !AccountSessionCoordinator.shouldAcceptTrigger(trigger)
+        }
+        if (!ApplicationHookConstants.hasPendingTriggers()) return
+
+        if (AccountSessionCoordinator.isSwitching()) {
+            record(TAG, "session switching, skip dispatch: ${ApplicationHook.readinessSummary()}")
+            return
+        }
+
+        if (ApplicationHookConstants.isOffline()) {
+            record(TAG, "offline active, skip dispatch: ${ApplicationHook.readinessSummary()}")
+            return
+        }
+
+        val mainTask = ApplicationHook.mainTask
+        if (mainTask == null) {
+            record(TAG, "mainTask is null: ${ApplicationHook.readinessSummary()}")
+            return
+        }
+
+        if (!ApplicationHook.isReadyForExec()) {
+            record(TAG, "not ready for exec: ${ApplicationHook.readinessSummary()}")
+            return
+        }
+
+        if (mainTask.isRunning) {
+            record(TAG, "mainTask is running, pending=${ApplicationHookConstants.pendingTriggerCount()}")
+            return
+        }
+
+        val currentOwnerUserId = AccountSessionCoordinator.currentUserId()
+        val currentSessionEpoch = AccountSessionCoordinator.currentSessionEpoch()
+        if (PersistentScheduleRegistry.hasActiveModuleChild(currentOwnerUserId, currentSessionEpoch)) {
+            record(
+                TAG,
+                "module persistent child is active, defer mainTask: pending=${ApplicationHookConstants.pendingTriggerCount()} owner=$currentOwnerUserId session=$currentSessionEpoch",
+            )
+            return
+        }
+
+        record(TAG, "▶️ dispatch mainTask, pending=${ApplicationHookConstants.pendingTriggerCount()}")
+        val job = mainTask.startTask(force = false, rounds = 1)
+        job.invokeOnCompletion {
+            dispatchIfNeeded()
+        }
+    }
+}

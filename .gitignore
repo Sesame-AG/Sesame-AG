@@ -1,10 +1,13 @@
 # Built application files
 *.apk
+*.aab
 *.ap_
+output-metadata.json
 /app/normal/*
 /app/compatible/*
 /app/lint-baseline.xml
 *.jks
+*.keystore
 # Files for the ART/Dalvik VM
 *.dex
 
@@ -39,13 +42,16 @@ captures/
 # IntelliJ
 *.iml
 .idea/
+/.run/
+/io.github.aoguai.sesameag/
 
 # Keystore files
 # Uncomment the following line if you do not want to check your keystore files in.
 #*.jks
 
 # External native build folder generated in Android Studio 2.2 and later
-.externalNativeBuild
+.externalNativeBuild/
+.cxx/
 
 # Google Services (e.g. APIs or Firebase)
 google-services.json
@@ -62,28 +68,19 @@ fastlane/screenshots
 fastlane/test_output
 #fastlane/readme.md
 
-Xposed-Modules-Repo/
-plugin/
-demo/*
 /.vscode/settings.json
 *.REST
 *.txt
 *.json
-
-# CPP source code
-#C++源代码
-/app/src/main/cpp/ 
-
 #编译缓存
 /app/.cxx/* 
 
 # python virtual env
 .venv/
-test
+test/
 
 # cache
-.lingma/rules/project_rule.md
-serve-debug/webhook.db
+.kotlin/
 *.pyc
 
 # Cursor IDE
@@ -91,9 +88,27 @@ serve-debug/webhook.db
 /.cursor/rules/zh.mdc
 
 # debug ui
+/serve-debug/config.json
+/serve-debug/friend.json
+/serve-debug/webhook.db
 /serve-debug/web
 webui_debug*
-ai.py
-.kotlin/sessions/*
 /serve-debug/whackmole.py
 /serve-debug/user.py
+
+/libxposed/
+
+# Local AI coding assistant state
+/.agents/
+/.claude/
+/.claude-plugin/
+/.codex/
+/.codex-plugin/
+/.pi/
+/.cursor/
+/.windsurf/
+/.gemini/
+/.roo/
+/.aider/
+/.continue/
+/.lingma/

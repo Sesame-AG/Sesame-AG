@@ -1,0 +1,2235 @@
+package io.github.aoguai.sesameag.task.antSports
+
+import android.util.Base64
+
+import io.github.aoguai.sesameag.entity.RpcEntity
+import io.github.aoguai.sesameag.hook.RequestManager
+import io.github.aoguai.sesameag.hook.internal.LocationHelper
+import org.json.JSONArray
+import org.json.JSONException
+import org.json.JSONObject
+import java.util.UUID
+
+/**
+ * @file AntSportsRpcCall.kt
+ * @brief 蚂蚁运动（AntSports）RPC 接口调用集合
+ *
+ * @details
+ * 本模块提供了支付蚂蚁运动所有功能的 RPC 接口的 Kotlin 封装版本。
+ * 包括：
+ * - 运动任务查询与完成
+ * - 能量球（金币）收集与捐赠
+ * - 行走路线管理与进度查询
+ * - 运动币兑换与礼品领取
+ * - 健康岛（Neverland）任务系统
+ * - 抢好友大战功能
+ */
+object AntSportsRpcCall {
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 常量定义
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    /**
+     * @brief 应用渠道信息 - 应用中心子频道9patch
+     */
+    private const val CH_INFO = "ch_appcenter__chsub_9patch"
+
+    /**
+     * @brief 运动首页渠道信息
+     */
+    private const val HOME_CH_INFO = "ch_shouquan_shouye"
+
+    /**
+     * @brief 时区信息 - 亚洲/上海
+     */
+    private const val TIME_ZONE = "Asia\\/Shanghai"
+
+    /**
+     * @brief 城市代码 - 杭州
+     */
+    private const val CITY_CODE = "330100"
+
+    private const val SPORTS_WALK_SOURCE = "ch_othertinyapp"
+
+    /**
+     * @brief 路线推荐页来源 - 真实页面查询推荐路线列表使用的渠道标识
+     */
+    private const val SPORTS_RECOMMEND_SOURCE = "medical_health"
+
+    /**
+     * @brief 功能特性列表 - JSON 格式字符串
+     *
+     * 包含运动各项功能的支持标识符，用于API请求。
+     */
+    private const val FEATURES = """["DAILY_STEPS_RANK_V2","STEP_BATTLE","CLUB_HOME_CARD","NEW_HOME_PAGE_STATIC","CLOUD_SDK_AUTH","STAY_ON_COMPLETE","EXTRA_TREASURE_BOX","NEW_HOME_PAGE_STATIC","SUPPORT_AI","SUPPORT_TAB3","SUPPORT_FLYRABBIT","SUPPORT_NEW_MATCH","EXTERNAL_ADVERTISEMENT_TASK","PROP","PROPV2","ASIAN_GAMES"]"""
+
+    private const val QUERY_COIN_TASK_PANEL_RPC =
+        "com.alipay.sportshealth.biz.rpc.SportsHealthCoinTaskRpc.queryCoinTaskPanel"
+    private const val QUERY_ENERGY_BUBBLE_MODULE_RPC =
+        "com.alipay.sportshealth.biz.rpc.sportsHealthHomeRpc.queryEnergyBubbleModule"
+    private const val NEVERLAND_QUERY_TASK_CENTER_RPC =
+        "com.alipay.neverland.biz.rpc.queryTaskCenter"
+    private const val NEVERLAND_QUERY_TASK_INFO_RPC =
+        "com.alipay.neverland.biz.rpc.queryTaskInfo"
+    private const val NEVERLAND_QUERY_BUBBLE_TASK_RPC =
+        "com.alipay.neverland.biz.rpc.queryBubbleTask"
+    private const val NEVERLAND_QUERY_MAP_LIST_RPC =
+        "com.alipay.neverland.biz.rpc.queryMapList"
+    private const val NEVERLAND_QUERY_MAP_INFO_NEW_RPC =
+        "com.alipay.neverland.biz.rpc.queryMapInfoNew"
+    private const val NEVERLAND_QUERY_BASEINFO_RPC =
+        "com.alipay.neverland.biz.rpc.queryBaseinfo"
+    private const val NEVERLAND_QUERY_MAP_DETAIL_RPC =
+        "com.alipay.neverland.biz.rpc.queryMapDetail"
+    internal const val QUERY_WALK_STEP_RPC =
+        "alipay.antsports.steps.query"
+    private const val MOTION_QUIZ_BIZ_TYPE = "MOTION_DAILY_QUIZ"
+    private const val MOTION_QUIZ_CHANNEL_RPC = "alipay.iblib.channel.data"
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 运动任务面板接口
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    /**
+     * @brief 查询运动币任务面板
+     *
+     * @details 获取首页运动任务列表，包括能量获取任务和活动任务。
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：com.alipay.sportshealth.biz.rpc.SportsHealthCoinTaskRpc.queryCoinTaskPanel
+     */
+    fun queryCoinTaskPanel(): String {
+        val args1 = """[{"canAddHome":false,"chInfo":"medical_health","clientAuthStatus":"not_support","clientOS":"android","features":$FEATURES,"topTaskId":""}]"""
+        return RequestManager.requestString(QUERY_COIN_TASK_PANEL_RPC, args1)
+    }
+
+    /**
+     * @brief 运动任务签到
+     *
+     * @param taskId 任务ID - 特定任务的唯一标识
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：com.alipay.sportshealth.biz.rpc.SportsHealthCoinTaskRpc.signUpTask
+     */
+    fun signUpTask(taskId: String): String {
+        val args = """[{"apiVersion":"energy","chInfo":"medical_health","clientOS":"android","features":$FEATURES,"taskCenId":"","taskId":"$taskId"}]"""
+        return RequestManager.requestString("com.alipay.sportshealth.biz.rpc.SportsHealthCoinTaskRpc.signUpTask", args)
+    }
+
+    /**
+     * @brief 完成普通跳转类运动任务
+     *
+     * @remark 对应抓包：普通 JUMP 成功包不携带 bizNo/taskType
+     */
+    fun completeJumpTask(
+        taskId: String,
+        taskAction: String = "JUMP",
+        chInfo: String = "medical_health",
+    ): String {
+        val args =
+            JSONArray().apply {
+                put(
+                    JSONObject().apply {
+                        put("apiVersion", "energy")
+                        put("chInfo", chInfo)
+                        put("clientOS", "android")
+                        put("features", JSONArray(FEATURES))
+                        put("taskAction", taskAction)
+                        put("taskId", taskId)
+                    },
+                )
+            }
+        return RequestManager.requestString("com.alipay.sportshealth.biz.rpc.SportsHealthCoinTaskRpc.completeTask", args.toString())
+    }
+
+    /**
+     * @brief 完成广告浏览类运动任务
+     *
+     * @remark 对应抓包：SHOW_AD 成功包携带 bizNo 与 taskType=AD_TASK
+     */
+    fun completeAdTask(
+        taskId: String,
+        taskAction: String = "SHOW_AD",
+        taskType: String = "AD_TASK",
+        bizNo: String = buildSportsTaskBizNo(),
+        chInfo: String = "medical_health",
+    ): String {
+        val args =
+            JSONArray().apply {
+                put(
+                    JSONObject().apply {
+                        put("apiVersion", "energy")
+                        put("bizNo", bizNo)
+                        put("chInfo", chInfo)
+                        put("clientOS", "android")
+                        put("features", JSONArray(FEATURES))
+                        put("taskAction", taskAction)
+                        put("taskId", taskId)
+                        put("taskType", taskType)
+                    },
+                )
+            }
+        return RequestManager.requestString("com.alipay.sportshealth.biz.rpc.SportsHealthCoinTaskRpc.completeTask", args.toString())
+    }
+
+    /**
+     * @brief 完成运动任务面板中的广告浏览任务
+     *
+     * @param bizId queryCoinTaskPanel.taskList[].bizExtMap.bizId
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应抓包：com.alipay.adtask.biz.mobilegw.service.task.finish
+     */
+    fun finishAdTask(bizId: String): String {
+        val params =
+            JSONObject().apply {
+                put("bizId", bizId)
+            }
+        return finishAdTask(params)
+    }
+
+    fun finishAdTask(params: JSONObject): String {
+        val args = JSONArray().put(params)
+        return RequestManager.requestString(
+            "com.alipay.adtask.biz.mobilegw.service.task.finish",
+            args.toString(),
+        )
+    }
+
+    private fun buildSportsTaskBizNo(): String = "${System.currentTimeMillis()}-${UUID.randomUUID()}"
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 运动问答接口
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    private fun requestMotionQuizChannelData(
+        activityCode: String,
+        activityId: String,
+        body: JSONObject,
+    ): String {
+        val args =
+            JSONArray().put(
+                JSONObject().apply {
+                    put("activityCode", activityCode)
+                    put("activityId", activityId)
+                    put("body", body)
+                    put("version", "2.0")
+                },
+            )
+        return RequestManager.requestString(MOTION_QUIZ_CHANNEL_RPC, args.toString())
+    }
+
+    fun queryMotionQuizBlockDetail(queryDate: Long): String {
+        val body =
+            JSONObject().apply {
+                put("bizType", MOTION_QUIZ_BIZ_TYPE)
+                put("cityCode", LocationHelper.getCityCodeOrNull() ?: CITY_CODE)
+                put("queryDate", queryDate)
+                put("queryVersion", 2)
+                put("scene", "single_day")
+                put(
+                    "schemeParams",
+                    JSONObject().apply {
+                        put("queryPrizeParams", true)
+                    },
+                )
+            }
+        return requestMotionQuizChannelData(
+            "query_quiz_block_detail",
+            "2023041700010001",
+            body,
+        )
+    }
+
+    fun answerMotionQuiz(
+        quizId: String,
+        answer: String,
+        gmtStartAnswer: Long,
+    ): String {
+        val body =
+            JSONObject().apply {
+                val now = System.currentTimeMillis()
+                put("answer", answer)
+                put("bizType", MOTION_QUIZ_BIZ_TYPE)
+                put("gmtAnswer", now)
+                put("gmtStartAnswer", gmtStartAnswer)
+                put("quizId", quizId)
+            }
+        return requestMotionQuizChannelData(
+            "answer_quiz",
+            "2023041700030001",
+            body,
+        )
+    }
+
+    fun queryMotionQuizAward(quizId: String): String {
+        val body =
+            JSONObject().apply {
+                put("bizType", MOTION_QUIZ_BIZ_TYPE)
+                put("quizId", quizId)
+            }
+        return RequestManager.requestString(
+            "alipay.iblib.channel.flow",
+            JSONArray().put(JSONObject()
+                .put("body", body)
+                .put("stepflowCode", "query_quiz_prizes_new")
+                .put("version", "2.0")).toString(),
+        )
+    }
+
+    fun receiveMotionQuizWelfare(campId: String, prizeId: String): String = RequestManager.requestString(
+        "com.alipay.loanpromoweb.promo.camp.trigger",
+        JSONArray().put(JSONObject().put("campId", campId).put("prizeId", prizeId)).toString(),
+        tryCount = 1,
+        retryInterval = 0,
+    )
+
+    fun clickMotionQuizReceiveSort(
+        quizId: String,
+        creativityId: String,
+    ): String {
+        val body =
+            JSONObject().apply {
+                put("bizType", MOTION_QUIZ_BIZ_TYPE)
+                put("creativityId", creativityId)
+                put("quizId", quizId)
+            }
+        return requestMotionQuizChannelData(
+            "click_receive_sort",
+            "2025102200108020",
+            body,
+        )
+    }
+
+    fun queryFactcheckQuestionnaireIndex(lifecycleId: String): String = RequestManager.requestString(
+        "com.alipay.factcheck.questionnaireIndex",
+        JSONArray().put(JSONObject()
+            .put("businessTypeEnum", "APPLET")
+            .put("extInfo", JSONObject().put("lifecycleId", lifecycleId))
+            .put("previewDate", System.currentTimeMillis())
+            .put("source", "factcheck")).toString(),
+    )
+
+    fun startFactcheckQuestionnaire(question: JSONObject, lifecycleId: String): String {
+        val content = JSONObject(question.toString()).apply {
+            remove("index")
+            put("sourceMethod", "factchek")
+        }
+        val message = JSONObject().put("chunkId", 0).put("hasNext", false).put("turn", 0)
+            .put("contents", JSONArray().put(JSONObject()
+                .put("content", Base64.encodeToString(content.toString().toByteArray(Charsets.UTF_8), Base64.NO_WRAP))
+                .put("lastPack", false).put("packNo", 0)))
+        return RequestManager.requestString("com.alipay.factcheck.questionnaire", JSONArray().put(JSONObject()
+            .put("businessTypeEnum", "APPLET")
+            .put("extInfo", JSONObject().put("lifecycleId", lifecycleId))
+            .put("previewDate", System.currentTimeMillis()).put("source", "factcheck")
+            .put("messageInfo", message)).toString())
+    }
+
+    fun submitFactcheckAnswer(question: JSONObject, context: JSONObject, questionNo: Int, lifecycleId: String): String {
+        val session = context.getJSONObject("sessionInfo")
+        val content = JSONObject(question.toString()).apply {
+            put("userAnswer", question.getString("certType"))
+            put("sessionId", session.getString("sessionId"))
+            put("index", questionNo)
+            put("sourceMethod", "factchek")
+        }
+        val message = JSONObject().put("chatId", context.getJSONObject("messageInfo").getString("chatId"))
+            .put("chunkId", 0).put("hasNext", false).put("turn", 0)
+            .put("contents", JSONArray().put(JSONObject()
+                .put("content", Base64.encodeToString(content.toString().toByteArray(Charsets.UTF_8), Base64.NO_WRAP))
+                .put("lastPack", false).put("packNo", 0)))
+        return RequestManager.requestString("com.alipay.factcheck.submitAnswer", JSONArray().put(JSONObject()
+            .put("businessTypeEnum", "APPLET")
+            .put("extInfo", JSONObject().put("lifecycleId", lifecycleId))
+            .put("previewDate", System.currentTimeMillis()).put("source", "factcheck")
+            .put("messageInfo", message).put("sessionInfo", session)
+            .put("streamInfo", context.getJSONObject("streamInfo"))).toString())
+    }
+
+    fun collectFactcheckEnergy(question: JSONObject, context: JSONObject, bubbleId: String, lifecycleId: String): String {
+        val session = context.getJSONObject("sessionInfo")
+        val content = JSONObject().put("contentId", question.getString("contentId"))
+            .put("title", question.getString("title")).put("userId", session.getString("userId"))
+            .put("bubbleId", bubbleId)
+        val message = JSONObject().put("hasNext", false).put("protocolVersion", "2.0").put("turn", 666)
+            .put("contents", JSONArray().put(JSONObject()
+                .put("content", Base64.encodeToString(content.toString().toByteArray(Charsets.UTF_8), Base64.NO_WRAP))
+                .put("contentEncoding", "json").put("contentType", "energy")
+                .put("lastPack", false).put("packNo", 1)))
+        return RequestManager.requestString("com.alipay.factcheck.collectEnergy", JSONArray().put(JSONObject()
+            .put("businessTypeEnum", "APPLET")
+            .put("extInfo", JSONObject().put("lifecycleId", lifecycleId))
+            .put("previewDate", System.currentTimeMillis()).put("source", "factcheck")
+            .put("messageInfo", message).put("sessionInfo", session)
+            .put("streamInfo", context.getJSONObject("streamInfo"))).toString())
+    }
+
+    /**
+     * @brief 完成运动首页气泡任务
+     *
+     * @param taskId 首页气泡任务ID
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应抓包：运动首页 recBubbleList 中的 task.taskId
+     */
+    fun completeHomeBubbleTask(taskId: String): String {
+        val args1 = """[{"apiVersion":"energy","chInfo":"$HOME_CH_INFO","clientOS":"android","features":$FEATURES,"taskAction":"JUMP","taskId":"$taskId"}]"""
+        return RequestManager.requestString("com.alipay.sportshealth.biz.rpc.SportsHealthCoinTaskRpc.completeTask", args1)
+    }
+
+    /**
+     * @brief 运动健康签到/查询接口
+     *
+     * @param operatorType 操作类型
+     *   - "signIn" - 执行签到
+     *   - "query" - 查询签到状态
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：com.alipay.sportshealth.biz.rpc.SportsHealthCoinTaskRpc.signInCoinTask
+     */
+    fun signInCoinTask(operatorType: String): String {
+        val args1 = """[{"apiVersion":"energy","chInfo":"medical_health","clientOS":"android","features":$FEATURES,"operatorType":"$operatorType"}]"""
+        return RequestManager.requestString("com.alipay.sportshealth.biz.rpc.SportsHealthCoinTaskRpc.signInCoinTask", args1)
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 能量球模块接口
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    /**
+     * @brief 查询能量球泡泡模块
+     *
+     * @details 获取首页可领取的能量球列表。
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：com.alipay.sportshealth.biz.rpc.sportsHealthHomeRpc.queryCoinBubbleModule
+     */
+    fun queryCoinBubbleModule(): String =
+        RequestManager.requestString(
+            "com.alipay.sportshealth.biz.rpc.sportsHealthHomeRpc.queryCoinBubbleModule",
+            """[{"bubbleId":"","canAddHome":false,"chInfo":"$CH_INFO","clientAuthStatus":"not_support","clientOS":"android","distributionChannel":"","features":["DAILY_STEPS_RANK_V2","STEP_BATTLE","CLUB_HOME_CARD","NEW_HOME_PAGE_STATIC","CLOUD_SDK_AUTH","STAY_ON_COMPLETE","EXTRA_TREASURE_BOX","NEW_HOME_PAGE_STATIC","SUPPORT_AI","SUPPORT_TAB3","SUPPORT_FLYRABBIT","PROP","PROPV2","ASIAN_GAMES"]}]""",
+        )
+
+    /**
+     * @brief 领取能量球任务能量（无指定方式，默认不抢好友能量球）
+     *
+     * @param medEnergyBallInfoRecordId 能量球记录ID
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：com.alipay.neverland.biz.rpc.pickBubbleTaskEnergy
+     */
+    fun pickBubbleTaskEnergy(medEnergyBallInfoRecordId: String): String = pickBubbleTaskEnergy(medEnergyBallInfoRecordId, false)
+
+    /**
+     * @brief 领取能量球任务能量（可指定是否抢好友能量球）
+     *
+     * @param medEnergyBallInfoRecordId 能量球记录ID
+     * @param pickAllEnergyBall 是否领取所有能量球（包括好友的）
+     *   - true - 领取所有能量球，包括好友的
+     *   - false - 仅领取自己的
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：com.alipay.neverland.biz.rpc.pickBubbleTaskEnergy
+     */
+    fun pickBubbleTaskEnergy(
+        medEnergyBallInfoRecordId: String,
+        pickAllEnergyBall: Boolean,
+    ): String {
+        val args1 = """[{"apiVersion":"energy","chInfo":"medical_health","clientOS":"android","features":$FEATURES,"medEnergyBallInfoRecordIds":["$medEnergyBallInfoRecordId"],"pickAllEnergyBall":$pickAllEnergyBall,"source":"SPORT"}]"""
+        return RequestManager.requestString("com.alipay.neverland.biz.rpc.pickBubbleTaskEnergy", args1)
+    }
+
+    /**
+     * @brief 查询能量球模块 - 推荐列表
+     *
+     * @details 获取首页能量球推荐列表，包含广告和活动任务。
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：com.alipay.sportshealth.biz.rpc.sportsHealthHomeRpc.queryEnergyBubbleModule
+     */
+    fun queryEnergyBubbleModule(): String {
+        val args1 = """[{"apiVersion":"MERGE_SERVICE","bubbleId":"","canAddHome":false,"chInfo":"$HOME_CH_INFO","clientAuthStatus":"not_support","clientOS":"android","distributionChannel":"","features":$FEATURES,"outBizNo":""}]"""
+        return RequestManager.requestString(QUERY_ENERGY_BUBBLE_MODULE_RPC, args1)
+    }
+
+    /**
+     * @brief 拾取能量球（无参数版本）
+     *
+     * @details 领取所有待领取的能量球，传递空数组。
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：com.alipay.neverland.biz.rpc.pickBubbleTaskEnergy
+     */
+    fun pickBubbleTaskEnergy(): String {
+        val args1 = """[{"apiVersion":"energy","chInfo":"$HOME_CH_INFO","clientOS":"android","features":$FEATURES,"medEnergyBallInfoRecordIds":[],"pickAllEnergyBall":true,"source":"SPORT"}]"""
+        return RequestManager.requestString("com.alipay.neverland.biz.rpc.pickBubbleTaskEnergy", args1)
+    }
+
+    /**
+     * @brief 收集金币资产
+     *
+     * @param assetId 资产ID - 金币资产唯一标识
+     * @param coinAmount 金币数量 - 收集的金币数量
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：com.alipay.sportshealth.biz.rpc.SportsHealthCoinCenterRpc.receiveCoinAsset
+     */
+    fun receiveCoinAsset(
+        assetId: String,
+        coinAmount: Int,
+    ): String =
+        RequestManager.requestString(
+            "com.alipay.sportshealth.biz.rpc.SportsHealthCoinCenterRpc.receiveCoinAsset",
+            """[{"assetId":"$assetId","chInfo":"$CH_INFO","clientOS":"android","coinAmount":$coinAmount,"features":["DAILY_STEPS_RANK_V2","STEP_BATTLE","CLUB_HOME_CARD","NEW_HOME_PAGE_STATIC","CLOUD_SDK_AUTH","STAY_ON_COMPLETE","EXTRA_TREASURE_BOX","NEW_HOME_PAGE_STATIC","SUPPORT_TAB3","SUPPORT_FLYRABBIT","PROP","PROPV2","ASIAN_GAMES"],"tracertPos":"首页金币收集"}]""",
+        )
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 运动币兑换模块
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    /**
+     * @brief 查询礼品详情
+     *
+     * @param itemId 礼品ID - 要查询的礼品唯一标识
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：com.alipay.sportshealth.biz.rpc.SportsHealthItemCenterRpc.queryItemDetail
+     */
+    fun queryItemDetail(itemId: String): String {
+        val arg = """[{"itemId":"$itemId"}]"""
+        return RequestManager.requestString("com.alipay.sportshealth.biz.rpc.SportsHealthItemCenterRpc.queryItemDetail", arg)
+    }
+
+    /**
+     * @brief 查询项目列表
+     *
+     * @param index 页码索引，从0开始
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @deprecated 该为旧版接口
+     * @remark 对应API：alipay.antsports.walk.charity.queryProjectList
+     */
+    fun queryProjectList(index: Int): String =
+        RequestManager.requestString(
+            "alipay.antsports.walk.charity.queryProjectList",
+            """[{"chInfo":"$CH_INFO","clientOS":"android","features":["DAILY_STEPS_RANK_V2","STEP_BATTLE","CLUB_HOME_CARD","NEW_HOME_PAGE_STATIC","CLOUD_SDK_AUTH","STAY_ON_COMPLETE","EXTRA_TREASURE_BOX","NEW_HOME_PAGE_STATIC","SUPPORT_TAB3","SUPPORT_FLYRABBIT","PROP","PROPV2","ASIAN_GAMES"],"index":$index,"projectListUseVertical":true}]""",
+        )
+
+    /**
+     * @brief 捐赠慈善能量
+     *
+     * @param donateCharityCoin 捐赠慈善能量数量
+     * @param projectId 项目ID
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @deprecated 该为旧版接口
+     * @remark 对应API：alipay.antsports.walk.charity.donate
+     */
+    fun donate(
+        donateCharityCoin: Int,
+        projectId: String,
+    ): String =
+        RequestManager.requestString(
+            "alipay.antsports.walk.charity.donate",
+            """[{"chInfo":"$CH_INFO","clientOS":"android","donateCharityCoin":$donateCharityCoin,"features":["DAILY_STEPS_RANK_V2","STEP_BATTLE","CLUB_HOME_CARD","NEW_HOME_PAGE_STATIC","CLOUD_SDK_AUTH","STAY_ON_COMPLETE","EXTRA_TREASURE_BOX","NEW_HOME_PAGE_STATIC","SUPPORT_TAB3","SUPPORT_FLYRABBIT","PROP","PROPV2","ASIAN_GAMES"],"projectId":"$projectId"}]""",
+        )
+
+    /**
+     * @brief 查询当前可用步数
+     *
+     * @details
+     * 2026-03 抓包显示捐步查询已切换为 `alipay.antsports.steps.query`，
+     * 返回结构以顶层 `stepCount` 为主；旧版 `dailyStepModel.produceQuantity`
+     * 仍保留兼容解析，见 [extractWalkStepCount]。
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：alipay.antsports.steps.query
+     */
+    fun queryWalkStep(): String =
+        RequestManager.requestString(
+            QUERY_WALK_STEP_RPC,
+            """[{"appId":"healthstep","bizId":"donation","chInfo":"h5_donation_healthstep","timeZone":"$TIME_ZONE"}]""",
+        )
+
+    /**
+     * @brief 从捐步查询响应中提取可用步数
+     *
+     * @param response `queryWalkStep()` 返回的 JSON 对象
+     * @return 可用步数，解析失败时返回 0
+     */
+    fun extractWalkStepCount(response: JSONObject?): Int {
+        if (response == null) {
+            return 0
+        }
+
+        if (response.has("stepCount")) {
+            return response.optInt("stepCount", 0).coerceAtLeast(0)
+        }
+
+        val dailyStepModel = response.optJSONObject("dailyStepModel")
+        if (dailyStepModel != null) {
+            if (dailyStepModel.has("produceQuantity")) {
+                return dailyStepModel.optInt("produceQuantity", 0).coerceAtLeast(0)
+            }
+            if (dailyStepModel.has("stepCount")) {
+                return dailyStepModel.optInt("stepCount", 0).coerceAtLeast(0)
+            }
+        }
+
+        return 0
+    }
+
+    /**
+     * @brief 行走捐赠签到信息
+     *
+     * @param count 步数
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @deprecated 该为旧版接口
+     * @remark 对应API：alipay.charity.mobile.donate.walk.walkDonateSignInfo
+     */
+    fun walkDonateSignInfo(count: Int): String =
+        RequestManager.requestString(
+            "alipay.charity.mobile.donate.walk.walkDonateSignInfo",
+            """[{"needDonateAction":false,"source":"walkDonateHome","steps":$count,"timezoneId":"$TIME_ZONE"}]""",
+        )
+
+    /**
+     * @brief 行走捐赠首页
+     *
+     * @param count 步数
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @deprecated 该为旧版接口
+     * @remark 对应API：alipay.charity.mobile.donate.walk.home
+     */
+    fun donateWalkHome(count: Int): String =
+        RequestManager.requestString(
+            "alipay.charity.mobile.donate.walk.home",
+            """[{"module":"3","steps":$count,"timezoneId":"$TIME_ZONE"}]""",
+        )
+
+    /**
+     * @brief 兑换捐赠步数
+     *
+     * @param actId 活动ID
+     * @param count 步数
+     * @param donateToken 捐赠令牌
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @deprecated 该为旧版接口
+     * @remark 对应API：alipay.charity.mobile.donate.walk.exchange
+     */
+    fun exchange(
+        actId: String,
+        count: Int,
+        donateToken: String,
+    ): String =
+        RequestManager.requestString(
+            "alipay.charity.mobile.donate.walk.exchange",
+            """[{"actId":"$actId","count":$count,"donateToken":"$donateToken","timezoneId":"$TIME_ZONE","ver":0}]""",
+        )
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 新版行走路线模块（推荐使用）
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    /**
+     * @brief 查询用户信息 - 新版
+     *
+     * @details 获取新版蚂蚁运动中用户的基本信息。
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：com.alipay.sportsplay.biz.rpc.walk.queryUser
+     */
+
+    fun queryUser(): String {
+        val data = """[{"chInfo":"$SPORTS_WALK_SOURCE","clientOS":"android","features":$FEATURES,"mainPage":true,"timeZone":"$TIME_ZONE"}]"""
+        return RequestManager.requestString("com.alipay.sportsplay.biz.rpc.walk.queryUser", data)
+    }
+
+    fun queryThemeList(): String = RequestManager.requestString(
+        "com.alipay.sportsplay.biz.rpc.walk.theme.queryThemeList", "[{}]",
+    )
+
+    fun queryWorldMap(themeId: String): String = RequestManager.requestString(
+        "com.alipay.sportsplay.biz.rpc.walk.queryWorldMap",
+        JSONArray().put(JSONObject().put("themeId", themeId)).toString(),
+    )
+
+    /**
+     * @brief 查询城市路线 - 新版
+     *
+     * @param cityId 城市ID
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：com.alipay.sportsplay.biz.rpc.walk.queryCityPath
+     */
+    fun queryCityPath(cityId: String): String =
+        RequestManager.requestString(
+            "com.alipay.sportsplay.biz.rpc.walk.queryCityPath",
+            """[{"apiVersion":"energy","chInfo":"ch_othertinyapp","cityId":"$cityId","clientOS":"android","features":$FEATURES}]""",
+        )
+
+    /**
+     * @brief 查询城市见闻详情及其关联路线
+     *
+     * @remark 对应抓包：com.alipay.sportsplay.biz.rpc.walk.queryCityKnowledgeDetail
+     */
+    fun queryCityKnowledgeDetail(cityId: String): String =
+        RequestManager.requestString(
+            "com.alipay.sportsplay.biz.rpc.walk.queryCityKnowledgeDetail",
+            """[{"chInfo":"$SPORTS_WALK_SOURCE","cityId":"$cityId","clientOS":"android","features":$FEATURES}]""",
+        )
+
+    /**
+     * 查询用户已经进入过的路线历史；首页不发送 pageNo，避免伪造分页参数。
+     */
+    fun queryUserPathList(pageNo: Int? = null): String {
+        val request =
+            JSONObject().apply {
+                put("chInfo", SPORTS_WALK_SOURCE)
+                put("clientOS", "android")
+                put("features", JSONArray(FEATURES))
+                if (pageNo != null) {
+                    put("pageNo", pageNo)
+                }
+                put("pageSize", 7)
+            }
+        return RequestManager.requestString(
+            "com.alipay.sportsplay.biz.rpc.walk.queryUserPathList",
+            JSONArray().put(request).toString(),
+        )
+    }
+
+    /**
+     * @brief 查询城市见闻领取汇总
+     *
+     * @remark 对应抓包：com.alipay.sportsplay.biz.rpc.walk.queryCityKnowledgeSummary
+     */
+    fun queryCityKnowledgeSummary(): String =
+        RequestManager.requestString(
+            "com.alipay.sportsplay.biz.rpc.walk.queryCityKnowledgeSummary",
+            """[{"apiVersion":"energy","source":"ch_othertinyapp"}]""",
+        )
+
+    /**
+     * @brief 查询城市见闻勋章详情
+     *
+     * @remark 对应抓包：com.alipay.sportsplay.biz.rpc.walk.queryMedalDetail
+     */
+    fun queryMedalDetail(): String =
+        RequestManager.requestString(
+            "com.alipay.sportsplay.biz.rpc.walk.queryMedalDetail",
+            """[{"chInfo":"$SPORTS_WALK_SOURCE","clientOS":"android","features":$FEATURES}]""",
+        )
+
+    /**
+     * @brief 查询路线详情 - 新版
+     *
+     * @param date 日期字符串，格式如 "yyyy-MM-dd"
+     * @param pathId 路线ID
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：com.alipay.sportsplay.biz.rpc.walk.queryPath
+     */
+    fun queryPath(
+        date: String,
+        pathId: String,
+    ): String =
+        RequestManager.requestString(
+            "com.alipay.sportsplay.biz.rpc.walk.queryPath",
+            """[{"chInfo":"$SPORTS_WALK_SOURCE","clientOS":"android","date":"$date","enableNewVersion":true,"features":$FEATURES,"pathId":"$pathId","timeZone":"$TIME_ZONE"}]""",
+        )
+
+    /**
+     * @brief 查询推荐路线列表 - 当前路线完成后真实页面换图使用的推荐接口
+     *
+     * @param pathId 当前路线ID
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：com.alipay.sportsplay.biz.rpc.walk.queryRecommendPathList
+     */
+    fun queryRecommendPathList(pathId: String): String =
+        RequestManager.requestString(
+            "com.alipay.sportsplay.biz.rpc.walk.queryRecommendPathList",
+            """[{"chInfo":"$SPORTS_RECOMMEND_SOURCE","clientOS":"android","features":$FEATURES,"pathId":"$pathId"}]""",
+        )
+
+    /**
+     * @brief 加入运动路线 - 新版
+     *
+     * @param pathId 路线ID
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：com.alipay.sportsplay.biz.rpc.walk.joinPath
+     */
+    fun joinPath(pathId: String): String {
+        val requestBody = """[{"chInfo":"$SPORTS_WALK_SOURCE","clientOS":"android","features":$FEATURES,"pathId":"$pathId"}]"""
+        return RequestManager.requestString("com.alipay.sportsplay.biz.rpc.walk.joinPath", requestBody)
+    }
+
+    /**
+     * @brief 行走运动路线 - 新版
+     *
+     * @param date 日期字符串，格式如 "yyyy-MM-dd"
+     * @param pathId 路线ID
+     * @param useStepCount 使用的步数
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：com.alipay.sportsplay.biz.rpc.walk.go
+     */
+    fun walkGo(
+        date: String,
+        pathId: String,
+        useStepCount: Int,
+    ): String {
+        val requestBody = """[{"chInfo":"$SPORTS_WALK_SOURCE","clientOS":"android","date":"$date","features":$FEATURES,"pathId":"$pathId","source":"$SPORTS_WALK_SOURCE","timeZone":"$TIME_ZONE","useStepCount":$useStepCount}]"""
+        return RequestManager.requestString("com.alipay.sportsplay.biz.rpc.walk.go", requestBody)
+    }
+
+    /**
+     * @brief 领取路线事件奖励（如宝箱）- 新版
+     *
+     * @param eventBillNo 事件账单号（宝箱号）
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：com.alipay.sportsplay.biz.rpc.walk.receiveEvent
+     */
+    fun receiveEvent(eventBillNo: String): String =
+        RequestManager.requestString(
+            "com.alipay.sportsplay.biz.rpc.walk.receiveEvent",
+            """[{"apiVersion":"energy","eventBillNo":"$eventBillNo"}]""",
+        )
+
+    /**
+     * @brief 查询路线复活任务完成状态
+     */
+    fun queryReviveTaskFinishStatus(): String =
+        RequestManager.requestString(
+            "com.alipay.sportsplay.biz.rpc.walk.steprevive.queryTaskFinishStatus",
+            "[{}]",
+        )
+
+    /**
+     * @brief 查询可复活步数明细
+     */
+    fun queryUserReviveStepT2(): String =
+        RequestManager.requestString(
+            "com.alipay.sportsplay.biz.rpc.walk.steprevive.queryUserReviveStepT2",
+            """[{"timeZone":"$TIME_ZONE"}]""",
+        )
+
+    /**
+     * @brief 查询路线复活任务列表
+     */
+    fun queryReviveTaskList(): String =
+        RequestManager.requestString(
+            "com.alipay.sportsplay.biz.rpc.walk.steprevive.queryTaskList",
+            "[{}]",
+        )
+
+    /**
+     * @brief 触发路线复活任务
+     */
+    fun triggerReviveTask(
+        taskId: String,
+        taskBizId: String? = null,
+    ): String {
+        val obj =
+            JSONObject().apply {
+                put("taskId", taskId)
+                if (!taskBizId.isNullOrBlank()) {
+                    put("taskBizId", taskBizId)
+                }
+            }
+        return RequestManager.requestString(
+            "com.alipay.sportsplay.biz.rpc.walk.steprevive.triggerTask",
+            JSONArray().put(obj).toString(),
+        )
+    }
+
+    /**
+     * @brief 完成路线复活任务
+     */
+    fun completeReviveTask(taskId: String): String =
+        RequestManager.requestString(
+            "com.alipay.sportsplay.biz.rpc.walk.steprevive.completeTask",
+            """[{"taskId":"$taskId"}]""",
+        )
+
+    /**
+     * @brief 复活当前路线可复活步数
+     */
+    fun reviveSteps(): String =
+        RequestManager.requestString(
+            "com.alipay.sportsplay.biz.rpc.walk.steprevive.reviveSteps",
+            """[{"apiVersion":"energy","source":"$SPORTS_WALK_SOURCE","timeZone":"$TIME_ZONE"}]""",
+        )
+
+    /**
+     * @brief 按指定日期复活步数
+     */
+    fun reviveSteps(stepDate: String): String =
+        RequestManager.requestString(
+            "com.alipay.sportsplay.biz.rpc.walk.steprevive.reviveSteps",
+            """[{"stepDate":"$stepDate","timeZone":"$TIME_ZONE"}]""",
+        )
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 文体中心模块
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    /**
+     * @brief 查询用户任务组
+     *
+     * @param groupId 任务组ID
+     *   - "SPORTS_DAILY_SIGN_GROUP" - 日常签到组
+     *   - "SPORTS_DAILY_GROUP" - 日常任务组
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：alipay.tiyubiz.sports.userTaskGroup.query
+     */
+    fun userTaskGroupQuery(groupId: String): String =
+        RequestManager.requestString(
+            "alipay.tiyubiz.sports.userTaskGroup.query",
+            """[{"cityCode":"${LocationHelper.getCityCodeOrNull() ?: CITY_CODE}","groupId":"$groupId"}]""",
+        )
+
+    /**
+     * @brief 完成用户任务
+     *
+     * @param bizType 业务类型
+     * @param taskId 任务ID
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：alipay.tiyubiz.sports.userTask.complete
+     */
+    fun userTaskComplete(
+        bizType: String,
+        taskId: String,
+    ): String =
+        RequestManager.requestString(
+            "alipay.tiyubiz.sports.userTask.complete",
+            """[{"bizType":"$bizType","cityCode":"${LocationHelper.getCityCodeOrNull() ?: CITY_CODE}","completedTime":${System.currentTimeMillis()},"taskId":"$taskId"}]""",
+        )
+
+    /**
+     * @brief 领取用户任务权益
+     *
+     * @param taskId 任务ID
+     * @param userTaskId 用户任务ID
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：alipay.tiyubiz.sports.userTaskRights.receive
+     */
+    fun userTaskRightsReceive(
+        taskId: String,
+        userTaskId: String,
+    ): String =
+        RequestManager.requestString(
+            "alipay.tiyubiz.sports.userTaskRights.receive",
+            """[{"taskId":"$taskId","userTaskId":"$userTaskId"}]""",
+        )
+
+    /**
+     * @brief 查询已报名线上赛列表
+     *
+     * @param statusList 报名状态，抓包中进行中比赛为 "JOIN"
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：alipay.tiyubiz.userOnlineGame.listquery
+     */
+    fun userOnlineGameListQuery(statusList: String = "JOIN"): String =
+        RequestManager.requestString(
+            "alipay.tiyubiz.userOnlineGame.listquery",
+            """[{"chInfo":"medical_health","clientOS":"android","features":$FEATURES,"index":1,"isInProgress":true,"size":10,"statusList":"$statusList"}]""",
+        )
+
+    /**
+     * @brief 查询线上赛列表
+     *
+     * @param bizType 线上赛分组，如 RECOMMEND_GAME、NEW_ONLINE_GAME、STEP_GAME
+     * @param notInWufu 是否带上抓包中的 notinwufu 标记
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：alipay.tiyubiz.onlineGame.sports.listquery
+     */
+    fun onlineGameSportsListQuery(
+        bizType: String,
+        index: Int = 1,
+        size: Int = 10,
+        notInWufu: Boolean = false,
+    ): String {
+        val notInWufuField = if (notInWufu) ",\"notinwufu\":\"true\"" else ""
+        return RequestManager.requestString(
+            "alipay.tiyubiz.onlineGame.sports.listquery",
+            """[{"bizType":"$bizType","chInfo":"medical_health","clientOS":"android","features":$FEATURES,"index":$index$notInWufuField,"size":$size}]""",
+        )
+    }
+
+    /**
+     * @brief 查询线上赛目标档位
+     *
+     * @param gameId 比赛 ID
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：alipay.tiyubiz.onlineGame.eventQuery
+     */
+    fun onlineGameEventQuery(gameId: String): String =
+        RequestManager.requestString(
+            "alipay.tiyubiz.onlineGame.eventQuery",
+            """[{"chInfo":"medical_health","clientOS":"android","features":$FEATURES,"gameId":"$gameId"}]""",
+        )
+
+    /**
+     * @brief 报名线上赛
+     *
+     * @param gameId 比赛 ID
+     * @param gameEventId 目标档位 ID
+     * @param rightsPackageId 权益包 ID
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：alipay.tiyubiz.userOnlineGame.signup
+     */
+    fun userOnlineGameSignup(
+        gameId: String,
+        gameEventId: String,
+        rightsPackageId: String,
+    ): String =
+        RequestManager.requestString(
+            "alipay.tiyubiz.userOnlineGame.signup",
+            """[{"chInfo":"medical_health","clientOS":"android","features":$FEATURES,"gameEventId":"$gameEventId","gameId":"$gameId","rightsPackageId":"$rightsPackageId"}]""",
+        )
+
+    /**
+     * @brief 查询已报名线上赛详情
+     *
+     * @param gameId 比赛 ID
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：alipay.tiyubiz.userOnlineGame.detailQuery.forwenti
+     */
+    fun userOnlineGameDetailQuery(gameId: String): String =
+        RequestManager.requestString(
+            "alipay.tiyubiz.userOnlineGame.detailQuery.forwenti",
+            """[{"chInfo":"medical_health","clientOS":"android","features":$FEATURES,"gameId":"$gameId"}]""",
+        )
+
+    /**
+     * @brief 查询线上赛运动数据列表
+     *
+     * @param gameId 比赛 ID
+     * @param userGameId 用户参赛 ID
+     * @param sync 是否先同步服务端记录
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：alipay.tiyubiz.userOnlineGame.dataQuery
+     */
+    fun userOnlineGameDataQuery(
+        gameId: String,
+        userGameId: String,
+        sync: Boolean = true,
+        pageIndex: Int = 1,
+        pageSize: Int = 3,
+    ): String =
+        RequestManager.requestString(
+            "alipay.tiyubiz.userOnlineGame.dataQuery",
+            """[{"chInfo":"medical_health","clientOS":"android","features":$FEATURES,"gameId":"$gameId","pageIndex":$pageIndex,"pageSize":$pageSize,"sync":$sync,"userGameId":"$userGameId"}]""",
+        )
+
+    /**
+     * @brief 查询运动工具配置
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：com.alipay.sportshealth.biz.rpc.SportsHealthToolRpc.querySportsToolConfig
+     */
+    fun querySportsToolConfig(): String =
+        RequestManager.requestString(
+            "com.alipay.sportshealth.biz.rpc.SportsHealthToolRpc.querySportsToolConfig",
+            """[{"chInfo":"medical_health","clientOS":"android","features":$FEATURES}]""",
+        )
+
+    /**
+     * @brief 查询运动工具页面
+     *
+     * @param outBizCode 线上赛 gameId
+     * @param sportsType 运动类型，如 walk/run
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：com.alipay.sportshealth.biz.rpc.SportsHealthToolRpc.querySportsToolPage
+     */
+    fun querySportsToolPage(
+        outBizCode: String,
+        sportsType: String,
+    ): String {
+        val args =
+            JSONArray().put(
+                JSONObject().apply {
+                    put("chInfo", "medical_health")
+                    put("clientOS", "android")
+                    put("extraInfo", JSONObject().put("bizDesc", ""))
+                    put("features", JSONArray(FEATURES))
+                    put("fromAppId", "sports_online_game")
+                    put("outBizCode", outBizCode)
+                    put("sportsType", sportsType)
+                },
+            )
+        return RequestManager.requestString(
+            "com.alipay.sportshealth.biz.rpc.SportsHealthToolRpc.querySportsToolPage",
+            args.toString(),
+        )
+    }
+
+    /**
+     * @brief 查询用户进行中的运动记录
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：com.alipay.sportshealth.biz.rpc.SportsHealthToolRpc.queryUserMovingRecord
+     */
+    fun queryUserMovingRecord(): String =
+        RequestManager.requestString(
+            "com.alipay.sportshealth.biz.rpc.SportsHealthToolRpc.queryUserMovingRecord",
+            """[{"chInfo":"medical_health","clientOS":"android","features":$FEATURES}]""",
+        )
+
+    /**
+     * @brief 查询运动工具音频配置
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：com.alipay.sportshealth.biz.rpc.SportsHealthToolRpc.queryAudioConfig
+     */
+    fun queryAudioConfig(): String =
+        RequestManager.requestString(
+            "com.alipay.sportshealth.biz.rpc.SportsHealthToolRpc.queryAudioConfig",
+            """[{"chInfo":"medical_health","clientOS":"android","features":$FEATURES,"supportPlayBgm":true}]""",
+        )
+
+    /**
+     * @brief 同步运动工具传感器授权状态
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：com.alipay.sportshealth.biz.rpc.sportsHealthHomeRpc.syncDeviceAuthInfo
+     */
+    fun syncSportsDeviceAuthInfo(): String {
+        val authInfo =
+            JSONObject().apply {
+                put("authCanOpen", false)
+                put("authOpen", true)
+                put("authState", "authed")
+                put("authType", "sensor")
+                put("dataSource", "")
+                put("queryError", "NO_ERROR_CODE")
+            }
+        val args =
+            JSONArray().put(
+                JSONObject().apply {
+                    put("authInfos", JSONArray().put(authInfo))
+                    put("chInfo", "default")
+                    put("clientOS", "android")
+                },
+            )
+        return RequestManager.requestString(
+            "com.alipay.sportshealth.biz.rpc.sportsHealthHomeRpc.syncDeviceAuthInfo",
+            args.toString(),
+        )
+    }
+
+    /**
+     * @brief 开始运动工具记录
+     *
+     * @param outBizCode 线上赛 gameId
+     * @param sportsType 运动类型，如 walk/run
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：com.alipay.sportshealth.biz.rpc.SportsHealthToolRpc.startSports
+     */
+    fun startSports(
+        outBizCode: String,
+        sportsType: String,
+    ): String {
+        val args =
+            JSONArray().put(
+                JSONObject().apply {
+                    put("chInfo", "medical_health")
+                    put("clientOS", "android")
+                    put(
+                        "extraInfo",
+                        JSONObject().apply {
+                            put("bizDesc", "")
+                            put("planId", "")
+                        },
+                    )
+                    put("features", JSONArray(FEATURES))
+                    put("fromAppId", "sports_online_game")
+                    put("outBizCode", outBizCode)
+                    put("sportsType", sportsType)
+                },
+            )
+        return RequestManager.requestString(
+            "com.alipay.sportshealth.biz.rpc.SportsHealthToolRpc.startSports",
+            args.toString(),
+        )
+    }
+
+    /**
+     * @brief 结束运动工具记录
+     *
+     * @param record 运动记录体，对应抓包 requestData[].record
+     * @param isNormalFinish 是否正常结束
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：com.alipay.sportshealth.biz.rpc.SportsHealthToolRpc.finishSports
+     */
+    fun finishSports(
+        record: JSONObject,
+        isNormalFinish: Boolean = true,
+    ): String {
+        val args =
+            JSONArray().put(
+                JSONObject().apply {
+                    put("chInfo", "medical_health")
+                    put("clientOS", "android")
+                    put("features", JSONArray(FEATURES))
+                    put("isAutoStop", false)
+                    put("isNormalFinish", isNormalFinish)
+                    put("record", record)
+                },
+            )
+        return RequestManager.requestString(
+            "com.alipay.sportshealth.biz.rpc.SportsHealthToolRpc.finishSports",
+            args.toString(),
+        )
+    }
+
+    /**
+     * @brief 查询运动工具记录详情
+     *
+     * @param outBizCode 线上赛 gameId
+     * @param recordId 运动记录 ID
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：com.alipay.sportshealth.biz.rpc.SportsHealthToolRpc.querySportsRecordDetail
+     */
+    fun querySportsRecordDetail(
+        outBizCode: String,
+        recordId: String,
+    ): String {
+        val args =
+            JSONArray().put(
+                JSONObject().apply {
+                    put("chInfo", "medical_health")
+                    put("clientOS", "android")
+                    put("features", JSONArray(FEATURES))
+                    put("fromAppId", "sports_online_game")
+                    put("outBizCode", outBizCode)
+                    put("recordId", recordId)
+                    put("source", "SPORTS_TOOL")
+                },
+            )
+        return RequestManager.requestString(
+            "com.alipay.sportshealth.biz.rpc.SportsHealthToolRpc.querySportsRecordDetail",
+            args.toString(),
+        )
+    }
+
+    /**
+     * @brief 同步运动工具结束粒子统计
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：com.alipay.sportshealth.biz.rpc.SportsHealthToolRpc.finishSyncParticles
+     */
+    fun finishSyncParticles(
+        recordId: String,
+        sportsType: String,
+        stepCount: Int,
+        distance: Double,
+        durationMillis: Long,
+        startTime: Long,
+        endTime: Long,
+        index: Int,
+    ): String {
+        val particle =
+            JSONObject().apply {
+                put("accelStep", stepCount)
+                put("distance", 0)
+                put("duration", 0)
+                put("endTime", endTime)
+                put("gpsScore", 0)
+                put("identifier", recordId)
+                put(
+                    "invalidStatistics",
+                    JSONObject()
+                        .apply {
+                            put("last", 0)
+                            put("accuracy", 6)
+                            put("speedOrAcc", 3)
+                        }.toString(),
+                )
+                put(
+                    "lbsStatistics",
+                    JSONObject()
+                        .apply {
+                            put("gps", "80")
+                            put("wifi", "1")
+                        }.toString(),
+                )
+                put("sportDistance", distance)
+                put("sportDuration", durationMillis)
+                put("startTime", startTime)
+                put("status", "stop")
+                put("step", stepCount)
+                put("type", sportsType)
+            }
+        val args =
+            JSONArray().put(
+                JSONObject().apply {
+                    put("chInfo", "medical_health")
+                    put("clientOS", "android")
+                    put("features", JSONArray(FEATURES))
+                    put("index", index)
+                    put("particleDetailInfos", JSONArray().put(particle))
+                    put("recordId", recordId)
+                },
+            )
+        return RequestManager.requestString(
+            "com.alipay.sportshealth.biz.rpc.SportsHealthToolRpc.finishSyncParticles",
+            args.toString(),
+        )
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 抢好友大战模块
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    /**
+     * @brief 查询抢好友俱乐部首页
+     *
+     * @details 获取抢好友大战中的俱乐部首页数据。
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：alipay.antsports.club.home.queryClubHome
+     */
+    fun queryClubHome(): String {
+        val args = """[{"apiVersion":"energy","chInfo":"healthstep","timeZone":"$TIME_ZONE"}]"""
+        return RequestManager.requestString("alipay.antsports.club.home.queryClubHome", args)
+    }
+
+    /**
+     * @brief 查询训练项目
+     *
+     * @details 获取可用的训练项目列表。
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：alipay.antsports.club.train.queryTrainItem
+     */
+    fun queryTrainItem(): String {
+        val args = """[{"apiVersion":"energy","chInfo":"healthstep"}]"""
+        return RequestManager.requestString("alipay.antsports.club.train.queryTrainItem", args)
+    }
+
+    /**
+     * @brief 训练好友
+     *
+     * @param bizId 业务ID
+     * @param itemType 训练项目类型（如 "skate"）
+     * @param memberId 成员ID
+     * @param originBossId 原老板ID
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：alipay.antsports.club.train.trainMember
+     */
+    fun trainMember(
+        bizId: String,
+        itemType: String,
+        memberId: String,
+        originBossId: String,
+    ): String {
+        val args = """[{"apiVersion":"energy","bizId":"$bizId","chInfo":"healthstep","itemType":"$itemType","memberId":"$memberId","originBossId":"$originBossId"}]"""
+        return RequestManager.requestString("alipay.antsports.club.train.trainMember", args)
+    }
+
+    /**
+     * @brief 查询成员价格排行
+     *
+     * @param coinBalance 当前能量余额
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：alipay.antsports.club.ranking.queryMemberPriceRanking
+     */
+    fun queryMemberPriceRanking(coinBalance: Int): String {
+        val args = """[{"apiVersion":"energy","buyMember":true,"chInfo":"healthstep","coinBalance":$coinBalance}]"""
+        return RequestManager.requestString("alipay.antsports.club.ranking.queryMemberPriceRanking", args)
+    }
+
+    /**
+     * @brief 查询俱乐部成员详情
+     *
+     * @param memberId 成员ID
+     * @param originBossId 原老板ID
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：alipay.antsports.club.trade.queryClubMember
+     */
+    fun queryClubMember(
+        memberId: String,
+        originBossId: String,
+    ): String {
+        val args = """[{"apiVersion":"energy","chInfo":"healthstep","memberId":"$memberId","originBossId":"$originBossId"}]"""
+        return RequestManager.requestString("alipay.antsports.club.trade.queryClubMember", args)
+    }
+
+    /**
+     * @brief 抢购好友
+     *
+     * @param currentBossId 当前老板ID
+     * @param memberId 成员ID
+     * @param originBossId 原老板ID
+     * @param priceInfo 价格信息（JSON字符串）
+     * @param roomId 房间ID
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应API：alipay.antsports.club.trade.buyMember
+     */
+    fun buyMember(
+        currentBossId: String,
+        memberId: String,
+        originBossId: String,
+        priceInfo: String,
+        roomId: String,
+    ): String {
+        val requestData = """[{"apiVersion":"energy","chInfo":"healthstep","currentBossId":"$currentBossId","memberId":"$memberId","originBossId":"$originBossId","priceInfo":$priceInfo,"roomId":"$roomId"}]"""
+        return RequestManager.requestString("alipay.antsports.club.trade.buyMember", requestData)
+    }
+
+    /**
+     * 买回被其他玩家雇佣的自身成员。请求字段严格复用 queryClubHome 的 memberId 与 priceInfo。
+     */
+    fun buyBackMember(
+        memberId: String,
+        priceInfo: JSONObject,
+    ): String {
+        val args =
+            JSONArray().put(
+                JSONObject()
+                    .put("apiVersion", "energy")
+                    .put("chInfo", "healthstep")
+                    .put("memberId", memberId)
+                    .put("priceInfo", priceInfo),
+            )
+        return RequestManager.requestString("alipay.antsports.club.trade.buyBackMember", args.toString())
+    }
+
+    /**
+     * @brief 解锁下一个抢好友房间
+     *
+     * @param price 抓包中请求 price 使用当前能量余额，服务端自行计算实际解锁价格
+     *
+     * @return RPC调用结果的 JSON 字符串
+     *
+     * @remark 对应抓包：alipay.antsports.club.trade.unlockNextRoom
+     */
+    fun unlockNextRoom(price: Int): String {
+        val args = """[{"apiVersion":"energy","chInfo":"healthstep","price":$price}]"""
+        return RequestManager.requestString("alipay.antsports.club.trade.unlockNextRoom", args)
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 健康岛（Neverland）内部类
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    /**
+     * @brief 健康岛（Neverland）RPC 接口集合
+     *
+     * @details 专门用于健康岛任务系统的 RPC 接口组合。
+     * 包括签到、任务、泡泡、建造、走路等功能。
+     */
+    object NeverlandRpcCall {
+        private const val DEFAULT_SOURCE = "ch_toufang__yundongshouye"
+
+        fun offlineAward(): String = RequestManager.requestString(
+            "com.alipay.neverland.biz.rpc.offlineAward", "[{\"isAdvertisement\":true}]",
+        )
+
+        fun receiveSpecialPrize(sceneType: String): String = RequestManager.requestString(
+            "com.alipay.neverland.biz.rpc.receiveSpecialPrize",
+            JSONArray().put(JSONObject().put("sceneType", sceneType)).toString(),
+        )
+
+        /**
+         * @brief 查询签到状态
+         *
+         * @param signType 签到类型（健康岛固定为 3）
+         * @param source 来源标识（当前运动首页抓包稳定使用 "ch_toufang__yundongshouye"）
+         *
+         * @return RPC调用结果的 JSON 字符串
+         *
+         * @remark 对应API：com.alipay.neverland.biz.rpc.querySign
+         */
+        fun querySign(
+            signType: Int,
+            source: String,
+        ): String =
+            RequestManager.requestString(
+                "com.alipay.neverland.biz.rpc.querySign",
+                """[{"signType":$signType,"source":"$source"}]""",
+            )
+
+        /**
+         * @brief 执行签到
+         *
+         * @param signType 签到类型（健康岛固定为 3）
+         * @param source 来源标识（当前运动首页抓包稳定使用 "ch_toufang__yundongshouye"）
+         *
+         * @return RPC调用结果的 JSON 字符串
+         *
+         * @remark 对应API：com.alipay.neverland.biz.rpc.takeSign
+         */
+        fun takeSign(
+            signType: Int,
+            source: String,
+        ): String =
+            RequestManager.requestString(
+                "com.alipay.neverland.biz.rpc.takeSign",
+                """[{"signType":$signType,"source":"$source"}]""",
+            )
+
+        /**
+         * @brief 查询泡泡任务列表
+         *
+         * @return RPC调用结果的 JSON 字符串
+         *
+         * @remark 对应API：com.alipay.neverland.biz.rpc.queryBubbleTask
+         */
+        fun queryBubbleTask(source: String? = DEFAULT_SOURCE): String =
+            RequestManager.requestString(
+                NEVERLAND_QUERY_BUBBLE_TASK_RPC,
+                JSONArray().put(JSONObject().apply {
+                    if (source != null) put("source", source)
+                    put("sportsAuthed", true)
+                }).toString(),
+            )
+
+        private fun sportsItemMallFeatures(): JSONArray =
+            JSONArray().apply {
+                listOf(
+                    "DAILY_STEPS_RANK_V2",
+                    "STEP_BATTLE",
+                    "CLUB_HOME_CARD",
+                    "NEW_HOME_PAGE_STATIC",
+                    "CLOUD_SDK_AUTH",
+                    "STAY_ON_COMPLETE",
+                    "EXTRA_TREASURE_BOX",
+                    "SUPPORT_AI",
+                    "SUPPORT_TAB3",
+                    "SUPPORT_FLYRABBIT",
+                    "SUPPORT_NEW_MATCH",
+                    "EXTERNAL_ADVERTISEMENT_TASK",
+                    "PROP",
+                    "PROPV2",
+                    "ASIAN_GAMES",
+                ).forEach { put(it) }
+            }
+
+        fun queryCoinCenterPage(): String {
+            val args =
+                JSONArray()
+                    .put(
+                        JSONObject().apply {
+                            put("canAddHome", false)
+                            put("chInfo", "xzyd1031")
+                            put("clientAuthStatus", "not_support")
+                            put("clientOS", "android")
+                            put("features", sportsItemMallFeatures())
+                            put("topTaskId", "")
+                        },
+                    ).toString()
+            return RequestManager.requestString(
+                "com.alipay.sportshealth.biz.rpc.SportsHealthCoinCenterRpc.queryCoinCenterPage",
+                args,
+            )
+        }
+
+        fun deliverSportsItemMallPage(pageCode: String = "@alipay/alipaysports/property"): String {
+            val args =
+                JSONArray()
+                    .put(
+                        JSONObject().apply {
+                            put("extInfo", JSONObject())
+                            put("pageCode", pageCode)
+                        },
+                    ).toString()
+            return RequestManager.requestString(
+                "com.alipay.promofrontcenter.deliver.deliverByPageId",
+                args,
+            )
+        }
+
+        fun queryItemCategoryList(): String {
+            val args =
+                JSONArray()
+                    .put(
+                        JSONObject().apply {
+                            put("chInfo", "medical_health")
+                            put("clientOS", "android")
+                            put("features", sportsItemMallFeatures())
+                            put("sceneId", "SPORT_ITEM_MALL")
+                            put("source", "SPORT")
+                        },
+                    ).toString()
+            return RequestManager.requestString(
+                "com.alipay.neverland.biz.rpc.queryItemCategoryList",
+                args,
+            )
+        }
+
+        fun queryItemList(
+            categoryType: String = "",
+            pageNum: Int = 1,
+            pageSize: Int = 10,
+            cityCode: String,
+            adSession: String = "",
+        ): String {
+            val args =
+                JSONArray()
+                    .put(
+                        JSONObject().apply {
+                            put("adSession", adSession)
+                            put("categoryType", categoryType)
+                            put("chInfo", "medical_health")
+                            put("cityCode", cityCode)
+                            put("clientOS", "android")
+                            put("features", sportsItemMallFeatures())
+                            put("pageNum", pageNum)
+                            put("pageSize", pageSize)
+                            put("recommendItemIdList", JSONArray())
+                            put("sceneId", "SPORT_ITEM_MALL")
+                            put("source", "SPORT")
+                        },
+                    ).toString()
+            return RequestManager.requestString(
+                "com.alipay.neverland.biz.rpc.queryItemList",
+                args,
+            )
+        }
+
+        /** 权益中心下拉奖励使用独立请求形状，不能复用商城字段。 */
+        fun queryRightsCenterItemList(cityCode: String): String {
+            val args =
+                JSONArray()
+                    .put(
+                        JSONObject().apply {
+                            put("adSession", "")
+                            put("categoryType", "ALL")
+                            put("chInfo", DEFAULT_SOURCE)
+                            put("cityCode", cityCode)
+                            put("filterBenefitList", JSONArray())
+                            put("pageNum", 1)
+                            put("pageSize", 15)
+                            put("recommendItemIdList", JSONArray())
+                        },
+                    ).toString()
+            return RequestManager.requestString(
+                "com.alipay.neverland.biz.rpc.queryItemList",
+                args,
+            )
+        }
+
+        /** 权益中心下拉奖励领取；energyNum 保持抓包中的数字类型。 */
+        fun receiveRightsCenterDropdownReward(
+            encryptValue: String,
+            energyNum: Int,
+            taskId: String,
+        ): String {
+            val args =
+                JSONArray()
+                    .put(
+                        JSONObject().apply {
+                            put("encryptValue", encryptValue)
+                            put("energyNum", energyNum)
+                            put("lightTaskId", taskId)
+                            put("type", "DROPDOWN_REWARD_TASK")
+                        },
+                    ).toString()
+            return RequestManager.requestString(
+                "com.alipay.neverland.biz.rpc.energyReceive",
+                args,
+            )
+        }
+
+        fun queryItemDetail(
+            benefitId: String,
+            itemId: String,
+            materialType: String,
+            cityCode: String,
+            apDid: String = "",
+        ): String {
+            val args =
+                JSONArray()
+                    .put(
+                        JSONObject().apply {
+                            if (apDid.isNotBlank()) {
+                                put("apDid", apDid)
+                            }
+                            put("benefitId", benefitId)
+                            put("cityCode", cityCode)
+                            put("itemId", itemId)
+                            put("materialType", materialType)
+                        },
+                    ).toString()
+            return RequestManager.requestString(
+                RpcEntity(
+                    requestMethod = "com.alipay.neverland.biz.rpc.queryItemDetail",
+                    requestData = args,
+                    appName = "neverland",
+                    methodName = "queryItemDetail",
+                    facadeName = "NeverlandBenefitCenterRpc",
+                ),
+            )
+        }
+
+        fun createOrder(
+            benefitId: String,
+            itemId: String,
+            cityCode: String,
+            apDid: String = "",
+        ): String {
+            val args =
+                JSONArray()
+                    .put(
+                        JSONObject().apply {
+                            if (apDid.isNotBlank()) {
+                                put("apDid", apDid)
+                            }
+                            put("benefitId", benefitId)
+                            put("chInfo", "xzyd1031")
+                            put("cityCode", cityCode)
+                            put("itemId", itemId)
+                            put("source", "SPORT")
+                        },
+                    ).toString()
+            return RequestManager.requestString(
+                RpcEntity(
+                    requestMethod = "com.alipay.neverland.biz.rpc.createOrder",
+                    requestData = args,
+                    appName = "neverland",
+                    methodName = "createOrder",
+                    facadeName = "NeverlandBenefitCenterRpc",
+                ),
+            )
+        }
+
+        fun collectExchangeData(
+            cityCode: String,
+            apDid: String = "",
+        ): String {
+            val args =
+                JSONArray()
+                    .put(
+                        JSONObject().apply {
+                            if (apDid.isNotBlank()) {
+                                put("apDid", apDid)
+                            }
+                            put("cityCode", cityCode)
+                            put("collectType", "LOG_REPORT")
+                            put("scene", "BENEFIT_CENTER")
+                            put("subScene", "exchange")
+                        },
+                    ).toString()
+            return RequestManager.requestString(
+                RpcEntity(
+                    requestMethod = "com.alipay.neverland.biz.rpc.collectData",
+                    requestData = args,
+                    appName = "neverland",
+                    methodName = "collectData",
+                    facadeName = "NeverlandDataCollectRpc",
+                ),
+            )
+        }
+
+        /**
+         * @brief 领取泡泡能量
+         *
+         * @param ids 泡泡记录ID列表
+         *
+         * @return RPC调用结果的 JSON 字符串
+         *
+         * @remark 对应API：com.alipay.neverland.biz.rpc.pickBubbleTaskEnergy
+         */
+        fun pickBubbleTaskEnergy(
+            ids: List<String>,
+            source: String? = DEFAULT_SOURCE,
+            pickAllEnergyBall: Boolean = true,
+        ): String {
+            val obj =
+                JSONObject().apply {
+                    put(
+                        "medEnergyBallInfoRecordIds",
+                        JSONArray().apply {
+                            ids.forEach { put(it) }
+                        },
+                    )
+                    put("pickAllEnergyBall", pickAllEnergyBall)
+                    if (source != null) put("source", source)
+                }
+            val arr = JSONArray().put(obj)
+            return RequestManager.requestString(
+                "com.alipay.neverland.biz.rpc.pickBubbleTaskEnergy",
+                arr.toString(),
+            )
+        }
+
+        /**
+         * @brief 查询健康岛快捷游戏入口
+         *
+         * @remark 对应抓包：com.alipay.neverland.biz.rpc.queryQuickGameList
+         */
+        fun queryQuickGameList(source: String = DEFAULT_SOURCE, cityCode: String): String =
+            RequestManager.requestString(
+                "com.alipay.neverland.biz.rpc.queryQuickGameList",
+                JSONArray().put(JSONObject().put("chInfo", source).put("cityCode", cityCode).put("source", source)).toString(),
+            )
+
+        /**
+         * @brief 查询任务中心
+         *
+         * @details 获取健康岛任务大厅的任务列表，请求体按当前运动首页抓包同步。
+         *
+         * @param source 来源标识
+         * @param cityCode 城市编码
+         * @param apDid 可选设备标识；当前模块内没有可靠运行时来源时不传固定值
+         *
+         * @return RPC调用结果的 JSON 字符串
+         *
+         * @remark 对应API：com.alipay.neverland.biz.rpc.queryTaskCenter
+         */
+        fun queryTaskCenter(
+            source: String,
+            cityCode: String,
+            apDid: String = "",
+        ): String {
+            val args =
+                JSONArray()
+                    .put(
+                        JSONObject().apply {
+                            if (apDid.isNotBlank()) {
+                                put("apDid", apDid)
+                            }
+                            put("cityCode", cityCode)
+                            put("deviceLevel", "high")
+                            put("newGame", 1)
+                            put("source", source)
+                        },
+                    ).toString()
+            return RequestManager.requestString(
+                NEVERLAND_QUERY_TASK_CENTER_RPC,
+                args,
+            )
+        }
+
+        /**
+         * @brief 查询指定类型的任务信息
+         *
+         * @param source 来源标识（如 "health-island"）
+         * @param type 任务类型（如 "LIGHT_FEEDS_TASK"）
+         *
+         * @return RPC调用结果的 JSON 字符串
+         *
+         * @remark 对应API：com.alipay.neverland.biz.rpc.queryTaskInfo
+         */
+        fun queryTaskInfo(
+            source: String,
+            type: String,
+        ): String =
+            RequestManager.requestString(
+                NEVERLAND_QUERY_TASK_INFO_RPC,
+                """[{"source":"$source","type":"$type"}]""",
+            )
+
+        /**
+         * @brief 领取能量任务奖励
+         *
+         * @param encryptValue 任务加密值
+         * @param energyNum 能量数量
+         * @param type 任务类型
+         * @param lightTaskId 轻任务ID（可选）
+         *
+         * @return RPC调用结果的 JSON 字符串
+         *
+         * @remark 对应API：com.alipay.neverland.biz.rpc.energyReceive
+         */
+        fun energyReceive(
+            encryptValue: String,
+            energyNum: Int,
+            type: String,
+            lightTaskId: String?,
+            source: String = DEFAULT_SOURCE,
+        ): String {
+            val obj =
+                JSONObject().apply {
+                    put("encryptValue", encryptValue)
+                    put("energyNum", energyNum.toString())
+                    put("source", source)
+                    put("type", type)
+                    if (!lightTaskId.isNullOrEmpty()) {
+                        put("lightTaskId", lightTaskId)
+                    }
+                }
+            val arr = JSONArray().put(obj)
+            return RequestManager.requestString(
+                "com.alipay.neverland.biz.rpc.energyReceive",
+                arr.toString(),
+            )
+        }
+
+        /**
+         * @brief 提交任务
+         *
+         * @param taskObj 任务对象（JSONObject）
+         *
+         * @return RPC调用结果的 JSON 字符串
+         *
+         * @remark 对应API：com.alipay.neverland.biz.rpc.taskSend
+         */
+        fun taskSend(taskObj: JSONObject): String =
+            RequestManager.requestString(
+                "com.alipay.neverland.biz.rpc.taskSend",
+                """[$taskObj]""",
+            )
+
+        /**
+         * @brief 领取任务
+         *
+         * @param taskObj 任务对象（JSONObject）
+         *
+         * @return RPC调用结果的 JSON 字符串
+         *
+         * @remark 对应API：com.alipay.neverland.biz.rpc.taskReceive
+         */
+        fun taskReceive(taskObj: JSONObject): String =
+            RequestManager.requestString(
+                "com.alipay.neverland.biz.rpc.taskReceive",
+                """[$taskObj]""",
+            )
+
+        /**
+         * @brief 完成广告任务
+         *
+         * @param bizId 业务ID
+         *
+         * @return RPC调用结果的 JSON 字符串
+         *
+         * @remark 对应API：com.alipay.adtask.biz.mobilegw.service.task.finish
+         */
+        fun finish(bizId: String): String =
+            RequestManager.requestString(
+                "com.alipay.adtask.biz.mobilegw.service.task.finish",
+                """[{"bizId":"$bizId"}]""",
+            )
+
+        /**
+         * @brief 查询地图列表
+         *
+         * @return RPC调用结果的 JSON 字符串
+         *
+         * @remark 对应API：com.alipay.neverland.biz.rpc.queryMapList
+         */
+        fun queryMapList(source: String = DEFAULT_SOURCE): String =
+            RequestManager.requestString(
+                NEVERLAND_QUERY_MAP_LIST_RPC,
+                """[{"source":"$source"}]""",
+            )
+
+        /**
+         * @brief 查询地图信息（旧版）
+         *
+         * @param mapId 地图ID
+         * @param branchId 分支ID
+         *
+         * @return RPC调用结果的 JSON 字符串
+         *
+         * @throws JSONException JSON解析异常
+         * @remark 对应API：com.alipay.neverland.biz.rpc.queryMapInfo
+         */
+        @Throws(JSONException::class)
+        fun queryMapInfo(
+            mapId: String,
+            branchId: String,
+            source: String = DEFAULT_SOURCE,
+        ): String {
+            val obj = JSONObject()
+            obj.put("branchId", branchId)
+            obj.put("drilling", false)
+            obj.put("mapId", mapId)
+            obj.put("source", source)
+
+            val arr = JSONArray()
+            arr.put(obj)
+            return RequestManager.requestString("com.alipay.neverland.biz.rpc.queryMapInfo", arr.toString())
+        }
+
+        /**
+         * @brief 查询地图信息（新版）
+         *
+         * @param mapId 地图ID
+         *
+         * @return RPC调用结果的 JSON 字符串
+         *
+         * @remark 对应API：com.alipay.neverland.biz.rpc.queryMapInfoNew
+         */
+        fun queryMapInfoNew(
+            mapId: String,
+            branchId: String = "MASTER",
+            source: String = DEFAULT_SOURCE,
+        ): String =
+            RequestManager.requestString(
+                NEVERLAND_QUERY_MAP_INFO_NEW_RPC,
+                """[{"branchId":"$branchId","mapId":"$mapId","source":"$source"}]""",
+            )
+
+        /**
+         * @brief 查询基础信息
+         *
+         * @return RPC调用结果的 JSON 字符串
+         *
+         * @remark 对应API：com.alipay.neverland.biz.rpc.queryBaseinfo
+         */
+        fun queryBaseinfo(source: String = DEFAULT_SOURCE): String =
+            RequestManager.requestString(
+                NEVERLAND_QUERY_BASEINFO_RPC,
+                """[{"source":"$source"}]""",
+            )
+
+        fun queryBaseinfo(
+            branchId: String,
+            mapId: String,
+            fromMapId: String?,
+            source: String = DEFAULT_SOURCE,
+        ): String {
+            val obj =
+                JSONObject().apply {
+                    put("branchId", branchId)
+                    if (!fromMapId.isNullOrBlank()) {
+                        put("fromMapId", fromMapId)
+                    }
+                    put("mapId", mapId)
+                    put("source", source)
+                }
+            return RequestManager.requestString(
+                NEVERLAND_QUERY_BASEINFO_RPC,
+                JSONArray().put(obj).toString(),
+            )
+        }
+
+        /**
+         * @brief 建造建筑
+         *
+         * @param branchId 分支ID
+         * @param mapId 地图ID
+         * @param multiNum 建造倍数（1-10）
+         *
+         * @return RPC调用结果的 JSON 字符串
+         *
+         * @remark 对应API：com.alipay.neverland.biz.rpc.build
+         */
+        fun build(
+            branchId: String,
+            mapId: String,
+            multiNum: Int,
+            source: String = DEFAULT_SOURCE,
+        ): String {
+            val result =
+                RequestManager.requestString(
+                    "com.alipay.neverland.biz.rpc.build",
+                    """[{"branchId":"$branchId","mapId":"$mapId","multiNum":$multiNum,"source":"$source"}]""",
+                )
+            return result
+        }
+
+        /**
+         * @brief 建造建筑（新版参数顺序，兼容旧 build(branchId, mapId, multiNum)）
+         */
+        fun build(
+            mapId: String,
+            multiNum: Int,
+            branchId: String = "MASTER",
+            source: String = DEFAULT_SOURCE,
+        ): String = build(branchId, mapId, multiNum, source)
+
+        /**
+         * @brief 查询地图详情
+         *
+         * @param mapId 地图ID
+         *
+         * @return RPC调用结果的 JSON 字符串
+         *
+         * @remark 对应API：com.alipay.neverland.biz.rpc.queryMapDetail
+         */
+        fun queryMapDetail(
+            mapId: String,
+            source: String = DEFAULT_SOURCE,
+        ): String =
+            RequestManager.requestString(
+                NEVERLAND_QUERY_MAP_DETAIL_RPC,
+                """[{"mapId":"$mapId","source":"$source"}]""",
+            )
+
+        /**
+         * @brief 领取地图关卡奖励
+         *
+         * @param branchId 分支ID
+         * @param level 关卡等级
+         * @param mapId 地图ID
+         *
+         * @return RPC调用结果的 JSON 字符串
+         *
+         * @remark 对应API：com.alipay.neverland.biz.rpc.mapStageReward
+         */
+        fun mapStageReward(
+            branchId: String,
+            level: Int,
+            mapId: String,
+            source: String = DEFAULT_SOURCE,
+        ): String {
+            val result =
+                RequestManager.requestString(
+                    "com.alipay.neverland.biz.rpc.mapStageReward",
+                    """[{"branchId":"$branchId","level":$level,"mapId":"$mapId","source":"$source"}]""",
+                )
+            return result
+        }
+
+        /**
+         * @brief 选择奖励
+         *
+         * @param branchId 分支ID
+         * @param mapId 地图ID
+         * @param rewardId 奖励ID
+         *
+         * @return RPC调用结果的 JSON 字符串
+         *
+         * @remark 对应API：com.alipay.neverland.biz.rpc.mapChooseReward
+         */
+        fun chooseReward(
+            branchId: String,
+            mapId: String,
+            rewardId: String,
+            source: String = DEFAULT_SOURCE,
+        ): String {
+            val result =
+                RequestManager.requestString(
+                    "com.alipay.neverland.biz.rpc.mapChooseReward",
+                    """[{"branchId":"$branchId","channel":"$source","mapId":"$mapId","rewardId":"$rewardId","source":"$source"}]""",
+                )
+            return result
+        }
+
+        /**
+         * @brief 选择地图
+         *
+         * @param branchId 分支ID
+         * @param mapId 地图ID
+         *
+         * @return RPC调用结果的 JSON 字符串
+         *
+         * @remark 对应API：com.alipay.neverland.biz.rpc.mapChooseFree
+         */
+        fun chooseMap(
+            branchId: String,
+            mapId: String,
+            source: String = DEFAULT_SOURCE,
+        ): String {
+            val result =
+                RequestManager.requestString(
+                    "com.alipay.neverland.biz.rpc.mapChooseFree",
+                    """[{"branchId":"$branchId","mapId":"$mapId","source":"$source"}]""",
+                )
+            return result
+        }
+
+        /**
+         * @brief 行走地格
+         *
+         * @param branchId 分支ID
+         * @param mapId 地图ID
+         * @param drilling 是否钻探（通常为 false）
+         *
+         * @return RPC调用结果的 JSON 字符串
+         *
+         * @remark 对应API：com.alipay.neverland.biz.rpc.walkGrid
+         */
+        fun walkGrid(
+            branchId: String,
+            mapId: String,
+            drilling: Boolean,
+            source: String = DEFAULT_SOURCE,
+        ): String =
+            RequestManager.requestString(
+                "com.alipay.neverland.biz.rpc.walkGrid",
+                """[{"branchId":"$branchId","mapId":"$mapId","drilling":$drilling,"source":"$source"}]""",
+            )
+
+        /**
+         * @brief 查询用户能量
+         *
+         * @return RPC调用结果的 JSON 字符串
+         *
+         * @remark 对应API：com.alipay.neverland.biz.rpc.queryUserAccount
+         */
+        fun queryUserEnergy(source: String = DEFAULT_SOURCE): String =
+            RequestManager.requestString(
+                "com.alipay.neverland.biz.rpc.queryUserAccount",
+                """[{"source":"$source"}]""",
+            )
+    }
+}

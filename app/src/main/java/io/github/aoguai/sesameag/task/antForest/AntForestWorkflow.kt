@@ -1,0 +1,278 @@
+package io.github.aoguai.sesameag.task.antForest
+
+import io.github.aoguai.sesameag.util.Log
+import io.github.aoguai.sesameag.util.TimeCounter
+import io.github.aoguai.sesameag.util.maps.UserMap
+import org.json.JSONObject
+
+private val FOREST_TAG: String = AntForest::class.java.simpleName
+
+private fun logVisibleEnergyCollectionDisabled() {
+    Log.forest("收集能量开关关闭：仅跳过自己、好友和 PK 森友的可见绿色能量球收集相关链路；独立奖励任务仍按各自开关执行")
+}
+
+private fun AntForest.runForestWateringWorkflow(tc: TimeCounter, beforeCollect: Boolean) {
+    if (!tryStartWaterFriendsForStage(beforeCollect)) {
+        return
+    }
+    Log.forest(if (beforeCollect) "🚿 【正常流程】执行预收能量浇水" else "🚿 【正常流程】执行收能量后浇水")
+    waterFriends()
+    tc.countDebug(if (beforeCollect) "预收能量浇水" else "给好友浇水")
+}
+
+internal suspend fun AntForest.runForestPreparationAndCollectionWorkflow(tc: TimeCounter): JSONObject? {
+    runForestWateringWorkflow(tc, beforeCollect = true)
+
+    Log.forest("🌳 【正常流程】查询森林主页数据...")
+    val initialHome = querySelfHome()
+    tc.countDebug("主页对象信息")
+
+    updateSelfHomePage(initialHome)
+    tc.countDebug("查询道具状态")
+
+    val latestHomeAfterProps = usePropBeforeCollectEnergy(UserMap.currentUid)
+    tc.countDebug("使用自己道具卡")
+
+    val collectEnergyEnabled = isCollectEnergyEnabled()
+
+    // 加速器可能已立即收走能量，不能将其收取前的主页快照再次用于收取。
+    var selfHomeObj = if (collectEnergyEnabled && latestHomeAfterProps != null) {
+        querySelfHome()
+    } else {
+        latestHomeAfterProps ?: initialHome
+    }
+    if (selfHomeObj != null) {
+        if (collectEnergyEnabled) {
+            collectEnergy(UserMap.currentUid, selfHomeObj, "self")
+            Log.forest("✅ 【正常流程】收取自己的能量完成")
+            tc.countDebug("收取自己的能量")
+        } else {
+            logVisibleEnergyCollectionDisabled()
+            tc.countDebug("跳过自己的能量收取（未开启）")
+        }
+    } else {
+        Log.error(FOREST_TAG, "❌ 【正常流程】获取自己主页信息失败，跳过本次自己能量收取")
+        tc.countDebug("跳过自己的能量收取（主页获取失败）")
+    }
+
+    if (isTakeLookEnergyEnabled()) {
+        Log.forest("🚀 执行找能量接口")
+        collectEnergyByTakeLook()
+        tc.countDebug("找能量接口")
+    } else {
+        Log.forest("找能量开关关闭，跳过找能量接口")
+        tc.countDebug("跳过找能量接口（找能量未开启）")
+    }
+
+    if (collectEnergyEnabled && pkEnergy?.value == true) {
+        Log.forest("🚀 执行PK排行榜补全（协程）")
+        collectPKEnergyCoroutine()
+        tc.countDebug("PK排行榜补全（同步）")
+    } else if (pkEnergy?.value == true) {
+        Log.forest("收集能量开关关闭，跳过PK排行榜补全")
+        tc.countDebug("跳过PK排行榜补全（收集能量未开启）")
+    } else {
+        tc.countDebug("跳过PK排行榜补全（未开启）")
+    }
+
+    if (hasFriendRankingWorkEnabled()) {
+        Log.forest("🚀 执行好友排行榜补全（协程）")
+        collectFriendEnergyCoroutine()
+        tc.countDebug("好友排行榜补全（同步）")
+    } else {
+        Log.forest("收能量未开启，跳过好友主页扫描；好友礼盒/复活能量仅随已获取好友主页处理")
+        tc.countDebug("跳过好友主页扫描（收能量未开启）")
+    }
+
+    Log.forest("🌳 【正常流程】补充检查自己的森林主页...")
+    val finalSelfHomeObj = querySelfHome()
+    if (finalSelfHomeObj != null) {
+        selfHomeObj = finalSelfHomeObj
+        if (collectEnergyEnabled) {
+            collectEnergy(UserMap.currentUid, finalSelfHomeObj, "self")
+            Log.forest("✅ 【正常流程】补充检查自己能量完成")
+            tc.countDebug("补充检查自己的能量")
+        } else {
+            tc.countDebug("跳过补充检查自己的能量（未开启）")
+        }
+    } else {
+        Log.error(FOREST_TAG, "❌ 【正常流程】补充检查自己主页失败")
+        tc.countDebug("跳过补充检查自己的能量（主页获取失败）")
+    }
+    runForestWateringWorkflow(tc, beforeCollect = false)
+    return selfHomeObj
+}
+
+internal fun AntForest.runEnergyOnlyCollectionWorkflow(tc: TimeCounter): JSONObject? {
+    val collectEnergyEnabled = isCollectEnergyEnabled()
+
+    Log.forest("🌳 【只收能量】查询自己的森林主页...")
+    val selfHomeObj = querySelfHome()
+    updateSelfHomePage(selfHomeObj)
+    if (selfHomeObj != null) {
+        if (collectEnergyEnabled) {
+            collectEnergy(UserMap.currentUid, selfHomeObj, "self")
+            Log.forest("✅ 【只收能量】收取自己的能量完成")
+            tc.countDebug("只收能量-收取自己的能量")
+        } else {
+            logVisibleEnergyCollectionDisabled()
+            tc.countDebug("只收能量-跳过自己的能量收取（未开启）")
+        }
+    } else {
+        Log.error(FOREST_TAG, "❌ 【只收能量】获取自己主页信息失败，跳过本次自己能量收取")
+        tc.countDebug("只收能量-跳过自己的能量收取（主页获取失败）")
+    }
+
+    if (isTakeLookEnergyEnabled()) {
+        Log.forest("🚀 【只收能量】执行找能量接口")
+        collectEnergyByTakeLook()
+        tc.countDebug("只收能量-找能量接口")
+    } else {
+        Log.forest("找能量开关关闭，跳过找能量接口")
+        tc.countDebug("只收能量-跳过找能量接口（找能量未开启）")
+    }
+
+    return selfHomeObj
+}
+
+// 首次处理和后续刷新共用主页收益入口，不重跑游戏、兑换等独立任务。
+private fun AntForest.collectSelfHomeRewards(selfHomeObj: JSONObject, tc: TimeCounter) {
+    collectGiftBox(selfHomeObj)
+    tc.countDebug("收取自己的礼盒")
+
+    val processObj =
+        if (isTeam(selfHomeObj)) {
+            selfHomeObj
+                .optJSONObject("teamHomeResult")
+                ?.optJSONObject("mainMember")
+        } else {
+            selfHomeObj
+        }
+
+    if (collectWateringBubble?.value == true) {
+        wateringBubbles(processObj)
+        tc.countDebug("收取浇水金球")
+    }
+    if (collectProp?.value == true) {
+        givenProps(processObj)
+        tc.countDebug("收取道具")
+    }
+    collectEnergyBomb(selfHomeObj)
+    tc.countDebug("收取炸弹卡能量")
+}
+
+internal suspend fun AntForest.runForestHomeFollowUpWorkflow(
+    selfHomeObj: JSONObject?,
+    tc: TimeCounter,
+) {
+    if (selfHomeObj == null) {
+        return
+    }
+    var shouldRefreshForestHomeAfterEnergyRain = false
+
+    checkAndHandleWhackMole()
+    tc.countDebug("拼手速")
+
+    collectSelfHomeRewards(selfHomeObj, tc)
+    handleEnergyPvpChallenge()
+    tc.countDebug("1V1能量挑战赛")
+
+    if (receiveForestTaskAward?.value == true) {
+        receiveTaskAward()
+        plantTaskQueue.submit {
+            waterMemberPlant()
+            runMemberPlantTasks()
+        }
+        tc.countDebug("森林任务")
+        handleGift7thSign(selfHomeObj)
+        tc.countDebug("森林七日礼包")
+    }
+    if (ecoLife?.value == true) {
+        val ecoLifeTimeAllowed = ecoLifeTime?.let { it.isDisabled() || it.isReachedToday() } ?: true
+        if (ecoLifeTimeAllowed) {
+            EcoLife.ecoLife()
+            tc.countDebug("绿色行动")
+        } else {
+            Log.forest("绿色行动未到执行时间，跳过")
+        }
+    }
+
+    if (giveProp?.value == true) {
+        giveProp()
+        tc.countDebug("赠送道具")
+    }
+
+    if (vitalityExchange?.value == true) {
+        handleVitalityExchange()
+        tc.countDebug("活力值兑换")
+    }
+
+    if (energyRain?.value == true) {
+        val energyRainTimeAllowed = energyRainTime?.let { it.isDisabled() || it.isReachedToday() } ?: true
+        if (energyRainTimeAllowed) {
+            if (energyRainChance?.value == true) {
+                useEnergyRainChanceCard()
+                tc.countDebug("使用能量雨卡")
+            }
+            if (EnergyRainCoroutine.execEnergyRain(
+                    gameTaskCloser =
+                        EnergyRainCoroutine.EnergyRainGameDriveCloser { request ->
+                            closeEnergyRainGameDriveTask(request)
+                        },
+                )
+            ) {
+                shouldRefreshForestHomeAfterEnergyRain = true
+                handleEnergyRainPostFlow()
+            }
+            tc.countDebug("能量雨")
+        } else {
+            Log.forest("能量雨未到执行时间，跳过")
+        }
+    }
+
+    if (forestMarket?.value == true) {
+        GreenLife.ForestMarket("GREEN_LIFE")
+        GreenLife.checkIn()
+        tc.countDebug("森林集市")
+    }
+    if (greenRent?.value == true) {
+        GreenLife.collectRentEnergy()
+        tc.countDebug("绿色租赁")
+    }
+
+    if (medicalHealth?.value == true) {
+        if (AntForest.medicalHealthOption?.value?.contains("FEEDS") == true) {
+            Healthcare.queryForestEnergy("FEEDS")
+            tc.countDebug("绿色医疗")
+        }
+        if (AntForest.medicalHealthOption?.value?.contains("BILL") == true) {
+            Healthcare.queryForestEnergy("BILL")
+            tc.countDebug("电子小票")
+        }
+    }
+
+
+    if (forestDailyDress?.value == true) ForestDress.run()
+    if (forestRead?.value == true) runForestReadWorkflow()
+    if (forestChouChouLe?.value == true) {
+        ForestChouChouLe(forestCharityWater?.value == true && isForestWateringEnabled()).chouChouLe()
+        tc.countDebug("抽抽乐")
+    }
+
+    doforestgame()
+
+    val latestHomeObj = updateSelfHomePage(
+        collectRobMultiplierEnergy = true,
+        homePageSource =
+            if (shouldRefreshForestHomeAfterEnergyRain) {
+                AntForestRpcCall.BACK_FROM_ENERGY_RAIN_SOURCE
+            } else {
+                null
+            },
+    )
+    tc.countDebug("领取N倍卡能量")
+    latestHomeObj?.let { collectSelfHomeRewards(it, tc) }
+
+    logForestEnergyInfo()
+    tc.stop()
+}

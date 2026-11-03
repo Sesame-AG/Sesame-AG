@@ -1,0 +1,92 @@
+package io.github.aoguai.sesameag.entity
+
+import io.github.aoguai.sesameag.hook.AccountSessionIdentity
+import io.github.aoguai.sesameag.hook.ExchangeSettingsRefreshContext
+import io.github.aoguai.sesameag.hook.internal.SecurityBodyHelper
+import org.json.JSONException
+import org.json.JSONObject
+import kotlin.concurrent.Volatile
+
+/**
+ * 表示一个 RPC（远程过程调用）实体，用于封装请求和响应数据。
+ * 提供线程安全的响应和错误标识。
+ */
+class RpcEntity @JvmOverloads constructor(
+    val requestMethod: String? = null,
+    val requestData: String? = null,
+    val appName: String? = null,
+    val methodName: String? = "taskFeedback",
+    val facadeName: String? = null,
+    val headers: Map<String, String>? = null,
+    val relationLocal: JSONObject? = null
+) {
+    // 仅在客户端传递所属会话和设置页上下文，不进入 rpcFullRequestData。
+    internal var requestIdentity: AccountSessionIdentity? = null
+    internal var settingsRefresh: ExchangeSettingsRefreshContext? = null
+
+    @Volatile
+    var hasResult = false
+    @Volatile
+    var hasError = false
+    @Volatile
+    var responseObject: Any? = null
+    @Volatile
+    var responseString: String? = null
+    /**
+     * 设置响应结果并标记请求已完成。
+     *
+     * @param result    响应的对象
+     * @param resultStr 响应的字符串形式
+     */
+    fun setResponseObject(result: Any?, resultStr: String?) {
+        this.hasError = false
+        this.responseObject = result
+        // 确保 responseString 不为 null，避免上层 NPE
+        this.responseString = resultStr ?: ""
+        this.hasResult = true // 响应内容就绪后再发布结果
+    }
+
+    /**
+     * 标记请求为错误状态。
+     */
+    fun setError() {
+        this.hasError = true // 标记请求发生错误
+        // 确保 responseString 不为 null，避免上层 NPE
+        if (this.responseString == null) {
+            this.responseString = ""
+        }
+    }
+
+    @get:Throws(JSONException::class)
+    val rpcFullRequestData: String
+        /**
+         * 获取Rpc请求字符串
+         *
+         * @return Rpc请求字符串
+         * @throws JSONException json解析错误，需要处理
+         */
+        get() {
+            val jo = JSONObject()
+            jo.put("__apiCallStartTime", System.currentTimeMillis())
+            // [__apiNativeCallId]不传是否有影响，取值又如何获取
+            jo.put("apiCallLink", "XRiverNotFound")
+            jo.put("appName", this.appName)
+            jo.put("execEngine", "XRiver")
+            jo.put("__apiNativeCallId", "native_" + (100..2000).random())
+            jo.put("facadeName", this.facadeName)
+            jo.put("methodName", this.methodName)
+            jo.put("operationType", this.requestMethod)
+            jo.put("requestData", this.requestData)
+            if (this.relationLocal != null) {
+                jo.put("relationLocal", this.relationLocal)
+            }
+            if (!this.headers.isNullOrEmpty()) {
+                jo.put("headers", JSONObject(this.headers))
+            }
+            jo.put("wua", SecurityBodyHelper.getSecurityBodyData(4).toString())
+            jo.put("useWua", true)
+            jo.put("disableLimitView", true)
+            return jo.toString()
+        }
+}
+
