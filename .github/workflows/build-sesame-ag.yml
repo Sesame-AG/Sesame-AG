@@ -10,21 +10,24 @@ on:
       - '[0-9]*-*'
   workflow_dispatch:
   schedule:
+    # 每 3 天 UTC 0:00（北京 8:00）检测
     - cron: '0 0 */3 * *'
 
 env:
   CI: "true"
   JAVA_DISTRIBUTION: "oracle"
   JAVA_VERSION: "17.0.1"
+  
+  # 原仓库构建基线
   ANDROID_API_LEVEL: "37"
   ANDROID_PLATFORM: "android-37.0"
   ANDROID_BUILD_TOOLS: "37.0.0"
-  LOCAL_GRADLE_VERSION: "9.5.1"
-  LOCAL_AGP_VERSION: "9.2.1"
-  LOCAL_KOTLIN_VERSION: "2.2.10"
+  
   RELEASE_DIR: app/build/outputs/apk/release
   STAGING_DIR: app/build/outputs/apk/all
   ASSET_DIR: app/build/outputs/apk/release-assets
+  
+  # 同步配置
   TARGET_SOURCE_BRANCH: dev
   UPSTREAM_REPO: Sesame-AG/Sesame-AG
   UPSTREAM_BRANCH: dev
@@ -36,6 +39,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # ============================================================
+  # 任务 1：同步原仓库 dev 分支到本地 dev（隔离执行）
+  # ============================================================
   sync-dev:
     runs-on: ubuntu-latest
     permissions:
@@ -45,23 +51,23 @@ jobs:
       dev_updated: ${{ steps.sync.outputs.dev_updated }}
       change_log: ${{ steps.sync.outputs.change_log }}
     steps:
-      - name: Checkout Repo
+      - name: 检出仓库
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
           token: ${{ secrets.GH_PAT }}
           ref: main
-      - name: Config Git
+
+      - name: 配置 Git 与上游
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git remote set-url origin "https://x-access-token:${{ secrets.GH_PAT }}@github.com/${{ github.repository }}.git"
-      - name: Fetch Upstream Dev
-        run: |
           git remote remove upstream 2>/dev/null || true
           git remote add upstream "https://github.com/${{ env.UPSTREAM_REPO }}.git"
           git fetch upstream "${{ env.UPSTREAM_BRANCH }}" --quiet
-      - name: Sync Dev
+
+      - name: 合并上游 dev 分支
         id: sync
         run: |
           if git rev-parse --verify --quiet "origin/${{ env.TARGET_SOURCE_BRANCH }}" >/dev/null; then
@@ -69,140 +75,160 @@ jobs:
           else
             git checkout -B "${{ env.TARGET_SOURCE_BRANCH }}" origin/main
           fi
+
+          # 检查是否有更新
           if git merge-base --is-ancestor "upstream/${{ env.UPSTREAM_BRANCH }}" HEAD; then
             echo "dev_updated=false" >> "$GITHUB_OUTPUT"
             echo "change_log=" >> "$GITHUB_OUTPUT"
+            echo "ℹ️ dev 分支无更新"
             exit 0
           fi
+
+          # 执行合并
           BEFORE_SHA="$(git rev-parse HEAD)"
           git merge "upstream/${{ env.UPSTREAM_BRANCH }}" --no-commit --no-ff -X theirs || true
+          
+          # 恢复第三方仓库自己的 workflows，避免 push 被拒
           rm -rf .github/workflows
           git checkout "${BEFORE_SHA}" -- .github/workflows 2>/dev/null || true
+          
           git add -A
           git commit -m "Merge upstream/${{ env.UPSTREAM_BRANCH }} [skip ci]" || true
+          
           AFTER_SHA="$(git rev-parse HEAD)"
           CHANGE_LOG="$(git log --oneline "${BEFORE_SHA}..${AFTER_SHA}")"
+          
           echo "dev_updated=true" >> "$GITHUB_OUTPUT"
           echo "change_log<<CHANGE_LOG_EOF" >> "$GITHUB_OUTPUT"
           echo "${CHANGE_LOG}" >> "$GITHUB_OUTPUT"
           echo "CHANGE_LOG_EOF" >> "$GITHUB_OUTPUT"
+          
           git push origin "${{ env.TARGET_SOURCE_BRANCH }}" --force-with-lease
+          echo "✅ dev 分支已同步并推送"
 
+  # ============================================================
+  # 任务 2：同步原仓库 main 分支到本地 main（隔离执行）
+  # ============================================================
   sync-main:
     runs-on: ubuntu-latest
     permissions:
       contents: write
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     continue-on-error: true
-    outputs:
-      main_updated: ${{ steps.sync.outputs.main_updated }}
     steps:
-      - name: Checkout Repo
+      - name: 检出仓库
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
           token: ${{ secrets.GH_PAT }}
           ref: main
-      - name: Config Git
+
+      - name: 配置 Git 与上游
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git remote set-url origin "https://x-access-token:${{ secrets.GH_PAT }}@github.com/${{ github.repository }}.git"
-      - name: Fetch Upstream Main
-        run: |
           git remote remove upstream 2>/dev/null || true
           git remote add upstream "https://github.com/${{ env.UPSTREAM_REPO }}.git"
           git fetch upstream "${{ env.UPSTREAM_MAIN_BRANCH }}" --quiet
-      - name: Sync Main
-        id: sync
+
+      - name: 合并上游 main 分支
         run: |
           git checkout -B main origin/main
+          
           if git merge-base --is-ancestor "upstream/${{ env.UPSTREAM_MAIN_BRANCH }}" HEAD; then
-            echo "main_updated=false" >> "$GITHUB_OUTPUT"
+            echo "ℹ️ main 分支无更新"
             exit 0
           fi
+
           BEFORE_SHA="$(git rev-parse HEAD)"
           git merge "upstream/${{ env.UPSTREAM_MAIN_BRANCH }}" --no-commit --no-ff -X theirs || true
+          
           rm -rf .github/workflows
           git checkout "${BEFORE_SHA}" -- .github/workflows 2>/dev/null || true
+          
           git add -A
           git commit -m "Merge upstream/${{ env.UPSTREAM_MAIN_BRANCH }} [skip ci]" || true
-          echo "main_updated=true" >> "$GITHUB_OUTPUT"
+          
           git push origin main --force-with-lease
+          echo "✅ main 分支已同步并推送"
 
+  # ============================================================
+  # 任务 3：构建、签名、发布（仅在 dev 有更新或手动触发时运行）
+  # ============================================================
   build-and-release:
     runs-on: ubuntu-latest
     needs: sync-dev
     permissions:
       contents: write
-    if: always() && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'push' && github.ref == 'refs/heads/dev') || github.event_name == 'workflow_dispatch' || needs.sync-dev.outputs.dev_updated == 'true')
+    if: |
+      always() && (
+        github.event_name == 'workflow_dispatch' || 
+        github.event_name == 'push' || 
+        needs.sync-dev.outputs.dev_updated == 'true'
+      )
     outputs:
       version: ${{ steps.prepare_assets.outputs.version }}
       tag_name: ${{ steps.prepare_assets.outputs.tag_name }}
-      build_time: ${{ steps.prepare_assets.outputs.build_time }}
-      dev_latest_commit: ${{ steps.prepare_assets.outputs.dev_latest_commit }}
-      dev_latest_commit_msg: ${{ steps.prepare_assets.outputs.dev_latest_commit_msg }}
-      dev_latest_commit_time: ${{ steps.prepare_assets.outputs.dev_latest_commit_time }}
-      main_latest_commit: ${{ steps.prepare_assets.outputs.main_latest_commit }}
-      main_latest_commit_msg: ${{ steps.prepare_assets.outputs.main_latest_commit_msg }}
-      main_latest_commit_time: ${{ steps.prepare_assets.outputs.main_latest_commit_time }}
+      dev_commit: ${{ steps.upstream_info.outputs.dev_commit }}
+      main_commit: ${{ steps.upstream_info.outputs.main_commit }}
     steps:
-      - name: Set Timezone
-        run: sudo timedatectl set-timezone Asia/Shanghai
-      - name: Checkout Build Code
+      - name: 检出待构建代码
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
           ref: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.ref || env.TARGET_SOURCE_BRANCH }}
-      - name: Wait Random
-        if: github.event_name == 'schedule'
-        run: |
-          WAIT_SEC=$((RANDOM % 7200))
-          sleep "${WAIT_SEC}"
-      - name: Setup JDK
+
+      - name: 设置时区
+        run: sudo timedatectl set-timezone Asia/Shanghai
+
+      - name: 安装 JDK
         uses: actions/setup-java@v5
         with:
           distribution: ${{ env.JAVA_DISTRIBUTION }}
           java-version: ${{ env.JAVA_VERSION }}
           architecture: x64
-      - name: Set Gradle Java Home
+
+      - name: 配置 Gradle Java Home
         run: echo "ORG_GRADLE_JAVA_HOME=${JAVA_HOME}" >> "$GITHUB_ENV"
-      - name: Setup Android SDK Tools
+
+      - name: 安装 Android SDK 工具
         uses: android-actions/setup-android@v4
         with:
           packages: ""
-      - name: Install Android SDK
+
+      - name: 安装 Android SDK 组件
         run: |
           sdkmanager --install "platform-tools" "platforms;${ANDROID_PLATFORM}" "build-tools;${ANDROID_BUILD_TOOLS}"
           set +o pipefail
           yes | sdkmanager --licenses >/dev/null
           set -o pipefail
-      - name: Setup Gradle Cache
+
+      - name: 配置 Gradle 缓存
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: wrapper
           cache-read-only: false
           cache-cleanup: on-success
-      - name: Chmod Gradle
+
+      - name: 赋予 Gradle 执行权限
         run: chmod +x gradlew
-      - name: Check Toolchain
-        run: |
-          grep -Eq '^distributionUrl=.*gradle-'"${LOCAL_GRADLE_VERSION//./\\.}"'-bin\.zip$' gradle/wrapper/gradle-wrapper.properties
-          grep -Eq '^android-plugin = "'"${LOCAL_AGP_VERSION//./\\.}"'"$' gradle/libs.versions.toml
-          grep -Eq '^kotlin = "'"${LOCAL_KOTLIN_VERSION//./\\.}"'"$' gradle/libs.versions.toml
-          grep -Eq '^appVersion=.+' gradle.properties
-          grep -Eq 'compileSdk = '"${ANDROID_API_LEVEL}"'$' app/build.gradle.kts
-          grep -Eq 'buildToolsVersion = "'"${ANDROID_BUILD_TOOLS//./\\.}"'"$' app/build.gradle.kts
-      - name: Build Release
+
+      - name: 执行 Release 构建
         run: ./gradlew --no-daemon --stacktrace assembleRelease
-      - name: Stage APKs
+
+      - name: 准备待签名的 APK
         run: |
           rm -rf "${STAGING_DIR}" "${ASSET_DIR}"
           mkdir -p "${STAGING_DIR}"
-          mapfile -t apks < <(find "${RELEASE_DIR}" -maxdepth 1 -type f -name "*.apk" | sort)
-          if [ "${#apks[@]}" -eq 0 ]; then exit 1; fi
-          cp "${apks[@]}" "${STAGING_DIR}/"
-      - name: Sign APKs
+          find "${RELEASE_DIR}" -maxdepth 1 -type f -name "*.apk" -exec cp {} "${STAGING_DIR}/" \;
+          
+          if [ -z "$(ls -A ${STAGING_DIR})" ]; then
+            echo "❌ 未找到任何 APK 文件"
+            exit 1
+          fi
+
+      - name: 对 APK 进行签名
         id: sign_apks
         uses: ilharp/sign-android-release@v2
         with:
@@ -212,12 +238,14 @@ jobs:
           keyStorePassword: ${{ secrets.KEYSTORE_PASSWORD }}
           keyPassword: ${{ secrets.KEY_PASSWORD }}
           buildToolsVersion: ${{ env.ANDROID_BUILD_TOOLS }}
-      - name: Prepare Assets
+
+      - name: 规范化文件名与版本号提取
         id: prepare_assets
         run: |
-          rm -rf "${ASSET_DIR}"
           mkdir -p "${ASSET_DIR}"
           IFS=':' read -r -a files <<< "${{ steps.sign_apks.outputs.signedFiles }}"
+          
+          # 1. 重命名 APK 文件对齐原仓库
           for file in "${files[@]}"; do
             [ -n "${file}" ] || continue
             base="$(basename "${file}")"
@@ -227,54 +255,94 @@ jobs:
             done
             cp "${file}" "${ASSET_DIR}/app-${abi}-release-signed.apk"
           done
+          
           cd "${ASSET_DIR}"
           sha256sum -- *.apk > SHA256SUMS
-          VERSION="$(sed -n 's/^appVersion=//p' gradle.properties | head -n1 | tr -d '\r')"
+
+          # 2. 三层版本号解析逻辑
+          # 第一层：尝试从 gradle.properties 读取
+          VERSION="$(grep '^appVersion=' gradle.properties | head -n 1 | cut -d'=' -f 2 | tr -d '[:space:]')"
+          
+          # 第二层：如果当前是打 Tag 触发，直接解析 Tag 名 (如 4380-0.2.6)
+          if [ -z "${VERSION}" ] && [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG_NAME="${{ github.ref_name }}"
+            if [[ "${TAG_NAME}" =~ ^[0-9]+-(.+)$ ]]; then
+              VERSION="${BASH_REMATCH[1]}"
+            fi
+          fi
+          
+          # 第三层：如果以上都没有，拉取原仓库最新的 Tag 解析
+          if [ -z "${VERSION}" ]; then
+            git remote add upstream "https://github.com/${{ env.UPSTREAM_REPO }}.git" 2>/dev/null || true
+            git fetch upstream --tags --quiet 2>/dev/null || true
+            LATEST_TAG="$(git describe --tags --abbrev=0 "upstream/${{ env.UPSTREAM_BRANCH }}" 2>/dev/null || true)"
+            if [[ "${LATEST_TAG}" =~ ^[0-9]+-(.+)$ ]]; then
+              VERSION="${BASH_REMATCH[1]}"
+            fi
+          fi
+          
+          # 绝对兜底
           if [ -z "${VERSION}" ]; then VERSION="0.0.0"; fi
-          SHORT_SHA="$(git rev-parse --short HEAD)"
+
+          SHORT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo "0000000")"
           DATE="$(date '+%Y%m%d')"
+          
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag_name=v${VERSION}-${DATE}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
-          echo "build_time=$(date '+%Y-%m-%d %H:%M:%S')" >> "$GITHUB_OUTPUT"
+          echo "✅ 解析到的版本号为: ${VERSION}"
+
+      - name: 获取原仓库最新提交信息
+        id: upstream_info
+        run: |
           git remote remove upstream 2>/dev/null || true
           git remote add upstream "https://github.com/${{ env.UPSTREAM_REPO }}.git"
           git fetch upstream --quiet
+          
           if git rev-parse --short upstream/dev >/dev/null 2>&1; then
-            echo "dev_latest_commit=$(git rev-parse --short upstream/dev)" >> "$GITHUB_OUTPUT"
-            echo "dev_latest_commit_msg=$(git log --oneline -1 upstream/dev | cut -d' ' -f2-)" >> "$GITHUB_OUTPUT"
-            echo "dev_latest_commit_time=$(git log -1 --format='%ci' upstream/dev)" >> "$GITHUB_OUTPUT"
+            DEV_SHA="$(git rev-parse --short upstream/dev)"
+            DEV_MSG="$(git log --oneline -1 upstream/dev | cut -d' ' -f2-)"
           else
-            echo "dev_latest_commit=N/A" >> "$GITHUB_OUTPUT"
-            echo "dev_latest_commit_msg=N/A" >> "$GITHUB_OUTPUT"
-            echo "dev_latest_commit_time=N/A" >> "$GITHUB_OUTPUT"
+            DEV_SHA="N/A"
+            DEV_MSG="无"
           fi
-          echo "main_latest_commit=$(git rev-parse --short upstream/main)" >> "$GITHUB_OUTPUT"
-          echo "main_latest_commit_msg=$(git log --oneline -1 upstream/main | cut -d' ' -f2-)" >> "$GITHUB_OUTPUT"
-          echo "main_latest_commit_time=$(git log -1 --format='%ci' upstream/main)" >> "$GITHUB_OUTPUT"
-      - name: Gen Release Body
+          
+          MAIN_SHA="$(git rev-parse --short upstream/main)"
+          MAIN_MSG="$(git log --oneline -1 upstream/main | cut -d' ' -f2-)"
+
+          echo "dev_commit=${DEV_SHA} - ${DEV_MSG}" >> "$GITHUB_OUTPUT"
+          echo "main_commit=${MAIN_SHA} - ${MAIN_MSG}" >> "$GITHUB_OUTPUT"
+
+      - name: 生成 Release 说明文件
         run: |
           cat > release-body.md << 'BODY_EOF'
-          ## Build Info
+          ## 📦 构建信息
           BODY_EOF
-          echo "- Version: v${{ steps.prepare_assets.outputs.version }}" >> release-body.md
-          echo "- Build Time: ${{ steps.prepare_assets.outputs.build_time }}" >> release-body.md
+          echo "- 版本号：v${{ steps.prepare_assets.outputs.version }}" >> release-body.md
+          echo "- 构建时间：$(date '+%Y-%m-%d %H:%M:%S')" >> release-body.md
           echo "" >> release-body.md
-          echo "## Upstream Commits" >> release-body.md
-          echo "- dev: ${{ steps.prepare_assets.outputs.dev_latest_commit }}" >> release-body.md
-          echo "- main: ${{ steps.prepare_assets.outputs.main_latest_commit }}" >> release-body.md
+          
+          echo "## 📝 原仓库最新提交" >> release-body.md
+          echo "- **dev**: ${{ steps.upstream_info.outputs.dev_commit }}" >> release-body.md
+          echo "- **main**: ${{ steps.upstream_info.outputs.main_commit }}" >> release-body.md
+          
           if [ "${{ needs.sync-dev.outputs.dev_updated }}" == "true" ]; then
             echo "" >> release-body.md
-            echo "## Changes" >> release-body.md
-            printf '%s\n' "${{ needs.sync-dev.outputs.change_log }}" | while read -r line; do [ -n "$line" ] && echo "- $line" >> release-body.md; done
+            echo "## 📥 本次同步更新记录" >> release-body.md
+            printf '%s\n' "${{ needs.sync-dev.outputs.change_log }}" | while read -r line; do
+              if [ -n "$line" ]; then echo "- $line" >> release-body.md; fi
+            done
           fi
+          
           cat >> release-body.md << 'BODY_EOF'
 
-          ## Downloads
-          - `universal`: Recommended for all devices.
-          - `arm64-v8a`: 64-bit ARM devices.
-          - `armeabi-v7a`: 32-bit ARM devices.
+          ## 📱 下载说明
+          - `universal`: 通用版（推荐，适用所有设备）
+          - `arm64-v8a`: 64位 ARM 设备（主流新手机）
+          - `armeabi-v7a`: 32位 ARM 设备（旧款手机）
+          - `x86_64` / `x86`: 安卓模拟器
           BODY_EOF
-      - name: Create Release
+
+      - name: 创建 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.prepare_assets.outputs.tag_name }}
@@ -286,7 +354,8 @@ jobs:
             ${{ env.ASSET_DIR }}/*.apk
             ${{ env.ASSET_DIR }}/*.sha256
             ${{ env.ASSET_DIR }}/SHA256SUMS
-      - name: Clean Old Releases
+
+      - name: 清理旧版本（保留最近 3 个）
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -294,30 +363,58 @@ jobs:
           releases="$(curl -sS -H "Authorization: token ${GITHUB_TOKEN}" "https://api.github.com/repos/${REPO}/releases?per_page=100" | jq -r '.[] | select(.tag_name | startswith("v")) | "\(.id) \(.tag_name)"' | sort -r)"
           count="$(printf '%s\n' "${releases}" | sed '/^$/d' | wc -l)"
           delete_count=$((count - 3))
+          
           if [ "${delete_count}" -le 0 ]; then exit 0; fi
+          
           printf '%s\n' "${releases}" | tail -n "${delete_count}" | while read -r release_id tag_name; do
             curl -sS -f -X DELETE -H "Authorization: token ${GITHUB_TOKEN}" "https://api.github.com/repos/${REPO}/releases/${release_id}" || true
             curl -sS -f -X DELETE -H "Authorization: token ${GITHUB_TOKEN}" "https://api.github.com/repos/${REPO}/git/refs/tags/${tag_name}" || true
           done
 
+  # ============================================================
+  # 任务 4：邮件通知（无更新跳过时不发送）
+  # ============================================================
   notify-email:
     runs-on: ubuntu-latest
     needs: [ sync-dev, build-and-release ]
     if: always() && needs.build-and-release.result != 'skipped' && needs.build-and-release.result != 'cancelled'
     steps:
-      - name: Gen Email Body
+      - name: 准备邮件内容
         id: gen_email
         run: |
           if [ "${{ needs.build-and-release.result }}" == "success" ]; then
-            SUBJECT="Success: Sesame-AG Build"
-            echo "Build URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" > email-body.txt
-            echo "Version: ${{ needs.build-and-release.outputs.version }}" >> email-body.txt
+            SUBJECT="✅ Sesame-AG 构建成功 (v${{ needs.build-and-release.outputs.version }})"
+            {
+              echo "🎉 Sesame-AG 新版本已成功构建并发布！"
+              echo ""
+              echo "🔗 下载地址：${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.build-and-release.outputs.tag_name }}"
+              echo ""
+              echo "📦 版本信息：v${{ needs.build-and-release.outputs.version }}"
+              echo ""
+              echo "📝 原仓库最新提交"
+              echo "- dev: ${{ needs.build-and-release.outputs.dev_commit }}"
+              echo "- main: ${{ needs.build-and-release.outputs.main_commit }}"
+            } > email-body.txt
           else
-            SUBJECT="Failed: Sesame-AG Build"
-            echo "Build Failed. Check logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" > email-body.txt
+            SUBJECT="❌ Sesame-AG 构建失败"
+            {
+              echo "❌ Sesame-AG 构建流程出现失败。"
+              echo ""
+              echo "🔗 错误日志：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            } > email-body.txt
           fi
+          
+          if [ "${{ needs.sync-dev.outputs.dev_updated }}" == "true" ]; then
+            echo "" >> email-body.txt
+            echo "📥 本次同步的全部提交：" >> email-body.txt
+            printf '%s\n' "${{ needs.sync-dev.outputs.change_log }}" | while read -r line; do
+              if [ -n "$line" ]; then echo "- $line" >> email-body.txt; fi
+            done
+          fi
+          
           echo "subject=${SUBJECT}" >> "$GITHUB_OUTPUT"
-      - name: Send Mail
+
+      - name: 发送邮件
         uses: dawidd6/action-send-mail@v6
         with:
           server_address: smtp.qq.com
@@ -325,14 +422,20 @@ jobs:
           username: ${{ secrets.EMAIL_USERNAME }}
           password: ${{ secrets.EMAIL_PASSWORD }}
           to: ${{ secrets.EMAIL_RECEIVER }}
-          from: GitHub Actions
+          from: GitHub Actions 自动构建
           subject: ${{ steps.gen_email.outputs.subject }}
           body: file://email-body.txt
 
+  # ============================================================
+  # 任务 5：失败摘要补充
+  # ============================================================
   notify-failure:
     runs-on: ubuntu-latest
     needs: [ sync-dev, sync-main, build-and-release ]
     if: failure()
     steps:
-      - name: Print Error
-        run: echo "Build Failed"
+      - name: 输出失败提示
+        run: |
+          echo "## ❌ 构建执行失败" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "请点击左侧失败的任务步骤，查看详细日志信息。" >> "$GITHUB_STEP_SUMMARY"
