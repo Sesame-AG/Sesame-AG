@@ -1,11 +1,13 @@
 name: Sesame-AG 第三方构建（对齐原仓库产物）
 
-run-name: ${{ github.actor }} 触发的构建 | ${{ github.event_name }}
+run-name: 第三方构建 - ${{ github.event_name }} 触发
 
 on:
   push:
-分支: [ dev ]
-标签: [ "[0-9]*-*" ]
+分支:
+      - dev
+标签:
+      - '[0-9]*-*'
   workflow_dispatch:
   schedule:
     # 每 3 天 UTC 0:00（北京 8:00）检测；构建前随机等待 0-120 分钟
