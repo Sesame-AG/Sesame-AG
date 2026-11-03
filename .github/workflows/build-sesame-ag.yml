@@ -1,4 +1,4 @@
-name: Sesame-AG 第三方构建
+name: Sesame-AG 第三方构建（对齐原仓库产物）
 
 run-name: ${{ github.actor }} 触发的构建 | ${{ github.event_name }}
 
