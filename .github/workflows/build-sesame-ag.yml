@@ -13,7 +13,7 @@ on:
 env:
   CI: "true"
   JAVA_DISTRIBUTION: "temurin"
-  JAVA_VERSION: "17"
+  JAVA_VERSION: "17.0.1"
 
   # 原仓库构建基线
   ANDROID_API_LEVEL: "37"
@@ -174,16 +174,19 @@ jobs:
       dev_commit: ${{ steps.upstream_info.outputs.dev_commit }}
       main_commit: ${{ steps.upstream_info.outputs.main_commit }}
     steps:
+      - name: 判断检出ref
+        id: pick-ref
+        run: |
+          if [[ "${{ github.event_name }}" == "push" && "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
+            echo "checkout_ref=${{ github.ref }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "checkout_ref=${{ env.TARGET_SOURCE_BRANCH }}" >> "$GITHUB_OUTPUT"
+          fi
       - name: 检出待构建代码
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          ref: >-
-            ${{
-              (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
-              ? github.ref
-              : env.TARGET_SOURCE_BRANCH
-            }}
+          ref: ${{ steps.pick-ref.outputs.checkout_ref }}
       - name: 设置时区
         run: echo "TZ=Asia/Shanghai" >> "$GITHUB_ENV"
       - name: 安装 JDK
