@@ -222,7 +222,16 @@ jobs:
             )
           done
 
+          # 从 gradle.properties 读版本号；读不到则从最新 git tag 提取
           VERSION=$(sed -n 's/^appVersion=//p' gradle.properties | head -n1 | tr -d '\r')
+          if [ -z "$VERSION" ] || [ "$VERSION" = "" ]; then
+            LATEST_TAG=$(git describe --tags --abbrev=0 upstream/main 2>/dev/null || echo "")
+            if [ -n "$LATEST_TAG" ]; then
+              VERSION=$(echo "$LATEST_TAG" | sed 's/^v//' | cut -d'-' -f1)
+            else
+              VERSION="0.0.0"
+            fi
+          fi
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
           SHORT_SHA=$(git rev-parse --short HEAD)
