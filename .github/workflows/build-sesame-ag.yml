@@ -1,4 +1,4 @@
-name: Sesame-AG 全自动构建系统（最终稳定版）
+name: Sesame-AG 自动构建脚本
 run-name: ${{ github.actor }} 触发的构建 | ${{ github.event_name }}
 
 on:
