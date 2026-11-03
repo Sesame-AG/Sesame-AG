@@ -1,48 +1,44 @@
 name: Sesame-AG 第三方构建
-
 run-name: 构建任务 - ${{ github.event_name }}
-
 on:
   push:
-分支:
+    branches:
       - dev
-标签:
+    tags:
       - '[0-9]*-*'
   workflow_dispatch:
   schedule:
     # 每 3 天 UTC 0:00（北京 8:00）检测
     - cron: '0 0 */3 * *'
-
 env:
   CI: "true"
-  JAVA_DISTRIBUTION: "oracle"
-  JAVA_VERSION: "17.0.1"
-  
+  JAVA_DISTRIBUTION: "temurin"
+  JAVA_VERSION: "17"
+
   # 原仓库构建基线
   ANDROID_API_LEVEL: "37"
   ANDROID_PLATFORM: "android-37.0"
   ANDROID_BUILD_TOOLS: "37.0.0"
-  
+
   RELEASE_DIR: app/build/outputs/apk/release
   STAGING_DIR: app/build/outputs/apk/all
   ASSET_DIR: app/build/outputs/apk/release-assets
-  
+
   # 同步配置
   TARGET_SOURCE_BRANCH: dev
   UPSTREAM_REPO: Sesame-AG/Sesame-AG
   UPSTREAM_BRANCH: dev
   UPSTREAM_MAIN_BRANCH: main
   ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
-
 concurrency:
   group: sesame-build
   cancel-in-progress: false
-
 jobs:
   # ============================================================
   # 任务 1：同步原仓库 dev 分支到本地 dev（隔离执行）
   # ============================================================
   sync-dev:
+    name: "🔄 同步上游 dev 分支"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -57,7 +53,6 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GH_PAT }}
           ref: main
-
       - name: 配置 Git 与上游
         run: |
           git config user.name "github-actions[bot]"
@@ -66,7 +61,6 @@ jobs:
           git remote remove upstream 2>/dev/null || true
           git remote add upstream "https://github.com/${{ env.UPSTREAM_REPO }}.git"
           git fetch upstream "${{ env.UPSTREAM_BRANCH }}" --quiet
-
       - name: 合并上游 dev 分支
         id: sync
         run: |
@@ -75,7 +69,6 @@ jobs:
           else
             git checkout -B "${{ env.TARGET_SOURCE_BRANCH }}" origin/main
           fi
-
           # 检查是否有更新
           if git merge-base --is-ancestor "upstream/${{ env.UPSTREAM_BRANCH }}" HEAD; then
             echo "dev_updated=false" >> "$GITHUB_OUTPUT"
@@ -83,33 +76,38 @@ jobs:
             echo "ℹ️ dev 分支无更新"
             exit 0
           fi
-
           # 执行合并
           BEFORE_SHA="$(git rev-parse HEAD)"
           git merge "upstream/${{ env.UPSTREAM_BRANCH }}" --no-commit --no-ff -X theirs || true
-          
+
+          # 检测合并冲突文件，存在冲突直接终止，避免产生垃圾提交
+          if git diff --name-only --diff-filter=U | grep -q .; then
+            echo "❌ 合并上游产生冲突，终止任务"
+            exit 1
+          fi
+
           # 恢复第三方仓库自己的 workflows，避免 push 被拒
           rm -rf .github/workflows
           git checkout "${BEFORE_SHA}" -- .github/workflows 2>/dev/null || true
-          
+
           git add -A
           git commit -m "Merge upstream/${{ env.UPSTREAM_BRANCH }} [skip ci]" || true
-          
+
           AFTER_SHA="$(git rev-parse HEAD)"
           CHANGE_LOG="$(git log --oneline "${BEFORE_SHA}..${AFTER_SHA}")"
-          
+
           echo "dev_updated=true" >> "$GITHUB_OUTPUT"
           echo "change_log<<CHANGE_LOG_EOF" >> "$GITHUB_OUTPUT"
           echo "${CHANGE_LOG}" >> "$GITHUB_OUTPUT"
           echo "CHANGE_LOG_EOF" >> "$GITHUB_OUTPUT"
-          
+
           git push origin "${{ env.TARGET_SOURCE_BRANCH }}" --force-with-lease
           echo "✅ dev 分支已同步并推送"
-
   # ============================================================
   # 任务 2：同步原仓库 main 分支到本地 main（隔离执行）
   # ============================================================
   sync-main:
+    name: "🔄 同步上游 main 分支"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -122,7 +120,6 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GH_PAT }}
           ref: main
-
       - name: 配置 Git 与上游
         run: |
           git config user.name "github-actions[bot]"
@@ -131,40 +128,44 @@ jobs:
           git remote remove upstream 2>/dev/null || true
           git remote add upstream "https://github.com/${{ env.UPSTREAM_REPO }}.git"
           git fetch upstream "${{ env.UPSTREAM_MAIN_BRANCH }}" --quiet
-
       - name: 合并上游 main 分支
         run: |
           git checkout -B main origin/main
-          
+
           if git merge-base --is-ancestor "upstream/${{ env.UPSTREAM_MAIN_BRANCH }}" HEAD; then
             echo "ℹ️ main 分支无更新"
             exit 0
           fi
-
           BEFORE_SHA="$(git rev-parse HEAD)"
           git merge "upstream/${{ env.UPSTREAM_MAIN_BRANCH }}" --no-commit --no-ff -X theirs || true
-          
+
+          # 检测合并冲突
+          if git diff --name-only --diff-filter=U | grep -q .; then
+            echo "⚠️ main分支合并冲突，跳过本次合并"
+            exit 1
+          fi
+
           rm -rf .github/workflows
           git checkout "${BEFORE_SHA}" -- .github/workflows 2>/dev/null || true
-          
+
           git add -A
           git commit -m "Merge upstream/${{ env.UPSTREAM_MAIN_BRANCH }} [skip ci]" || true
-          
+
           git push origin main --force-with-lease
           echo "✅ main 分支已同步并推送"
-
   # ============================================================
   # 任务 3：构建、签名、发布（仅在 dev 有更新或手动触发时运行）
   # ============================================================
   build-and-release:
+    name: "📦 编译签名发布 APK"
     runs-on: ubuntu-latest
     needs: sync-dev
     permissions:
       contents: write
     if: |
       always() && (
-        github.event_name == 'workflow_dispatch' || 
-        github.event_name == 'push' || 
+        github.event_name == 'workflow_dispatch' ||
+        github.event_name == 'push' ||
         needs.sync-dev.outputs.dev_updated == 'true'
       )
     outputs:
@@ -177,57 +178,52 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          ref: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.ref || env.TARGET_SOURCE_BRANCH }}
-
+          ref: >-
+            ${{
+              (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
+              ? github.ref
+              : env.TARGET_SOURCE_BRANCH
+            }}
       - name: 设置时区
-        run: sudo timedatectl set-timezone Asia/Shanghai
-
+        run: echo "TZ=Asia/Shanghai" >> "$GITHUB_ENV"
       - name: 安装 JDK
         uses: actions/setup-java@v5
         with:
           distribution: ${{ env.JAVA_DISTRIBUTION }}
           java-version: ${{ env.JAVA_VERSION }}
           architecture: x64
-
       - name: 配置 Gradle Java Home
         run: echo "ORG_GRADLE_JAVA_HOME=${JAVA_HOME}" >> "$GITHUB_ENV"
-
       - name: 安装 Android SDK 工具
         uses: android-actions/setup-android@v4
         with:
           packages: ""
-
       - name: 安装 Android SDK 组件
         run: |
           sdkmanager --install "platform-tools" "platforms;${ANDROID_PLATFORM}" "build-tools;${ANDROID_BUILD_TOOLS}"
           set +o pipefail
           yes | sdkmanager --licenses >/dev/null
           set -o pipefail
-
       - name: 配置 Gradle 缓存
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: wrapper
           cache-read-only: false
           cache-cleanup: on-success
-
       - name: 赋予 Gradle 执行权限
         run: chmod +x gradlew
-
       - name: 执行 Release 构建
         run: ./gradlew --no-daemon --stacktrace assembleRelease
-
       - name: 准备待签名的 APK
         run: |
           rm -rf "${STAGING_DIR}" "${ASSET_DIR}"
           mkdir -p "${STAGING_DIR}"
           find "${RELEASE_DIR}" -maxdepth 1 -type f -name "*.apk" -exec cp {} "${STAGING_DIR}/" \;
-          
+
           if [ -z "$(ls -A ${STAGING_DIR})" ]; then
             echo "❌ 未找到任何 APK 文件"
             exit 1
           fi
-
       - name: 对 APK 进行签名
         id: sign_apks
         uses: ilharp/sign-android-release@v2
@@ -238,13 +234,12 @@ jobs:
           keyStorePassword: ${{ secrets.KEYSTORE_PASSWORD }}
           keyPassword: ${{ secrets.KEY_PASSWORD }}
           buildToolsVersion: ${{ env.ANDROID_BUILD_TOOLS }}
-
       - name: 规范化文件名与版本号提取
         id: prepare_assets
         run: |
           mkdir -p "${ASSET_DIR}"
           IFS=':' read -r -a files <<< "${{ steps.sign_apks.outputs.signedFiles }}"
-          
+
           # 1. 重命名 APK 文件对齐原仓库
           for file in "${files[@]}"; do
             [ -n "${file}" ] || continue
@@ -255,14 +250,13 @@ jobs:
             done
             cp "${file}" "${ASSET_DIR}/app-${abi}-release-signed.apk"
           done
-          
+
           cd "${ASSET_DIR}"
           sha256sum -- *.apk > SHA256SUMS
-
           # 2. 三层版本号解析逻辑
-          # 第一层：尝试从 gradle.properties 读取
-          VERSION="$(grep '^appVersion=' gradle.properties | head -n 1 | cut -d'=' -f 2 | tr -d '[:space:]')"
-          
+          # 第一层：尝试从 app/gradle.properties 读取
+          VERSION="$(grep '^appVersion=' app/gradle.properties 2>/dev/null | head -n 1 | cut -d'=' -f 2 | tr -d '[:space:]')"
+
           # 第二层：如果当前是打 Tag 触发，直接解析 Tag 名 (如 4380-0.2.6)
           if [ -z "${VERSION}" ] && [[ "${{ github.ref }}" == refs/tags/* ]]; then
             TAG_NAME="${{ github.ref_name }}"
@@ -270,7 +264,7 @@ jobs:
               VERSION="${BASH_REMATCH[1]}"
             fi
           fi
-          
+
           # 第三层：如果以上都没有，拉取原仓库最新的 Tag 解析
           if [ -z "${VERSION}" ]; then
             git remote add upstream "https://github.com/${{ env.UPSTREAM_REPO }}.git" 2>/dev/null || true
@@ -280,24 +274,22 @@ jobs:
               VERSION="${BASH_REMATCH[1]}"
             fi
           fi
-          
+
           # 绝对兜底
           if [ -z "${VERSION}" ]; then VERSION="0.0.0"; fi
-
           SHORT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo "0000000")"
           DATE="$(date '+%Y%m%d')"
-          
+
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag_name=v${VERSION}-${DATE}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
           echo "✅ 解析到的版本号为: ${VERSION}"
-
       - name: 获取原仓库最新提交信息
         id: upstream_info
         run: |
           git remote remove upstream 2>/dev/null || true
           git remote add upstream "https://github.com/${{ env.UPSTREAM_REPO }}.git"
           git fetch upstream --quiet
-          
+
           if git rev-parse --short upstream/dev >/dev/null 2>&1; then
             DEV_SHA="$(git rev-parse --short upstream/dev)"
             DEV_MSG="$(git log --oneline -1 upstream/dev | cut -d' ' -f2-)"
@@ -305,13 +297,11 @@ jobs:
             DEV_SHA="N/A"
             DEV_MSG="无"
           fi
-          
+
           MAIN_SHA="$(git rev-parse --short upstream/main)"
           MAIN_MSG="$(git log --oneline -1 upstream/main | cut -d' ' -f2-)"
-
           echo "dev_commit=${DEV_SHA} - ${DEV_MSG}" >> "$GITHUB_OUTPUT"
           echo "main_commit=${MAIN_SHA} - ${MAIN_MSG}" >> "$GITHUB_OUTPUT"
-
       - name: 生成 Release 说明文件
         run: |
           cat > release-body.md << 'BODY_EOF'
@@ -320,11 +310,11 @@ jobs:
           echo "- 版本号：v${{ steps.prepare_assets.outputs.version }}" >> release-body.md
           echo "- 构建时间：$(date '+%Y-%m-%d %H:%M:%S')" >> release-body.md
           echo "" >> release-body.md
-          
+
           echo "## 📝 原仓库最新提交" >> release-body.md
           echo "- **dev**: ${{ steps.upstream_info.outputs.dev_commit }}" >> release-body.md
           echo "- **main**: ${{ steps.upstream_info.outputs.main_commit }}" >> release-body.md
-          
+
           if [ "${{ needs.sync-dev.outputs.dev_updated }}" == "true" ]; then
             echo "" >> release-body.md
             echo "## 📥 本次同步更新记录" >> release-body.md
@@ -332,16 +322,14 @@ jobs:
               if [ -n "$line" ]; then echo "- $line" >> release-body.md; fi
             done
           fi
-          
-          cat >> release-body.md << 'BODY_EOF'
 
+          cat >> release-body.md << 'BODY_EOF'
           ## 📱 下载说明
           - `universal`: 通用版（推荐，适用所有设备）
           - `arm64-v8a`: 64位 ARM 设备（主流新手机）
           - `armeabi-v7a`: 32位 ARM 设备（旧款手机）
           - `x86_64` / `x86`: 安卓模拟器
           BODY_EOF
-
       - name: 创建 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -352,29 +340,28 @@ jobs:
           body_path: release-body.md
           files: |
             ${{ env.ASSET_DIR }}/*.apk
-            ${{ env.ASSET_DIR }}/*.sha256
             ${{ env.ASSET_DIR }}/SHA256SUMS
-
       - name: 清理旧版本（保留最近 3 个）
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           REPO: ${{ github.repository }}
         run: |
+          sudo apt-get update && sudo apt-get install -y jq
           releases="$(curl -sS -H "Authorization: token ${GITHUB_TOKEN}" "https://api.github.com/repos/${REPO}/releases?per_page=100" | jq -r '.[] | select(.tag_name | startswith("v")) | "\(.id) \(.tag_name)"' | sort -r)"
           count="$(printf '%s\n' "${releases}" | sed '/^$/d' | wc -l)"
           delete_count=$((count - 3))
-          
+
           if [ "${delete_count}" -le 0 ]; then exit 0; fi
-          
+
           printf '%s\n' "${releases}" | tail -n "${delete_count}" | while read -r release_id tag_name; do
             curl -sS -f -X DELETE -H "Authorization: token ${GITHUB_TOKEN}" "https://api.github.com/repos/${REPO}/releases/${release_id}" || true
             curl -sS -f -X DELETE -H "Authorization: token ${GITHUB_TOKEN}" "https://api.github.com/repos/${REPO}/git/refs/tags/${tag_name}" || true
           done
-
   # ============================================================
   # 任务 4：邮件通知（无更新跳过时不发送）
   # ============================================================
   notify-email:
+    name: "📧 邮件通知构建结果"
     runs-on: ubuntu-latest
     needs: [ sync-dev, build-and-release ]
     if: always() && needs.build-and-release.result != 'skipped' && needs.build-and-release.result != 'cancelled'
@@ -403,7 +390,7 @@ jobs:
               echo "🔗 错误日志：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             } > email-body.txt
           fi
-          
+
           if [ "${{ needs.sync-dev.outputs.dev_updated }}" == "true" ]; then
             echo "" >> email-body.txt
             echo "📥 本次同步的全部提交：" >> email-body.txt
@@ -411,9 +398,8 @@ jobs:
               if [ -n "$line" ]; then echo "- $line" >> email-body.txt; fi
             done
           fi
-          
-          echo "subject=${SUBJECT}" >> "$GITHUB_OUTPUT"
 
+          echo "subject=${SUBJECT}" >> "$GITHUB_OUTPUT"
       - name: 发送邮件
         uses: dawidd6/action-send-mail@v6
         with:
@@ -425,14 +411,14 @@ jobs:
           from: GitHub Actions 自动构建
           subject: ${{ steps.gen_email.outputs.subject }}
           body: file://email-body.txt
-
   # ============================================================
   # 任务 5：失败摘要补充
   # ============================================================
   notify-failure:
+    name: "⚠️ 失败摘要输出"
     runs-on: ubuntu-latest
     needs: [ sync-dev, sync-main, build-and-release ]
-    if: failure()
+    if: failure() || cancelled()
     steps:
       - name: 输出失败提示
         run: |
