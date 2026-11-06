@@ -438,6 +438,9 @@ class TaskFlowEngine(
         const val MAX_DYNAMIC_ROUND_LIMIT = 64
         const val DYNAMIC_ROUND_LIMIT_EXTRA = 6
         const val ROUND_SLEEP_JITTER_MS = 1275L
+        const val HUMAN_PACE_BREAK_EVERY_ROUNDS = 6
+        const val HUMAN_PACE_BREAK_MIN_MS = 8_000L
+        const val HUMAN_PACE_BREAK_MAX_MS = 25_000L
     }
 
     fun run(): TaskFlowRunResult {
@@ -446,6 +449,10 @@ class TaskFlowEngine(
         val stateKey = "taskFlow:${adapter.moduleName}:${adapter.stateScope}"
         val day = TimeUtil.getDateStr()
         var completed = false
+        val report = TaskExecutionReport.current()
+        val previousFlow = report?.currentFlow
+        // 与 ModelTask 设置的模块名配合，日志里就能看到 "运动/健康岛" 这种精确归因。
+        report?.currentFlow = adapter.flowName
         try {
             if (session != null && store != null) {
                 AccountSessionCoordinator.withCurrentSession(AccountSessionIdentity(session.userId, session.sessionEpoch)) {
@@ -465,6 +472,7 @@ class TaskFlowEngine(
             TaskExecutionReport.current()?.recordException()
             throw t
         } finally {
+            report?.currentFlow = previousFlow
             if (session != null && store != null &&
                 AccountSessionCoordinator.checkCurrentSession(session.userId, session.sessionEpoch) is AccountSessionCheck.Current
             ) {
@@ -499,7 +507,14 @@ class TaskFlowEngine(
         while (round <= roundLimit) {
             if (round > 1) {
                 // 轮间停顿：基础间隔叠加随机抖动，避免匀速连续回查形成机器节奏
-                CoroutineUtils.sleepCompat(roundSleepMs + Random.nextLong(0, ROUND_SLEEP_JITTER_MS))
+                var roundGapMs = roundSleepMs + Random.nextLong(0, ROUND_SLEEP_JITTER_MS)
+                // 拟人节律：每若干轮插入一次"走神"空闲，把连续的机器式回查打断
+                if (io.github.aoguai.sesameag.model.BaseModel.humanPace.value == true &&
+                    round % HUMAN_PACE_BREAK_EVERY_ROUNDS == 0
+                ) {
+                    roundGapMs += Random.nextLong(HUMAN_PACE_BREAK_MIN_MS, HUMAN_PACE_BREAK_MAX_MS)
+                }
+                CoroutineUtils.sleepCompat(roundGapMs)
             }
             if (adapter.isFlowHandledToday()) {
                 adapter.onFlowHandledToday()
@@ -617,7 +632,12 @@ class TaskFlowEngine(
             while (confirmations.hasNext()) {
                 val (key, pending) = confirmations.next()
                 val (previous, action) = pending
-                if (key != actionSnapshotKey(previous, action)) continue
+                if (key != actionSnapshotKey(previous, action)) {
+                    // 快照已变化：旧记录不会再被任何新动作命中，留着只会在内存和持久化里无限累积。
+                    confirmations.remove()
+                    adapter.logInfo("${adapter.flowName}[清理过期的待确认记录：${previous.title}]")
+                    continue
+                }
                 if (adapter.shouldSkipByTodayState(previous)) {
                     confirmations.remove()
                     progressed = true
@@ -840,8 +860,10 @@ class TaskFlowEngine(
                 if (decision == TaskFlowDecision.BLACKLIST) {
                     adapter.blacklist(item, result)
                 }
-                // 已生效的黑名单隔离不可执行动作；失败响应仍由分类日志保留。
-                if (decision != TaskFlowDecision.BLACKLIST || !shouldSkipBlacklisted(item)) {
+                // 业务上限（今日次数用完/资格不足）不是故障：只停止本轮，不计入失败。
+                // 计入失败会让整个模块每轮都被判定为"执行失败"，持续累积还会触发异常暂停。
+                val countsAsFailure = failureType != TaskRpcFailureType.BUSINESS_LIMIT
+                if (countsAsFailure && (decision != TaskFlowDecision.BLACKLIST || !shouldSkipBlacklisted(item))) {
                     executionState.unresolvedActionFailures[actionSnapshotKey] = item to action
                 }
                 failureCountAny = unresolvedFailureCount

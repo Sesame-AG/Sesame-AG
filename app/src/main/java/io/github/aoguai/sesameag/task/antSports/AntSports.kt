@@ -3342,7 +3342,9 @@ class AntSports : ModelTask() {
     }
 
     private fun isSportsRouteBusinessTerminal(errorCode: String): Boolean =
-        errorCode in setOf("AE950002", "AE960231")
+        // PATH_NOT_AUTH/PATH_NOT_EXIST 是"这条路线对当前账号不可用"，
+        // 属于业务终态而不是故障，不应按错误刷屏或影响任务成败判断。
+        errorCode in setOf("AE950002", "AE960231", "PATH_NOT_AUTH", "PATH_NOT_EXIST")
 
     private fun sportsEnergyBubbleTask() {
         try {

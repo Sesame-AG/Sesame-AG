@@ -26,6 +26,11 @@ class FixedOrRangeIntervalLimit(
             ThreadLocalRandom.current().nextInt(rangeMin, rangeMax)
         }
 
+    /**
+     * 上一次放行时间。限速判定会被多个 RPC 线程并发读写，
+     * 必须 volatile，否则 64 位写入的可见性得不到保证，限速会被静默放宽。
+     */
+    @Volatile
     override var time: Long = 0
 
     init {

@@ -491,6 +491,9 @@ abstract class ModelTask : Model() {
                         return@submit TaskExecutionOutcome.SKIPPED
                     }
                     val runningName = runningStatusName()
+                    // 把模块名挂在执行上下文上，风控/异常日志才能归因到具体任务。
+                    report.currentModule = getName()
+                    report.currentFlow = null
                     try {
                         isRunning = true
                         addRunCents()
@@ -507,6 +510,8 @@ abstract class ModelTask : Model() {
                         report.recordException()
                     } finally {
                         isRunning = false
+                        report.currentModule = null
+                        report.currentFlow = null
                         finishTaskRunning(runningName)
                         updateRunningNextExec(-1)
                     }

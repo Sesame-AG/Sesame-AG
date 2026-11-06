@@ -203,6 +203,9 @@ object PageStructureSnapshotter {
         }
     }
 
+    /** 供风控/验证页排查复用：取当前前台 Activity；无前台时返回 null。 */
+    fun resumedActivity(): Activity? = resumedActivityRef?.get()
+
     private fun resolveVisibility(visibility: Int): String {
         return when (visibility) {
             View.VISIBLE -> "VISIBLE"

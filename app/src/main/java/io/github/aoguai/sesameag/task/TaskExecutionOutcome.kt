@@ -53,6 +53,29 @@ internal class TaskExecutionReport(
     private val flows = ConcurrentHashMap<Triple<TaskFlowExecutionState, String, String>, TaskFlowRunResult>()
     private val exception = AtomicBoolean(false)
 
+    /**
+     * 当前正在执行的模块/流程名，用于把风控、空响应、异常等日志归因到具体任务。
+     * 由 [io.github.aoguai.sesameag.task.ModelTask] 设置模块名，
+     * [io.github.aoguai.sesameag.task.common.TaskFlowEngine] 在其上补充流程名。
+     */
+    @Volatile
+    var currentModule: String? = null
+
+    @Volatile
+    var currentFlow: String? = null
+
+    /** 形如 `运动/健康岛`、`蚂蚁森林`；都拿不到时返回 `unknown`。 */
+    fun taskLabel(): String {
+        val module = currentModule?.trim()?.takeIf { it.isNotEmpty() }
+        val flow = currentFlow?.trim()?.takeIf { it.isNotEmpty() }
+        return when {
+            module != null && flow != null && flow != module -> "$module/$flow"
+            module != null -> module
+            flow != null -> flow
+            else -> "unknown"
+        }
+    }
+
     val hasException: Boolean
         get() = exception.get()
 

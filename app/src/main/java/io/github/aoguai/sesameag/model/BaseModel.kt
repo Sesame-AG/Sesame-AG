@@ -37,6 +37,9 @@ class BaseModel : Model() {
         modelFields.addField(manualTriggerAutoSchedule) // 手动触发是否自动安排下次执行
         modelFields.addField(checkInterval) // 执行间隔时间
         modelFields.addField(offlineCooldown) // 离线冷却时间
+        modelFields.addField(humanPace) // 拟人节律
+        modelFields.addField(riskPageAutoPause) // 页面验证自动暂停
+        modelFields.addField(captchaAutoSolve) // 自动过滑块（实验）
         modelFields.addField(taskExecutionRounds) // 轮数
         modelFields.addField(taskMaxConcurrency) // 任务并发数
         modelFields.addField(taskOrderMode)
@@ -126,6 +129,32 @@ class BaseModel : Model() {
                 24 * 60,
                 60000,
             ).withDesc("用于离线恢复判断的冷却时长；0 跟随执行间隔，至少 3 分钟。到期不自动解除离线，需完成验证或处理异常后返回目标应用。")
+
+        /**
+         * 拟人节律：把固定 RPC 间隔换成人类操作的长尾分布，并周期性插入空闲
+         */
+        val humanPace: BooleanModelField =
+            BooleanModelField("humanPace", "拟人节律(降低风控)", false).withDesc(
+                "开启后 RPC 间隔按对数正态分布采样，任务流每若干轮插入一次随机空闲。可降低固定节奏被风控识别的概率，代价是单次执行耗时明显变长。",
+            )
+
+        /**
+         * 页面级验证自动暂停：H5 页面弹滑块时 RPC 往往不报错，只能靠页面 URL 识别
+         */
+        val riskPageAutoPause: BooleanModelField =
+            BooleanModelField("riskPageAutoPause", "页面验证自动暂停", false).withDesc(
+                "开启后识别到疑似安全验证/滑块页面时，按软验证暂停任务并进入只读探活，验证通过自动续跑。" +
+                    "默认关闭时只在日志里记录 RiskVerifyPage 命中的 URL，便于先确认真实规则。",
+            )
+
+        /**
+         * 自动过滑块（实验性）：定位 H5 滑块把手 + 识别缺口 + 注入人类化拖动
+         */
+        val captchaAutoSolve: BooleanModelField =
+            BooleanModelField("captchaAutoSolve", "自动过滑块(实验)", false).withDesc(
+                "实验功能：识别到 H5 滑块验证页时，尝试自动完成一次拖动。失败会立即放弃且 60 秒内不再重试。" +
+                    "拖动轨迹与识别结果都依赖页面样式，建议先只开日志观察成功率。",
+            )
 
         /**
          * 任务执行轮数配置

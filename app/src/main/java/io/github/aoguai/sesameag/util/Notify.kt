@@ -15,6 +15,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
+import io.github.aoguai.sesameag.data.General
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.hook.keepalive.PersistentSchedule
 import io.github.aoguai.sesameag.hook.keepalive.PersistentSchedulePrecisionPolicy
@@ -470,11 +471,20 @@ object Notify {
     }
 
     @JvmStatic
-    fun sendAlert(title: String?, content: String?) {
-        sendAlertNotification(title, content)
+    @JvmOverloads
+    fun sendAlert(
+        title: String?,
+        content: String?,
+        launchTargetApp: Boolean = false,
+    ) {
+        sendAlertNotification(title, content, launchTargetApp)
     }
 
-    private fun sendAlertNotification(title: String?, content: String?) {
+    private fun sendAlertNotification(
+        title: String?,
+        content: String?,
+        launchTargetApp: Boolean,
+    ) {
         try {
             val ctx = context
             if (ctx == null) {
@@ -502,10 +512,32 @@ object Notify {
                 .setSubText(SUB_TEXT)
                 .setAutoCancel(true)
                 .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .apply {
+                    if (launchTargetApp) {
+                        buildTargetAppPendingIntent(ctx)?.let { setContentIntent(it) }
+                    }
+                }
 
             NotificationManagerCompat.from(ctx).notify(ALERT_NOTIFICATION_ID, alertBuilder.build())
         } catch (e: Exception) {
             Log.printStackTrace(e)
         }
+    }
+
+    /** 风控通知点击直达目标应用，用户滑完即可让探活自动续跑。 */
+    private fun buildTargetAppPendingIntent(ctx: Context): PendingIntent? {
+        return runCatching {
+            val launchIntent = ctx.packageManager.getLaunchIntentForPackage(General.PACKAGE_NAME)
+                ?: Intent(Intent.ACTION_VIEW).setPackage(General.PACKAGE_NAME)
+            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+            PendingIntent.getActivity(
+                ctx,
+                ALERT_NOTIFICATION_ID,
+                launchIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+        }.onFailure {
+            Log.printStackTrace(TAG, "构建目标应用跳转 PendingIntent 失败", it)
+        }.getOrNull()
     }
 }

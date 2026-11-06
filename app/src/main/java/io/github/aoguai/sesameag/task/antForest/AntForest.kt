@@ -6571,12 +6571,24 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 if (ResChecker.checkRes(TAG, "查询道具列表失败:", propListPayload)) {
                     val forestPropVOList = propListPayload.optJSONArray("forestPropVOList")
                     if (forestPropVOList != null && forestPropVOList.length() > 0) {
-                        val propJo = forestPropVOList.getJSONObject(0)
-                        val giveConfigId =
-                            propJo.getJSONObject("giveConfigVO").getString("giveConfigId")
-                        val propName = propJo.getJSONObject("propConfigVO").getString("propName")
+                        // 服务端并不保证每个道具都带 giveConfigVO/propConfigVO（活动道具常见缺省），
+                        // 只取列表第 0 项会导致"第一个不可赠送 → 整段赠送直接放弃"，
+                        // 这里遍历找出第一个可赠送的道具；一个都没有才结束。
+                        val propJo = (0 until forestPropVOList.length())
+                            .map { index -> forestPropVOList.getJSONObject(index) }
+                            .firstOrNull { candidate ->
+                                candidate.optJSONObject("giveConfigVO") != null &&
+                                    candidate.optJSONObject("propConfigVO") != null &&
+                                    (candidate.optJSONArray("propIdList")?.length() ?: 0) > 0
+                            }
+                        if (propJo == null) {
+                            Log.error(TAG, "赠送道具跳过: 道具列表中没有可赠送的道具(共${forestPropVOList.length()}项)")
+                            return
+                        }
+                        val giveConfigId = requireNotNull(propJo.optJSONObject("giveConfigVO")).getString("giveConfigId")
+                        val propName = requireNotNull(propJo.optJSONObject("propConfigVO")).getString("propName")
                         val propGroup = propJo.optString("propGroup")
-                        val propId = propJo.getJSONArray("propIdList").getString(0)
+                        val propId = requireNotNull(propJo.optJSONArray("propIdList")).getString(0)
                         if (propGroup.isBlank()) {
                             Log.error(TAG, "赠送道具失败: 缺少propGroup")
                             return
@@ -7936,7 +7948,18 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 refreshRound++
 
                 val response = AntForestRpcCall.queryGameList(currentForestGameCenterRecentAppRecords())
-                val jo = JSONObject(response)
+                if (response.isBlank()) {
+                    // 风控/暂停态下 requestString 会返回空串，直接 JSONObject("") 会抛
+                    // "End of input at character 0 of"，把整段游戏中心收敛当成异常中断。
+                    Log.error(TAG, "queryGameList 返回空响应，结束本轮游戏中心收敛")
+                    return
+                }
+                val jo = try {
+                    JSONObject(response)
+                } catch (e: Exception) {
+                    Log.printStackTrace(TAG, "queryGameList 响应解析失败", e)
+                    return
+                }
                 rememberForestGameCenterAppIds(jo)
                 val querySuccess = ResChecker.checkRes(TAG, jo)
                 if (!querySuccess) {

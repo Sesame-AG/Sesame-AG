@@ -1,10 +1,8 @@
 package io.github.aoguai.sesameag.util
 
-import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import org.json.JSONObject
 
 object RpcOfflineRisk {
-    private const val TAG = "风控"
     private val directRiskCodes = setOf("1009")
     private val offlineModeCodes = setOf("I07")
     private const val XLIGHT_TRAFFIC_RESTRICTION_CODE = "217"
@@ -80,6 +78,11 @@ object RpcOfflineRisk {
                     response.optString("sspErrorCode") == XLIGHT_TRAFFIC_RESTRICTION_SSP_CODE
             }
 
+    /**
+     * 命中风控后按分级交给 [io.github.aoguai.sesameag.hook.rpc.RiskControlGuard]：
+     * 滑块/验证码属于可恢复的软验证（暂停 + 探活 + 自动续跑），
+     * 1009/访问受限属于硬拦截（更长暂停 + 更稀疏探活）。
+     */
     fun enterOfflineIfNeeded(
         source: String,
         code: String,
@@ -88,18 +91,37 @@ object RpcOfflineRisk {
         if (!isOfflineRisk(code, message)) {
             return false
         }
-        if (!ApplicationHookConstants.isOffline()) {
-            val detail = buildDetail(source, code, message)
-            // 风控/验证(含滑块)命中时显式落错误日志，保留触发响应的原始线索，
-            // 避免仅静默进入离线模式而在日志中查不到任何风控痕迹。
-            Log.error(TAG, "命中风控/验证拦截，进入离线 | $detail")
-            ApplicationHookConstants.enterOffline(
-                ApplicationHookConstants.getOfflineCooldownMs(),
-                "auth_like",
-                detail,
-            )
+        if (isVerificationRisk(message)) {
+            io.github.aoguai.sesameag.hook.rpc.RiskControlGuard.onVerificationRisk(source, code, message)
+        } else {
+            io.github.aoguai.sesameag.hook.rpc.RiskControlGuard.onHardBlockRisk(source, code, message)
         }
         return true
+    }
+    /** 软验证判定：文案里出现滑块/验证码/需要验证等可恢复信号。 */
+    fun isVerificationRisk(message: String): Boolean {
+        if (message.isBlank()) {
+            return false
+        }
+        return recoverableVerificationKeywords.any { message.contains(it, ignoreCase = true) }
+    }
+
+    /**
+     * 风控分级入口：返回 null 表示这条响应不是风控/验证。
+     * 1009 这类"请进行验证后继续"属于可恢复验证，不能按硬拦截处理。
+     */
+    fun classifyRisk(
+        code: String,
+        message: String,
+    ): io.github.aoguai.sesameag.hook.rpc.RiskTier? {
+        if (!isOfflineRisk(code, message)) {
+            return null
+        }
+        return if (isVerificationRisk(message)) {
+            io.github.aoguai.sesameag.hook.rpc.RiskTier.SOFT_VERIFY
+        } else {
+            io.github.aoguai.sesameag.hook.rpc.RiskTier.HARD_BLOCK
+        }
     }
 
     fun enterOfflineIfNeeded(
@@ -139,21 +161,4 @@ object RpcOfflineRisk {
             jsonObject.optString("message"),
         ).filter { it.isNotBlank() }
             .joinToString(" | ")
-
-    private fun buildDetail(
-        source: String,
-        code: String,
-        message: String,
-    ): String =
-        buildString {
-            append(source)
-            if (code.isNotBlank()) {
-                append(" code=")
-                append(code)
-            }
-            if (message.isNotBlank()) {
-                append(" msg=")
-                append(message.take(300))
-            }
-        }
 }

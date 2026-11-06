@@ -8,15 +8,24 @@ import fi.iki.elonen.NanoHTTPD
 import java.io.DataInputStream
 import java.nio.charset.StandardCharsets
 
+/** 调试接口只服务本机调试工具，绑定回环地址即可，避免同网段设备直接调用。 */
+private const val LOOPBACK_HOST = "127.0.0.1"
+
 class ModuleHttpServer(
     port: Int = 8080,
-    secretToken: String = ""
-) : NanoHTTPD("0.0.0.0", port) {
+    secretToken: String,
+) : NanoHTTPD(LOOPBACK_HOST, port) {
     private val tag = "ModuleHttpServer"
 
     private val routes = mutableMapOf<String, HttpHandler>()
 
+    companion object {
+        /** 请求体上限：调试请求只承载一条 RPC 描述，64KB 足够，同时避免 Content-Length 伪造造成大块分配。 */
+        private const val MAX_BODY_BYTES = 64 * 1024
+    }
+
     init {
+        require(secretToken.isNotBlank()) { "调试接口必须配置访问 token" }
         // 注册路由
         register("/debugHandler", DebugHandler(secretToken), "调试接口")
         register("/status", StatusHandler(secretToken), "运行状态快照")
@@ -52,7 +61,12 @@ class ModuleHttpServer(
      * 2. 指定 UTF-8 编码
      */
     private fun getPostBodySafe(session: IHTTPSession): String? {
-        val contentLength = session.headers["content-length"]?.toIntOrNull() ?: return null
+        val contentLength = session.headers["content-length"]?.trim()?.toIntOrNull() ?: return null
+        // 负数/超限一律拒绝：不做 ByteArray(contentLength) 的直接分配，避免被伪造成 OOM。
+        if (contentLength < 0 || contentLength > MAX_BODY_BYTES) {
+            Log.error(tag, "Rejected body with invalid content-length=$contentLength uri=${session.uri}")
+            return null
+        }
         if (contentLength == 0) return ""
 
         return try {

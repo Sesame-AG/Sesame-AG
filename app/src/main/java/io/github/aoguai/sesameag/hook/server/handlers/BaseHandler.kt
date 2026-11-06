@@ -6,6 +6,8 @@ import fi.iki.elonen.NanoHTTPD
 import fi.iki.elonen.NanoHTTPD.IHTTPSession
 import fi.iki.elonen.NanoHTTPD.Method
 import fi.iki.elonen.NanoHTTPD.Response
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 
 abstract class BaseHandler(private val secretToken: String) : HttpHandler {
     companion object {
@@ -36,8 +38,12 @@ abstract class BaseHandler(private val secretToken: String) : HttpHandler {
     }
 
     private fun verifyToken(session: IHTTPSession): Boolean {
-        // 如果未设置 Token，默认通过（或者是禁止？视需求而定，这里假设未设置则不验证）
-        if (secretToken.isBlank()) return true
+        // 失败关闭：没有配置 token 时一律拒绝，而不是"默认放行"。
+        // 该接口能直接驱动宿主业务 RPC，放行等于把账号交给本机任意应用。
+        if (secretToken.isBlank()) {
+            Log.error(TAG, "调试接口未配置 token，已拒绝请求 uri=${session.uri}")
+            return false
+        }
 
         val authHeader = session.headers["authorization"] ?: return false
         // 允许 Bearer 或直接 Token
@@ -46,7 +52,14 @@ abstract class BaseHandler(private val secretToken: String) : HttpHandler {
         } else {
             authHeader.trim()
         }
-        return token == secretToken
+        if (token.isEmpty()) {
+            return false
+        }
+        // 常量时间比较，避免按字节提前返回带来的时序侧信道。
+        return MessageDigest.isEqual(
+            token.toByteArray(StandardCharsets.UTF_8),
+            secretToken.toByteArray(StandardCharsets.UTF_8),
+        )
     }
 
     // 默认实现改为 405 Method Not Allowed，而不是 404 Not Found

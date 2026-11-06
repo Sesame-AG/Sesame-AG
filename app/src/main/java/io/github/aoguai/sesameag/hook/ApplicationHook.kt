@@ -280,6 +280,10 @@ class ApplicationHook {
                         ensureScheduler()
                         application?.let { PageStructureSnapshotter.install(it) }
                         RpcTrafficCapture.install(classLoader!!, context)
+                        // 页面级验证信号常驻嗅探（不依赖抓包开关），用于识别 H5 弹出的滑块/安全验证。
+                        runCatching {
+                            io.github.aoguai.sesameag.hook.rpc.RiskVerifyPageWatcher.install(classLoader!!)
+                        }.onFailure { printStackTrace(TAG, "安装页面验证信号嗅探失败", it) }
 
                         SecurityBodyHelper.init(classLoader!!)
                         AlipayMiniMarkHelper.init(classLoader!!)
@@ -1353,7 +1357,7 @@ class ApplicationHook {
                 // 仅在用户开启“抓包调试模式”时启动调试 HTTP 服务（release 也可用）
                 try {
                     if (debugMode.value == true) {
-                        startIfNeeded(8080, "ET3vB^#td87sQqKaY*eMUJXP", processName, General.PACKAGE_NAME)
+                        startIfNeeded(8080, processName, General.PACKAGE_NAME)
                     } else {
                         io.github.aoguai.sesameag.hook.server.ModuleHttpServerManager
                             .stop()
@@ -1486,6 +1490,9 @@ class ApplicationHook {
                     // ignore
                 }
                 shutdownAndRestart()
+                // 会话销毁后探活协程必须一并退出，否则旧账号的探活可能在新会话里触发恢复。
+                runCatching { io.github.aoguai.sesameag.hook.rpc.RiskControlGuard.cancelProbe() }
+                    .onFailure { printStackTrace(TAG, "取消风控探活失败", it) }
                 stopHandler()
 
                 if (service != null) {

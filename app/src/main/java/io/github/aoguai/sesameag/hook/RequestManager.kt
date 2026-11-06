@@ -48,12 +48,17 @@ object RequestManager {
     // 若恢复冷却时间小于 20s，会导致“每 15s 触发一次恢复 -> 取消并重新调度 20s 任务”，
     // 从而永远无法真正执行 reOpenApp（日志表现为反复 RPC 拦截 + 20s 延迟，直到用户手动重启 App）。
     private const val OFFLINE_RECOVERY_COOLDOWN_MS = 25_000L
+    private const val BLANK_RESPONSE_RISK_THRESHOLD = 5
     private const val RPC_BRIDGE_NULL_LOG_INTERVAL_MS: Long = 5_000L
     private const val RPC_BLOCKED_LOG_INTERVAL_MS: Long = 5_000L
     private const val OFFLINE_RECOVERY_COOLDOWN_LOG_INTERVAL_MS: Long = 5_000L
 
     // 连续失败计数器
     private val errorCount = AtomicInteger(0)
+
+    // 第三路风控信号：同一方法连续空响应次数，以及本进程内已触发过软验证的方法集合
+    private val consecutiveBlankResponses = java.util.concurrent.ConcurrentHashMap<String, AtomicInteger>()
+    private val blankRiskFlaggedMethods = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     private val rpcBridgeNullLogLimiter = RpcLogLimiter(RPC_BRIDGE_NULL_LOG_INTERVAL_MS)
     private val rpcBlockedLogLimiter = RpcLogLimiter(RPC_BLOCKED_LOG_INTERVAL_MS)
@@ -147,6 +152,7 @@ object RequestManager {
                 return RpcRequestOutcome.Stopped(RpcFallbackJsonFactory.build("离线模式", methodLog))
             }
             // 失败：增加计数，检查兜底
+            trackBlankResponse(methodLog)
             handleFailure(methodLog ?: "Unknown", "返回数据为空")
             return RpcRequestOutcome.Failure("返回数据为空")
         } else {
@@ -156,11 +162,41 @@ object RequestManager {
                 return RpcRequestOutcome.Stopped(result)
             }
             // 成功：重置计数器
-            if (errorCount.get() > 0) {
-                errorCount.set(0)
-                Log.record(TAG, "RPC 恢复正常，错误计数重置")
-            }
+            onRpcRecovered(methodLog)
             return RpcRequestOutcome.Success(result)
+        }
+    }
+
+    /**
+     * 第三路风控信号：滑块验证出现时，前台页面上的请求往往表现为"同一方法连续空响应"，
+     * 文案里既没有"需要验证"也没有错误码。这里按方法累计空响应，达到阈值即触发软验证暂停，
+     * 避免继续撞门把临时验证升级成设备级限制。每个方法每个进程只触发一次，防止 pause/retry 抖动。
+     */
+    private fun trackBlankResponse(methodLog: String?) {
+        if (ApplicationHookConstants.isProbeInProgress()) return
+        val method = methodLog?.trim()?.takeIf { it.isNotBlank() } ?: return
+        val count = consecutiveBlankResponses.computeIfAbsent(method) { AtomicInteger(0) }.incrementAndGet()
+        if (count < BLANK_RESPONSE_RISK_THRESHOLD) return
+        if (!blankRiskFlaggedMethods.add(method)) return
+        val taskLabel = runCatching { TaskExecutionReport.current()?.taskLabel() }.getOrNull() ?: "unknown"
+        Log.record(TAG, "连续 $count 次空响应，按风控验证信号暂停: $method task=$taskLabel")
+        runCatching {
+            io.github.aoguai.sesameag.hook.rpc.RiskControlGuard.onVerificationRisk(
+                source = "blank_response:$method",
+                code = "",
+                message = "连续 $count 次空响应",
+            )
+        }.onFailure { Log.printStackTrace(TAG, "空响应风控信号处理失败", it) }
+    }
+
+    private fun onRpcRecovered(methodLog: String?) {
+        if (errorCount.get() > 0) {
+            errorCount.set(0)
+            Log.record(TAG, "RPC 恢复正常，错误计数重置")
+        }
+        methodLog?.trim()?.takeIf { it.isNotBlank() }?.let { method ->
+            consecutiveBlankResponses.remove(method)
+            blankRiskFlaggedMethods.remove(method)
         }
     }
 
@@ -168,6 +204,12 @@ object RequestManager {
      * 处理失败逻辑：计数、报警、熔断
      */
     private fun handleFailure(method: String, reason: String) {
+        // 风控探活是探测性请求：失败只能说明"还没解封"，不能计入连续失败阈值，
+        // 否则探活自己会把模块推入 rpc_error_threshold 离线。
+        if (ApplicationHookConstants.isProbeInProgress()) {
+            Log.record(TAG, "探活请求未通过，不计入失败阈值 | Method: $method | Reason: $reason")
+            return
+        }
         val currentCount = errorCount.incrementAndGet()
         // 假设 BaseModel 有个方法获取这个配置，或者直接用常量
         val maxCount = BaseModel.setMaxErrorCount.value ?: 8
@@ -213,10 +255,14 @@ object RequestManager {
      */
     @RequiresPermission(Manifest.permission.ACCESS_NETWORK_STATE)
     private fun getRpcBridge(): RpcBridge? {
+        // 探活线程不为等待窗口阻塞，避免一次探活占住 IO 线程 10 秒。
+        val isProbe = ApplicationHookConstants.isProbeInProgress()
         if (!NetworkUtils.isNetworkAvailable()) {
             Log.record(TAG, "网络不可用，尝试等待 5秒...")
             // 公共入口仅在断网时保留一次五秒恢复窗口，复查仍不可用就退出，不对正常请求加等待。
-            CoroutineUtils.sleepCompat(5000)
+            if (!isProbe) {
+                CoroutineUtils.sleepCompat(5000)
+            }
             if (!NetworkUtils.isNetworkAvailable()) {
                 return null
             }
@@ -226,7 +272,9 @@ object RequestManager {
         if (bridge == null) {
             Log.record(TAG, "RpcBridge 未初始化，尝试等待 5秒...")
             // 为宿主异步初始化 RPC 桥保留一次五秒窗口，随后只重新读取桥实例。
-            CoroutineUtils.sleepCompat(5000)
+            if (!isProbe) {
+                CoroutineUtils.sleepCompat(5000)
+            }
             bridge = ApplicationHook.rpcBridge
         }
 

@@ -55,6 +55,26 @@ object ApplicationHookConstants {
     @Volatile
     var nowProvider: () -> Long = { System.currentTimeMillis() }
 
+    /**
+     * 风控探活专用旁路：探活请求本身必须能在离线态发出，否则永远无法判断验证是否已通过。
+     * 用 ThreadLocal 而不是全局开关，保证只有探活线程的请求被放行，任务线程仍然被拦截。
+     */
+    private val probeBypass: ThreadLocal<Boolean> = ThreadLocal.withInitial { false }
+
+    @JvmStatic
+    fun isProbeInProgress(): Boolean = probeBypass.get() == true
+
+    @JvmStatic
+    fun <T> withProbeBypass(block: () -> T): T {
+        val previous = probeBypass.get()
+        probeBypass.set(true)
+        return try {
+            block()
+        } finally {
+            probeBypass.set(previous)
+        }
+    }
+
     @Volatile
     var offline: Boolean = false
         private set
@@ -244,17 +264,30 @@ object ApplicationHookConstants {
             stopAllTask()
             // 离线/风控发生时实时通知用户（含滑块验证 auth_like），补齐“风控无感知”缺口。
             if (BaseModel.errNotify.value == true) {
+                val isRiskReason = reason == io.github.aoguai.sesameag.hook.rpc.RiskControlGuard.REASON_VERIFY ||
+                    reason == io.github.aoguai.sesameag.hook.rpc.RiskControlGuard.REASON_HARD_BLOCK
                 val title =
                     when (reason) {
-                        "auth_like" -> "检测到风控/验证，已暂停"
+                        io.github.aoguai.sesameag.hook.rpc.RiskControlGuard.REASON_VERIFY ->
+                            "检测到风控验证，任务已暂停"
+                        io.github.aoguai.sesameag.hook.rpc.RiskControlGuard.REASON_HARD_BLOCK ->
+                            "检测到访问受限，任务已暂停"
                         "rpc_error_threshold" -> "RPC 连续失败，已暂停"
                         "network_error_threshold" -> "网络异常次数超过阈值，已暂停"
                         else -> "模块已进入离线，已暂停"
                     }
+                val content =
+                    detail?.takeIf { it.isNotBlank() }
+                        ?: if (isRiskReason) {
+                            "打开目标应用完成滑块/验证即可，验证通过后模块会自动继续"
+                        } else {
+                            "请打开目标应用完成验证或查看错误日志"
+                        }
                 runCatching {
                     io.github.aoguai.sesameag.util.Notify.sendAlert(
                         title,
-                        detail?.takeIf { it.isNotBlank() } ?: "请打开目标应用完成验证或查看错误日志",
+                        content,
+                        launchTargetApp = isRiskReason,
                     )
                 }
             }
@@ -337,7 +370,7 @@ object ApplicationHookConstants {
     }
 
     @JvmStatic
-    fun shouldBlockRpc(): Boolean = offline
+    fun shouldBlockRpc(): Boolean = offline && !isProbeInProgress()
 
     enum class TriggerPriority(
         val weight: Int,

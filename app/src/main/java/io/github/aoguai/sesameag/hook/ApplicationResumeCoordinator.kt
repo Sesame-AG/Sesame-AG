@@ -122,6 +122,7 @@ internal object ApplicationResumeCoordinator {
 
         val shouldRecover = cooldownExpired || when (reason) {
             "auth_like",
+            "risk_hard_block",
             "system_busy",
             "login_timeout",
             "network_error_threshold",
@@ -131,6 +132,18 @@ internal object ApplicationResumeCoordinator {
         if (!shouldRecover) return false
 
         val session = AccountSessionCoordinator.currentSession() ?: return false
+
+        // 风控暂停期间，用户打开验证页本身就会触发 onResume；
+        // 此时验证还没完成，贸然解除暂停会让任务立刻撞回同一个风控接口（日志里 785ms 就恢复过一次）。
+        // 交给只读探活判断，它会在验证真正通过后自动续跑。
+        if (io.github.aoguai.sesameag.hook.rpc.RiskControlGuard.isProbeActive() &&
+            (reason == io.github.aoguai.sesameag.hook.rpc.RiskControlGuard.REASON_VERIFY ||
+                reason == io.github.aoguai.sesameag.hook.rpc.RiskControlGuard.REASON_HARD_BLOCK)
+        ) {
+            record(TAG, "风控暂停中（$reason），等待只读探活确认后再恢复，忽略本次 $resumeSource")
+            return false
+        }
+
         val recover = recover@{
             val loader = ApplicationHook.classLoader ?: return@recover
             if (!ApplicationHookConstants.isOffline() ||

@@ -213,21 +213,45 @@ class AriverRpcBridge : RpcBridge {
         reason: String,
         offlineDetail: String = reason,
         count: Int,
+        errorCode: String = "",
+        errorMessage: String = "",
     ): RpcEntity? {
         maxErrorCount.set(0)
         val wasOffline = io.github.aoguai.sesameag.hook.ApplicationHookConstants.offline
         val cooldownMs = offlineCooldownMs()
-        // 常驻标题与离线告警统一由 enterOffline 单点驱动，此处不再重复设置/发送
+        // 风控/验证必须交给统一守卫：它负责分级暂停、只读探活和验证通过后的自动续跑。
+        // 直接在桥内 enterOffline 会让 1009/滑块响应被当成普通鉴权失败，冷却按执行间隔算，且没有任何恢复手段。
+        val riskTier = RpcOfflineRisk.classifyRisk(errorCode, errorMessage)
         if (!wasOffline) {
-            io.github.aoguai.sesameag.hook.ApplicationHookConstants.enterOffline(
-                cooldownMs,
-                "auth_like",
-                offlineDetail,
-            )
+            when (riskTier) {
+                io.github.aoguai.sesameag.hook.rpc.RiskTier.SOFT_VERIFY ->
+                    io.github.aoguai.sesameag.hook.rpc.RiskControlGuard.onVerificationRisk(
+                        source = methodName ?: TAG,
+                        code = errorCode,
+                        message = errorMessage,
+                        method = methodName,
+                    )
+                io.github.aoguai.sesameag.hook.rpc.RiskTier.HARD_BLOCK ->
+                    io.github.aoguai.sesameag.hook.rpc.RiskControlGuard.onHardBlockRisk(
+                        source = methodName ?: TAG,
+                        code = errorCode,
+                        message = errorMessage,
+                        method = methodName,
+                    )
+                null ->
+                    // 常驻标题与离线告警统一由 enterOffline 单点驱动，此处不再重复设置/发送
+                    io.github.aoguai.sesameag.hook.ApplicationHookConstants.enterOffline(
+                        cooldownMs,
+                        "auth_like",
+                        offlineDetail,
+                    )
+            }
         }
 
+        // 验证/风控态下重新登录只会再撞一次风控，必须禁用。
         val shouldTryRelogin =
-            BaseModel.timeoutRestart.value == true &&
+            riskTier == null &&
+                BaseModel.timeoutRestart.value == true &&
                 shouldNotifyNow(lastReloginAtMs, reloginIntervalMs)
         if (!wasOffline && shouldTryRelogin) {
             Log.record(TAG, "尝试重新登录")
@@ -448,6 +472,17 @@ class AriverRpcBridge : RpcBridge {
                         rpcEntity.setError()
                         return@dispatch false
                     }
+                    // 刚刚触发过风控的方法在隔离期内直接跳过：
+                    // 风控是按接口生效的，探活只能证明"账号没被封"，不能证明这个方法能通。
+                    if (io.github.aoguai.sesameag.hook.rpc.RiskControlGuard.isMethodQuarantined(requestMethod)) {
+                        captureNote = "blocked_by_risk_quarantine"
+                        rpcEntity.setResponseObject(
+                            null,
+                            RpcFallbackJsonFactory.build("风控隔离中，稍后重试", requestMethod),
+                        )
+                        rpcEntity.setError()
+                        return@dispatch false
+                    }
                     if (io.github.aoguai.sesameag.hook.ApplicationHookConstants.shouldBlockRpc()) {
                         rpcEntity.settingsRefresh?.failed = true
                         captureNote = "blocked_by_offline"
@@ -615,6 +650,7 @@ class AriverRpcBridge : RpcBridge {
                         handleAuthLikeError(
                             rpcEntity, requestMethod, "硬阻塞: $code/$message",
                             buildOfflineDetail(requestMethod, code, message, "访问受限"), count,
+                            errorCode = code, errorMessage = message,
                         )
                         // 保留本次真实响应，不依赖随后 I07 包装中的全局历史来源。
                         return rpcEntity
@@ -667,6 +703,8 @@ class AriverRpcBridge : RpcBridge {
                                 reason = "访问受限: $errorCode/$errorMessage",
                                 offlineDetail = buildOfflineDetail(methodName, errorCode, errorMessage, "访问受限"),
                                 count = count,
+                                errorCode = errorCode,
+                                errorMessage = errorMessage,
                             )
                         }
 

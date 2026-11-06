@@ -190,8 +190,30 @@ class ForestChouChouLe(private val charityWaterEnabled: Boolean = false) {
         }.onFailure { Log.printStackTrace(TAG, "执行异常", it) }
     }
 
+    private fun nonConvergeStreakFlag(s: Scene): String = "${s.flag}_nc_streak"
+
+    private fun nonConvergeSkipFlag(s: Scene): String = "${s.flag}_nc_skip_today"
+
+    /**
+     * 未收敛说明"任务列表一直显示可执行但推进不了"，通常是外部游戏任务或页面侧验证把动作挡住了。
+     * 每次 run 都会重进页面并重复查询，连续两轮没收敛就当日停手，减少无效请求（也避免反复撞风控）。
+     */
+    private fun recordNonConvergence(s: Scene) {
+        val streakFlag = nonConvergeStreakFlag(s)
+        if (Status.hasFlagToday(streakFlag)) {
+            Status.setFlagToday(nonConvergeSkipFlag(s))
+            Log.forest("${s.name} 连续两轮抽抽乐状态未收敛，今日停止该场景")
+        } else {
+            Status.setFlagToday(streakFlag)
+        }
+    }
+
     private fun processScene(s: Scene) =
         runCatching {
+            if (Status.hasFlagToday(nonConvergeSkipFlag(s))) {
+                Log.forest("⏭️ ${s.name} 连续两轮状态未收敛，今日不再重复请求")
+                return@runCatching
+            }
             if (Status.hasFlagToday(s.flag)) {
                 when (inspectSceneState(s).check) {
                     CompletionFlagCheck.NO_ACTIONABLE -> {
@@ -242,6 +264,7 @@ class ForestChouChouLe(private val charityWaterEnabled: Boolean = false) {
                     !seenStateFingerprints.add(stateBefore.fingerprint)
                 ) {
                     Status.removeFlag(s.flag)
+                    recordNonConvergence(s)
                     Log.forest("${s.name} 抽抽乐状态未收敛，停止重复请求并保留后续重试")
                     return@runCatching
                 }
@@ -268,6 +291,7 @@ class ForestChouChouLe(private val charityWaterEnabled: Boolean = false) {
                 when (sceneState.check) {
                     CompletionFlagCheck.NO_ACTIONABLE -> {
                         Status.setFlagToday(s.flag)
+                        Status.removeFlag(nonConvergeStreakFlag(s))
                         return@runCatching
                     }
 
@@ -280,6 +304,7 @@ class ForestChouChouLe(private val charityWaterEnabled: Boolean = false) {
                     CompletionFlagCheck.ACTIONABLE -> {
                         if (sceneState.fingerprint in seenStateFingerprints) {
                             Status.removeFlag(s.flag)
+                            recordNonConvergence(s)
                             Log.forest("${s.name} 抽抽乐状态未收敛，停止重复请求并保留后续重试")
                             return@runCatching
                         }
