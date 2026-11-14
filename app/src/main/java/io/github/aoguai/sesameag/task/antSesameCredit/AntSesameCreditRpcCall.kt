@@ -103,22 +103,17 @@ object AntSesameCreditRpcCall {
     }
 
     @JvmStatic
-    fun queryAccomplishmentHome(tabCode: String? = null): String = RequestManager.requestString(
-        "com.antgroup.zmxy.zmcustprod.biz.rpc.creditidentity.api.CreditIdentityAchievementRpcManager.queryAccomplishmentHomeV2",
+    fun queryAccomplishmentHome(visitId: String, tabCode: String? = null): String = RequestManager.requestString(
+        "com.antgroup.zmxy.zmcustprod.biz.rpc.creditidentity.api.CreditIdentityAchievementRpcManager.queryAccomplishmentHallV3",
         JSONArray().put(JSONObject().apply {
+            put("visitId", visitId)
             if (!tabCode.isNullOrBlank()) put("tabCode", tabCode)
         }).toString(),
     )
 
     @JvmStatic
-    fun queryAccomplishmentDetail(medalSeriesCode: String): String = RequestManager.requestString(
-        "com.antgroup.zmxy.zmcustprod.biz.rpc.creditidentity.api.CreditIdentityAchievementRpcManager.enterAccomplishmentDetailV2",
-        JSONArray().put(JSONObject().put("medalSeriesCode", medalSeriesCode)).toString(),
-    )
-
-    @JvmStatic
     fun claimAccomplishment(medalSeriesCode: String): String = RequestManager.requestString(
-        "com.antgroup.zmxy.zmcustprod.biz.rpc.creditidentity.api.CreditIdentityAchievementRpcManager.claimAccomplishmentV2",
+        "com.antgroup.zmxy.zmcustprod.biz.rpc.creditidentity.api.CreditIdentityAchievementRpcManager.claimAccomplishmentSeriesV3",
         JSONArray().put(JSONObject().put("medalSeriesCode", medalSeriesCode)).toString(),
     )
 
