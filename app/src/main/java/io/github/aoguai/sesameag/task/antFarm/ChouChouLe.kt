@@ -294,7 +294,8 @@ class ChouChouLe {
             if ("ipDraw" == drawType) {
                 handleIpDraw()
             } else {
-                handleDailyDraw()
+                val kitchenDraw = handleDailyDraw(source = "AIKitchen", maxDrawTimes = 1)
+                kitchenDraw.success && handleDailyDraw().success
             }
 
         if (!drawSuccess) return false
@@ -610,62 +611,83 @@ class ChouChouLe {
     /**
      * 执行普通抽抽乐抽奖
      */
-    private fun handleDailyDraw(): Boolean {
+    internal fun handleDailyDraw(
+        source: String = "antfarm_villa",
+        maxDrawTimes: Int = Int.MAX_VALUE,
+    ): TaskFlowActionResult {
         try {
-            val jo =
-                JSONObject(
-                    AntFarmRpcCall.queryDrawMachineActivity_New(
-                        "dailyDrawMachine",
-                        "ipDrawMachine",
-                    ),
-                )
+            val jo = JSONObject(
+                AntFarmRpcCall.queryDrawMachineActivity_New("dailyDrawMachine", "ipDrawMachine", source),
+            )
             if (!ResChecker.checkRes(TAG, jo)) {
-                Log.farm("日常抽抽乐活动查询失败，本轮停止")
-                return false
+                return TaskFlowActionResult.failure(
+                    TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                    message = "日常抽抽乐活动查询失败", raw = jo.toString(),
+                )
             }
 
-            val activity = jo.optJSONObject("drawMachineActivity") ?: return false
+            val activity = jo.optJSONObject("drawMachineActivity") ?: return TaskFlowActionResult.failure(
+                TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                message = "日常抽抽乐缺少活动信息", raw = jo.toString(),
+            )
             val endTime = activity.optLong("endTime", 0)
             if (endTime > 0 && System.currentTimeMillis() > endTime) {
                 Log.farm("该[${activity.optString("activityId")}]抽奖活动已结束")
-                return true
+                return TaskFlowActionResult.success(progressChanged = false)
             }
 
             var remainingTimes = extractDrawTimes(jo)
-            if (remainingTimes < 0) return false
-            if (remainingTimes <= 0) {
+            if (remainingTimes < 0) return TaskFlowActionResult.failure(
+                TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                message = "日常抽抽乐缺少可用次数", raw = jo.toString(),
+            )
+            if (remainingTimes == 0) {
                 Log.farm("日常抽抽乐当前无可用次数，跳过抽奖")
-                return true
+                return TaskFlowActionResult.success(progressChanged = false)
             }
-            var allSuccess = true
-
+            var drawnTimes = 0
             Log.farm("日常抽抽乐剩余次数: $remainingTimes")
 
-            while (remainingTimes > 0) {
-                val batchCount = remainingTimes.coerceAtMost(10)
+            while (remainingTimes > 0 && drawnTimes < maxDrawTimes) {
+                val batchCount = minOf(remainingTimes, 10, maxDrawTimes - drawnTimes)
                 Log.farm("执行日常抽抽乐 $batchCount 连抽...")
 
-                val response = AntFarmRpcCall.drawMachineDaily(batchCount)
-                val batchSuccess = drawPrize("日常抽抽乐", response)
-                if (!batchSuccess) {
+                val response = AntFarmRpcCall.drawMachineDaily(batchCount, source)
+                if (!drawPrize("日常抽抽乐", response)) {
                     Log.farm("日常抽抽乐提交结果未确认，本轮停止抽奖，避免重复扣减")
-                    return false
+                    return AntFarm.instance?.buildFarmTaskFailureResult(
+                        JSONObject(response), "dailyDrawMachine", "日常抽抽乐", "抽奖", "drawMachine",
+                    ) ?: TaskFlowActionResult.failure(
+                        TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                        message = "日常抽抽乐提交结果未确认", raw = response,
+                    )
                 }
-                allSuccess = allSuccess and batchSuccess
 
-                val refreshed = JSONObject(AntFarmRpcCall.queryDrawMachineActivity_New("dailyDrawMachine", "ipDrawMachine"))
-                if (!ResChecker.checkRes(TAG, refreshed)) return false
+                val refreshed = JSONObject(
+                    AntFarmRpcCall.queryDrawMachineActivity_New("dailyDrawMachine", "ipDrawMachine", source),
+                )
+                if (!ResChecker.checkRes(TAG, refreshed)) return TaskFlowActionResult.failure(
+                    TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                    message = "日常抽抽乐余额查询失败", raw = refreshed.toString(),
+                )
                 val afterTimes = extractDrawTimes(refreshed)
                 if (afterTimes < 0 || afterTimes >= remainingTimes) {
                     Log.farm("日常抽抽乐响应成功但余额未确认减少，本轮停止抽奖")
-                    return false
+                    return TaskFlowActionResult.defer(
+                        DeferredReason.PREREQUISITE_PENDING,
+                        message = "抽奖扣减尚未确认，等待任务状态回查",
+                        refreshAfterAction = true,
+                    )
                 }
+                drawnTimes += batchCount
                 remainingTimes = afterTimes
             }
-            return allSuccess
+            return TaskFlowActionResult.success(progressChanged = drawnTimes > 0)
         } catch (t: Throwable) {
             Log.printStackTrace("handleDailyDraw err:", t)
-            return false
+            return TaskFlowActionResult.failure(
+                TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW, message = t.message.orEmpty(),
+            )
         }
     }
 

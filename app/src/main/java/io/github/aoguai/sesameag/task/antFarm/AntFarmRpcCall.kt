@@ -9,6 +9,7 @@ import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.ResChecker
 import io.github.aoguai.sesameag.util.RandomUtil.nextInt
+import io.github.aoguai.sesameag.util.maps.UserMap
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -273,13 +274,14 @@ object AntFarmRpcCall {
     }
 
     @JvmStatic
-    fun listFarmTask(): String {
-        val args1 =
-            (
-                "[{\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\",\"version\":\"" +
-                    VERSION + "\"}]"
-            )
-        return requestString("com.alipay.antfarm.listFarmTask", args1)
+    fun listFarmTask(taskSceneCode: String = "ANTFARM_FOOD_TASK"): String {
+        val args = JSONObject()
+            .put("requestType", "NORMAL")
+            .put("sceneCode", if (taskSceneCode == "ANTFARM_AI_KITCHEN_TASK") taskSceneCode else "ANTFARM")
+            .put("source", "H5")
+            .put("taskSceneCode", taskSceneCode)
+        if (taskSceneCode != "ANTFARM_AI_KITCHEN_TASK") args.put("version", VERSION)
+        return requestString("com.alipay.antfarm.listFarmTask", JSONArray().put(args).toString())
     }
 
     /**
@@ -298,15 +300,20 @@ object AntFarmRpcCall {
         sceneCode: String,
         outBizNo: String,
     ): String {
+        val aiKitchen = sceneCode == "ANTFARM_AI_KITCHEN_TASK"
         val args = JSONObject()
         args.put("outBizNo", outBizNo)
-        args.put("requestType", "RPC")
+        args.put("requestType", if (aiKitchen) "NORMAL" else "RPC")
         args.put("sceneCode", sceneCode)
-        args.put("source", "ADBASICLIB")
+        args.put("source", if (aiKitchen) "aikitchen_daily" else "ADBASICLIB")
         args.put("taskType", taskType)
-
-        val params = "[$args]"
-        return requestString("com.alipay.antiep.finishTask", params)
+        if (aiKitchen) {
+            args.put("bizKey", taskType)
+            args.put("taskSceneCode", sceneCode)
+            args.put("userId", UserMap.currentUid)
+        }
+        val method = if (aiKitchen) "com.alipay.antieptask.finishTaskantfarm" else "com.alipay.antiep.finishTask"
+        return requestString(method, JSONArray().put(args).toString())
     }
 
     @JvmStatic
@@ -705,6 +712,22 @@ object AntFarmRpcCall {
     }
 
     @JvmStatic
+    fun useFarmFood(cookbookId: String, cuisineId: String, cuisineType: String, resultLevel: String): String {
+        val args = JSONObject().apply {
+            put("cookbookId", cookbookId)
+            put("cuisineId", cuisineId)
+            if (cuisineType.isNotEmpty()) put("cuisineType", cuisineType)
+            if (resultLevel.isNotEmpty()) put("resultLevel", resultLevel)
+            put("requestType", "NORMAL")
+            put("sceneCode", "ANTFARM")
+            put("source", "chInfo_ch_appcenter__chsub_9patch")
+            put("useCuisine", true)
+            put("version", VERSION)
+        }
+        return requestString("com.alipay.antfarm.useFarmFood", JSONArray().put(args).toString())
+    }
+
+    @JvmStatic
     fun collectKitchenGarbage(): String =
         requestString(
             "com.alipay.antfarm.collectKitchenGarbage",
@@ -714,14 +737,17 @@ object AntFarmRpcCall {
     // 日常任务
     @JvmStatic
     @JvmOverloads
-    fun doFarmTask(bizKey: String?, taskSceneCode: String? = null, requestType: String = "NORMAL"): String =
+    fun doFarmTask(
+        bizKey: String?, taskSceneCode: String? = null, requestType: String = "NORMAL",
+        sceneCode: String = "ANTFARM", source: String = "H5",
+    ): String =
         requestString(
             "com.alipay.antfarm.doFarmTask",
             JSONArray().put(JSONObject().apply {
                 put("bizKey", bizKey)
                 put("requestType", requestType)
-                put("sceneCode", "ANTFARM")
-                put("source", "H5")
+                put("sceneCode", sceneCode)
+                put("source", source)
                 put("version", VERSION)
                 if (!taskSceneCode.isNullOrBlank()) put("taskSceneCode", taskSceneCode)
             }).toString(),
@@ -731,11 +757,13 @@ object AntFarmRpcCall {
         bizKey: String,
         taskSceneCode: String,
         originalFailure: TaskFlowActionResult,
+        sceneCode: String,
+        source: String,
         onFailure: (JSONObject) -> TaskFlowActionResult,
     ): TaskFlowActionResult {
         val rpc = "AntFarmRpcCall.doFarmTask"
         val originalDetail = "originalRpc=${originalFailure.rpc} originalCode=${originalFailure.code} originalRaw=${originalFailure.raw}"
-        val raw = doFarmTask(bizKey, taskSceneCode, "RPC")
+        val raw = doFarmTask(bizKey, taskSceneCode, "RPC", sceneCode, source)
         val response = JsonUtil.parseJSONObjectOrNull(raw) ?: return TaskFlowActionResult.failure(
             TaskRpcFailureType.RETRYABLE_RPC,
             message = "场景任务请求返回空或无法解析",
@@ -766,7 +794,7 @@ object AntFarmRpcCall {
             message = "场景任务已受理，等待所属任务列表确认",
             rpc = rpc,
             raw = raw,
-            detail = "$originalDetail taskSceneCode=$taskSceneCode bizKey=$bizKey",
+            detail = "$originalDetail sceneCode=$sceneCode source=$source taskSceneCode=$taskSceneCode bizKey=$bizKey",
             refreshAfterAction = true,
         )
     }
@@ -1049,10 +1077,11 @@ object AntFarmRpcCall {
     fun queryDrawMachineActivity_New(
         scene: String,
         otherScene: String,
+        source: String = "antfarm_villa",
     ): String =
         requestString(
             "com.alipay.antfarm.queryDrawMachineActivity",
-            "[{\"otherScenes\":[\"$otherScene\"],\"requestType\":\"RPC\",\"scene\":\"$scene\",\"sceneCode\":\"ANTFARM\",\"source\":\"antfarm_villa\"}]",
+            "[{\"otherScenes\":[\"$otherScene\"],\"requestType\":\"RPC\",\"scene\":\"$scene\",\"sceneCode\":\"ANTFARM\",\"source\":\"$source\"}]",
         )
 
     /**
@@ -1078,8 +1107,8 @@ object AntFarmRpcCall {
      * 执行抽奖（普通抽抽乐）- 支持连抽
      */
     @JvmStatic
-    fun drawMachineDaily(batchDrawTimes: Int): String {
-        val data = "[{\"batchDrawTimes\":$batchDrawTimes,\"requestType\":\"RPC\",\"scene\":\"dailyDrawMachine\",\"sceneCode\":\"ANTFARM\",\"source\":\"antfarm_villa\"}]"
+    fun drawMachineDaily(batchDrawTimes: Int, source: String = "antfarm_villa"): String {
+        val data = "[{\"batchDrawTimes\":$batchDrawTimes,\"requestType\":\"RPC\",\"scene\":\"dailyDrawMachine\",\"sceneCode\":\"ANTFARM\",\"source\":\"$source\"}]"
         return requestString("com.alipay.antfarm.drawMachine", data)
     }
 
@@ -1365,14 +1394,99 @@ object AntFarmRpcCall {
             ""
         }
 
+    @JvmStatic
+    fun enterAiKitchen(): String = requestString(
+        "com.alipay.antfarm.enterAiKitchen",
+        JSONArray().put(JSONObject().put("requestType", "RPC").put("sceneCode", "ANTFARM")
+            .put("source", "aikitchen_daily")).toString(),
+    )
+
+    @JvmStatic
+    fun getAiKitchenCookbookInfo(seasonId: String, pageNum: Int): String = requestString(
+        "com.alipay.antfarm.getAiKitchenCookbookInfo",
+        JSONArray().put(JSONObject().put("pageNum", pageNum).put("sortField", "HIGHEST_SCORE_COOK_TIME")
+            .put("seasonId", seasonId).put("requestType", "RPC").put("sceneCode", "ANTFARM")
+            .put("source", "H5")).toString(),
+    )
+
+    @JvmStatic
+    fun queryAiKitchenDishDetail(seasonId: String, dishId: String): String = requestString(
+        "com.alipay.antfarm.queryAiKitchenDishDetail",
+        JSONArray().put(JSONObject().put("seasonId", seasonId).put("dishId", dishId)
+            .put("requestType", "RPC").put("sceneCode", "ANTFARM").put("source", "H5")).toString(),
+    )
+
+    @JvmStatic
+    fun shareAiKitchenIngredient(
+        seasonId: String,
+        ingredientId: String,
+        receiverId: String,
+        requestId: String,
+    ): String = requestString(
+        "com.alipay.antfarm.shareAiKitchenIngredient",
+        JSONArray().put(JSONObject().put("seasonId", seasonId).put("ingredientId", ingredientId)
+            .put("receiverId", receiverId).put("requestId", requestId).put("requestType", "RPC")
+            .put("sceneCode", "ANTFARM").put("source", "aikitchen_daily")).toString(),
+    )
+
+    @JvmStatic
+    fun cookAiKitchen(seasonId: String, ingredientIds: List<String>): String = requestString(
+        "com.alipay.antfarm.cookAiKitchen",
+        JSONArray().put(JSONObject().put("ingredientIds", JSONArray(ingredientIds)).put("seasonId", seasonId)
+            .put("requestType", "RPC").put("sceneCode", "ANTFARM").put("source", "aikitchen_daily")).toString(),
+    )
+
     // 小鸡换装
     @JvmStatic
-    fun listOrnaments(): String =
+    fun listOrnaments(setsType: String = "ACHIEVEMENTSETS", pageNo: Int = 1): String =
         requestString(
             "com.alipay.antfarm.listOrnaments",
-            "[{\"pageNo\":\"1\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"setsType\":\"ACHIEVEMENTSETS\",\"source\":\"H5\",\"subType\":\"sets\",\"type\":\"apparels\",\"version\":\"" +
-                VERSION +
-                "\"}]",
+            JSONArray().put(JSONObject()
+                .put("pageNo", pageNo.toString())
+                .put("requestType", "NORMAL")
+                .put("sceneCode", "ANTFARM")
+                .put("setsType", setsType)
+                .put("source", "H5")
+                .put("subType", "sets")
+                .put("type", "apparels")
+                .put("version", VERSION)).toString(),
+        )
+
+    fun ornamentActivityDetail(activityId: String, ornamentId: String): String =
+        requestString(
+            "com.alipay.antfarm.ornamentActivityDetail",
+            JSONArray().put(JSONObject()
+                .put("activityId", activityId)
+                .put("ornamentId", ornamentId)
+                .put("requestType", "NORMAL")
+                .put("sceneCode", "ANTFARM")
+                .put("source", "H5")
+                .put("version", VERSION)).toString(),
+        )
+
+    fun completeOrnamentTask(activityId: String, taskId: String): String =
+        requestString(
+            "com.alipay.antfarm.completeOrnamentTask",
+            JSONArray().put(JSONObject()
+                .put("activityId", activityId)
+                .put("taskId", taskId)
+                .put("requestType", "NORMAL")
+                .put("sceneCode", "ANTFARM")
+                .put("source", "H5")
+                .put("version", VERSION)).toString(),
+        )
+
+    fun receiveOrnamentTaskAward(taskId: String, completeActivity: Boolean): String =
+        requestString(
+            "com.alipay.antfarm.receiveUserAward",
+            JSONArray().put(JSONObject()
+                .put("completeActivity", completeActivity)
+                .put("taskId", taskId)
+                .put("taskType", "ORNAMENT_TASK")
+                .put("requestType", "NORMAL")
+                .put("sceneCode", "ANTFARM")
+                .put("source", "H5")
+                .put("version", VERSION)).toString(),
         )
 
     @JvmStatic

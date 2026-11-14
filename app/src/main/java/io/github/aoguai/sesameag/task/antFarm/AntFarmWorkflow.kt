@@ -4,6 +4,7 @@ import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
+import io.github.aoguai.sesameag.task.common.TaskFlowActionResult
 import io.github.aoguai.sesameag.task.common.TaskFlowRunResult
 import io.github.aoguai.sesameag.util.TimeCounter
 import io.github.aoguai.sesameag.util.maps.UserMap
@@ -126,6 +127,7 @@ internal suspend fun AntFarm.runFarmPriorityDonations(userId: String? = UserMap.
     }
 
     if (!ApplicationHookConstants.isOffline()) handleDonationCompetition()
+    if (!ApplicationHookConstants.isOffline()) runOrdinaryOrnamentTasks()
 }
 
 internal suspend fun AntFarm.runFarmSocialWorkflow(
@@ -200,10 +202,9 @@ internal suspend fun AntFarm.runFarmFinalizeWorkflow(
         return
     }
     val wasSleeping = isOwnerAnimalSleeping()
-    receiveFarmAwards()
     runDueFarmWork()
+    runFarmResourceWork(includeGames = false)
     if (!ApplicationHookConstants.isOffline()) {
-        runFarmKitchen()
         refreshFarmStatus("家庭、抽奖、宝箱和兑换后补蛋")
         if (shouldHarvestProduceNow()) harvestProduce(ownerFarmId)
         runFarmPriorityDonations()
@@ -240,18 +241,50 @@ internal suspend fun AntFarm.runFarmResourceWork(
 ): Boolean {
     if (ApplicationHookConstants.isOffline()) return false
     val stockBefore = AntFarm.foodStock
+    var progressed = false
+    var aiKitchenShareFailure: TaskFlowActionResult? = null
+    var oldKitchenFailure: TaskFlowActionResult? = null
     preloadFarmTools()
-    val kitchenProgress = runFarmKitchen().progressed
-    if (ApplicationHookConstants.isOffline()) return kitchenProgress
     if (includeGames && recordFarmGame?.value == true) FarmGame.run(this)
-    if (ApplicationHookConstants.isOffline()) return kitchenProgress
+    if (ApplicationHookConstants.isOffline()) return false
     receiveToolTaskReward()
-    if (ApplicationHookConstants.isOffline()) return kitchenProgress
-    receiveFarmAwards()
-    handleMultiStageTasksLoop()
-    if (feedAfterAwards && stockBefore < 180 && AntFarm.foodStock >= 180 && feedAnimal?.value == true) {
-        handleAutoFeedAnimal()
+    if (ApplicationHookConstants.isOffline()) return false
+    do {
+        val roundStock = AntFarm.foodStock
         receiveFarmAwards()
-    }
-    return kitchenProgress || AntFarm.foodStock != stockBefore
+        if (ApplicationHookConstants.isOffline()) break
+        handleMultiStageTasksLoop()
+        if (ApplicationHookConstants.isOffline()) break
+        var statusFailure: TaskFlowActionResult? = null
+        syncAnimalStatus(ownerFarmId) { statusFailure = it }
+        if (statusFailure != null) {
+            Log.error("AntFarm", "资源照料状态刷新失败: $statusFailure")
+            break
+        }
+        if (feedAfterAwards && !isOwnerAnimalSleeping()) {
+            if (feedAnimal?.value == true) handleAutoFeedAnimal()
+            if (ApplicationHookConstants.isOffline()) break
+            if (shouldHireAnimalNow()) {
+                runHireAnimalFeedTaskFlow()
+                if (ApplicationHookConstants.isOffline()) break
+                hireAnimal()
+            }
+        }
+        if (ApplicationHookConstants.isOffline()) break
+        val aiKitchenShare = if (aiKitchenShareFailure == null) runFarmAiKitchenShare() else AntFarm.FarmResourceResult(0)
+        aiKitchenShareFailure = aiKitchenShareFailure ?: aiKitchenShare.failure
+        progressed = progressed || aiKitchenShare.progressed
+        if (ApplicationHookConstants.isOffline()) break
+        val oldKitchen = if (oldKitchenFailure == null) runFarmKitchen() else AntFarm.FarmResourceResult(0)
+        oldKitchenFailure = oldKitchenFailure ?: oldKitchen.failure
+        if (ApplicationHookConstants.isOffline()) break
+        // 睡前资源准备由原睡前预算安排照料，厨神制作留到正常资源流程。
+        val aiKitchen = if (feedAfterAwards) runFarmAiKitchen() else AntFarm.FarmResourceResult(0)
+        val cooked = oldKitchen.progressed || aiKitchen.progressed
+        progressed = progressed || cooked || AntFarm.foodStock != roundStock
+        if (ApplicationHookConstants.isOffline() || aiKitchen.failure != null) break
+        if (cooked) useDailySpecialFoodIfNeeded()
+        if (!aiKitchenShare.progressed && !cooked && AntFarm.foodStock == roundStock) break
+    } while (!ApplicationHookConstants.isOffline())
+    return progressed || AntFarm.foodStock != stockBefore
 }

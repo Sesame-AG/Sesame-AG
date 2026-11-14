@@ -1,6 +1,7 @@
 package io.github.aoguai.sesameag.task.antFarm
 
 import io.github.aoguai.sesameag.data.Status
+import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.task.antFarm.AntFarm.Companion.TAG
@@ -122,6 +123,7 @@ private fun parseLoveChickenActivity(response: JSONObject): LoveChickenActivityS
 }
 
 private fun AntFarm.queryLoveChickenActivity(): JSONObject? {
+    if (Status.hasFlagToday(StatusFlags.FLAG_FARM_DONATION_COMPETITION_UNAVAILABLE)) return null
     val owner = AccountSessionCoordinator.currentUserId().orEmpty()
     val epoch = AccountSessionCoordinator.currentSessionEpoch()
     val response = JSONObject(AntFarmRpcCall.enterDonationCompetitionRank())
@@ -132,7 +134,8 @@ private fun AntFarm.queryLoveChickenActivity(): JSONObject? {
             return null
         }
         "DONATION_COMPETITION02" -> {
-            Log.error(TAG, "爱心鸡结号功能未开启，结束本次续调 rpc=enterDonationCompetitionRank classification=BUSINESS_LIMIT raw=$response")
+            Status.setFlagToday(StatusFlags.FLAG_FARM_DONATION_COMPETITION_UNAVAILABLE, expectedUserId = owner)
+            Log.error(TAG, "爱心鸡结号功能未开启，今日停止该入口 rpc=enterDonationCompetitionRank classification=BUSINESS_LIMIT raw=$response")
             return null
         }
     }
@@ -736,6 +739,10 @@ internal suspend fun AntFarm.runLoveChickenGatheringWorkflow(initialResponse: JS
     var schedule = true
     var retryAt: Long? = null
     try {
+        if (Status.hasFlagToday(StatusFlags.FLAG_FARM_DONATION_COMPETITION_UNAVAILABLE)) {
+            schedule = false
+            return false
+        }
         var response = initialResponse ?: queryLoveChickenActivity()
         if (response == null) { schedule = false; return false }
         snapshot = parseLoveChickenActivity(response)

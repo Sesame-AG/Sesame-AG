@@ -122,9 +122,13 @@ internal suspend fun AntFarm.runDueFarmWork() {
             }
             "zhimaPigeon" -> {
                 if (isZhimaPigeonConfigured()) handleNpcAnimalLogic()
+                if (shouldHireAnimalNow()) {
+                    runHireAnimalFeedTaskFlow()
+                    hireAnimal()
+                }
                 runNpcTaskFlow()
             }
-            "awards" -> receiveFarmAwards()
+            "awards" -> runFarmResourceWork(includeGames = false)
             "draw" -> if (enableChouchoule?.value == true) ChouChouLe().run(this)
             "exchange" -> if (enableChouchoule?.value == true && autoExchange?.value == true) ChouChouLe().run(this)
             "meal" -> if (family?.value == true && familyOptions?.value?.contains("eatTogetherConfig") == true) {
