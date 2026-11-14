@@ -19,14 +19,22 @@ internal data class GameTaskReportResult(
     val attemptedReports: Int,
     val successfulReports: Int,
     val failureMessage: String = "",
+    val failureCode: String = "",
+    val failureRaw: String = "",
+    val stopCurrentRound: Boolean = false,
+    val businessConfirmed: Boolean = false,
 ) {
-    val completed: Boolean
-        get() = successfulReports >= requiredSuccesses
+    val accepted: Boolean
+        get() = failureMessage.isBlank() && (businessConfirmed || successfulReports >= requiredSuccesses)
 }
 
 private data class GameTaskSingleReportResult(
     val success: Boolean,
     val message: String = "",
+    val code: String = "",
+    val raw: String = "",
+    val stopCurrentRound: Boolean = false,
+    val token: String? = null,
 )
 
 enum class GameTask(
@@ -88,14 +96,13 @@ enum class GameTask(
         }
     }
 
-    private fun login(logger: (String) -> Unit): String? {
+    private fun login(): GameTaskSingleReportResult {
         var captureRequestId: String? = null
         var connection: HttpURLConnection? = null
         return try {
             val authCode = AuthCodeHelper.getAuthCode(appId)
             if (authCode.isNullOrBlank()) {
-                logger("登录失败：授权码为空")
-                return null
+                return GameTaskSingleReportResult(false, "登录失败：授权码为空", stopCurrentRound = true)
             }
             val mark = AlipayMiniMarkHelper.getAlipayMiniMark(appId, version)
             val requestId = "${System.currentTimeMillis()}_${(1..350).random()}"
@@ -131,25 +138,26 @@ enum class GameTask(
             val token = if (responseCode in 200..299 && response.optInt("code") == 1) {
                 response.optJSONObject("data")?.optString("token")?.takeIf { it.isNotBlank() }
             } else null
-            if (token == null) logger("登录失败：HTTP=$responseCode response=$responseText")
-            token
+            if (token == null) {
+                GameTaskSingleReportResult(
+                    false, "登录失败：HTTP=$responseCode", RpcOfflineRisk.extractCode(response),
+                    responseText, stopCurrentRound = true,
+                )
+            } else GameTaskSingleReportResult(true, token = token)
         } catch (error: Exception) {
             RpcTrafficCapture.recordModuleHttpError(captureRequestId, error)
             if (error is CancellationException || error is InterruptedException) throw error
-            logger("登录异常：${error.message.orEmpty()}")
-            null
+            GameTaskSingleReportResult(false, "登录异常：${error.message.orEmpty()}", stopCurrentRound = true)
         } finally {
             connection?.disconnect()
         }
     }
 
-    suspend fun report(eggCount: Int): Boolean = reportDetailed(eggCount).completed
-
     internal suspend fun reportDetailed(
         eggCount: Int,
         actionFinishChannel: String = channel,
-        includeSafetyReport: Boolean = true,
         logger: ((String) -> Unit)? = null,
+        confirmProgress: (suspend () -> Boolean?)? = null,
     ): GameTaskReportResult {
         val emitLog = logger ?: ::logTask
         if (eggCount <= 0) {
@@ -165,37 +173,62 @@ enum class GameTask(
             )
         }
 
-        val requiredSuccesses = eggCount * requestsPerEgg
-        val totalReports = requiredSuccesses + if (includeSafetyReport) 1 else 0
+        val batchSize = when {
+            this == Farm_ddply && actionFinishChannel == "zhuangyuan" -> 2
+            this == Forest_slxcc && actionFinishChannel == "goldenbean" -> 2
+            else -> requestsPerEgg
+        }
+        val requiredSuccesses = eggCount * batchSize
         currentCoroutineContext().ensureActive()
-        val token = login(emitLog)
+        val loginResult = login()
         currentCoroutineContext().ensureActive()
+        val token = loginResult.token
         if (token.isNullOrBlank()) {
-            emitLog("登录失败：未取得有效登录凭证，停止上报")
             return GameTaskReportResult(
                 requestedRewards = eggCount,
                 requiredSuccesses = requiredSuccesses,
                 attemptedReports = 0,
                 successfulReports = 0,
-                failureMessage = "登录失败：未取得有效登录凭证",
+                failureMessage = loginResult.message,
+                failureCode = loginResult.code,
+                failureRaw = loginResult.raw,
+                stopCurrentRound = true,
             )
         }
 
         var attemptedReports = 0
         var successfulReports = 0
-        var failureMessage = ""
-        for (index in 1..totalReports) {
+        var failure: GameTaskSingleReportResult? = null
+        var businessConfirmed = false
+        for (index in 1..requiredSuccesses) {
             currentCoroutineContext().ensureActive()
             attemptedReports++
-            val result = executeSingleReport(index, totalReports, actionFinishChannel, token)
+            val result = executeSingleReport(index, requiredSuccesses, actionFinishChannel, token)
             currentCoroutineContext().ensureActive()
             if (!result.success) {
-                failureMessage = result.message
+                failure = result
                 break
             }
             successfulReports++
-            if (index % requestsPerEgg == 0) {
-                emitLog("进度: $index/$requiredSuccesses (已达成 ${index / requestsPerEgg} 次)")
+            emitLog("上报已接受: $index/$requiredSuccesses，业务进度待回查")
+            if (confirmProgress != null) {
+                val confirmed = try {
+                    confirmProgress()
+                } catch (error: Exception) {
+                    if (error is CancellationException || error is InterruptedException) throw error
+                    failure = GameTaskSingleReportResult(false, "上报后业务查询异常：${error.message.orEmpty()}")
+                    null
+                }
+                currentCoroutineContext().ensureActive()
+                if (confirmed == null) {
+                    if (failure == null) failure = GameTaskSingleReportResult(false, "上报后业务状态未确认，停止本批上报")
+                    break
+                }
+                if (confirmed) {
+                    businessConfirmed = true
+                    emitLog("业务状态已确认达成，结束本批上报")
+                    break
+                }
             }
         }
         return GameTaskReportResult(
@@ -203,7 +236,11 @@ enum class GameTask(
             requiredSuccesses = requiredSuccesses,
             attemptedReports = attemptedReports,
             successfulReports = successfulReports,
-            failureMessage = failureMessage,
+            failureMessage = failure?.message.orEmpty(),
+            failureCode = failure?.code.orEmpty(),
+            failureRaw = failure?.raw.orEmpty(),
+            stopCurrentRound = failure?.stopCurrentRound == true,
+            businessConfirmed = businessConfirmed,
         )
     }
 
@@ -253,7 +290,10 @@ enum class GameTask(
             } else {
                 GameTaskSingleReportResult(
                     success = false,
-                    message = "上报失败：进度=$current/$total HTTP=$responseCode response=$responseText",
+                    message = "上报失败：进度=$current/$total HTTP=$responseCode",
+                    code = RpcOfflineRisk.extractCode(response),
+                    raw = responseText,
+                    stopCurrentRound = responseCode in setOf(401, 403) || RpcOfflineRisk.isOfflineRisk(response),
                 )
             }
         } catch (error: Exception) {

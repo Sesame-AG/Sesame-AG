@@ -497,7 +497,7 @@ class TaskFlowEngine(
         var failureStoppedActions = false
 
         while (round <= roundLimit) {
-            if (round > 1) {
+            if (round > 1 && roundSleepMs > 0L) {
                 // 轮间停顿：基础间隔叠加随机抖动，避免匀速连续回查形成机器节奏
                 CoroutineUtils.sleepCompat(roundSleepMs + Random.nextLong(0, ROUND_SLEEP_JITTER_MS))
             }

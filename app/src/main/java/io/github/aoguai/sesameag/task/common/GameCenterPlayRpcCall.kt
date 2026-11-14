@@ -121,6 +121,7 @@ object GameCenterPlayRpcCall {
             objects.map { it.optString("gameAppId") },
             objects.map { it.optString("appId") },
             objects.map { it.optString("game_id") },
+            objects.map { it.optString("gameId") },
             urlParameters.valuesFor("gameAppId", "appId", "game_id"),
         )
         val source = firstNonBlank(
@@ -175,15 +176,6 @@ object GameCenterPlayRpcCall {
         directFinishSupported: Boolean = false,
     ): TaskActionDecision {
         val descriptor = describeTask(*roots)
-        if (descriptor.contract == null && !hasP2eFloatingBallProtocol(descriptor.objects)) {
-            descriptor.mappedTask?.let { mappedTask ->
-                return TaskActionDecision(
-                    action = TaskAction.LEGACY_EXTERNAL_REPORT,
-                    mappedTask = mappedTask,
-                    reason = "verified GameTask mapping",
-                )
-            }
-        }
         if (!descriptor.isGameTask) {
             return TaskActionDecision(
                 action = TaskAction.DIRECT_FINISH.takeIf { directFinishSupported } ?: TaskAction.DEFERRED,
@@ -222,6 +214,13 @@ object GameCenterPlayRpcCall {
                 action = TaskAction.DEFERRED,
                 reason = "duration protocol is present but its contract is incomplete",
                 missingFields = descriptor.missingDurationFields,
+            )
+        }
+        descriptor.mappedTask?.let { mappedTask ->
+            return TaskActionDecision(
+                action = TaskAction.LEGACY_EXTERNAL_REPORT,
+                mappedTask = mappedTask,
+                reason = "supported non-duration game action",
             )
         }
         return TaskActionDecision(
@@ -463,7 +462,7 @@ object GameCenterPlayRpcCall {
             "url", "sourceUrl", "schema", "query", "channelTaskPassThrough", "cdpQueryParams", "originalMap",
         )
         objects.forEach { objectValue ->
-            listOf("targetUrl", "actionUrl", "jumpUrl", "jumpLink", "pageUrl", "taskJumpUrl")
+            listOf("targetUrl", "actionUrl", "jumpUrl", "jumpLink", "pageUrl", "taskJumpUrl", "gameUrl")
                 .map(objectValue::optString)
                 .filter { it.isNotBlank() }
                 .forEach { queue.add(it to null) }
@@ -571,6 +570,11 @@ object GameCenterPlayRpcCall {
             .flatMap { values -> values.asSequence().map(String::trim) }
             .firstOrNull { it.isNotBlank() }
             .orEmpty()
+
+    fun enterGame(gameAppId: String): FloatingBallAck = requestAck(
+        METHOD_GAME_USER_ACTION,
+        JSONObject().put("actionCode", "enterGame").put("gameId", gameAppId).put("source", "gameFramework"),
+    )
 
     fun submit(contract: Contract): String =
         RequestManager.requestString(
