@@ -55,6 +55,7 @@ object RpcTrafficCapture {
     private const val H5_REQUEST_CLASS = "com.alipay.mobile.common.transport.h5.H5HttpUrlRequest"
     private const val XRIVER_REQUEST_CLASS = "com.alibaba.xriver.android.proxy.CRVRequestProxy"
     private const val MTOP_REQUEST_CLASS = "com.alibaba.ariver.jsapi.mtop.MtopBridgeExtention"
+    private const val OKHTTP_CLIENT_CLASS = "okhttp3.OkHttpClient"
 
     private enum class TrafficSource(val title: String) {
         ARIVER_RPC("Host RPC"),
@@ -62,13 +63,21 @@ object RpcTrafficCapture {
         MODULE_ACTIVE("Module RPC"),
         MINI_HTTP("Mini-program HTTP"),
         MODULE_HTTP("Module HTTP"),
+        HOST_WEBSOCKET("Host WebSocket"),
     }
 
     private enum class TrafficPhase {
         REQUEST,
         RESPONSE,
         ERROR,
-        SESSION_START
+        SESSION_START,
+        CONNECT,
+        OPEN,
+        SEND,
+        RECEIVE,
+        CLOSING,
+        CLOSED,
+        CANCEL,
     }
 
     private data class RpcTrafficEvent(
@@ -167,6 +176,10 @@ object RpcTrafficCapture {
     private val captureHooks = ConcurrentHashMap<Method, XposedInterface.HookHandle>()
     // false 仅表示类入口正在安装，不把安装占位当作成功。
     private val miniHttpClassInstallations = ConcurrentHashMap<Class<*>, Boolean>()
+    private val webSocketFactoryInstallations = ConcurrentHashMap<Class<*>, Boolean>()
+    // 会话内按真实对象身份关联连接，不把服务端推送配对到最近一次发送。
+    private val webSocketReferenceQueue = ReferenceQueue<Any>()
+    private val webSocketConnections = HashMap<WeakIdentityKey, String>()
     private val reportedHttpClasses = ConcurrentHashMap.newKeySet<Class<*>>()
     private val reportedHttpCallSites = AtomicReference<Set<String>>(emptySet())
     private val httpClassDeclarations = ConcurrentHashMap<Class<*>, String>()
@@ -275,12 +288,14 @@ object RpcTrafficCapture {
                 mtopRequestHookInstalled.set(false)
                 h5HookInstalled.set(false)
                 miniHttpClassInstallations.clear()
+                webSocketFactoryInstallations.clear()
             }
             if (RuntimeIdentityGuard.isMainProcess()) {
                 resetCaptureSession()
             } else {
                 synchronized(sessionLock) {
                     clearPendingAriverRequests()
+                    webSocketConnections.clear()
                     sessionId = null
                     sessionStarted = false
                     captureSessionCache = null
@@ -438,15 +453,23 @@ object RpcTrafficCapture {
     fun recordModuleHttpRequest(connection: HttpURLConnection, body: String): String? =
         runCatching {
             if (!isCaptureEnabled()) return@runCatching null
+            recordModuleHttpRequest(connection.url.toExternalForm(), connection.requestMethod, connection.requestProperties, body)
+        }.onFailure {
+            runCatching { Log.runtime(TAG, "记录模块 HTTP 请求失败: ${it.message}") }
+        }.getOrNull()
+
+    fun recordModuleHttpRequest(url: String, method: String, headers: Map<String, List<String>>, body: String): String? =
+        runCatching {
+            if (!isCaptureEnabled()) return@runCatching null
             val payload = JSONObject()
-                .put("url", connection.url.toExternalForm())
-                .put("method", connection.requestMethod)
-                .put("headers", JSONObject(connection.requestProperties))
+                .put("url", url)
+                .put("method", method)
+                .put("headers", JSONObject(headers))
                 .put("body", body)
                 .toString()
             PendingHostRequest(
                 requestId = newRequestId(),
-                method = "${connection.requestMethod} ${connection.url}",
+                method = "$method $url",
                 requestPayload = payload,
                 startedAtMs = System.currentTimeMillis(),
                 source = TrafficSource.MODULE_HTTP,
@@ -463,18 +486,35 @@ object RpcTrafficCapture {
     ) {
         runCatching {
             if (!isCaptureEnabled()) return@runCatching
-            val headers = JSONArray()
-            connection.headerFields.forEach { (name, values) ->
-                headers.put(
+            recordModuleHttpResponse(requestId, connection.url.toExternalForm(), connection.requestMethod,
+                connection.headerFields, status, body)
+        }.onFailure {
+            runCatching { Log.runtime(TAG, "记录模块 HTTP 响应失败: ${it.message}") }
+        }
+    }
+
+    fun recordModuleHttpResponse(
+        requestId: String?,
+        url: String,
+        method: String,
+        headers: Map<out String?, List<String>>,
+        status: Int,
+        body: String,
+    ) {
+        runCatching {
+            if (!isCaptureEnabled()) return@runCatching
+            val headerEntries = JSONArray()
+            headers.forEach { (name, values) ->
+                headerEntries.put(
                     JSONObject()
                         .put("name", name ?: JSONObject.NULL)
                         .put("values", JSONArray(values)),
                 )
             }
             val payload = JSONObject()
-                .put("url", connection.url.toExternalForm())
+                .put("url", url)
                 .put("status", status)
-                .put("headers", headers)
+                .put("headers", headerEntries)
                 .put("body", body)
                 .toString()
             val pending = requestId?.let(pendingAriverRequestsById::get)
@@ -484,7 +524,7 @@ object RpcTrafficCapture {
                         title = TrafficSource.MODULE_HTTP.title,
                         phase = TrafficPhase.RESPONSE,
                         source = TrafficSource.MODULE_HTTP,
-                        method = "${connection.requestMethod} ${connection.url}",
+                        method = "$method $url",
                         payload = payload,
                         correlationStatus = "UNMATCHED",
                     ),
@@ -508,7 +548,7 @@ object RpcTrafficCapture {
                         title = TrafficSource.MODULE_HTTP.title,
                         phase = TrafficPhase.ERROR,
                         source = TrafficSource.MODULE_HTTP,
-                        method = "HttpURLConnection",
+                        method = "HTTP",
                         note = note,
                         correlationStatus = "UNMATCHED",
                     ),
@@ -548,18 +588,21 @@ object RpcTrafficCapture {
                             if (result is Class<*> &&
                                 (result.name == MINI_REQUEST_CLASS || result.name == MINI_RESPONSE_CLASS ||
                                     result.name == H5_NETWORK_CLASS || result.name == XRIVER_REQUEST_CLASS ||
-                                    result.name == MTOP_REQUEST_CLASS)
+                                    result.name == MTOP_REQUEST_CLASS || result.name == OKHTTP_CLIENT_CLASS)
                             ) {
-                                runCatching { installMiniHttpClass(result) }.onFailure {
-                                    runCatching { Log.runtime(TAG, "延迟安装小程序 HTTP 抓包失败: ${it.stackTraceToString()}") }
+                                runCatching {
+                                    if (result.name == OKHTTP_CLIENT_CLASS) installWebSocketFactoryHook(result)
+                                    else installMiniHttpClass(result)
+                                }.onFailure {
+                                    runCatching { Log.runtime(TAG, "延迟安装网络抓包失败: ${it.stackTraceToString()}") }
                                 }
                             }
                             result
                         }) return@runCatching
                         listenerInstalled = true
-                        Log.runtime(TAG, "已安装小程序 HTTP 类加载监听: $method")
+                        Log.runtime(TAG, "已安装网络抓包类加载监听: $method")
                     }.onFailure {
-                        runCatching { Log.runtime(TAG, "安装小程序 HTTP 类加载监听失败: $method ${it.stackTraceToString()}") }
+                        runCatching { Log.runtime(TAG, "安装网络抓包类加载监听失败: $method ${it.stackTraceToString()}") }
                     }
                 }
             }.onFailure {
@@ -579,13 +622,219 @@ object RpcTrafficCapture {
                 runCatching { Log.runtime(TAG, "小程序 HTTP 入口暂未安装: $name ${it.stackTraceToString()}") }
             }
         }
+        val webSocketInstalled = runCatching {
+            installWebSocketFactoryHook(Class.forName(OKHTTP_CLIENT_CLASS, false, classLoader))
+        }.onFailure {
+            runCatching { Log.runtime(TAG, "WebSocket 入口暂未安装: $OKHTTP_CLIENT_CLASS ${it.message}") }
+        }.getOrDefault(false)
         Log.runtime(
             TAG,
-            "小程序 HTTP 安装状态: listener=$listenerInstalled, request=$requestInstalled, response=$responseInstalled, " +
-                "network=$networkInstalled, xriver=$xriverInstalled, process=${currentProcessName()}, " +
+            "网络抓包安装状态: listener=$listenerInstalled, request=$requestInstalled, response=$responseInstalled, " +
+                "network=$networkInstalled, xriver=$xriverInstalled, websocket=$webSocketInstalled, process=${currentProcessName()}, " +
                 "loader=${classLoader.javaClass.name}@${System.identityHashCode(classLoader)}",
         )
-        return listenerInstalled || requestInstalled || responseInstalled || networkInstalled || xriverInstalled
+        return listenerInstalled || requestInstalled || responseInstalled || networkInstalled || xriverInstalled || webSocketInstalled
+    }
+
+    private fun installWebSocketFactoryHook(targetClass: Class<*>): Boolean {
+        synchronized(installLock) {
+            if (!isCaptureEnabled()) return false
+            webSocketFactoryInstallations.putIfAbsent(targetClass, false)?.let { return it }
+        }
+        return try {
+            val loader = targetClass.classLoader
+            val method = targetClass.getDeclaredMethod(
+                "newWebSocket",
+                Class.forName("okhttp3.Request", false, loader),
+                Class.forName("okhttp3.WebSocketListener", false, loader),
+            )
+            require(!Modifier.isStatic(method.modifiers) && method.returnType.name == "okhttp3.WebSocket") {
+                "WebSocket 工厂签名不符: $method"
+            }
+            val installed = installWebSocketObserver(method, TrafficPhase.CONNECT)
+            synchronized(installLock) {
+                if (installed && isCaptureEnabled()) webSocketFactoryInstallations[targetClass] = true
+                installed && isCaptureEnabled()
+            }
+        } catch (error: Throwable) {
+            runCatching { Log.runtime(TAG, "安装 WebSocket 工厂失败: ${targetClass.name} ${error.stackTraceToString()}") }
+            false
+        } finally {
+            webSocketFactoryInstallations.remove(targetClass, false)
+        }
+    }
+
+    private fun installWebSocketEndpoint(instance: Any, contract: Class<*>, callback: Boolean) {
+        runCatching {
+            require(contract.isInstance(instance)) { "WebSocket 对象不符合接口: ${contract.name}" }
+            val loader = contract.classLoader
+            val byteString = Class.forName("okio.ByteString", false, loader)
+            val signatures = if (callback) {
+                val socket = Class.forName("okhttp3.WebSocket", false, loader)
+                val response = Class.forName("okhttp3.Response", false, loader)
+                listOf(
+                    contract.getMethod("onOpen", socket, response) to TrafficPhase.OPEN,
+                    contract.getMethod("onMessage", socket, String::class.java) to TrafficPhase.RECEIVE,
+                    contract.getMethod("onMessage", socket, byteString) to TrafficPhase.RECEIVE,
+                    contract.getMethod("onClosing", socket, Integer.TYPE, String::class.java) to TrafficPhase.CLOSING,
+                    contract.getMethod("onClosed", socket, Integer.TYPE, String::class.java) to TrafficPhase.CLOSED,
+                    contract.getMethod("onFailure", socket, Throwable::class.java, response) to TrafficPhase.ERROR,
+                )
+            } else {
+                listOf(
+                    contract.getMethod("send", String::class.java) to TrafficPhase.SEND,
+                    contract.getMethod("send", byteString) to TrafficPhase.SEND,
+                    contract.getMethod("close", Integer.TYPE, String::class.java) to TrafficPhase.CLOSING,
+                    contract.getMethod("cancel") to TrafficPhase.CANCEL,
+                )
+            }
+            signatures.forEach { (declaration, phase) ->
+                runCatching {
+                    val method = instance.javaClass.getMethod(declaration.name, *declaration.parameterTypes)
+                    val returnType = if (callback || phase == TrafficPhase.CANCEL) java.lang.Void.TYPE else java.lang.Boolean.TYPE
+                    require(method.returnType == returnType && !Modifier.isStatic(method.modifiers) &&
+                        !Modifier.isAbstract(method.modifiers)) { "WebSocket 方法签名不符: $method" }
+                    installWebSocketObserver(method, phase, callback)
+                }.onFailure {
+                    runCatching { Log.runtime(TAG, "安装 WebSocket 方法失败: $declaration ${it.stackTraceToString()}") }
+                }
+            }
+        }.onFailure {
+            runCatching { Log.runtime(TAG, "解析 WebSocket 接口失败: ${contract.name} ${it.stackTraceToString()}") }
+        }
+    }
+
+    private fun installWebSocketObserver(method: Method, phase: TrafficPhase, callback: Boolean = false): Boolean {
+        if (captureHooks.containsKey(method)) return true
+        method.isAccessible = true
+        val installed = installCaptureHook(method) intercept@ { chain ->
+            val owner = chain.getThisObject() ?: return@intercept chain.proceed()
+            if (!isCaptureEnabled()) return@intercept chain.proceed()
+            // 只观察实际分派方法，避免子类调用 super 时被已安装的父类 Hook 再记一遍。
+            if (phase != TrafficPhase.CONNECT && runCatching {
+                    owner.javaClass.getMethod(method.name, *method.parameterTypes) != method
+                }.getOrDefault(false)) return@intercept chain.proceed()
+            val socket = if (callback) chain.args.firstOrNull() else if (phase == TrafficPhase.CONNECT) null else owner
+            if (phase == TrafficPhase.CONNECT) {
+                chain.args.getOrNull(1)?.let { installWebSocketEndpoint(it, method.parameterTypes[1], true) }
+            } else if (callback && socket != null) {
+                // onOpen 可能早于 newWebSocket 返回；在宿主回调发送首帧之前接入发送观察。
+                installWebSocketEndpoint(socket, method.parameterTypes[0], false)
+            }
+            val startedAt = SystemClock.elapsedRealtime()
+            var callSession: String? = null
+            val event = runCatching capture@ {
+                synchronized(sessionLock) {
+                    if (!isCaptureEnabled()) return@capture null
+                    callSession = activeSessionId()
+                    val payload = JSONObject(snapshotWebSocketArguments(method, chain.args.toList()))
+                        .put("direction", if (callback) "INBOUND" else "OUTBOUND")
+                    if (socket != null) payload.put("connectionId", webSocketConnectionId(socket))
+                        .put("socketIdentity", System.identityHashCode(socket)).put("socketClass", socket.javaClass.name)
+                    RpcTrafficEvent(
+                        title = TrafficSource.HOST_WEBSOCKET.title,
+                        phase = phase,
+                        source = TrafficSource.HOST_WEBSOCKET,
+                        method = "${method.declaringClass.name}#${method.name}",
+                        attemptId = newAttemptId(),
+                        payload = payload.toString(),
+                        note = if (callback) "listener_event" else "api_call_not_delivery",
+                    ).also(::emit)
+                }
+            }.onFailure {
+                runCatching { Log.runtime(TAG, "记录 WebSocket 调用失败: $method ${it.stackTraceToString()}") }
+            }.getOrNull()
+            val result = try {
+                chain.proceed()
+            } catch (error: Throwable) {
+                runCatching {
+                    synchronized(sessionLock) {
+                        if (event != null && isCaptureEnabled() && activeSessionId() == callSession) {
+                            emit(event.copy(
+                                phase = TrafficPhase.ERROR,
+                                elapsedMs = SystemClock.elapsedRealtime() - startedAt,
+                                note = "${if (callback) "listener_threw" else "api_threw"}: ${error.javaClass.name}: ${error.message.orEmpty()}",
+                            ))
+                        }
+                    }
+                }.onFailure {
+                    runCatching { Log.runtime(TAG, "记录 WebSocket 异常失败: ${it.stackTraceToString()}") }
+                }
+                throw error
+            }
+            if (phase == TrafficPhase.CONNECT && result != null && isCaptureEnabled()) {
+                installWebSocketEndpoint(result, method.returnType, false)
+            }
+            if (!callback && event != null) runCatching {
+                synchronized(sessionLock) {
+                    if (isCaptureEnabled() && activeSessionId() == callSession) {
+                        val payload = JSONObject(event.payload!!).apply { remove("arguments") }
+                        val note = when (phase) {
+                            TrafficPhase.CONNECT -> {
+                                if (result != null) payload.put("connectionId", webSocketConnectionId(result))
+                                    .put("socketIdentity", System.identityHashCode(result)).put("socketClass", result.javaClass.name)
+                                "socket_returned_not_open"
+                            }
+                            TrafficPhase.SEND -> if (result == true) "send_enqueued_not_delivered" else "send_rejected"
+                            TrafficPhase.CLOSING -> if (result == true) "close_enqueued_not_closed" else "close_rejected"
+                            else -> "cancel_returned"
+                        }
+                        if (phase != TrafficPhase.CONNECT) payload.put("returnValue", result ?: JSONObject.NULL)
+                        emit(event.copy(
+                            payload = payload.toString(),
+                            elapsedMs = SystemClock.elapsedRealtime() - startedAt,
+                            note = note,
+                        ))
+                    }
+                }
+            }.onFailure {
+                runCatching { Log.runtime(TAG, "记录 WebSocket 返回值失败: $method ${it.stackTraceToString()}") }
+            }
+            result
+        }
+        if (installed) runCatching {
+            Log.runtime(TAG, "已安装 WebSocket 观察: $method; loader=${method.declaringClass.classLoader}, process=${currentProcessName()}")
+        }
+        return installed
+    }
+
+    // 调用方持有 sessionLock；连接引用保持弱引用，关闭后仍保留身份以记录被拒绝的发送。
+    private fun webSocketConnectionId(socket: Any): String {
+        while (true) {
+            val collected = webSocketReferenceQueue.poll() as? WeakIdentityKey ?: break
+            webSocketConnections.remove(collected)
+        }
+        return webSocketConnections.getOrPut(WeakIdentityKey(socket, webSocketReferenceQueue)) { UUID.randomUUID().toString() }
+    }
+
+    private fun snapshotWebSocketArguments(method: Method, args: List<Any?>): String {
+        val values = JSONArray()
+        args.forEachIndexed { index, value ->
+            val type = method.parameterTypes[index]
+            val entry = JSONObject().put("index", index).put("type", type.name)
+            runCatching {
+                val snapshot = when {
+                    value == null -> JSONObject.NULL
+                    type.name == "okio.ByteString" -> snapshotMiniHttpValue(
+                        type.getMethod("toByteArray").invoke(value) as ByteArray, IdentityHashMap(),
+                    )
+                    value is Throwable -> JSONObject().put("type", value.javaClass.name).put("message", value.message ?: JSONObject.NULL)
+                    type.name == "okhttp3.Request" -> JSONObject()
+                        .put("url", type.getMethod("url").invoke(value)?.toString() ?: JSONObject.NULL)
+                        .put("method", type.getMethod("method").invoke(value))
+                        .put("headers", type.getMethod("headers").invoke(value)?.toString() ?: JSONObject.NULL)
+                    type.name == "okhttp3.Response" -> JSONObject()
+                        .put("code", type.getMethod("code").invoke(value))
+                        .put("headers", type.getMethod("headers").invoke(value)?.toString() ?: JSONObject.NULL)
+                    else -> snapshotMiniHttpValue(value, IdentityHashMap())
+                }
+                entry.put("value", snapshot)
+            }.onFailure {
+                entry.put("readError", "${it.javaClass.name}: ${it.message.orEmpty()}")
+            }
+            values.put(entry)
+        }
+        return JSONObject().put("signature", method.toString()).put("arguments", values).toString()
     }
 
     private fun installMiniHttpClass(targetClass: Class<*>): Boolean {
@@ -2106,6 +2355,7 @@ object RpcTrafficCapture {
     fun resetCaptureSession() {
         synchronized(sessionLock) {
             clearPendingAriverRequests()
+            webSocketConnections.clear()
             sessionId = null
             sessionStarted = false
             eventSequence.set(0L)
@@ -2126,6 +2376,7 @@ object RpcTrafficCapture {
             }
             if (sessionId != resolved) {
                 clearPendingAriverRequests()
+                webSocketConnections.clear()
                 reportedHttpClasses.clear()
                 reportedHttpCallSites.set(emptySet())
                 sessionId = resolved
