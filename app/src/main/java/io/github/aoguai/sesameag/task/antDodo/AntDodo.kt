@@ -43,6 +43,7 @@ import io.github.aoguai.sesameag.task.common.TaskFlowRunResult
 import io.github.aoguai.sesameag.task.common.TaskFlowPhase
 import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
 import io.github.aoguai.sesameag.task.common.GameCenterPlayRpcCall
+import io.github.aoguai.sesameag.task.common.NonDurationGameTask
 import io.github.aoguai.sesameag.task.exchange.ExchangeEffectNeed
 import io.github.aoguai.sesameag.task.exchange.ExchangeReplenishResult
 import io.github.aoguai.sesameag.task.exchange.ExchangeReplenisher
@@ -274,7 +275,26 @@ class AntDodo : ModelTask() {
             val pendingKey = "antDodoScratchPending"
             val rewards = store.getOrCreate<MutableMap<String, Int>>(pendingKey)
             val prefix = "$animalId:"
-            val currentCards = (0 until cards.length()).mapNotNull { cards.optJSONObject(it) }
+            var currentCards = (0 until cards.length()).mapNotNull { cards.optJSONObject(it) }
+            if (currentCards.any { !it.has("scratchable") || (it.optBoolean("scratchable") && !it.has("scratched")) }) {
+                val instanceIds = currentCards.map { it.optString("cardInstanceId") }.toSet()
+                val refreshed = JSONObject(AntDodoRpcCall.homePage())
+                if (!ResChecker.checkRes(TAG, "神奇物种新卡状态查询失败：", refreshed)) return false
+                val collections = refreshed.optJSONObject("data")?.optJSONArray("curCollection")
+                val detail = (0 until (collections?.length() ?: 0)).mapNotNull { collections?.optJSONObject(it) }
+                    .firstOrNull { it.optJSONObject("animal")?.optString("animalId") == animalId }
+                    ?.optJSONObject("collectDetail")
+                val refreshedCards = detail?.optJSONArray("cardList")
+                val resolved = (0 until (refreshedCards?.length() ?: 0)).mapNotNull { refreshedCards?.optJSONObject(it) }
+                if (instanceIds.any { id -> id.isBlank() || resolved.none { it.optString("cardInstanceId") == id } } ||
+                    resolved.any { !it.has("scratchable") || (it.optBoolean("scratchable") && !it.has("scratched")) }
+                ) {
+                    Log.error(TAG, "神奇物种新卡状态尚未完整返回，保留卡片：$animalId")
+                    return false
+                }
+                collection.put("collectDetail", detail)
+                currentCards = resolved
+            }
             val pending = currentCards.filter { it.optBoolean("scratchable") && !it.optBoolean("scratched") }
             if (pending.isEmpty() && rewards.keys.none { it.startsWith(prefix) }) return true
             for (card in pending) {
@@ -379,19 +399,32 @@ class AntDodo : ModelTask() {
             var jo = JSONObject(homeResponse)
             var attempted = false
             if (ResChecker.checkRes(TAG, jo)) {
-                var data = jo.getJSONObject("data")
+                var data = jo.optJSONObject("data")
+                val ja = data?.optJSONArray("limit")
+                if (data == null || ja == null) {
+                    Log.error(TAG, "神奇物种抽卡首页缺少data/limit raw=$jo")
+                    return false
+                }
                 observeScratchableCards(data)
-                val ja = data.getJSONArray("limit")
                 var index = -1
                 for (i in 0 until ja.length()) {
-                    jo = ja.getJSONObject(i)
-                    if ("DAILY_COLLECT" == jo.getString("actionCode")) {
+                    val limit = ja.optJSONObject(i)
+                    if (limit == null) {
+                        Log.error(TAG, "神奇物种抽卡限额条目格式错误[index=$i] raw=${ja.opt(i)}")
+                        continue
+                    }
+                    jo = limit
+                    if ("DAILY_COLLECT" == jo.optString("actionCode")) {
                         index = i
                         break
                     }
                 }
                 if (index >= 0) {
-                    val leftFreeQuota = jo.getInt("leftFreeQuota")
+                    val leftFreeQuota = jo.opt("leftFreeQuota")?.toString()?.toIntOrNull()
+                    if (leftFreeQuota == null || leftFreeQuota < 0) {
+                        Log.error(TAG, "神奇物种抽卡缺少有效leftFreeQuota raw=$jo")
+                        return false
+                    }
                     if (leftFreeQuota == 0 &&
                         !Status.hasFlagToday(StatusFlags.FLAG_ANTDODO_CONSECUTIVE_COLLECT_DONE)
                     ) {
@@ -408,12 +441,16 @@ class AntDodo : ModelTask() {
                         }
                         jo = JSONObject(collectResponse)
                         if (ResChecker.checkRes(TAG, jo)) {
-                            data = jo.getJSONObject("data")
                             Status.removeFlag(StatusFlags.FLAG_ANTDODO_TASKS_DONE)
                             taskListRefreshNeeded = true
-                            val animal = data.getJSONObject("animal")
-                            val ecosystem = animal.getString("ecosystem")
-                            val name = animal.getString("name")
+                            data = jo.optJSONObject("data")
+                            if (data == null) {
+                                Log.error(TAG, "神奇物种抽卡响应缺少data，保留后续回查 raw=$jo")
+                                break
+                            }
+                            val animal = data.optJSONObject("animal")
+                            val ecosystem = animal?.optString("ecosystem", "未知生态") ?: "未知生态"
+                            val name = animal?.optString("name", "未知物种") ?: "未知物种"
                             Log.dodo("神奇物种🦕[$ecosystem]#$name")
                             scratchAnimalCards(data)
                         } else {
@@ -649,18 +686,11 @@ class AntDodo : ModelTask() {
                 }
                 GameCenterPlayRpcCall.TaskAction.LEGACY_EXTERNAL_REPORT -> {
                     val game = decision.mappedTask ?: return missingRawResult(item, "externalGame")
-                    val report = runBlocking {
-                        game.reportDetailed(1, includeSafetyReport = false) { Log.dodo(it) }
+                    val result = runBlocking {
+                        NonDurationGameTask.advance(game, item.raw,
+                            detail = dodoActionDetail(item, "externalGame"), logger = Log::dodo)
                     }
-                    if (!report.completed) {
-                        return TaskFlowActionResult.failure(
-                            failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
-                            message = report.failureMessage,
-                            rpc = "GameTask.reportDetailed",
-                            detail = dodoActionDetail(item, "externalGame"),
-                            continueCurrentRoundOnFailure = true,
-                        )
-                    }
+                    if (result.deferredReason != DeferredReason.STATE_CONFIRMATION) return result
                 }
                 GameCenterPlayRpcCall.TaskAction.DEFERRED -> return TaskFlowActionResult.defer(
                     DeferredReason.PREREQUISITE_PENDING, decision.reason,
@@ -683,7 +713,7 @@ class AntDodo : ModelTask() {
                 detail = dodoActionDetail(item, "finishTask")
             )
             return if (failure.code == "400000040" && item.sceneCode.isNotBlank()) {
-                AntFarmRpcCall.doSceneTask(item.type, item.sceneCode, failure) { fallback ->
+                AntFarmRpcCall.doSceneTask(item.type, item.sceneCode, failure, sceneCode = item.sceneCode, source = "af-biodiversity") { fallback ->
                     dodoActionFailureResult(fallback, "AntFarmRpcCall.doFarmTask", dodoActionDetail(item, "finishTask"))
                 }
             } else failure
@@ -1442,11 +1472,20 @@ class AntDodo : ModelTask() {
             var jo = JSONObject(queryResponse)
             if (ResChecker.checkRes(TAG, jo)) {
                 var handled = false
-                val limitList = jo.getJSONObject("data").getJSONObject("extend").getJSONArray("limit")
+                val friendData = jo.optJSONObject("data")
+                val limitList = friendData?.optJSONObject("extend")?.optJSONArray("limit")
+                if (limitList == null) {
+                    Log.error(TAG, "神奇物种帮抽卡缺少限额列表 raw=$jo")
+                    return CollectToFriendResult(progressed = false, remainingCount = null)
+                }
                 var collectLimit: JSONObject? = null
                 for (i in 0 until limitList.length()) {
-                    val limit = limitList.getJSONObject(i)
-                    if (limit.getString("actionCode") == "COLLECT_TO_FRIEND") {
+                    val limit = limitList.optJSONObject(i)
+                    if (limit == null) {
+                        Log.error(TAG, "神奇物种帮抽卡限额条目格式错误[index=$i] raw=${limitList.opt(i)}")
+                        continue
+                    }
+                    if (limit.optString("actionCode") == "COLLECT_TO_FRIEND") {
                         collectLimit = limit
                         break
                     }
@@ -1456,8 +1495,13 @@ class AntDodo : ModelTask() {
                     Log.runtime(TAG, "神奇物种帮抽卡限额缺少COLLECT_TO_FRIEND.startTime/leftLimit")
                     return CollectToFriendResult(progressed = false, remainingCount = null)
                 }
-                val startTime = resolvedLimit.getLong("startTime")
-                var count = resolvedLimit.getInt("leftLimit").coerceAtLeast(0)
+                val startTime = resolvedLimit.opt("startTime")?.toString()?.toLongOrNull()
+                val leftLimit = resolvedLimit.opt("leftLimit")?.toString()?.toIntOrNull()
+                if (startTime == null || startTime < 0 || leftLimit == null || leftLimit < 0) {
+                    Log.error(TAG, "神奇物种帮抽卡限额无效 raw=$resolvedLimit")
+                    return CollectToFriendResult(progressed = false, remainingCount = null)
+                }
+                var count: Int = leftLimit
                 if (startTime > System.currentTimeMillis()) {
                     if (manageScheduledWakeup) {
                         registerCollectToFriendSchedule(startTime)
@@ -1468,14 +1512,23 @@ class AntDodo : ModelTask() {
                     return CollectToFriendResult(progressed = false, remainingCount = 0)
                 }
                 val initialCount = count
-                val friendList = jo.getJSONObject("data").getJSONArray("friends")
+                val friendList = friendData?.optJSONArray("friends")
+                if (friendList == null) {
+                    Log.error(TAG, "神奇物种帮抽卡缺少好友列表 raw=$jo")
+                    return CollectToFriendResult(progressed = false, remainingCount = null)
+                }
                 for (i in (0 until friendList.length()).shuffled()) {
                     if (count <= 0) break
-                    val friend = friendList.getJSONObject(i)
-                    if (friend.getBoolean("dailyCollect")) {
+                    val friend = friendList.optJSONObject(i)
+                    val useId = friend?.optString("userId").orEmpty()
+                    val dailyCollect = friend?.opt("dailyCollect")?.toString()?.toBooleanStrictOrNull()
+                    if (friend == null || useId.isBlank() || dailyCollect == null) {
+                        Log.error(TAG, "神奇物种帮抽卡好友条目缺少有效身份或状态[index=$i] raw=${friendList.opt(i)}")
                         continue
                     }
-                    val useId = friend.getString("userId")
+                    if (dailyCollect) {
+                        continue
+                    }
                     if (FriendGuard.shouldSkipFriend(useId, TAG, "神奇物种帮抽卡")) {
                         continue
                     }
@@ -1493,12 +1546,16 @@ class AntDodo : ModelTask() {
                     }
                     jo = JSONObject(collectFriendResponse)
                     if (ResChecker.checkRes(TAG, jo)) {
-                        val collectData = jo.getJSONObject("data")
                         Status.removeFlag(StatusFlags.FLAG_ANTDODO_TASKS_DONE)
                         taskListRefreshNeeded = true
-                        val animal = collectData.getJSONObject("animal")
-                        val ecosystem = animal.getString("ecosystem")
-                        val name = animal.getString("name")
+                        val collectData = jo.optJSONObject("data")
+                        if (collectData == null) {
+                            Log.error(TAG, "神奇物种帮抽卡响应缺少data，保留后续回查 raw=$jo")
+                            return CollectToFriendResult(progressed = false, remainingCount = null)
+                        }
+                        val animal = collectData.optJSONObject("animal")
+                        val ecosystem = animal?.optString("ecosystem", "未知生态") ?: "未知生态"
+                        val name = animal?.optString("name", "未知物种") ?: "未知物种"
                         val userName = UserMap.getMaskName(useId) ?: useId
                         Log.dodo("神奇物种🦕帮好友[$userName]抽卡[$ecosystem]#$name")
                         handleFriendExchange(useId, collectData)
@@ -1557,8 +1614,13 @@ class AntDodo : ModelTask() {
         val limitList = json.optJSONObject("data")?.optJSONObject("extend")?.optJSONArray("limit") ?: return null
         for (index in 0 until limitList.length()) {
             val limit = limitList.optJSONObject(index) ?: continue
-            if (limit.optString("actionCode") == "COLLECT_TO_FRIEND" && limit.has("leftLimit")) {
-                return limit.optInt("leftLimit").coerceAtLeast(0)
+            if (limit.optString("actionCode") == "COLLECT_TO_FRIEND") {
+                val leftLimit = limit.opt("leftLimit")?.toString()?.toIntOrNull()
+                if (leftLimit == null || leftLimit < 0) {
+                    Log.error(TAG, "神奇物种帮抽卡回查缺少有效leftLimit raw=$limit")
+                    return null
+                }
+                return leftLimit
             }
         }
         return null
@@ -2109,7 +2171,7 @@ class AntDodo : ModelTask() {
         const val PERSISTENT_CHILD_KIND = "dodo_child_task"
         const val COLLECT_TO_FRIEND_CHILD_ID = "collect_to_friend"
         const val TASK_FLOW_CHILD_ID = "task_flow"
-        private val BUSINESS_DRIVEN_TASK_TYPES = setOf("HELP_FRIEND_COLLECT", "SEND_FRIEND_CARD")
+        private val BUSINESS_DRIVEN_TASK_TYPES = setOf("HELP_FRIEND_COLLECT")
     }
 }
 

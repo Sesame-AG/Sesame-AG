@@ -119,10 +119,10 @@ object AntOceanRpcCall {
     }
 
     @JvmStatic
-    fun drawAiFish(imgId: String, imgUrl: String): String {
+    fun drawAiFish(imgId: String, imgUrl: String, penCount: Int, colorCount: Int): String {
         return RequestManager.requestString(
             "alipay.antaifish.h5.drawFish",
-            "[{\"imgId\":\"$imgId\",\"imgUrl\":\"$imgUrl\",\"source\":\"$SOURCE_AI_FISH\",\"uniqueId\":\"${getUniqueId()}\"}]"
+            "[{\"imgId\":\"$imgId\",\"imgUrl\":\"$imgUrl\",\"penCount\":$penCount,\"colorCount\":$colorCount,\"source\":\"$SOURCE_AI_FISH\",\"uniqueId\":\"${getUniqueId()}\"}]"
         )
     }
 

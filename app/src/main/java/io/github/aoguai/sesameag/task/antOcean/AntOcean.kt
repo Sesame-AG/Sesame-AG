@@ -22,6 +22,7 @@ import io.github.aoguai.sesameag.task.TaskStatus
 import io.github.aoguai.sesameag.task.antForest.AntForest
 import io.github.aoguai.sesameag.task.common.DeferredReason
 import io.github.aoguai.sesameag.task.common.GameCenterPlayRpcCall
+import io.github.aoguai.sesameag.task.common.NonDurationGameTask
 import io.github.aoguai.sesameag.task.common.TaskFlowAction
 import io.github.aoguai.sesameag.task.common.TaskFlowActionResult
 import io.github.aoguai.sesameag.task.common.TaskFlowAdapter
@@ -38,9 +39,9 @@ import io.github.aoguai.sesameag.task.exchange.ExchangeReplenisher
 import io.github.aoguai.sesameag.util.FriendGuard
 import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log
-import io.github.aoguai.sesameag.util.RandomUtil
 import io.github.aoguai.sesameag.util.ResChecker
 import io.github.aoguai.sesameag.util.RpcOfflineRisk
+import io.github.aoguai.sesameag.util.TimeUtil
 import io.github.aoguai.sesameag.util.friend.FriendCapabilityRecorder
 import io.github.aoguai.sesameag.util.maps.BeachMap
 import io.github.aoguai.sesameag.util.maps.IdMapManager
@@ -91,16 +92,8 @@ class AntOcean : ModelTask() {
         private const val AI_FISH_SCENE_CODE = "ANTAIFISH"
         private const val AI_FISH_STATUS_DEFAULT = "DEFAULT_AI_FISH"
         private const val AI_FISH_STATUS_CAPTURED = "CAPTURED"
-        private val AI_FISH_IMAGE_URLS =
-            arrayOf(
-                "https://mdn.alipayobjects.com/afts/img/JNVwTJAPzqMAAAAAQOAAAAgA9KBtAQJr/original?bz=ai_fish",
-                "https://mdn.alipayobjects.com/afts/img/ZK3FTK8eQ-IAAAAAQIAAAAgA9KBtAQJr/original?bz=ai_fish",
-                "https://mdn.alipayobjects.com/afts/img/Se_RQ7215tsAAAAAQQAAAAgA9KBtAQJr/original?bz=ai_fish",
-                "https://mdn.alipayobjects.com/afts/img/n8yQSYH-lvgAAAAAQGAAAAgA9KBtAQJr/original?bz=ai_fish",
-                "https://mdn.alipayobjects.com/afts/img/_rKKT6IJRWcAAAAAQKAAAAgA9KBtAQJr/original?bz=ai_fish",
-                "https://mdn.alipayobjects.com/afts/img/_zy6QaSffRMAAAAAQGAAAAgA9KBtAQJr/original?bz=ai_fish",
-                "https://mdn.alipayobjects.com/afts/img/3tFWT43StnAAAAAAQHAAAAgA9KBtAQJr/original?bz=ai_fish",
-            )
+        private const val AI_FISH_IMAGE_URL =
+            "https://mdn.alipayobjects.com/afts/img/Sf7tTLHp8D4AAAAAQIAAAAgA9KBtAQJr/original?bz=ai_fish"
 
         /**
          * 保护类型字段（静态）
@@ -834,16 +827,24 @@ class AntOcean : ModelTask() {
     }
 
     private fun appraiseAiFish() {
+        val uid = UserMap.currentUid?.takeIf { it.isNotBlank() } ?: return
+        val day = TimeUtil.getDateStr()
+        if (Status.hasFlagToday(StatusFlags.FLAG_ANTOCEAN_AIFISH_APPRAISE_LIMIT)) return
         var earned = 0
         val attempted = mutableSetOf<String>()
         try {
             while (!io.github.aoguai.sesameag.hook.ApplicationHookConstants.isOffline() && !Thread.currentThread().isInterrupted) {
                 val response = JSONObject(AntOceanRpcCall.queryNeedAppraiseFishList())
                 if (!ResChecker.checkRes(TAG, "AI翻牌列表查询失败:", response)) return
-                if (response.has("appraiseRewardRemainNum") && response.optInt("appraiseRewardRemainNum") <= 0) break
+                if (UserMap.currentUid != uid || TimeUtil.getDateStr() != day) return
+                if (response.optInt("appraiseRewardRemainNum", -1) == 0) {
+                    Status.setFlagToday(StatusFlags.FLAG_ANTOCEAN_AIFISH_APPRAISE_LIMIT, expectedUserId = uid)
+                    return
+                }
                 val fishes = response.getJSONArray("fishList")
                 var acted = false
                 for (index in 0 until fishes.length()) {
+                    if (UserMap.currentUid != uid || TimeUtil.getDateStr() != day) return
                     val fish = fishes.getJSONObject(index)
                     if (fish.optJSONObject("appraiseVO")?.optBoolean("canAppraise") != true) continue
                     val identity = "${fish.getString("seasonId")}:${fish.getString("imageId")}:${fish.getString("userId")}"
@@ -857,8 +858,12 @@ class AntOcean : ModelTask() {
                     }
                     earned += amount
                     acted = true
-                    if (amount <= 0 || (result.has("appraiseRewardRemainNum") &&
-                            result.optInt("appraiseRewardRemainNum") <= 0)) return
+                    if (UserMap.currentUid != uid || TimeUtil.getDateStr() != day) return
+                    if (result.optInt("appraiseRewardRemainNum", -1) == 0) {
+                        Status.setFlagToday(StatusFlags.FLAG_ANTOCEAN_AIFISH_APPRAISE_LIMIT, expectedUserId = uid)
+                        return
+                    }
+                    if (amount <= 0) return
                 }
                 if (!acted) break
             }
@@ -999,7 +1004,7 @@ class AntOcean : ModelTask() {
 
     private fun drawAiFish(): Boolean {
         return try {
-            val imgUrl = AI_FISH_IMAGE_URLS[RandomUtil.nextInt(0, AI_FISH_IMAGE_URLS.size)]
+            val imgUrl = AI_FISH_IMAGE_URL
             val start = imgUrl.indexOf("img/")
             val end = imgUrl.indexOf("/original")
             if (start < 0 || end <= start) {
@@ -1007,13 +1012,19 @@ class AntOcean : ModelTask() {
                 return false
             }
             val imgId = imgUrl.substring(start + 4, end)
-            val jo = JsonUtil.parseJSONObjectOrNull(AntOceanRpcCall.drawAiFish(imgId, imgUrl)) ?: return false
+            val jo = JsonUtil.parseJSONObjectOrNull(AntOceanRpcCall.drawAiFish(imgId, imgUrl, penCount = 5, colorCount = 1)) ?: return false
             if (!ResChecker.checkRes(TAG, "海洋摸鱼开通画鱼失败:", jo)) {
                 Log.ocean("海洋摸鱼🐟开通画鱼失败：${extractOceanResultDesc(jo)}")
                 return false
             }
-            Log.ocean("海洋摸鱼🐟提交画鱼成功")
-            Toast.show("海洋摸鱼🐟提交画鱼成功")
+            val home = queryAiFishHomepage(logSummary = false) ?: return false
+            val fish = home.optJSONObject("myFish")
+            if (fish?.optString("image") != imgUrl || fish.optString("displayFishImgUrl").isBlank()) {
+                Log.error(TAG, "海洋摸鱼🐟画鱼已提交，首页图片尚未确认 raw=$home")
+                return false
+            }
+            Log.ocean("海洋摸鱼🐟画鱼图片已确认")
+            Toast.show("海洋摸鱼🐟画鱼成功")
             true
         } catch (t: Throwable) {
             Log.runtime(TAG, "drawAiFish err:")
@@ -1163,21 +1174,9 @@ class AntOcean : ModelTask() {
                 return handleAiFishFinishTask(item)
             }
             if (gameDecision.action == GameCenterPlayRpcCall.TaskAction.LEGACY_EXTERNAL_REPORT && mappedTask != null) {
-                val report = kotlinx.coroutines.runBlocking { mappedTask.reportDetailed(1, logger = Log::ocean) }
-                return if (report.completed) {
-                    TaskFlowActionResult.defer(
-                        deferredReason = DeferredReason.STATE_CONFIRMATION,
-                        message = "游戏业务上报完成，回查摸鱼任务及奖励",
-                        rpc = "GameTask.reportDetailed",
-                        refreshAfterAction = true,
-                    )
-                } else {
-                    TaskFlowActionResult.failure(
-                        failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
-                        message = report.failureMessage,
-                        rpc = "GameTask.reportDetailed",
-                        detail = aiFishTaskActionDetail(item, "gameReport"),
-                    )
+                return kotlinx.coroutines.runBlocking {
+                    NonDurationGameTask.advance(mappedTask, item.raw,
+                        detail = aiFishTaskActionDetail(item, "gameReport"), logger = Log::ocean)
                 }
             }
             return handleAiFishFinishTask(item)
@@ -1211,7 +1210,7 @@ class AntOcean : ModelTask() {
                 detail = aiFishTaskActionDetail(item, "finishTask"),
             )
             return if (failure.code == "400000040") {
-                AntFarmRpcCall.doSceneTask(item.type, "ANTAIFISH", failure) { fallback ->
+                AntFarmRpcCall.doSceneTask(item.type, "ANTAIFISH", failure, sceneCode = "ANTAIFISH", source = "ANTAIFISH") { fallback ->
                     aiFishTaskActionFailureResult(item, fallback, "AntFarmRpcCall.doFarmTask", aiFishTaskActionDetail(item, "finishTask"))
                 }
             } else failure
@@ -1281,14 +1280,17 @@ class AntOcean : ModelTask() {
             }
             val maxAttempts = remainTouchChance + 3
             var touchCount = 0
+            var attempts = 0
             var totalEnergy = 0
-            while (remainTouchChance > 0 && touchCount < maxAttempts) {
+            while (remainTouchChance > 0 && attempts < maxAttempts) {
+                attempts += 1
                 val response = AntOceanRpcCall.touchAiFish()
                 val result = JsonUtil.parseJSONObjectOrNull(response) ?: break
-                if (result.optString("resultCode") == "USER_CAPTURED") {
-                    Log.ocean("海洋摸鱼🐟目标已被其他用户抢先处理，刷新摸鱼状态")
-                    queryAiFishHomepage(logSummary = true)
-                    break
+                if (result.optString("resultCode") in setOf("USER_CAPTURED", "FISH_ALREADY_CAPTURED")) {
+                    Log.error(TAG, "海洋摸鱼🐟当前鱼已不可操作，刷新后继续其他目标 raw=$result")
+                    val refreshed = queryAiFishHomepage(logSummary = true) ?: break
+                    remainTouchChance = extractAiFishRemainTouchChance(refreshed) ?: break
+                    continue
                 }
                 if (!ResChecker.checkRes(TAG, "海洋摸鱼执行失败:", result)) {
                     Log.ocean("海洋摸鱼🐟摸鱼失败：${extractOceanResultDesc(result)}")
@@ -1475,7 +1477,7 @@ class AntOcean : ModelTask() {
                 val s = AntOceanRpcCall.cleanOcean(userId)
                 val jo = JsonUtil.parseJSONObjectOrNull(s) ?: continue
                 if (ResChecker.checkRes(TAG, jo)) {
-                    val cleanRewardVOS = jo.getJSONArray("cleanRewardVOS")
+                    val cleanRewardVOS = jo.optJSONArray("cleanRewardVOS")
                     checkReward(cleanRewardVOS)
                     Log.ocean("神奇海洋🌊[清理:${UserMap.getMaskName(userId)}海域]")
                     markOceanHomeRefreshNeeded()
@@ -1499,7 +1501,7 @@ class AntOcean : ModelTask() {
             val s = AntOceanRpcCall.ipOpenSurprise()
             val jo = JsonUtil.parseJSONObjectOrNull(s) ?: return
             if (ResChecker.checkRes(TAG, jo)) {
-                val rewardVOS = jo.getJSONArray("surpriseRewardVOS")
+                val rewardVOS = jo.optJSONArray("surpriseRewardVOS")
                 checkReward(rewardVOS)
             } else {
                 Log.runtime(TAG, jo.getString("resultDesc"))
@@ -1527,18 +1529,24 @@ class AntOcean : ModelTask() {
         }
     }
 
-    private fun checkReward(rewards: JSONArray) {
+    private fun checkReward(rewards: JSONArray?) {
+        if (rewards == null) return
         try {
             for (i in 0 until rewards.length()) {
-                val reward = rewards.getJSONObject(i)
-                val name = reward.getString("name")
-                val attachReward = reward.getJSONArray("attachRewardBOList")
+                val reward = rewards.optJSONObject(i)
+                if (reward == null) {
+                    Log.error(TAG, "海洋奖励条目格式错误[index=$i] raw=${rewards.opt(i)}")
+                    continue
+                }
+                val name = reward.optString("name", "未知奖励")
+                val attachReward = reward.optJSONArray("attachRewardBOList") ?: continue
                 if (attachReward.length() > 0) {
                     Log.ocean("神奇海洋🌊[获得:" + name + "碎片]")
                     var canCombine = true
                     for (j in 0 until attachReward.length()) {
-                        val detail = attachReward.getJSONObject(j)
-                        if (detail.optInt("count", 0) == 0) {
+                        val detail = attachReward.optJSONObject(j)
+                        val count = detail?.opt("count")?.toString()?.toIntOrNull()
+                        if (count == null || count <= 0) {
                             canCombine = false
                             break
                         }
@@ -2177,6 +2185,7 @@ class AntOcean : ModelTask() {
         var entered = false
         return object : TaskFlowAdapter by OceanTaskFlowAdapter(rewardSource = "ANT_FOREST") {
             override val flowName = "快递海洋碎片"
+            override val stateScope: String = flowName
             override fun isFlowHandledToday(): Boolean = false
 
             override fun query(): JSONObject {
@@ -2475,17 +2484,12 @@ class AntOcean : ModelTask() {
             if (gameDecision.action == GameCenterPlayRpcCall.TaskAction.LEGACY_EXTERNAL_REPORT) {
                 val mappedTask = gameDecision.mappedTask
                 if (mappedTask != null) {
-                    val report = kotlinx.coroutines.runBlocking { mappedTask.reportDetailed(1, logger = Log::ocean) }
-                    return if (report.completed) {
-                        finishOceanTask(item)
-                    } else {
-                        TaskFlowActionResult.failure(
-                            failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
-                            message = report.failureMessage,
-                            rpc = "GameTask.reportDetailed",
-                            detail = oceanTaskActionDetail(item, "gameReport"),
-                        )
+                    val report = kotlinx.coroutines.runBlocking {
+                        NonDurationGameTask.advance(mappedTask, item.raw,
+                            detail = oceanTaskActionDetail(item, "gameReport"), logger = Log::ocean)
                     }
+                    if (report.deferredReason != DeferredReason.STATE_CONFIRMATION) return report
+                    return finishOceanTask(item).copy(progressChanged = false, refreshAfterAction = true)
                 }
             }
             if (gameDecision.action == GameCenterPlayRpcCall.TaskAction.DURATION_ONLY) {
@@ -2906,7 +2910,7 @@ class AntOcean : ModelTask() {
             detail = oceanTaskActionDetail(item, "finishTask"),
         )
         return if (failure.code == "400000040" && item.sceneCode.isNotBlank()) {
-            AntFarmRpcCall.doSceneTask(item.type, item.sceneCode, failure) { fallback ->
+            AntFarmRpcCall.doSceneTask(item.type, item.sceneCode, failure, sceneCode = item.sceneCode, source = "ANTFOCEAN") { fallback ->
                 oceanTaskActionFailureResult(item, fallback, "AntFarmRpcCall.doFarmTask", oceanTaskActionDetail(item, "finishTask"))
             }
         } else failure

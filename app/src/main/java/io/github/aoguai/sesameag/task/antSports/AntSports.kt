@@ -2597,7 +2597,7 @@ class AntSports : ModelTask() {
                         raw = result.toString(),
                         detail = "progress=$progressText",
                     )
-                    return AntFarmRpcCall.doSceneTask(taskId, sceneCode, failure) { fallback ->
+                    return AntFarmRpcCall.doSceneTask(taskId, sceneCode, failure, sceneCode = sceneCode, source = taskDetail.optString("source").ifBlank { "H5" }) { fallback ->
                         TaskFlowActionResult.failure(
                             failureType = classifySportsTaskFailure(fallback),
                             code = extractSportsRpcErrorCode(fallback),
@@ -5257,29 +5257,46 @@ class AntSports : ModelTask() {
      */
     internal fun userTaskGroupQuery(groupId: String) {
         try {
-            val s = AntSportsRpcCall.userTaskGroupQuery(groupId)
-            var jo = JSONObject(s)
-            if (ResChecker.checkRes(TAG, jo)) {
-                jo = jo.getJSONObject("group")
-                val userTaskList = jo.getJSONArray("userTaskList")
-                for (i in 0 until userTaskList.length()) {
-                    jo = userTaskList.getJSONObject(i)
-                    if ("TODO" != jo.getString("status")) continue
-                    val taskInfo = jo.getJSONObject("taskInfo")
-                    val bizType = taskInfo.getString("bizType")
-                    val taskId = taskInfo.getString("taskId")
+            val jo = JSONObject(AntSportsRpcCall.userTaskGroupQuery(groupId))
+            if (!ResChecker.checkRes(TAG, jo)) {
+                Log.error(TAG, "文体每日任务查询失败[groupId=$groupId] raw=$jo")
+                return
+            }
+            val userTaskList = jo.optJSONObject("group")?.optJSONArray("userTaskList")
+            if (userTaskList == null) {
+                Log.error(TAG, "文体每日任务缺少完整列表[groupId=$groupId] raw=$jo")
+                return
+            }
+            for (i in 0 until userTaskList.length()) {
+                try {
+                    val task = userTaskList.optJSONObject(i)
+                    val status = task?.optString("status").orEmpty()
+                    if (status.isBlank()) {
+                        Log.error(TAG, "文体每日任务条目缺少状态[index=$i] raw=${userTaskList.opt(i)}")
+                        continue
+                    }
+                    if (status != "TODO") continue
+                    val taskInfo = task?.optJSONObject("taskInfo")
+                    val bizType = taskInfo?.optString("bizType").orEmpty()
+                    val taskId = taskInfo?.optString("taskId").orEmpty()
+                    if (taskInfo == null || bizType.isBlank() || taskId.isBlank()) {
+                        Log.error(TAG, "文体每日任务缺少bizType/taskId raw=$task")
+                        continue
+                    }
                     val res = JSONObject(AntSportsRpcCall.userTaskComplete(bizType, taskId))
                     if (ResChecker.checkRes(TAG, res)) {
                         val taskName = taskInfo.optString("taskName", taskId)
                         Log.sports("完成任务🧾[$taskName]")
                     } else {
-                        Log.sports("文体每日任务 $res")
+                        Log.error(TAG, "文体每日任务执行失败[taskId=$taskId] raw=$res")
                     }
+                } catch (t: Throwable) {
+                    if (t is CancellationException || t is InterruptedException) throw t
+                    Log.printStackTrace(TAG, "userTaskGroupQuery item err[index=$i]", t)
                 }
-            } else {
-                Log.sports("文体每日任务 $s")
             }
         } catch (t: Throwable) {
+            if (t is CancellationException || t is InterruptedException) throw t
             Log.printStackTrace(TAG, "userTaskGroupQuery err:", t)
         }
     }
@@ -5984,39 +6001,64 @@ class AntSports : ModelTask() {
      */
     internal fun userTaskRightsReceive() {
         try {
-            val s = AntSportsRpcCall.userTaskGroupQuery("SPORTS_DAILY_GROUP")
-            var jo = JSONObject(s)
-            if (ResChecker.checkRes(TAG, jo)) {
-                jo = jo.getJSONObject("group")
-                val userTaskList = jo.getJSONArray("userTaskList")
-                for (i in 0 until userTaskList.length()) {
-                    jo = userTaskList.getJSONObject(i)
-                    if ("COMPLETED" != jo.getString("status")) continue
-                    val userTaskId = jo.getString("userTaskId")
-                    val taskInfo = jo.getJSONObject("taskInfo")
-                    val taskId = taskInfo.getString("taskId")
+            val jo = JSONObject(AntSportsRpcCall.userTaskGroupQuery("SPORTS_DAILY_GROUP"))
+            if (!ResChecker.checkRes(TAG, jo)) {
+                Log.error(TAG, "文体中心领奖列表查询失败 raw=$jo")
+                return
+            }
+            val userTaskList = jo.optJSONObject("group")?.optJSONArray("userTaskList")
+            if (userTaskList == null) {
+                Log.error(TAG, "文体中心领奖缺少完整列表 raw=$jo")
+                return
+            }
+            for (i in 0 until userTaskList.length()) {
+                try {
+                    val task = userTaskList.optJSONObject(i)
+                    val status = task?.optString("status").orEmpty()
+                    if (status.isBlank()) {
+                        Log.error(TAG, "文体中心领奖条目缺少状态[index=$i] raw=${userTaskList.opt(i)}")
+                        continue
+                    }
+                    if (status != "COMPLETED") continue
+                    val userTaskId = task?.optString("userTaskId").orEmpty()
+                    val taskInfo = task?.optJSONObject("taskInfo")
+                    val taskId = taskInfo?.optString("taskId").orEmpty()
+                    if (taskInfo == null || userTaskId.isBlank() || taskId.isBlank()) {
+                        Log.error(TAG, "文体中心领奖缺少taskId/userTaskId raw=$task")
+                        continue
+                    }
                     val res = JSONObject(AntSportsRpcCall.userTaskRightsReceive(taskId, userTaskId))
                     if (ResChecker.checkRes(TAG, res)) {
                         val taskName = taskInfo.optString("taskName", taskId)
-                        val rightsRuleList = taskInfo.getJSONArray("rightsRuleList")
+                        val rightsRuleList = taskInfo.optJSONArray("rightsRuleList")
                         val award = StringBuilder()
-                        for (j in 0 until rightsRuleList.length()) {
-                            val r = rightsRuleList.getJSONObject(j)
-                            award.append(r.getString("rightsName"))
-                                .append("*")
-                                .append(r.getInt("baseAwardCount"))
+                        if (rightsRuleList != null) {
+                            for (j in 0 until rightsRuleList.length()) {
+                                val rule = rightsRuleList.optJSONObject(j)
+                                if (rule == null) {
+                                    Log.error(TAG, "文体中心奖励展示条目格式错误[index=$j] raw=${rightsRuleList.opt(j)}")
+                                    continue
+                                }
+                                val name = rule.optString("rightsName")
+                                if (name.isBlank()) continue
+                                if (award.isNotEmpty()) award.append("、")
+                                award.append(name)
+                                rule.opt("baseAwardCount")?.toString()?.toIntOrNull()?.let { count ->
+                                    award.append("*").append(count)
+                                }
+                            }
                         }
-                        Log.sports("领取奖励🎖️[$taskName]#$award")
+                        Log.sports("领取奖励🎖️[$taskName]${if (award.isEmpty()) "" else "#$award"}")
                     } else {
-                        Log.sports("文体中心领取奖励")
-                        Log.sports(res.toString())
+                        Log.error(TAG, "文体中心领取奖励失败[taskId=$taskId] raw=$res")
                     }
+                } catch (t: Throwable) {
+                    if (t is CancellationException || t is InterruptedException) throw t
+                    Log.printStackTrace(TAG, "userTaskRightsReceive item err[index=$i]", t)
                 }
-            } else {
-                Log.sports("文体中心领取奖励")
-                Log.sports(s)
             }
         } catch (t: Throwable) {
+            if (t is CancellationException || t is InterruptedException) throw t
             Log.printStackTrace(TAG, "userTaskRightsReceive err:", t)
         }
     }
@@ -7191,17 +7233,24 @@ class AntSports : ModelTask() {
                         if (actionAcknowledged) {
                             val data = unwrapSportsRpcPayload(res).optJSONObject("data")
                             var rewardDetail = ""
-                            if (data != null && data.has("userItems")) {
-                                val items = data.getJSONArray("userItems")
+                            val items = data?.optJSONArray("userItems")
+                            if (items != null) {
                                 val sb = StringBuilder()
                                 for (i in 0 until items.length()) {
-                                    val item = items.getJSONObject(i)
+                                    val item = items.optJSONObject(i)
+                                    if (item == null) {
+                                        Log.error(TAG, "健康岛奖励展示条目格式错误[index=$i] raw=${items.opt(i)}")
+                                        continue
+                                    }
                                     val name = item.optString("name", "未知奖励")
-                                    val amount = item.optInt("modifyCount", 0)
-                                    val total = item.optInt("count", 0)
                                     sb.append("[").append(name)
-                                        .append(" +").append(amount)
-                                        .append(" (余:").append(total).append(")] ")
+                                    item.opt("modifyCount")?.toString()?.toIntOrNull()?.let { amount ->
+                                        sb.append(" +").append(amount)
+                                    }
+                                    item.opt("count")?.toString()?.toIntOrNull()?.let { total ->
+                                        sb.append(" (余:").append(total).append(")")
+                                    }
+                                    sb.append("] ")
                                 }
                                 rewardDetail = sb.toString()
                             }
@@ -8668,6 +8717,7 @@ class AntSports : ModelTask() {
                 map.optBoolean("newIsLandFlg", true) &&
                 status != "FINISH" &&
                 status != "FINISH_NOT_REWARD" &&
+                status != "OFFLINE" &&
                 (status == "DOING" || currentPercent < 100)
         }
 
