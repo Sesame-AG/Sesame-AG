@@ -26,7 +26,7 @@ import java.util.TimeZone
 internal object MonopolyPatrolWorkflow {
     private const val TAG = "AntForestPatrol"
 
-    fun run(tasksEnabled: Boolean, onMapCompleted: (() -> Unit)? = null) {
+    private fun run(tasksEnabled: Boolean, patrolEnabled: Boolean, onMapCompleted: (() -> Unit)? = null) {
         var state = parsePatrolResponse(AntForestPatrolRpcCall.queryMonopolyEntryInfo())
         if (!ResChecker.checkRes(TAG, "查询新巡护入口失败:", state)) return
         val region = state.optJSONObject("regionInfo")
@@ -52,6 +52,7 @@ internal object MonopolyPatrolWorkflow {
         var guideRoll = state.optJSONObject("userInfo")?.optBoolean("firstEnterMonopoly", false) == true
         var pendingEvent = state.optJSONObject("eventInfo")
         if (tasksEnabled) runTasks(region.optString("regionCode"), taskState)
+        if (!patrolEnabled) return
         if (ApplicationHookConstants.isOffline() || Thread.currentThread().isInterrupted) return
         val props = parsePatrolResponse(AntForestPatrolRpcCall.triggerMonopolyHomeProps())
         if (!ResChecker.checkRes(TAG, "新巡护首页道具处理失败:", props)) return
@@ -166,43 +167,84 @@ internal object MonopolyPatrolWorkflow {
         switchEnabled: Boolean,
         energyReserve: Int,
         showRanking: Boolean,
+        tasksEnabled: Boolean,
+        patrolEnabled: Boolean,
     ) {
-        val store = UserDataStoreManager.getCurrentInstance() ?: return
+        visitRegions { page ->
+            updateRegionMaps(page, exchangeEnabled, earlyExchange, switchEnabled, energyReserve, showRanking)
+            if (tasksEnabled || patrolEnabled) {
+                run(tasksEnabled, patrolEnabled) {
+                    val refreshed = parsePatrolResponse(AntForestPatrolRpcCall.queryMonopolyMapPage())
+                    if (ResChecker.checkRes(TAG, "刷新巡护地图失败:", refreshed)) {
+                        updateRegionMaps(refreshed, exchangeEnabled, earlyExchange, switchEnabled, energyReserve, false)
+                    }
+                }
+            }
+        }
+    }
+
+    // 地图执行和动物派遣共用区域恢复记录，未确认恢复时停止后续动作。
+    fun visitRegions(
+        allRegions: Boolean = true,
+        targetRegion: String? = null,
+        restoreMap: Boolean = false,
+        action: (JSONObject) -> Unit,
+    ): Boolean {
+        val store = UserDataStoreManager.getCurrentInstance() ?: return false
         val epoch = AccountSessionCoordinator.currentSessionEpoch()
         val pendingKey = "patrol_map_region"
+        val pendingMapKey = "patrol_map_code"
         try {
             if (store.get(pendingKey, String::class.java).orEmpty().isNotBlank()) {
-                Log.forestPatrol("先恢复上次目录查询的巡护区域")
-                return
+                Log.forestPatrol("先恢复上次操作的巡护区域和地图")
+                return false
             }
             if (ApplicationHookConstants.isOffline() ||
                 AccountSessionCoordinator.checkCurrentSession(store.uid, epoch) !is AccountSessionCheck.Current
-            ) return
+            ) return false
             val page = parsePatrolResponse(AntForestPatrolRpcCall.queryMonopolyMapPage())
-            if (!ResChecker.checkRes(TAG, "查询巡护地图失败:", page)) return
+            if (!ResChecker.checkRes(TAG, "查询巡护地图失败:", page)) return false
             val originalRegion = page.getString("currentRegionCode")
-            updateRegionMaps(page, exchangeEnabled, earlyExchange, switchEnabled, energyReserve, showRanking)
-            if (!exchangeEnabled) return
+            val originalMap = page.getString("currentMapCode")
+            require(originalRegion.isNotBlank() && originalMap.isNotBlank()) { "巡护区域或地图缺失:$page" }
             val regions = page.getJSONArray("regionList")
+            val regionCodes = mutableListOf(originalRegion)
             for (index in 0 until regions.length()) {
                 val region = regions.getJSONObject(index)
-                val regionCode = region.getString("regionCode")
-                if (regionCode == originalRegion || region.optString("regionAvailability") != "AVAILABLE") continue
+                if (region.optString("regionAvailability") == "AVAILABLE") {
+                    val code = region.getString("regionCode")
+                    if (code.isNotBlank() && code !in regionCodes) regionCodes.add(code)
+                }
+            }
+            val targets = when {
+                targetRegion != null -> regionCodes.filter { it == targetRegion }
+                allRegions -> regionCodes
+                else -> listOf(originalRegion)
+            }
+            if (targets.isEmpty()) return false
+            for (regionCode in targets) {
+                if (ApplicationHookConstants.isOffline() || Thread.currentThread().isInterrupted ||
+                    AccountSessionCoordinator.checkCurrentSession(store.uid, epoch) !is AccountSessionCheck.Current
+                ) return false
+                if (restoreMap || regionCode != originalRegion) {
+                    store.put(pendingKey, originalRegion, requirePersistence = true)
+                    if (restoreMap) store.put(pendingMapKey, originalMap, requirePersistence = true)
+                }
+                if (regionCode != originalRegion) {
+                    val switched = parsePatrolResponse(AntForestPatrolRpcCall.switchMonopolyRegion(regionCode))
+                    ResChecker.checkRes(TAG, "切换巡护区域失败:", switched)
+                }
                 if (ApplicationHookConstants.isOffline() ||
                     AccountSessionCoordinator.checkCurrentSession(store.uid, epoch) !is AccountSessionCheck.Current
-                ) return
-                store.put(pendingKey, originalRegion, requirePersistence = true)
-                val switched = parsePatrolResponse(AntForestPatrolRpcCall.switchMonopolyRegion(regionCode))
-                ResChecker.checkRes(TAG, "查询其他区域时切换失败:", switched)
-                if (ApplicationHookConstants.isOffline() ||
-                    AccountSessionCoordinator.checkCurrentSession(store.uid, epoch) !is AccountSessionCheck.Current
-                ) return
+                ) return false
                 val regionPage = parsePatrolResponse(AntForestPatrolRpcCall.queryMonopolyMapPage())
                 check(ResChecker.checkRes(TAG, regionPage) && regionPage.optString("currentRegionCode") == regionCode) {
                     "巡护区域切换未确认[$regionCode] raw=$regionPage"
                 }
-                updateRegionMaps(regionPage, exchangeEnabled, earlyExchange, false, energyReserve, showRanking)
+                action(regionPage)
             }
+            return !ApplicationHookConstants.isOffline() && !Thread.currentThread().isInterrupted &&
+                AccountSessionCoordinator.checkCurrentSession(store.uid, epoch) is AccountSessionCheck.Current
         } finally {
             if (!ApplicationHookConstants.isOffline() && !Thread.currentThread().isInterrupted &&
                 AccountSessionCoordinator.checkCurrentSession(store.uid, epoch) is AccountSessionCheck.Current
@@ -214,20 +256,32 @@ internal object MonopolyPatrolWorkflow {
                         ResChecker.checkRes(TAG, "恢复巡护区域返回失败:", restored)
                         if (ApplicationHookConstants.isOffline() ||
                             AccountSessionCoordinator.checkCurrentSession(store.uid, epoch) !is AccountSessionCheck.Current
-                        ) {
-                            throw RegionRestoreException("巡护区域[$originalRegion]尚待恢复")
-                        }
-                        val confirmed = parsePatrolResponse(AntForestPatrolRpcCall.queryMonopolyMapPage())
+                        ) throw RegionRestoreException("巡护区域[$originalRegion]尚待恢复")
+                        var confirmed = parsePatrolResponse(AntForestPatrolRpcCall.queryMonopolyMapPage())
                         if (!ResChecker.checkRes(TAG, confirmed) || confirmed.optString("currentRegionCode") != originalRegion) {
                             throw RegionRestoreException("恢复巡护区域[$originalRegion]未确认 raw=$confirmed")
                         }
+                        val originalMap = store.get(pendingMapKey, String::class.java).orEmpty()
+                        if (originalMap.isNotBlank() && confirmed.optString("currentMapCode") != originalMap) {
+                            val switched = parsePatrolResponse(AntForestPatrolRpcCall.switchMonopolyMap(originalMap, originalRegion))
+                            ResChecker.checkRes(TAG, "恢复巡护地图返回失败:", switched)
+                            if (ApplicationHookConstants.isOffline() ||
+                                AccountSessionCoordinator.checkCurrentSession(store.uid, epoch) !is AccountSessionCheck.Current
+                            ) throw RegionRestoreException("巡护地图[$originalMap]尚待恢复")
+                            confirmed = parsePatrolResponse(AntForestPatrolRpcCall.queryMonopolyMapPage())
+                            if (!ResChecker.checkRes(TAG, confirmed) ||
+                                confirmed.optString("currentRegionCode") != originalRegion ||
+                                confirmed.optString("currentMapCode") != originalMap
+                            ) throw RegionRestoreException("恢复巡护地图[$originalMap]未确认 raw=$confirmed")
+                        }
+                        store.remove(pendingMapKey)
                         store.remove(pendingKey)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: InterruptedException) {
                         throw e
                     } catch (e: Exception) {
-                        throw RegionRestoreException("巡护区域恢复失败，停止本轮巡护", e)
+                        throw RegionRestoreException("巡护区域或地图恢复失败，停止本轮巡护", e)
                     }
                 }
             }
@@ -311,7 +365,7 @@ internal object MonopolyPatrolWorkflow {
                 val bindings = currentMaps.associate { map ->
                     val display = map.optJSONObject("displayInfo")?.optJSONObject("mapDisplay")
                     val redirect = display?.optJSONObject("protectionGuideDisplay")?.optString("redirectUrl")
-                        ?.takeIf { it.isNotBlank() } ?: display?.optString("lockedRedirectUrl").orEmpty()
+                        .orEmpty()
                     val uri = redirect.takeIf { it.isNotBlank() }?.let { Uri.parse(it) }
                     val id = if (uri?.isHierarchical == true) {
                         uri.getQueryParameter("projectId") ?: uri.getQueryParameter("url")?.let {
@@ -326,7 +380,7 @@ internal object MonopolyPatrolWorkflow {
                     Log.forestPatrol("地图[$candidateCode]未下发明确的证书项目，保留后续查询")
                     continue
                 }
-                if (candidateCode != mapCode && bindings.any { (code, id) -> code != candidateCode && id == projectId }) {
+                if (bindings.any { (code, id) -> code != candidateCode && id == projectId }) {
                     val currentMap = currentMaps.firstOrNull { it.optString("mapCode") == mapCode }
                     val targetGuideUrl = candidate.optJSONObject("displayInfo")?.optJSONObject("mapDisplay")
                         ?.optJSONObject("protectionGuideDisplay")?.optString("redirectUrl").orEmpty()
@@ -383,10 +437,25 @@ internal object MonopolyPatrolWorkflow {
             return
         }
         val target = (0 until maps.length()).map { maps.getJSONObject(it) }
-            .filter { it.optString("mapAvailability") == "AVAILABLE" && it.optString("mapCode").isNotBlank() && it.optInt("level", -1) > currentLevel }
-            .maxByOrNull { it.getInt("level") }
+            .filter { candidate ->
+                candidate.optString("mapAvailability") == "AVAILABLE" &&
+                    candidate.optString("mapCode").isNotBlank() &&
+                    candidate.optString("mapCode") != mapCode && candidate.optInt("level", -1) > 0
+            }
+            .filter { candidate ->
+                val count = candidate.optInt("totalCreatureCount", -1)
+                val creatures = candidate.optJSONArray("creatureList")
+                count <= 0 || candidate.optInt("ownedCreatureCount", -1) < count ||
+                    creatures == null || creatures.length() != count ||
+                    (0 until creatures.length()).any { index ->
+                        val creature = creatures.optJSONObject(index)
+                        creature == null || creature.optInt("maxLevel", -1) <= 0 ||
+                            creature.optInt("level", -1) < creature.optInt("maxLevel")
+                    }
+            }
+            .minByOrNull { it.getInt("level") }
         if (target == null) {
-            Log.forestPatrol("当前地图动物已全部满星，服务端未下发更新的已开放地图，保持当前地图")
+            Log.forestPatrol("当前区域可推进展区已全部完成，继续处理其他开放区域")
             return
         }
         val targetCode = target.getString("mapCode")
@@ -408,6 +477,7 @@ internal object MonopolyPatrolWorkflow {
     ) : TaskFlowAdapter {
         override val moduleName: String = "AntForestPatrol"
         override val flowName: String = "新版巡护任务"
+        override val stateScope: String = "$flowName:$regionCode"
 
         override fun query(): JSONObject = parsePatrolResponse(AntForestPatrolRpcCall.listMonopolyTasks(regionCode, sceneCode))
         override fun isQuerySuccess(response: JSONObject): Boolean =
