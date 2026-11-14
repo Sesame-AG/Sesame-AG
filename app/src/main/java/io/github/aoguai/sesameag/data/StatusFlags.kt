@@ -70,6 +70,9 @@ object StatusFlags {
     /** 森林 1V1 能量挑战赛：今日已查询并处理待领奖励 */
     const val FLAG_ANTFOREST_ENERGY_PVP_CHALLENGE_DONE: String = "AntForest::energyPvpChallengeDone"
 
+    /** 森林每日竞猜：今日已处理。 */
+    const val FLAG_ANTFOREST_ENERGY_PVP_QUIZ_DONE = "AntForest::energyPvpQuizDone"
+
     /** 森林：光盘行动今日已完成 */
     const val FLAG_ANTFOREST_ECOLIFE_PHOTO_GUANGPAN = "EcoLife::photoGuangPan"
 
@@ -96,6 +99,12 @@ object StatusFlags {
 
     /** 森林：偷能量倍率卡时间槽已消费到的索引 */
     const val FLAG_ANTFOREST_ROB_MULTIPLIER_CARD_TRIGGER_INDEX = "antForest::robMultiplierCard::triggerIndex"
+
+    /** 森林：当天已确认消耗的收好友N倍卡次数。 */
+    const val FLAG_ANTFOREST_ROB_MULTIPLIER_CARD_USE_COUNT = "antForest::robMultiplierCard::useCount"
+
+    /** 森林：收到服务端业务限制后，当日停止收好友N倍卡消费。 */
+    const val FLAG_ANTFOREST_ROB_MULTIPLIER_CARD_STOPPED = "antForest::robMultiplierCard::stopped"
 
     /** 森林：活力值兑换次数上限前缀 */
     const val FLAG_ANTFOREST_VITALITY_EXCHANGE_LIMIT_PREFIX = "forest::VitalityExchangeLimit::"
@@ -337,6 +346,9 @@ object StatusFlags {
     /** 海洋摸鱼：不可重试动作与主任务分开保存，便于独立清理。 */
     const val FLAG_ANTOCEAN_AIFISH_ACTION_STOP_PREFIX = "AntOcean::aiFishActionStop::"
 
+    /** 海洋摸鱼：点赞回包已确认今日奖励额度耗尽。 */
+    const val FLAG_ANTOCEAN_AIFISH_APPRAISE_LIMIT = "AntOcean::aiFishAppraiseLimit"
+
     // ============================================================
     // 神奇物种
     // ============================================================
@@ -439,6 +451,15 @@ object StatusFlags {
 
     /** 庄园：活动特殊食品今日已达自定义上限 */
     const val FLAG_FARM_SPECIAL_FOOD_ACTIVITY_LIMIT = "antFarm::specialFoodActivityLimit"
+
+    /** 庄园：今日成功赠送食材总次数 */
+    const val FLAG_FARM_AI_KITCHEN_SHARE_DAILY_COUNT = "antFarm::aiKitchenShareDailyCount"
+
+    /** 庄园：今日向对应好友成功赠送食材的次数 */
+    const val FLAG_FARM_AI_KITCHEN_SHARE_FRIEND_COUNT_PREFIX = "antFarm::aiKitchenShareFriendCount::"
+
+    /** 庄园：明确返回食谱未配置的库存项，次日重新尝试 */
+    const val FLAG_FARM_UNUSABLE_CUISINE_PREFIX = "antFarm::unusableCuisine::"
 
     /** 庄园：今日是否已签到 */
     const val FLAG_FARM_SIGNED = "antFarm::signed"

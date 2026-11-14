@@ -16,7 +16,17 @@ import io.github.aoguai.sesameag.entity.OtherEntityProvider.listEcoLifeOptions
 import io.github.aoguai.sesameag.entity.OtherEntityProvider.listHealthcareOptions
 import io.github.aoguai.sesameag.entity.VitalityStore
 import io.github.aoguai.sesameag.entity.VitalityStore.Companion.getNameById
+import io.github.aoguai.sesameag.hook.ActiveAccountSession
+import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
+import io.github.aoguai.sesameag.util.UserDataStore
+import io.github.aoguai.sesameag.util.UserDataStoreManager
+import io.github.aoguai.sesameag.util.WorkflowRootGuard
+import io.github.aoguai.sesameag.storage.StoreAccess
+import io.github.aoguai.sesameag.hook.ApplicationHook
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleRegistry
+import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleState
+import io.github.aoguai.sesameag.hook.keepalive.UnifiedScheduler
 import io.github.aoguai.sesameag.hook.ExchangeOptionsRefreshBridge
 import io.github.aoguai.sesameag.hook.HookReadyChecker
 import io.github.aoguai.sesameag.util.GameTask
@@ -30,6 +40,8 @@ import io.github.aoguai.sesameag.model.BaseModel
 import io.github.aoguai.sesameag.model.ModelFields
 import io.github.aoguai.sesameag.model.ModelGroup
 import io.github.aoguai.sesameag.model.withDesc
+import io.github.aoguai.sesameag.model.ConfigPortScope
+import io.github.aoguai.sesameag.model.withPortScope
 import io.github.aoguai.sesameag.model.modelFieldExt.BooleanModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.ChoiceModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.FriendSelectionCountModelField
@@ -47,6 +59,7 @@ import io.github.aoguai.sesameag.task.TaskExecutionOutcome
 import io.github.aoguai.sesameag.task.TaskStatus
 import io.github.aoguai.sesameag.task.common.DeferredReason
 import io.github.aoguai.sesameag.task.common.GameCenterPlayRpcCall
+import io.github.aoguai.sesameag.task.common.NonDurationGameTask
 import io.github.aoguai.sesameag.task.common.TaskFlowAction
 import io.github.aoguai.sesameag.task.common.TaskFlowActionResult
 import io.github.aoguai.sesameag.task.common.TaskFlowAdapter
@@ -83,6 +96,7 @@ import io.github.aoguai.sesameag.util.TimeFormatter
 import io.github.aoguai.sesameag.util.TimeTriggerDecision
 import io.github.aoguai.sesameag.util.TimeTriggerEvaluator
 import io.github.aoguai.sesameag.util.TimeTriggerParseOptions
+import io.github.aoguai.sesameag.util.TimeWindow
 import io.github.aoguai.sesameag.util.TimeUtil
 import io.github.aoguai.sesameag.util.friend.FriendCapabilityRecorder
 import io.github.aoguai.sesameag.util.friend.FriendRepository
@@ -148,14 +162,40 @@ class AntForest : ModelTask(), EnergyCollectCallback {
 
     internal fun triggerPersistentPlantTask(payloadJson: String, scheduleId: String, source: String): Boolean {
         val payload = JSONObject(payloadJson)
+        var nextRunAt: Long? = null
         return executePersistentChild(
             scheduleId = scheduleId,
             ownerUserId = payload.optString("owner_user_id"),
             sessionEpoch = payload.optLong("session_epoch"),
             source = source,
             workflowQueue = plantTaskQueue,
+            afterExecution = {
+                nextRunAt?.let { triggerAt ->
+                    val previous = requireNotNull(PersistentScheduleRegistry.get(scheduleId))
+                    val next = UnifiedScheduler.schedulePersistentTrigger(
+                        context = requireNotNull(ApplicationHook.appContext),
+                        name = previous.name,
+                        kind = previous.kind,
+                        triggerAtMs = triggerAt,
+                        dedupeKey = previous.dedupeKey,
+                        payloadJson = payloadJson,
+                        ownerUserId = previous.ownerUserId,
+                        sessionEpoch = previous.sessionEpoch,
+                    )
+                    check(next.state == PersistentScheduleState.SCHEDULED) { "绿植续接注册失败：${next.lastError}" }
+                }
+            },
         ) {
             if (!isEnable() || receiveForestTaskAward?.value != true) return@executePersistentChild TaskExecutionOutcome.SKIPPED
+            TaskCommon.update()
+            if (TaskCommon.IS_ENERGY_TIME) {
+                val spec = BaseModel.energyTime.getTriggerSpec()
+                nextRunAt = TimeTriggerEvaluator.nextTriggerAt(
+                    spec.copy(allowWindows = listOf(TimeWindow(0, 86_400)), blockWindows = spec.allowWindows),
+                ) ?: TimeUtil.getToday().apply { add(java.util.Calendar.DAY_OF_YEAR, 1) }.timeInMillis
+                Log.forest("只收能量时间内保留绿植续接步骤，延后执行")
+                return@executePersistentChild TaskExecutionOutcome.DEFERRED
+            }
             val result = runMemberPlantTasks(payload)
             when {
                 result.completed -> {
@@ -228,6 +268,12 @@ class AntForest : ModelTask(), EnergyCollectCallback {
     @Volatile
     private var robMultiplierCardPropName: String = ""
 
+    @Volatile
+    private var robMultiplierCardPropId: String = ""
+
+    @Volatile
+    private var robMultiplierCardEffectTime: Long = 0L
+
     private val delayTimeMath = Average(5)
     private val collectEnergyQueue = SerialTaskQueue()
     private var lastCollectEnergyTime = 0L
@@ -240,6 +286,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
     private var collectEnergy: BooleanModelField? = null // 收集能量开关
     internal var pkEnergy: BooleanModelField? = null // PK能量开关
     internal var energyPvpChallenge: BooleanModelField? = null // 1V1能量挑战赛开关
+    internal var energyPvpQuiz: BooleanModelField? = null
     internal var energyRain: BooleanModelField? = null // 能量雨开关
     private var tryCount: IntegerModelField? = null // 尝试收取次数
     private var retryInterval: IntegerModelField? = null // 重试间隔（毫秒）
@@ -279,6 +326,8 @@ class AntForest : ModelTask(), EnergyCollectCallback {
     private var showBagList: BooleanModelField? = null
 
     private var vitalityExchangeList: SelectAndCountModelField? = null
+    private var vitalityExchangeStockLimits: SelectAndCountModelField? = null
+    private var continuousCarbonOffset: BooleanModelField? = null
     private var wateringEnabled: BooleanModelField? = null
     private var waterFriendEnergyFirst: BooleanModelField? = null
     @Volatile
@@ -302,6 +351,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
     internal var giveProp: BooleanModelField? = null
 
     private var robMultiplierCard: ChoiceModelField? = null // 收好友N倍卡
+    private var robMultiplierCardStrategy: ChoiceModelField? = null
     private var robMultiplierCardTime: TimeTriggerModelField? = null // 收好友N倍卡时间
     private var robMultiplierCardReplaceRemainDays: IntegerModelField? = null // 高倍率替换剩余天数
     private var robMultiplierCardForceReplaceExpireDays: IntegerModelField? = null // 临期强制替换天数
@@ -380,6 +430,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
     private val propQueryQueue = SerialTaskQueue()
     private var lastUsePropCheckTime: Long = 0
     private var roundPropCheckState: PropCheckRoundState? = null
+    private var robMultiplierCheckedThisRound = false
     private val forestGameCenterRecentAppRecords = java.util.concurrent.atomic.AtomicReference<Map<String, Long>>(emptyMap())
 
     private data class PropCheckRoundState(
@@ -509,6 +560,10 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 "能量挑战赛 | 开启",
                 false
             ).withDesc("自动查询 1V1 能量挑战赛状态，并领取已结算的能量和勋章奖励。").also { energyPvpChallenge = it })
+        modelFields.addField(
+            BooleanModelField("energyPvpQuiz", "能量挑战赛 | 每日竞猜", false)
+                .withDesc("自动答题，并按题目要求消耗能量浇公益林。")
+                .also { energyPvpQuiz = it })
         modelFields.addField(
             ChoiceModelField(
                 "whackMoleMode",
@@ -691,7 +746,15 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 "收好友N倍卡 | 消耗类型",
                 ApplyPropType.CLOSE,
                 ApplyPropType.nickNames
-            ).withDesc("优先高倍率和临期库存；有更高倍率卡待用时不继续延长低倍率卡，替换仍遵守下方阈值。").also { robMultiplierCard = it })
+            ).withDesc("按使用策略选择收好友N倍卡；仅限时模式不使用或补兑非限时卡。").also { robMultiplierCard = it })
+        modelFields.addField(
+            ChoiceModelField(
+                "robExpandCardStrategy",
+                "收好友N倍卡 | 使用策略",
+                0,
+                arrayOf("稳健接替", "高倍率优先", "临期保值（允许降倍）")
+            ).withDesc("稳健接替遵守升倍阈值；高倍率优先在允许时机直接升倍。临期保值允许使用临期低倍卡，恢复高倍失败或无恢复卡时可能停留低倍；未确认接替限制前不自动安排多步降倍再升倍。").withPortScope(ConfigPortScope.GENERIC).also { robMultiplierCardStrategy = it }
+        )
         // 收好友N倍卡时间
         modelFields.addField(
             TimeTriggerModelField(
@@ -715,7 +778,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 0,
                 0,
                 365
-            ).withDesc("当前生效卡剩余时间小于等于该天数时，才允许自动替换为更高倍率卡；默认 0 表示关闭普通高倍率替换。").also {
+            ).withDesc("仅稳健接替模式生效：当前卡剩余时间小于等于该天数时允许普通升倍；0 关闭普通升倍。旧卡权益按官方规则折算叠加，不要求新卡时长覆盖旧卡剩余时间。").also {
                 robMultiplierCardReplaceRemainDays = it
             }
         )
@@ -726,7 +789,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 0,
                 0,
                 365
-            ).withDesc("更高倍率候选卡在背包中的剩余可使用时间小于等于该天数时，允许无视普通替换阈值和时长保护直接替换；默认 0 表示关闭临期强制替换。").also {
+            ).withDesc("稳健模式允许在此期限内使用临期高倍卡；临期保值模式还允许使用临期低倍卡，可能降低当前倍率。0 关闭临期例外；背包过期时间不等于使用后的生效时长。").also {
                 robMultiplierCardForceReplaceExpireDays = it
             }
         )
@@ -850,6 +913,17 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 this::refreshVitalityExchangeOptionsForSettings,
                 "记得填兑换次数"
             ).withDesc("配置活力值商店兑换项及每日兑换次数。").also { vitalityExchangeList = it })
+        modelFields.addField(
+            SelectAndCountModelField(
+                "vitalityExchangeStockLimits", "活力值 | 道具库存额度", LinkedHashMap<String?, Int?>(),
+                this::refreshVitalityExchangeOptionsForSettings,
+                "填写道具库存数量"
+            ).withDesc("未配置或-1不限制库存，0不兑换该项，正数表示达到该库存后停止兑换。每日兑换次数仍按兑换列表执行。").also {
+                vitalityExchangeStockLimits = it
+            })
+        modelFields.addField(BooleanModelField("continuousCarbonOffset", "连续减碳 | 自动参与证书", false).withDesc(
+            "按项目要求消耗能量参与连续减碳证书活动。"
+        ).also { continuousCarbonOffset = it })
         modelFields.addField(BooleanModelField("receiveForestTaskAward", "森林任务 | 开启", false).withDesc(
             "执行并领取森林每日任务奖励。"
         ).also { receiveForestTaskAward = it })
@@ -1099,8 +1173,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         val runStartTime = System.currentTimeMillis()
         Log.forest("🌲🌲🌲 森林主任务开始执行 🌲🌲🌲")
         try {
-            TaskCommon.update()
-            val energyOnlyModeAtStart = TaskCommon.IS_ENERGY_TIME
             // 每次运行时检查并更新计数器
             checkAndUpdateCounters()
             // 正常流程会自动处理所有收取任务，无需特殊处理
@@ -1115,7 +1187,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             invalidatePropBagCache()
             forestGameCenterRecentAppRecords.set(emptyMap())
             GreenLife.resetForestMarketRound()
-            if (showBagList?.value == true) showBag()
             initRebornWeeklyState()
             wateringExecutedThisRound = false
             // 加载“今日统计”（按账号维度持久化），用于跨重启/多次运行累计
@@ -1126,19 +1197,16 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 totalWatered = Statistics.getData(uid, Statistics.TimeType.DAY, Statistics.DataType.WATERED)
             }
 
-            if (energyOnlyModeAtStart) {
-                TaskCommon.update()
-                if (TaskCommon.IS_ENERGY_TIME) {
-                    Log.forest("⏸ 当前为只收能量时间【${BaseModel.energyTime.value}】，执行本次只收能量链路")
-                    runEnergyOnlyCollectionWorkflow(tc)
-                    clearRoundCaches()
-                    Log.forest("✨ 本次只收能量链路完成，交回统一调度")
-                } else {
-                    Log.forest("当前不在只收能量时间段，跳过只收能量链路并交回统一调度")
-                }
+            TaskCommon.update()
+            if (TaskCommon.IS_ENERGY_TIME) {
+                Log.forest("⏸ 当前为只收能量时间【${BaseModel.energyTime.value}】，执行本次只收能量链路")
+                runEnergyOnlyCollectionWorkflow(tc)
+                clearRoundCaches()
+                Log.forest("✨ 本次只收能量链路完成，交回统一调度")
                 tc.stop()
                 return
             }
+            if (showBagList?.value == true) showBag()
             val selfHomeObj = runForestPreparationAndCollectionWorkflow(tc)
             runForestHomeFollowUpWorkflow(selfHomeObj, tc)
         } catch (e: CancellationException) {
@@ -1197,6 +1265,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         friendHomeCache.clear()
         attemptedGiftBoxes.clear()
         handledProtectUsers.clear()
+        robMultiplierCheckedThisRound = false
         roundPropCheckState = null
         lastUsePropCheckTime = 0L
         wateringExecutedThisRound = false
@@ -1609,27 +1678,25 @@ class AntForest : ModelTask(), EnergyCollectCallback {
     )
 
     internal fun handleEnergyPvpChallenge() {
-        if (energyPvpChallenge?.value != true) {
-            return
-        }
-        if (Status.hasFlagToday(StatusFlags.FLAG_ANTFOREST_ENERGY_PVP_CHALLENGE_DONE)) {
-            Log.forest("1V1能量挑战赛：今日已处理，跳过重复查询")
-            return
-        }
+        val claimRewards = energyPvpChallenge?.value == true &&
+            !Status.hasFlagToday(StatusFlags.FLAG_ANTFOREST_ENERGY_PVP_CHALLENGE_DONE)
+        val playQuiz = energyPvpQuiz?.value == true &&
+            !Status.hasFlagToday(StatusFlags.FLAG_ANTFOREST_ENERGY_PVP_QUIZ_DONE)
+        if (!claimRewards && !playQuiz) return
 
         try {
-            val pvpInfo = queryEnergyPvpInfoSnapshot()
+            val pvpInfo = if (claimRewards) queryEnergyPvpInfoSnapshot() else null
             val homeResponse = AntForestRpcCall.queryPvpHomeInfo(queryWaitToReceive = true)
             if (homeResponse.isBlank()) {
-                Log.forest("1V1能量挑战赛：查询主页响应为空")
+                Log.error(TAG, "1V1能量挑战赛：查询主页响应为空")
                 if (pvpInfo?.hasReward == true && receiveEnergyPvpRewards()) {
                     Status.setFlagToday(StatusFlags.FLAG_ANTFOREST_ENERGY_PVP_CHALLENGE_DONE)
                 }
                 return
             }
-            val homeObj = JSONObject(homeResponse)
+            val homeObj = JSONObject(homeResponse).let { it.optJSONObject("resData") ?: it }
             if (!ResChecker.checkRes(TAG, "查询1V1能量挑战赛失败:", homeObj)) {
-                Log.forest("1V1能量挑战赛查询失败: ${homeObj.optString("resultDesc", homeObj.optString("resultCode"))}")
+                Log.error(TAG, "1V1能量挑战赛查询失败 raw=$homeObj")
                 if (pvpInfo?.hasReward == true) {
                     Log.forest("1V1能量挑战赛：入口提示有待领奖励，主页查询失败后尝试直接领取")
                     if (receiveEnergyPvpRewards()) {
@@ -1639,33 +1706,33 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 return
             }
 
-            val currentRecord = homeObj.optJSONObject("currentEnergyPvpBattleRecord")
-            val previousRecord = homeObj.optJSONObject("previousEnergyPvpBattleRecord")
-            val waitRecordCount = homeObj.optInt("waitToReceiveRecordCount", 0)
-            val waitRewardCount = homeObj.optInt("waitToReceiveRewardCount", 0)
-            val hasUnreceivedReward = hasUnreceivedPvpReward(currentRecord) || hasUnreceivedPvpReward(previousRecord)
+            if (claimRewards) {
+                val currentRecord = homeObj.optJSONObject("currentEnergyPvpBattleRecord")
+                val previousRecord = homeObj.optJSONObject("previousEnergyPvpBattleRecord")
+                val waitRecordCount = homeObj.optInt("waitToReceiveRecordCount", 0)
+                val waitRewardCount = homeObj.optInt("waitToReceiveRewardCount", 0)
+                val hasUnreceivedReward = hasUnreceivedPvpReward(currentRecord) || hasUnreceivedPvpReward(previousRecord)
+                logEnergyPvpRecord("当前场次", currentRecord)
+                logEnergyPvpRecord("上一场次", previousRecord)
 
-            logEnergyPvpRecord("当前场次", currentRecord)
-            logEnergyPvpRecord("上一场次", previousRecord)
-
-            if (waitRewardCount > 0 || hasUnreceivedReward || pvpInfo?.hasReward == true) {
-                Log.forest("1V1能量挑战赛：发现待领取奖励 record=$waitRecordCount reward=$waitRewardCount，开始领取")
-                if (receiveEnergyPvpRewards()) {
-                    Status.setFlagToday(StatusFlags.FLAG_ANTFOREST_ENERGY_PVP_CHALLENGE_DONE)
+                when {
+                    waitRewardCount > 0 || hasUnreceivedReward || pvpInfo?.hasReward == true -> {
+                        Log.forest("1V1能量挑战赛：发现待领取奖励 record=$waitRecordCount reward=$waitRewardCount，开始领取")
+                        if (receiveEnergyPvpRewards()) {
+                            Status.setFlagToday(StatusFlags.FLAG_ANTFOREST_ENERGY_PVP_CHALLENGE_DONE)
+                        }
+                    }
+                    isPvpBattleActive(currentRecord) || isPvpBattleActive(previousRecord) ||
+                        isPvpBattleStatusActive(pvpInfo?.battleStatus.orEmpty()) -> {
+                        Log.forest("1V1能量挑战赛：仍在匹配/进行/结算中，保留后续重试")
+                    }
+                    else -> {
+                        Log.forest("1V1能量挑战赛：暂无待领取奖励，今日无需继续处理")
+                        Status.setFlagToday(StatusFlags.FLAG_ANTFOREST_ENERGY_PVP_CHALLENGE_DONE)
+                    }
                 }
-                return
             }
-
-            if (isPvpBattleActive(currentRecord) ||
-                isPvpBattleActive(previousRecord) ||
-                isPvpBattleStatusActive(pvpInfo?.battleStatus.orEmpty())
-            ) {
-                Log.forest("1V1能量挑战赛：仍在匹配/进行/结算中，保留后续重试")
-                return
-            }
-
-            Log.forest("1V1能量挑战赛：暂无待领取奖励，今日无需继续处理")
-            Status.setFlagToday(StatusFlags.FLAG_ANTFOREST_ENERGY_PVP_CHALLENGE_DONE)
+            if (playQuiz) ForestPvpQuiz.run(this, homeObj)
         } catch (t: Throwable) {
             handleException("handleEnergyPvpChallenge", t)
         }
@@ -1994,11 +2061,99 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         return statuses.filter { it.isNotBlank() }.joinToString("、")
     }
 
+    internal fun runContinuousCarbonOffset() {
+        if (continuousCarbonOffset?.value != true) return
+        val projectId = "OFFSHORE_LIANSHOU_2026_365"
+        TaskFlowEngine(object : TaskFlowAdapter {
+            override val moduleName = "蚂蚁森林"
+            override val flowName = "连续收能量证书"
+            override val stateScope = "continuousCarbonOffset:$projectId"
+
+            override fun query(): JSONObject = JSONObject(AntForestRpcCall.queryContinuousCarbonOffsetDetail(projectId))
+
+            override fun isQuerySuccess(response: JSONObject): Boolean =
+                ResChecker.checkRes(TAG, "查询连续收能量证书失败:", response) &&
+                    response.optJSONObject("project")?.optString("projectId") == projectId
+
+            override fun extractItems(response: JSONObject): List<TaskFlowItem> {
+                val project = response.optJSONObject("project") ?: return emptyList()
+                return listOf(TaskFlowItem(
+                    id = projectId,
+                    title = project.optString("projectName"),
+                    status = project.optString("exchangeStatus"),
+                    type = "CONTINUOUS_CARBON_OFFSET",
+                    current = response.optInt("continuousDays"),
+                    limit = project.optInt("continuousDays"),
+                    progress = "${project.optString("exchangeStatus")}:${response.optLong("userCurrentEnergy")}",
+                    raw = response,
+                ))
+            }
+
+            override fun mapPhase(item: TaskFlowItem): TaskFlowPhase {
+                if (item.status == "EXCHANGED") return TaskFlowPhase.TERMINAL
+                val detail = item.raw ?: return TaskFlowPhase.UNKNOWN
+                val project = detail.optJSONObject("project") ?: return TaskFlowPhase.UNKNOWN
+                if (!project.optBoolean("qualified") || detail.optLong("userCurrentEnergy") < project.optLong("energy")) {
+                    return TaskFlowPhase.UNSUPPORTED
+                }
+                return if (item.status == "CAN_EXCHANGE" && project.optLong("energy") > 0L) {
+                    TaskFlowPhase.BUSINESS_ACTION
+                } else {
+                    TaskFlowPhase.UNKNOWN
+                }
+            }
+
+            override fun shouldSkip(item: TaskFlowItem): Boolean = mapPhase(item) == TaskFlowPhase.UNSUPPORTED
+
+            override fun isPendingActionResolved(
+                item: TaskFlowItem, action: TaskFlowAction, response: JSONObject, items: List<TaskFlowItem>,
+            ): Boolean {
+                val confirmed = response.optJSONObject("project")?.optString("exchangeStatus") == "EXCHANGED"
+                if (confirmed) {
+                    val certificateName = item.raw?.optJSONObject("activityCertVO")?.optString("name").orEmpty()
+                    if (certificateName.isNotBlank()) {
+                        Log.forest("连续收能量证书📜[$certificateName]参与状态已确认")
+                    } else {
+                        Log.forest("连续收能量证书📜[参与状态已确认]")
+                    }
+                }
+                return confirmed
+            }
+
+            override fun complete(item: TaskFlowItem): TaskFlowActionResult {
+                val rpc = "AntForestRpcCall.exchangeContinuousCarbonOffsetProject"
+                val response = try {
+                    JSONObject(AntForestRpcCall.exchangeContinuousCarbonOffsetProject(projectId))
+                } catch (t: Throwable) {
+                    if (t is kotlinx.coroutines.CancellationException || t is InterruptedException) throw t
+                    Log.printStackTrace(TAG, "连续收能量证书参与结果未确认，等待查询状态", t)
+                    return TaskFlowActionResult.defer(
+                        deferredReason = DeferredReason.STATE_CONFIRMATION,
+                        message = "参与结果未确认，先查项目状态，不重复扣能量",
+                        rpc = rpc,
+                        stopCurrentRound = true,
+                    )
+                }
+                if (!isForestTaskAlreadyHandled(response) && !ResChecker.checkRes(TAG, "参与连续收能量证书失败:", response)) {
+                    return forestTaskActionFailureResult(response, rpc, "projectId=$projectId")
+                }
+                response.optJSONObject("activityCertVO")?.let { item.raw?.put("activityCertVO", it) }
+                return TaskFlowActionResult.defer(
+                    deferredReason = DeferredReason.STATE_CONFIRMATION,
+                    message = "等待连续收能量证书参与状态确认",
+                    rpc = rpc,
+                    raw = response.toString(),
+                )
+            }
+
+            override fun logInfo(message: String) { Log.forest(message) }
+            override fun logError(message: String) { Log.error(TAG, message) }
+        }).run()
+    }
+
     internal fun handleVitalityExchange(itemFilter: ((String, String) -> Boolean)? = null): Boolean {
         var exchangedAny = false
         try {
-//            JSONObject bag = getBag();
-
             if (!Vitality.initVitality("")) {
                 return false
             }
@@ -2020,8 +2175,29 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     Log.forest("活力值兑换🍃跳过[${exchangeItem.displayName()}]#${exchangeItem.safetyReason}")
                     continue
                 }
-                // 处理活力值兑换
+                val stockLimit = vitalityExchangeStockLimits?.get(skuId) ?: -1
+                if (stockLimit == 0) continue
+                val propGroups = exchangeItem?.effectTags.orEmpty().mapNotNull { tag ->
+                    when (tag.need) {
+                        ExchangeEffectNeed.FOREST_DOUBLE_CLICK -> "doubleClick"
+                        ExchangeEffectNeed.FOREST_SHIELD -> "shield"
+                        ExchangeEffectNeed.FOREST_STEALTH -> "stealthCard"
+                        ExchangeEffectNeed.FOREST_BUBBLE_BOOST -> "boost"
+                        ExchangeEffectNeed.FOREST_ROB_MULTIPLIER -> "robExpandCard"
+                        ExchangeEffectNeed.FOREST_ENERGY_BOMB -> "energyBombCard"
+                        else -> null
+                    }
+                }.distinct()
                 while (Status.canVitalityExchangeToday(skuId, count)) {
+                    if (stockLimit > 0 && propGroups.isNotEmpty()) {
+                        val bag = queryPropList(forceRefresh = true) ?: break
+                        if (propGroups.all { group ->
+                            collectAvailablePropsByGroup(bag, group).sumOf { it.optLong("holdsNum", 0L) } >= stockLimit
+                        }) {
+                            Log.forest("活力值兑换🍃[${getNameById(skuId)}]库存已达到配置额度[$stockLimit]，停止兑换")
+                            break
+                        }
+                    }
                     if (!Vitality.handleVitalityExchange(skuId)) {
                         Log.forest("活力值兑换失败: " + getNameById(skuId))
                         break
@@ -2067,6 +2243,8 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             for (entry in sortedEntries) {
                 val skuId = entry.key ?: continue
                 val count = entry.value?.takeIf { it > 0 } ?: continue
+                val stockLimit = vitalityExchangeStockLimits?.get(skuId) ?: -1
+                if (stockLimit == 0) continue
                 val skuName = Vitality.skuInfo[skuId]?.optString("skuName").orEmpty()
                 if (skuName.isBlank()) {
                     continue
@@ -2079,7 +2257,29 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 if (exchangeItem.safety != ExchangeSafety.AUTO) {
                     continue
                 }
+                val propGroups = exchangeItem.effectTags.mapNotNull { tag ->
+                    when (tag.need) {
+                        ExchangeEffectNeed.FOREST_DOUBLE_CLICK -> "doubleClick"
+                        ExchangeEffectNeed.FOREST_SHIELD -> "shield"
+                        ExchangeEffectNeed.FOREST_STEALTH -> "stealthCard"
+                        ExchangeEffectNeed.FOREST_BUBBLE_BOOST -> "boost"
+                        ExchangeEffectNeed.FOREST_ROB_MULTIPLIER -> "robExpandCard"
+                        ExchangeEffectNeed.FOREST_ENERGY_BOMB -> "energyBombCard"
+                        else -> null
+                    }
+                }.distinct()
                 while (exchangedCount < safeMaxCount && Status.canVitalityExchangeToday(skuId, count)) {
+                    if (need == ExchangeEffectNeed.FOREST_ROB_MULTIPLIER &&
+                        (robMultiplierCard?.value != ApplyPropType.ALL ||
+                            evaluateTriggerDecision(robMultiplierCardTime, StatusFlags.FLAG_ANTFOREST_ROB_MULTIPLIER_CARD_TRIGGER_INDEX)?.allowNow != true)
+                    ) break
+                    if (stockLimit > 0) {
+                        if (propGroups.isEmpty()) break
+                        val bag = queryPropList(forceRefresh = true) ?: break
+                        if (propGroups.any { group ->
+                            collectAvailablePropsByGroup(bag, group).sumOf { it.optLong("holdsNum", 0L) } >= stockLimit
+                        }) break
+                    }
                     attempted = true
                     if (!Vitality.handleVitalityExchange(skuId)) {
                         break
@@ -2864,6 +3064,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         var shouldCooldown = false
         var firstTakeLook = true
         var firstTakeLookExposedUserId = ""
+        var feedsId = ""
         val resolvedTakeLookSource = source?.takeIf { it.isNotBlank() }
             ?: AntForestRpcCall.defaultTakeLookSource()
         var takeLookSessionStarted = false
@@ -2925,14 +3126,15 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 val takeLookStartedThisRound = firstTakeLook
                 val takeLookResult = try {
                     takeLookSessionStarted = true
-                    val resStr = AntForestRpcCall.takeLook(
-                        buildTakeLookSkipUsers(),
-                        resolvedTakeLookSource,
+                    val resStr = AntForestRpcCall.takeLookForFeeds(
+                        skipUsers = buildTakeLookSkipUsers(),
+                        visitedUserIds = JSONArray(visitedInSession.toList()),
+                        feedsId = feedsId,
+                        source = resolvedTakeLookSource,
                         exposedUserId = if (takeLookStartedThisRound) firstTakeLookExposedUserId else "",
-                        takeLookStart = takeLookStartedThisRound
                     )
                     firstTakeLook = false
-                    JSONObject(resStr)
+                    JSONObject(resStr).let { it.optJSONObject("resData") ?: it }
                 } catch (e: Exception) {
                     Log.printStackTrace(TAG, "找能量接口异常", e)
                     shouldCooldown = true
@@ -2944,19 +3146,19 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     break@loop
                 }
 
+                feedsId = takeLookResult.optString("feedsId").ifBlank { feedsId }
                 val takeLookEnded = takeLookResult.optBoolean("takeLookEnd", false)
                 val friendId = takeLookResult.optString("friendId")
-                val actionType = takeLookResult.optString("actionType")
-                if (actionType.isNotBlank() && actionType != "FRIEND") {
-                    Log.forest("找能量返回非好友动作[$actionType]，结束")
+                val feedsType = takeLookResult.optString("feedsType")
+                if (feedsType != "FRIEND") {
+                    Log.forest("找能量返回非好友推荐[$feedsType]，结束")
                     if (!takeLookEnded) {
                         requestTakeLookEndIfNeeded()
                     }
                     break@loop
                 }
                 if (friendId.isBlank()) {
-                    val actionSuffix = if (actionType.isBlank()) "" else "[$actionType]"
-                    Log.forest("找能量返回${actionSuffix}无有效好友，结束")
+                    Log.forest("找能量返回[$feedsType]无有效好友，结束")
                     if (!takeLookEnded) {
                         requestTakeLookEndIfNeeded()
                     }
@@ -3033,7 +3235,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     // 记录到全局缓存，防止下次运行再次浪费时间查询
                     addToSkipUsers(friendId)
                     processedUsersCache.add(friendId)
-                    // 后续 takeLook 请求会带上 skipUsers，排行榜补齐也会通过 processedUsersCache 跳过本轮已确认保护的好友
+                    // 后续推荐请求携带 skipUsers 和 visitedUserIds，排行榜沿用本轮已处理记录。
                 } else {
                     // I. 收取能量
                     collectEnergy(friendId, friendHomeObj, "takeLook", rpcSource = resolvedTakeLookSource)
@@ -3790,6 +3992,8 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 robMultiplierCardFactor = 0.0
                 robMultiplierCardPropType = ""
                 robMultiplierCardPropName = ""
+                robMultiplierCardPropId = ""
+                robMultiplierCardEffectTime = 0L
             }
             for (i in 0 until usingUserProps.length()) {
                 val userUsingProp = usingUserProps.getJSONObject(i)
@@ -3821,6 +4025,8 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                         robMultiplierCardEndTime = userUsingProp.getLong("endTime")
                         robMultiplierCardPropName = propName
                         robMultiplierCardPropType = userUsingProp.optString("propType")
+                        robMultiplierCardPropId = userUsingProp.optString("propId")
+                        robMultiplierCardEffectTime = userUsingProp.optLong("effectTime")
                         robMultiplierCardFactor = parseRobMultiplierFactor(
                             robMultiplierCardPropType,
                             propName,
@@ -3888,7 +4094,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                                 }
                             } else {
                                 if (overLimitToday) {
-                                    Log.forest("$propName 今日翻倍能量领取已达上限(100000g)")
+                                    Log.forest("$propName 今日翻倍能量已达服务端上限")
                                 } else if (leftEnergy > 0.0) {
                                     if (leftEnergy >= 1.0) {
                                         Log.forest("$propName 剩余${leftEnergy}g，未达到领取阈值(${robMultiplierLimit.toInt()}g)，跳过领取")
@@ -4320,7 +4526,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         TaskBlacklist.addToBlacklist(forestTaskBlacklistModule, taskType)
     }
 
-    private fun classifyForestTaskFailure(response: JSONObject): TaskRpcFailureType {
+    internal fun classifyForestTaskFailure(response: JSONObject): TaskRpcFailureType {
         val code = extractForestTaskFailureCode(response)
         val message = extractForestTaskFailureMessage(response)
         return when {
@@ -4492,9 +4698,8 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             return false
         }
 
-        if (taskStatus == TaskStatus.FINISHED.name || taskStatus == "COMPLETE") {
-            return handleForestTaskNodeRewardOnly(taskInfo, mutableSetOf())
-        }
+        if (handleForestTaskNodeRewardOnly(taskInfo, mutableSetOf())) return true
+        if (taskStatus == TaskStatus.FINISHED.name || taskStatus == "COMPLETE") return false
         if (taskStatus != TaskStatus.TODO.name) {
             return false
         }
@@ -4550,7 +4755,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     val failure = forestTaskActionFailureResult(
                         finishTaskResponse, "AntForestRpcCall.finishTask", "taskType=$childTaskType sceneCode=$childSceneCode",
                     )
-                    val result = AntFarmRpcCall.doSceneTask(childTaskType, childSceneCode, failure) { fallback ->
+                    val result = AntFarmRpcCall.doSceneTask(childTaskType, childSceneCode, failure, childSceneCode, "ANTFOREST") { fallback ->
                         forestTaskActionFailureResult(fallback, "AntFarmRpcCall.doFarmTask", "taskType=$childTaskType sceneCode=$childSceneCode")
                     }
                     Log.error(TAG, "绿色践行子任务完成未确认[$childTaskTitle] rpc=${result.rpc} code=${result.code} msg=${result.message} raw=${result.raw} detail=${result.detail}")
@@ -4648,26 +4853,31 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         return taskNodes
     }
 
-    private fun queryForestTaskSource(sourceName: String, query: () -> String): JSONObject? {
+    private fun queryForestTaskSource(
+        sourceName: String, failures: JSONArray? = null, query: () -> String,
+    ): JSONObject? {
+        var response = ""
         return try {
-            val response = query()
+            response = query()
             if (response.isBlank()) {
+                Log.error(TAG, "查询森林任务[$sourceName]响应为空")
+                failures?.put(JSONObject().put("sourceName", sourceName).put("payload",
+                    JSONObject().put("success", false).put("resultDesc", "响应为空")))
                 return null
             }
             val responseObj = JSONObject(response)
-            // 兼容不同 RPC Bridge 的返回结构：有的直接返回业务字段，有的包一层 resData
             val payload = responseObj.optJSONObject("resData") ?: responseObj
             if (!ResChecker.checkRes(TAG, "查询森林任务[$sourceName]失败:", payload)) {
-                Log.forest("森林任务[$sourceName]返回异常: " + payload.optString(
-                        "resultDesc",
-                        payload.optString("desc", "未知错误")
-                    )
-                )
+                Log.error(TAG, "查询森林任务[$sourceName]失败 raw=$payload")
+                failures?.put(JSONObject().put("sourceName", sourceName).put("payload", payload))
                 return null
             }
             payload
         } catch (t: Throwable) {
+            if (t is CancellationException || t is InterruptedException) throw t
             Log.printStackTrace(TAG, "查询森林任务[$sourceName]异常", t)
+            failures?.put(JSONObject().put("sourceName", sourceName).put("payload",
+                JSONObject().put("success", false).put("resultDesc", t.toString()).put("raw", response)))
             null
         }
     }
@@ -4689,12 +4899,12 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             return false
         }
 
-        if (taskStatus != TaskStatus.FINISHED.name && taskStatus != "COMPLETE") {
-            return false
-        }
+        val taskRights = parseTaskRights(taskInfo)
+        val claimable = taskRights.optInt("rightsTimes", 0) > 0 &&
+            taskRights.optInt("totalAwardCount", 0) > taskRights.optInt("alreadyReceiveAwardCount", 0)
+        if (taskStatus != TaskStatus.FINISHED.name && taskStatus != "COMPLETE" && !claimable) return false
 
         val bizInfo = parseTaskBizInfo(taskBaseInfo)
-        val taskRights = parseTaskRights(taskInfo)
         val awardCount = taskRights.optInt("awardCount", 0)
         val taskTitle = sequenceOf(
             bizInfo.optString("taskTitle"),
@@ -4878,7 +5088,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             val failure = forestTaskActionFailureResult(
                 finishTaskResponse, "AntForestRpcCall.finishTask", forestTaskActionDetail(item, "finishLegacyGameTask"),
             )
-            return AntFarmRpcCall.doSceneTask(item.type, item.sceneCode, failure) { fallback ->
+            return AntFarmRpcCall.doSceneTask(item.type, item.sceneCode, failure, item.sceneCode, "ANTFOREST") { fallback ->
                 forestTaskActionFailureResult(fallback, "AntFarmRpcCall.doFarmTask", forestTaskActionDetail(item, "complete"))
             }
         }
@@ -4915,7 +5125,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             val failure = forestTaskActionFailureResult(
                 finishTaskResponse, "AntForestRpcCall.finishTask", forestTaskActionDetail(item, "finishTask"),
             )
-            return AntFarmRpcCall.doSceneTask(item.type, item.sceneCode, failure) { fallback ->
+            return AntFarmRpcCall.doSceneTask(item.type, item.sceneCode, failure, item.sceneCode, "ANTFOREST") { fallback ->
                 forestTaskActionFailureResult(fallback, "AntFarmRpcCall.doFarmTask", forestTaskActionDetail(item, "complete"))
             }
         }
@@ -5072,7 +5282,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             val failure = forestTaskActionFailureResult(
                 finishTaskResponse, "AntForestRpcCall.finishTask", forestTaskActionDetail(item, "oneClickWateringFinishTask"),
             )
-            return AntFarmRpcCall.doSceneTask(item.type, item.sceneCode, failure) { fallback ->
+            return AntFarmRpcCall.doSceneTask(item.type, item.sceneCode, failure, item.sceneCode, "ANTFOREST") { fallback ->
                 forestTaskActionFailureResult(fallback, "AntFarmRpcCall.doFarmTask", forestTaskActionDetail(item, "complete"))
             }
         }
@@ -5262,6 +5472,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             taskSources = emptyList(), targetTaskTypes = setOf("KUAIDI_VITALITY"),
         ) {
             override val flowName = "快递森林活力值"
+            override val stateScope: String = flowName
 
             override fun query(): JSONObject {
                 if (!entered) {
@@ -5291,12 +5502,11 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         override val moduleName: String = forestTaskBlacklistModule
         override val flowName: String = "森林任务"
         private val greenPracticeManualOnlyLogged = mutableSetOf<String>()
-        private val roundCompletedTaskKeys = mutableSetOf<String>()
-        private val roundReceivedTaskKeys = mutableSetOf<String>()
         private val duplicateSkipLogged = mutableSetOf<String>()
 
         override fun query(): JSONObject {
             val responseArray = JSONArray()
+            val failures = JSONArray()
             val uniqueSigns = linkedMapOf<String, JSONObject>()
             var queriedHomeTaskList = false
             var homeTaskListHasItems = false
@@ -5317,7 +5527,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             }
 
             for ((sourceName, request) in taskSources) {
-                val taskResponse = queryForestTaskSource(sourceName, request) ?: continue
+                val taskResponse = queryForestTaskSource(sourceName, failures, request) ?: continue
                 if (sourceName == "home_task_list") {
                     queriedHomeTaskList = true
                     homeTaskListHasItems = appendTaskResponse(sourceName, taskResponse)
@@ -5328,7 +5538,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
 
             if (queriedHomeTaskList && !homeTaskListHasItems) {
                 for ((sourceName, request) in fallbackTaskSources) {
-                    val taskResponse = queryForestTaskSource(sourceName, request) ?: continue
+                    val taskResponse = queryForestTaskSource(sourceName, failures, request) ?: continue
                     appendTaskResponse(sourceName, taskResponse)
                 }
             }
@@ -5336,13 +5546,18 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             val signArray = JSONArray()
             uniqueSigns.values.forEach { signArray.put(it) }
             return JSONObject()
-                .put("success", true)
+                .put("success", responseArray.length() > 0)
                 .put("responses", responseArray)
+                .put("failures", failures)
                 .put("signs", signArray)
         }
 
         override fun isQuerySuccess(response: JSONObject): Boolean {
-            return response.optBoolean("success", true)
+            return response.optBoolean("success") && response.optJSONArray("responses") != null
+        }
+
+        override fun isQueryComplete(response: JSONObject): Boolean {
+            return isQuerySuccess(response) && (response.optJSONArray("failures")?.length() ?: 0) == 0
         }
 
         override fun blacklist(
@@ -5429,7 +5644,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                             .ifBlank { bizInfo.optString("actionType") },
                         blacklistKeys = listOf(taskType),
                         raw = raw,
-                        progress = "award=$awardCount progress=$taskProgress/${taskRequire ?: 0}",
+                        progress = "award=$awardCount claimed=${taskRights.optInt("alreadyReceiveAwardCount")} rights=${taskRights.optInt("rightsTimes")} progress=$taskProgress/${taskRequire ?: 0}",
                         current = taskProgress,
                         limit = taskRequire
                     )
@@ -5554,6 +5769,10 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             if (!isGreenPracticeParentItem(item)) {
                 return false
             }
+            val rights = item.raw?.optJSONObject("taskRights")
+            if (rights != null && rights.has("rightsTimes") && rights.has("totalAwardCount") && rights.has("alreadyReceiveAwardCount")) {
+                return rights.optInt("rightsTimes") > 0 && rights.optInt("totalAwardCount") > rights.optInt("alreadyReceiveAwardCount")
+            }
             val current = item.current ?: return false
             val limit = item.limit ?: return false
             return limit > 0 && current >= limit
@@ -5578,18 +5797,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             }
             val taskKey = forestTaskItemKey(item)
             val phase = mapPhase(item)
-            if (roundReceivedTaskKeys.contains(taskKey)) {
-                if (duplicateSkipLogged.add("$taskKey|received")) {
-                    Log.debug(TAG, "森林任务[${item.title}] 本轮已领奖，跳过重复检查")
-                }
-                return true
-            }
-            if (phase != TaskFlowPhase.REWARD_READY && roundCompletedTaskKeys.contains(taskKey)) {
-                if (duplicateSkipLogged.add("$taskKey|completed")) {
-                    Log.debug(TAG, "森林任务[${item.title}] 本轮已推进，跳过重复完成探测")
-                }
-                return true
-            }
             if (item.type == ONE_CLICK_WATERING_TASK_TYPE &&
                 phase == TaskFlowPhase.READY_TO_COMPLETE &&
                 !isForestWateringEnabled()
@@ -5599,7 +5806,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 }
                 return true
             }
-            if (isGreenPracticeParentWithoutAutoAction(item)) {
+            if (phase != TaskFlowPhase.REWARD_READY && isGreenPracticeParentWithoutAutoAction(item)) {
                 val logKey = item.id.ifBlank { item.title }
                 if (greenPracticeManualOnlyLogged.add(logKey)) {
                     Log.forest("森林任务[${item.title}] 绿色践行剩余任务需真实行为或已在黑名单，保留待手动完成后领奖")
@@ -5664,17 +5871,8 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         }
 
         override fun afterSuccess(item: TaskFlowItem, action: TaskFlowAction, result: TaskFlowActionResult) {
-            if (item.type == FOREST_SIGN_TASK_TYPE) {
-                return
-            }
-            val taskKey = forestTaskItemKey(item)
-            when (action) {
-                TaskFlowAction.RECEIVE -> roundReceivedTaskKeys.add(taskKey)
-                TaskFlowAction.COMPLETE -> {
-                    roundCompletedTaskKeys.add(taskKey)
-                    forestTaskTryCount.remove(buildForestTaskKey(item.sceneCode, item.type))
-                }
-                else -> Unit
+            if (item.type != FOREST_SIGN_TASK_TYPE && action == TaskFlowAction.COMPLETE) {
+                forestTaskTryCount.remove(buildForestTaskKey(item.sceneCode, item.type))
             }
         }
 
@@ -5684,25 +5882,11 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             result: TaskFlowActionResult,
             decision: TaskFlowDecision
         ) {
-            if (item.type == FOREST_SIGN_TASK_TYPE) {
-                return
-            }
-            val taskKey = forestTaskItemKey(item)
-            when {
-                action == TaskFlowAction.RECEIVE &&
-                    (decision == TaskFlowDecision.MARK_HANDLED ||
-                        decision == TaskFlowDecision.BLACKLIST ||
-                        decision == TaskFlowDecision.STOP_TODAY_OR_CURRENT_CHAIN) -> {
-                    roundReceivedTaskKeys.add(taskKey)
-                }
-
-                action == TaskFlowAction.COMPLETE &&
-                    (decision == TaskFlowDecision.MARK_HANDLED ||
-                        decision == TaskFlowDecision.BLACKLIST ||
-                        decision == TaskFlowDecision.STOP_TODAY_OR_CURRENT_CHAIN) -> {
-                    roundCompletedTaskKeys.add(taskKey)
-                    forestTaskTryCount.remove(buildForestTaskKey(item.sceneCode, item.type))
-                }
+            if (item.type != FOREST_SIGN_TASK_TYPE && action == TaskFlowAction.COMPLETE &&
+                decision in setOf(TaskFlowDecision.MARK_HANDLED, TaskFlowDecision.BLACKLIST,
+                    TaskFlowDecision.STOP_TODAY_OR_CURRENT_CHAIN)
+            ) {
+                forestTaskTryCount.remove(buildForestTaskKey(item.sceneCode, item.type))
             }
         }
 
@@ -5791,15 +5975,67 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         }
     }
 
-    internal fun closeEnergyRainGameDriveTask(
+    internal suspend fun closeEnergyRainGameDriveTask(
         request: EnergyRainCoroutine.EnergyRainGameDriveRequest
     ): EnergyRainCoroutine.EnergyRainGameDriveResult {
         return try {
-            val gameCenterContext = syncEnergyRainGameCenterContext(request)
-            val gameCenterDriveResult = closeEnergyRainGameCenterLatestTriggerTasks(
-                request,
-                gameCenterContext.triggerTasks
-            ) ?: closeEnergyRainGameCenterDeliveryTasks(request, gameCenterContext.deliveryTasks)
+            var gameCenterDriveResult: EnergyRainCoroutine.EnergyRainGameDriveResult? = null
+            val attemptedSnapshots = mutableSetOf<String>()
+            try {
+                while (true) {
+                    val context = syncEnergyRainGameCenterContext(request)
+                    val tasks = linkedMapOf<String, EnergyRainGameCenterDeliveryTask>()
+                    context.deliveryTasks.forEach { task ->
+                        tasks["${task.sceneCode}#${task.taskType}#${task.appId}"] = task
+                    }
+                    context.triggerTasks.forEach { task ->
+                        val key = "${task.sceneCode}#${task.taskType}#${task.appId.orEmpty()}"
+                        val previous = tasks[key]
+                        tasks[key] = EnergyRainGameCenterDeliveryTask(
+                            sourceName = "queryOptionalPlay",
+                            sceneCode = task.sceneCode,
+                            taskType = task.taskType,
+                            status = task.status,
+                            title = task.title,
+                            appId = task.appId.orEmpty(),
+                            awardCount = task.awardCount,
+                            rightTimes = previous?.rightTimes ?: 0,
+                            rightTimesLimit = previous?.rightTimesLimit ?: 0,
+                            rawTasks = listOf(task.rawTask) + previous?.rawTasks.orEmpty(),
+                        )
+                    }
+                    val pending = tasks.values.filter { task ->
+                        val progress = task.rawTasks.joinToString(";") { raw ->
+                            val base = raw.optJSONObject("taskBaseInfo") ?: raw
+                            "${base.optInt("taskProgress")}/${base.optInt("taskRequire")}"
+                        }
+                        attemptedSnapshots.add(
+                            "${task.sceneCode}#${task.taskType}#${task.appId}#${task.status}#" +
+                                "${task.awardCount}#${task.rightTimes}/${task.rightTimesLimit}#$progress",
+                        )
+                    }
+                    if (pending.isEmpty()) break
+                    val result = closeEnergyRainGameCenterDeliveryTasks(request, pending) ?: break
+                    if (gameCenterDriveResult == null ||
+                        result.status == EnergyRainCoroutine.EnergyRainGameDriveStatus.UNKNOWN_FAILURE ||
+                        result.status == EnergyRainCoroutine.EnergyRainGameDriveStatus.NON_RETRYABLE_FAILED ||
+                        result.status == EnergyRainCoroutine.EnergyRainGameDriveStatus.RETRYABLE_FAILED ||
+                        (gameCenterDriveResult.status !in setOf(
+                            EnergyRainCoroutine.EnergyRainGameDriveStatus.UNKNOWN_FAILURE,
+                            EnergyRainCoroutine.EnergyRainGameDriveStatus.NON_RETRYABLE_FAILED,
+                            EnergyRainCoroutine.EnergyRainGameDriveStatus.RETRYABLE_FAILED,
+                        ) && result.status == EnergyRainCoroutine.EnergyRainGameDriveStatus.PROGRESSED)
+                    ) gameCenterDriveResult = result
+                    delay(425)
+                }
+            } catch (e: Exception) {
+                if (e is CancellationException || e is InterruptedException) throw e
+                Log.printStackTrace(TAG, "能量雨游戏中心动作异常，继续普通驱动", e)
+                gameCenterDriveResult = EnergyRainCoroutine.EnergyRainGameDriveResult(
+                    EnergyRainCoroutine.EnergyRainGameDriveStatus.UNKNOWN_FAILURE,
+                    "游戏中心执行异常: ${e.message.orEmpty()}",
+                )
+            }
             val driveTaskType = request.driveTaskType.takeIf { it.isNotBlank() }
                 ?: return gameCenterDriveResult ?: EnergyRainCoroutine.EnergyRainGameDriveResult(
                     EnergyRainCoroutine.EnergyRainGameDriveStatus.NOT_FOUND,
@@ -5825,10 +6061,43 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 "energy_rain_drive_home_task_list" to { AntForestRpcCall.queryTaskList() }
             )
             var driveTaskCompleted = false
-            val driveAdapter = object : TaskFlowAdapter by ForestTaskFlowAdapter(
+            val ordinaryAdapter = ForestTaskFlowAdapter(
                 taskSources = taskSources,
-                targetTaskTypes = setOf(driveTaskType)
-            ) {
+                targetTaskTypes = setOf(driveTaskType),
+            )
+            val driveAdapter = object : TaskFlowAdapter by ordinaryAdapter {
+                override fun complete(item: TaskFlowItem): TaskFlowActionResult {
+                    val raw = item.raw
+                    val base = raw?.optJSONObject("taskBaseInfo")
+                    val prodPlayParam = when (val value = base?.opt("prodPlayParam")) {
+                        is JSONObject -> value
+                        is String -> runCatching { JSONObject(value) }.getOrNull()
+                        else -> null
+                    }
+                    val decision = GameCenterPlayRpcCall.resolveTaskAction(
+                        raw?.optJSONObject("taskInfo"), base, raw?.optJSONObject("bizInfo"),
+                        prodPlayParam, directFinishSupported = true,
+                    )
+                    val contract = decision.contract
+                    if (contract != null) {
+                        val duration = GameCenterPlayRpcCall.advanceDuration(
+                            "energyRainDuration:${item.sceneCode}:${item.type}", contract,
+                        )
+                        if (!duration.success) return duration
+                    }
+                    val result = ordinaryAdapter.complete(item)
+                    return if (result.failureType == TaskRpcFailureType.TERMINAL_DONE &&
+                        result.code !in setOf("400000030", "400000008", "B000000008")
+                    ) result.copy(failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW) else result
+                }
+
+                override fun receive(item: TaskFlowItem): TaskFlowActionResult {
+                    val result = ordinaryAdapter.receive(item)
+                    return if (result.failureType == TaskRpcFailureType.TERMINAL_DONE &&
+                        result.code !in setOf("400000030", "400000008", "B000000008")
+                    ) result.copy(failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW) else result
+                }
+
                 override fun onAllTasksDone(snapshot: TaskFlowSnapshot) {
                     driveTaskCompleted = snapshot.totalTasks > 0
                 }
@@ -5842,35 +6111,29 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             val message = "gameTask=${request.gameTaskType}(${request.gameTaskStatus}) " +
                 "driveTask=$driveTaskType$gameCenterMessage"
             val status = when {
-                TaskBlacklist.isTaskInBlacklist(forestTaskBlacklistModule, driveTaskType) ->
-                    EnergyRainCoroutine.EnergyRainGameDriveStatus.SKIPPED_BLACKLISTED
-
-                runResult.completed && driveTaskCompleted -> EnergyRainCoroutine.EnergyRainGameDriveStatus.CONFIRMED_DONE
-                runResult.progressed -> EnergyRainCoroutine.EnergyRainGameDriveStatus.PROGRESSED
-                gameCenterDriveResult?.status == EnergyRainCoroutine.EnergyRainGameDriveStatus.CONFIRMED_DONE ->
-                    EnergyRainCoroutine.EnergyRainGameDriveStatus.CONFIRMED_DONE
-
-                gameCenterDriveResult?.status == EnergyRainCoroutine.EnergyRainGameDriveStatus.PROGRESSED ->
-                    EnergyRainCoroutine.EnergyRainGameDriveStatus.PROGRESSED
-
-                runResult.stopped || runResult.interrupted -> EnergyRainCoroutine.EnergyRainGameDriveStatus.RETRYABLE_FAILED
-                runResult.actionAttempted -> EnergyRainCoroutine.EnergyRainGameDriveStatus.NO_PROGRESS
-                gameCenterDriveResult?.status == EnergyRainCoroutine.EnergyRainGameDriveStatus.RETRYABLE_FAILED ->
-                    EnergyRainCoroutine.EnergyRainGameDriveStatus.RETRYABLE_FAILED
-
+                runResult.interrupted -> EnergyRainCoroutine.EnergyRainGameDriveStatus.RETRYABLE_FAILED
+                runResult.failureCount > 0 -> EnergyRainCoroutine.EnergyRainGameDriveStatus.UNKNOWN_FAILURE
+                gameCenterDriveResult?.status == EnergyRainCoroutine.EnergyRainGameDriveStatus.UNKNOWN_FAILURE ->
+                    EnergyRainCoroutine.EnergyRainGameDriveStatus.UNKNOWN_FAILURE
                 gameCenterDriveResult?.status == EnergyRainCoroutine.EnergyRainGameDriveStatus.NON_RETRYABLE_FAILED ->
                     EnergyRainCoroutine.EnergyRainGameDriveStatus.NON_RETRYABLE_FAILED
-
-                gameCenterDriveResult?.status == EnergyRainCoroutine.EnergyRainGameDriveStatus.NO_PROGRESS ->
-                    EnergyRainCoroutine.EnergyRainGameDriveStatus.NO_PROGRESS
-
+                gameCenterDriveResult?.status == EnergyRainCoroutine.EnergyRainGameDriveStatus.RETRYABLE_FAILED ->
+                    EnergyRainCoroutine.EnergyRainGameDriveStatus.RETRYABLE_FAILED
+                runResult.stopped -> EnergyRainCoroutine.EnergyRainGameDriveStatus.NO_PROGRESS
+                runResult.completed && driveTaskCompleted -> EnergyRainCoroutine.EnergyRainGameDriveStatus.CONFIRMED_DONE
+                runResult.progressed -> EnergyRainCoroutine.EnergyRainGameDriveStatus.PROGRESSED
+                gameCenterDriveResult != null -> gameCenterDriveResult.status
+                runResult.actionAttempted -> EnergyRainCoroutine.EnergyRainGameDriveStatus.NO_PROGRESS
                 else -> EnergyRainCoroutine.EnergyRainGameDriveStatus.NOT_FOUND
             }
             EnergyRainCoroutine.EnergyRainGameDriveResult(status, message)
+        } catch (e: CancellationException) {
+            throw e
         } catch (t: Throwable) {
+            if (t is InterruptedException) throw t
             handleException("closeEnergyRainGameDriveTask", t)
             EnergyRainCoroutine.EnergyRainGameDriveResult(
-                EnergyRainCoroutine.EnergyRainGameDriveStatus.RETRYABLE_FAILED,
+                EnergyRainCoroutine.EnergyRainGameDriveStatus.UNKNOWN_FAILURE,
                 "普通森林驱动任务闭环异常: ${t.message.orEmpty()}"
             )
         }
@@ -5890,7 +6153,8 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         val appId: String,
         val awardCount: Int,
         val rightTimes: Int,
-        val rightTimesLimit: Int
+        val rightTimesLimit: Int,
+        val rawTasks: List<JSONObject>,
     )
 
     private fun syncEnergyRainGameCenterContext(
@@ -5936,33 +6200,10 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         }
         return parseForestGameCenterOptionalTasks(payload).filter { task ->
             task.sceneCode == sceneCode &&
-                task.status in FOREST_LEYUAN_PROGRESS_PENDING_STATUSES &&
+                (task.status in FOREST_LEYUAN_PROGRESS_PENDING_STATUSES ||
+                    task.status in FOREST_LEYUAN_REWARD_READY_STATUSES) &&
                 task.appId == requestAppId
         }
-    }
-
-    private fun closeEnergyRainGameCenterLatestTriggerTasks(
-        request: EnergyRainCoroutine.EnergyRainGameDriveRequest,
-        triggerTasks: List<ForestLeyuanOptionalTask>
-    ): EnergyRainCoroutine.EnergyRainGameDriveResult? {
-        if (triggerTasks.isEmpty()) {
-            return null
-        }
-        // queryOptionalPlay.taskTriggerPlayInfo.taskList 已成为当前 authoritative source。
-        // 这条同步收尾路径还没有对应的稳定完成 RPC，先阻断旧 IEP 候选，继续走普通驱动回流闭环。
-        val taskSummary = triggerTasks.joinToString(separator = ", ") { task ->
-            "${task.sceneCode}/${task.taskType}(${task.status})"
-        }
-        triggerTasks.forEach { task ->
-            Log.forest(
-                "能量雨游戏任务[${request.gameTaskTitle}]识别最新触发任务源" +
-                    "[${task.title}][${task.sceneCode}/${task.taskType}] status=${task.status}"
-            )
-        }
-        return EnergyRainCoroutine.EnergyRainGameDriveResult(
-            EnergyRainCoroutine.EnergyRainGameDriveStatus.NO_PROGRESS,
-            "最新触发任务源未接入已实现闭环，已跳过旧IEP候选: $taskSummary"
-        )
     }
 
     private fun syncEnergyRainGameCenterResponse(
@@ -5972,7 +6213,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         try {
             val response = request()
             if (response.isBlank()) {
-                Log.forest("能量雨游戏中心上下文[$sourceName]返回空，本轮继续后续驱动")
+                Log.error(TAG, "能量雨游戏中心上下文[$sourceName]返回空，本轮继续独立驱动")
                 return null
             }
             val payload = JSONObject(response)
@@ -5981,11 +6222,15 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 val msg = payload.optString("desc").ifBlank {
                     payload.optString("resultDesc").ifBlank { payload.optString("memo") }
                 }
-                Log.forest("能量雨游戏中心上下文[$sourceName]未确认成功: $msg")
+                Log.error(TAG, "能量雨游戏中心上下文[$sourceName]查询失败: $msg raw=$payload")
+                return null
             }
             return payload
+        } catch (e: CancellationException) {
+            throw e
         } catch (t: Throwable) {
-            Log.forest("能量雨游戏中心上下文[$sourceName]同步异常: ${t.message.orEmpty()}")
+            if (t is InterruptedException) throw t
+            Log.printStackTrace(TAG, "能量雨游戏中心上下文[$sourceName]同步异常", t)
             return null
         }
     }
@@ -6032,7 +6277,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                         ) {
                             continue
                         }
-                        val key = "$sourceName#$sceneCode#$taskType#$appId"
+                        val key = "$sceneCode#$taskType#$appId"
                         deliveryTasks.putIfAbsent(
                             key,
                             EnergyRainGameCenterDeliveryTask(
@@ -6044,7 +6289,8 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                                 appId = appId,
                                 awardCount = optForestGameCenterInt(deliveryBenefit, "awardCount"),
                                 rightTimes = rightTimes,
-                                rightTimesLimit = rightTimesLimit
+                                rightTimesLimit = rightTimesLimit,
+                                rawTasks = listOf(deliveryBenefit, source),
                             )
                         )
                     }
@@ -6073,87 +6319,95 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         }
     }
 
-    private fun closeEnergyRainGameCenterDeliveryTasks(
+    private suspend fun closeEnergyRainGameCenterDeliveryTasks(
         request: EnergyRainCoroutine.EnergyRainGameDriveRequest,
         deliveryTasks: List<EnergyRainGameCenterDeliveryTask>
     ): EnergyRainCoroutine.EnergyRainGameDriveResult? {
-        if (deliveryTasks.isEmpty()) {
-            return null
-        }
+        if (deliveryTasks.isEmpty()) return null
+        var progressed = false
+        var failure: EnergyRainCoroutine.EnergyRainGameDriveStatus? = null
         for (task in deliveryTasks) {
             if (task.status in FOREST_LEYUAN_REWARD_READY_STATUSES) {
-                if (receiveEnergyRainGameCenterDeliveryAward(task)) {
-                    return EnergyRainCoroutine.EnergyRainGameDriveResult(
-                        EnergyRainCoroutine.EnergyRainGameDriveStatus.PROGRESSED,
-                        "游戏中心IEP奖励已处理，回查原任务: ${task.sceneCode}/${task.taskType}"
-                    )
-                }
+                val awardStatus = receiveEnergyRainGameCenterDeliveryAward(task)
+                if (awardStatus == EnergyRainCoroutine.EnergyRainGameDriveStatus.PROGRESSED) progressed = true
+                else failure = awardStatus
                 continue
             }
-            if (TaskBlacklist.isTaskInBlacklist(forestTaskBlacklistModule, task.taskType)) {
-                continue
-            }
-            val quotaSuffix = if (task.rightTimesLimit > 0) {
-                " quota=${task.rightTimes}/${task.rightTimesLimit}"
-            } else {
-                ""
-            }
-            Log.forest(
-                "能量雨游戏任务[${request.gameTaskTitle}]执行游戏中心IEP候选" +
-                    "[${task.title}][${task.sceneCode}/${task.taskType}] status=${task.status}$quotaSuffix"
-            )
-            val finishResponseText = AntForestRpcCall.finishTaskopengreen(
-                task.taskType,
-                task.sceneCode,
-                "task_entry"
-            )
-            if (finishResponseText.isBlank()) {
-                Log.error(TAG, "游戏中心IEP候选[${task.title}][${task.sceneCode}/${task.taskType}]finishTaskopengreen返回空")
-                continue
-            }
-            val finishResponse = JSONObject(finishResponseText)
-            when {
-                isAntiepSuccess(finishResponse) -> {
-                    receiveEnergyRainGameCenterDeliveryAward(task)
-                    return EnergyRainCoroutine.EnergyRainGameDriveResult(
-                        EnergyRainCoroutine.EnergyRainGameDriveStatus.PROGRESSED,
-                        "游戏中心IEP任务已提交: ${task.sceneCode}/${task.taskType}"
+            if (TaskBlacklist.isTaskInBlacklist(forestTaskBlacklistModule, task.taskType)) continue
+            Log.forest("能量雨任务[${request.gameTaskTitle}]执行[${task.sourceName}][${task.sceneCode}/${task.taskType}] status=${task.status}")
+            val decision = GameCenterPlayRpcCall.resolveTaskAction(*task.rawTasks.toTypedArray(), directFinishSupported = true)
+            when (decision.action) {
+                GameCenterPlayRpcCall.TaskAction.DURATION_ONLY,
+                GameCenterPlayRpcCall.TaskAction.CLICK_THEN_DURATION -> {
+                    val duration = GameCenterPlayRpcCall.advanceDuration(
+                        "energyRainDuration:${task.sceneCode}:${task.taskType}", requireNotNull(decision.contract),
                     )
-                }
-
-                isForestTaskAlreadyHandled(finishResponse) -> {
-                    return EnergyRainCoroutine.EnergyRainGameDriveResult(
-                        EnergyRainCoroutine.EnergyRainGameDriveStatus.PROGRESSED,
-                        "游戏中心IEP任务已处理: ${task.sceneCode}/${task.taskType}"
-                    )
-                }
-
-                else -> {
-                    val handled = handleForestTaskRpcFailure(
-                        action = "finishTaskopengreen",
-                        sceneCode = task.sceneCode,
-                        taskType = task.taskType,
-                        taskTitle = task.title,
-                        response = finishResponse
-                    )
-                    if (handled) {
-                        return EnergyRainCoroutine.EnergyRainGameDriveResult(
-                            EnergyRainCoroutine.EnergyRainGameDriveStatus.PROGRESSED,
-                            "游戏中心IEP任务已处理，回查原任务: ${task.sceneCode}/${task.taskType}"
-                        )
+                    if (!duration.success) {
+                        Log.error(TAG, "能量雨时长执行失败[${task.sceneCode}/${task.taskType}] rpc=${duration.rpc} code=${duration.code} msg=${duration.message} raw=${duration.raw}")
+                        failure = when (duration.failureType) {
+                            TaskRpcFailureType.RETRYABLE_RPC -> EnergyRainCoroutine.EnergyRainGameDriveStatus.RETRYABLE_FAILED
+                            TaskRpcFailureType.BUSINESS_LIMIT, TaskRpcFailureType.NON_RETRYABLE_INVALID,
+                            TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE -> EnergyRainCoroutine.EnergyRainGameDriveStatus.NON_RETRYABLE_FAILED
+                            else -> EnergyRainCoroutine.EnergyRainGameDriveStatus.UNKNOWN_FAILURE
+                        }
+                        continue
                     }
+                }
+                GameCenterPlayRpcCall.TaskAction.LEGACY_EXTERNAL_REPORT -> {
+                    val reporter = decision.mappedTask
+                    if (reporter == null) {
+                        Log.error(TAG, "能量雨任务缺少固定动作[${task.sceneCode}/${task.taskType}]")
+                        failure = EnergyRainCoroutine.EnergyRainGameDriveStatus.UNKNOWN_FAILURE
+                        continue
+                    }
+                    val report = NonDurationGameTask.advance(
+                        reporter, *task.rawTasks.toTypedArray(), channel = GameTask.Forest_slxcc.channel,
+                        detail = "taskId=${task.taskType} sceneCode=${task.sceneCode}", logger = Log::forest,
+                    )
+                    if (report.stopCurrentRound) return EnergyRainCoroutine.EnergyRainGameDriveResult(
+                        EnergyRainCoroutine.EnergyRainGameDriveStatus.STOPPED, report.message,
+                    )
+                    if (report.deferredReason != DeferredReason.STATE_CONFIRMATION) {
+                        failure = EnergyRainCoroutine.EnergyRainGameDriveStatus.UNKNOWN_FAILURE
+                        continue
+                    }
+                }
+                else -> Unit // 保留已有 IEP 完成动作，不以缺少合同或映射替代业务执行。
+            }
+            val finishText = AntForestRpcCall.finishTaskopengreen(task.taskType, task.sceneCode, "task_entry")
+            if (finishText.isBlank()) {
+                Log.error(TAG, "能量雨 finishTaskopengreen 返回空[${task.sceneCode}/${task.taskType}]")
+                failure = EnergyRainCoroutine.EnergyRainGameDriveStatus.UNKNOWN_FAILURE
+                continue
+            }
+            val response = JSONObject(finishText)
+            val code = extractForestTaskFailureCode(response)
+            if (isAntiepSuccess(response) || code == "400000030" || code == "400000008" || code == "B000000008") {
+                progressed = true
+                val awardStatus = receiveEnergyRainGameCenterDeliveryAward(task)
+                if (awardStatus != EnergyRainCoroutine.EnergyRainGameDriveStatus.PROGRESSED) {
+                    failure = awardStatus
+                }
+            } else {
+                Log.error(TAG, "能量雨 finishTaskopengreen 失败[${task.sceneCode}/${task.taskType}] raw=$response")
+                failure = when (code) {
+                    "3000", "REMOTE_INVOKE_EXCEPTION", "OP_REPEAT_CHECK" -> EnergyRainCoroutine.EnergyRainGameDriveStatus.RETRYABLE_FAILED
+                    "20020012", "TASK_ID_INVALID", "ILLEGAL_ARGUMENT", "PROMISE_TEMPLATE_NOT_EXIST",
+                    "400000040", "CAMP_TRIGGER_ERROR" -> EnergyRainCoroutine.EnergyRainGameDriveStatus.NON_RETRYABLE_FAILED
+                    else -> EnergyRainCoroutine.EnergyRainGameDriveStatus.UNKNOWN_FAILURE
                 }
             }
         }
         return EnergyRainCoroutine.EnergyRainGameDriveResult(
-            EnergyRainCoroutine.EnergyRainGameDriveStatus.NO_PROGRESS,
-            "游戏中心IEP候选本轮未形成确认进展"
+            failure ?: if (progressed) EnergyRainCoroutine.EnergyRainGameDriveStatus.PROGRESSED
+                else EnergyRainCoroutine.EnergyRainGameDriveStatus.NO_PROGRESS,
+            "游戏中心已执行相关候选，回查原任务与机会",
         )
     }
 
     private fun receiveEnergyRainGameCenterDeliveryAward(
         task: EnergyRainGameCenterDeliveryTask
-    ): Boolean {
+    ): EnergyRainCoroutine.EnergyRainGameDriveStatus {
         val responseText = AntForestRpcCall.receiveTaskAwardopengreen(
             AntForestRpcCall.OPEN_GREEN_RIGHTS_SOURCE,
             task.sceneCode,
@@ -6161,30 +6415,29 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         )
         if (responseText.isBlank()) {
             Log.error(TAG, "游戏中心IEP候选[${task.title}][${task.sceneCode}/${task.taskType}]receiveTaskAwardopengreen返回空")
-            return false
+            return EnergyRainCoroutine.EnergyRainGameDriveStatus.UNKNOWN_FAILURE
         }
         val response = JSONObject(responseText)
         return when {
             isAntiepSuccess(response) -> {
                 val awardSuffix = task.awardCount.takeIf { it > 0 }?.let { "#$it" }.orEmpty()
                 Log.forest("游戏中心IEP奖励🎮[${task.title}]$awardSuffix")
-                true
+                EnergyRainCoroutine.EnergyRainGameDriveStatus.PROGRESSED
             }
 
-            isForestTaskAlreadyHandled(response) -> {
-                Log.forest("游戏中心IEP候选[${task.title}]奖励已处理")
-                true
+            extractForestTaskFailureCode(response) in setOf("400000030", "400000008", "B000000008") -> {
+                Log.forest("游戏中心IEP候选[${task.title}]奖励已处理 code=${extractForestTaskFailureCode(response)}")
+                EnergyRainCoroutine.EnergyRainGameDriveStatus.PROGRESSED
             }
 
             else -> {
-                handleForestTaskRpcFailure(
-                    action = "receiveTaskAwardopengreen",
-                    sceneCode = task.sceneCode,
-                    taskType = task.taskType,
-                    taskTitle = task.title,
-                    response = response,
-                    terminalResult = false
-                )
+                Log.error(TAG, "能量雨 receiveTaskAwardopengreen 失败[${task.sceneCode}/${task.taskType}] raw=$response")
+                when (extractForestTaskFailureCode(response)) {
+                    "3000", "REMOTE_INVOKE_EXCEPTION", "OP_REPEAT_CHECK" -> EnergyRainCoroutine.EnergyRainGameDriveStatus.RETRYABLE_FAILED
+                    "20020012", "TASK_ID_INVALID", "ILLEGAL_ARGUMENT", "PROMISE_TEMPLATE_NOT_EXIST",
+                    "400000040", "CAMP_TRIGGER_ERROR" -> EnergyRainCoroutine.EnergyRainGameDriveStatus.NON_RETRYABLE_FAILED
+                    else -> EnergyRainCoroutine.EnergyRainGameDriveStatus.UNKNOWN_FAILURE
+                }
             }
         }
     }
@@ -6298,7 +6551,11 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     // Log.runtime(TAG, "bagObject=" + (bagObject == null ? "null" : bagObject.toString()));
                     if (needDouble) useDoubleCard(bagObject) // 使用双击卡
 
-                    if (needRobMultiplierCard) useRobMultiplierCard(bagObject) // 使用收好友N倍卡
+                    if (needRobMultiplierCard) {
+                        useRobMultiplierCard()
+                        // 接替可能自动结算旧累计收益，不向后续收取传递旧主页余额。
+                        latestHome = null
+                    }
 
                     if (needStealth) useStealthCard(bagObject) // 使用隐身卡
 
@@ -6317,6 +6574,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 Log.forest("没有需要使用的道具")
             }
         } catch (e: Exception) {
+            if (e is CancellationException || e is InterruptedException) throw e
             Log.printStackTrace(e)
         }
         if (checkedThisCall) {
@@ -6628,7 +6886,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         lastUsePropCheckTime = 0L
     }
 
-    private fun queryPropList(forceRefresh: Boolean): JSONObject? =
+    internal fun queryPropList(forceRefresh: Boolean): JSONObject? =
         propQueryQueue.execute { queryPropListNow(forceRefresh) }
 
     private fun queryPropListNow(forceRefresh: Boolean): JSONObject? {
@@ -6639,19 +6897,36 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         }
         try {
             Log.forest("刷新背包...")
-            val response = AntForestRpcCall.queryPropList(false)
-            // 检查响应是否为空，避免解析空字符串导致异常
-            if (response.isNullOrBlank()) {
-                Log.forest("刷新背包失败: 响应为空")
-                return null
+            val props = JSONArray()
+            val seenTypes = linkedSetOf<String>()
+            val seenCursors = mutableSetOf<String>()
+            var cursor = ""
+            repeat(100) {
+                val response = AntForestRpcCall.queryPropList(false, nextCursor = cursor, excludePropTypes = seenTypes)
+                if (response.isBlank()) return null
+                val page = unwrapResData(JSONObject(response))
+                if (!ResChecker.checkRes(TAG, "刷新背包失败:", page)) return null
+                val pageProps = page.optJSONArray("forestPropVOList") ?: return null
+                for (index in 0 until pageProps.length()) {
+                    val prop = pageProps.optJSONObject(index) ?: return null
+                    val type = getPropType(prop)
+                    if (type.isBlank()) return null
+                    if (seenTypes.add(type)) props.put(prop)
+                }
+                if (!page.has("hasMore")) return null
+                if (!page.optBoolean("hasMore")) {
+                    val bagObject = JSONObject().put("success", true).put("resultCode", "SUCCESS")
+                        .put("hasMore", false).put("forestPropVOList", props)
+                    propBagCache = System.currentTimeMillis() to bagObject
+                    return bagObject
+                }
+                cursor = page.optString("nextCursor")
+                if (cursor.isBlank() || !seenCursors.add(cursor)) {
+                    Log.forest("背包分页游标缺失或重复，停止使用不完整库存")
+                    return null
+                }
             }
-            val bagObject = JSONObject(response)
-            if (bagObject.optBoolean("success")) {
-                propBagCache = now to bagObject
-                return bagObject
-            } else {
-                Log.forest("刷新背包失败: " + bagObject.optString("resultDesc"))
-            }
+            Log.forest("背包分页超过读取上限，停止使用不完整库存")
         } catch (th: Throwable) {
             handleException("queryPropList", th)
         }
@@ -6682,7 +6957,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
     ): Double {
         detail?.optString("factor")
             ?.toDoubleOrNull()
-            ?.takeIf { it > 0.0 }
+            ?.takeIf { it.isFinite() && it > 1.0 }
             ?.let { return it }
 
         val candidates = listOf(propType, propName, desc).filterNot { it.isNullOrBlank() }
@@ -6696,7 +6971,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     ?.groupValues
                     ?.getOrNull(1)
                     ?.toDoubleOrNull()
-                if (factor != null && factor > 0.0) {
+                if (factor != null && factor.isFinite() && factor > 1.0) {
                     return factor
                 }
             }
@@ -6716,11 +6991,11 @@ class AntForest : ModelTask(), EnergyCollectCallback {
 
     private fun getRobMultiplierDurationMs(propObject: JSONObject?): Long {
         val durationSeconds = propObject?.optJSONObject("propConfigVO")?.optLong("durationTime", 0L) ?: 0L
-        return if (durationSeconds > 0L) durationSeconds * 1000L else 0L
+        return if (durationSeconds in 1..Long.MAX_VALUE / 1000L) durationSeconds * 1000L else 0L
     }
 
     private fun isRobMultiplierProp(propType: String): Boolean {
-        return propType.contains("ROB_EXPAND", ignoreCase = true)
+        return propType.contains("EXPAND_CARD", ignoreCase = true)
     }
 
     private fun isLimitedRobMultiplierProp(prop: JSONObject): Boolean {
@@ -6852,7 +7127,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             }
             val factor = getRobMultiplierFactor(prop)
             val durationMs = getRobMultiplierDurationMs(prop)
-            if (factor <= 0.0 || durationMs <= 0L) {
+            if (!factor.isFinite() || factor <= 1.0 || durationMs <= 0L) {
                 Log.forest("跳过收好友N倍卡[${getPropName(prop)}]，倍率或生效时长不明，避免误用")
                 continue
             }
@@ -6889,8 +7164,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             Comparator { c1: RobMultiplierCandidate, c2: RobMultiplierCandidate ->
                 when {
                     c1.expireTime != c2.expireTime -> c1.expireTime.compareTo(c2.expireTime)
-                    !isSameRobMultiplierFactor(c1.factor, c2.factor) -> c2.factor.compareTo(c1.factor)
-                    else -> c1.durationMs.compareTo(c2.durationMs)
+                    else -> ((c2.factor - 1.0) * c2.durationMs).compareTo((c1.factor - 1.0) * c1.durationMs)
                 }
             }
         )
@@ -6911,6 +7185,8 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         if (candidates.isEmpty()) {
             return null
         }
+        val strategy = robMultiplierCardStrategy?.value ?: 0
+        if (strategy !in 0..2) return null
         val active = currentRobMultiplierState(now)
         if (active == null) {
             sortRobMultiplierCandidates(candidates)
@@ -6922,95 +7198,46 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         }
 
         val activeRemainingMs = active.endTime - now
-        if (active.factor <= 0.0) {
-            Log.forest("当前收好友N倍卡[${active.propName}]倍率未知，跳过自动替换/延期，避免误用")
+        if (!active.factor.isFinite() || active.factor <= 1.0) {
+            Log.forest("当前收好友N倍卡倍率未知，跳过接替")
             return null
         }
-
-        val higherCandidates = candidates.filter { it.factor > active.factor + ROB_MULTIPLIER_FACTOR_EPS }
-            .toMutableList()
-        if (higherCandidates.isNotEmpty()) {
-            val forceReplaceExpireDays = (robMultiplierCardForceReplaceExpireDays?.value ?: 0).coerceAtLeast(0)
-            if (forceReplaceExpireDays > 0) {
-                val forceReplaceExpireMs = forceReplaceExpireDays * TimeFormatter.ONE_DAY_MS
-                val urgentHigherCandidates = higherCandidates.filter { candidate ->
-                    candidate.expireTime != Long.MAX_VALUE && candidate.expireTime - now <= forceReplaceExpireMs
-                }.toMutableList()
-                if (urgentHigherCandidates.isNotEmpty()) {
-                    sortRobMultiplierUrgentCandidates(urgentHigherCandidates)
-                    val selected = urgentHigherCandidates.first()
-                    val candidateRemainingMs = (selected.expireTime - now).coerceAtLeast(0L)
-                    Log.forest(
-                        "更高倍率${formatRobMultiplierFactor(selected.factor)}倍卡[${selected.propName}]背包剩余" +
-                                "${formatTimeDifference(candidateRemainingMs)}，满足临期强制替换条件(${forceReplaceExpireDays}天)，" +
-                                "直接替换当前${formatRobMultiplierFactor(active.factor)}倍卡"
-                    )
-                    return selected
-                }
-            }
-
-            val replaceRemainDays = (robMultiplierCardReplaceRemainDays?.value ?: 0).coerceAtLeast(0)
-            if (replaceRemainDays > 0) {
-                val replaceRemainMs = replaceRemainDays * TimeFormatter.ONE_DAY_MS
-                if (activeRemainingMs <= replaceRemainMs) {
-                    val safeHigherCandidates = higherCandidates.filter { it.durationMs >= activeRemainingMs }
-                        .toMutableList()
-                    if (safeHigherCandidates.isNotEmpty()) {
-                        sortRobMultiplierCandidates(safeHigherCandidates)
-                        val selected = safeHigherCandidates.first()
-                        Log.forest(
-                            "当前${formatRobMultiplierFactor(active.factor)}倍卡剩余${formatTimeDifference(activeRemainingMs)}，" +
-                                    "已到高倍率替换阈值(${replaceRemainDays}天)，准备用更高倍率" +
-                                    "${formatRobMultiplierFactor(selected.factor)}倍卡[${selected.propName}]替换"
-                        )
-                        return selected
-                    }
-                    sortRobMultiplierCandidates(higherCandidates)
-                    val bestHigher = higherCandidates.first()
-                    Log.forest(
-                        "当前${formatRobMultiplierFactor(active.factor)}倍卡剩余${formatTimeDifference(activeRemainingMs)}，" +
-                                "已到高倍率替换阈值(${replaceRemainDays}天)，但更高倍率" +
-                                "${formatRobMultiplierFactor(bestHigher.factor)}倍卡[${bestHigher.propName}]候选时长" +
-                                "${formatTimeDifference(bestHigher.durationMs)}短于当前剩余${formatTimeDifference(activeRemainingMs)}，跳过普通替换"
-                    )
-                } else {
-                    Log.forest(
-                        "当前${formatRobMultiplierFactor(active.factor)}倍卡剩余${formatTimeDifference(activeRemainingMs)}，" +
-                                "未到高倍率替换阈值(${replaceRemainDays}天)，跳过普通高倍率替换"
-                    )
-                }
-            } else {
-                Log.forest("高倍率普通替换已关闭，跳过更高倍率收好友N倍卡自动替换")
-            }
-            Log.forest("已有更高倍率卡待用，保留当前剩余时长，不继续延长低倍率卡")
-            return null
-        }
-
-        if (inventoryCandidates.any { it.factor > active.factor + ROB_MULTIPLIER_FACTOR_EPS }) {
-            Log.forest("更高倍率卡尚未到使用时机，不继续延长当前低倍率卡")
-            return null
-        }
-        val sameFactorCandidates = candidates.filter {
-            isSameRobMultiplierFactor(it.factor, active.factor)
+        val urgentDays = (robMultiplierCardForceReplaceExpireDays?.value ?: 0).coerceAtLeast(0)
+        // recentExpireTime 仅是分组最早到期时间，多张库存不能据此认定首个 ID 临期。
+        val urgent = candidates.filter {
+            urgentDays > 0 && it.prop.optLong("holdsNum") == 1L &&
+                it.prop.optJSONArray("propIdList")?.length() == 1 && it.expireTime != Long.MAX_VALUE &&
+                it.expireTime - now <= urgentDays * TimeFormatter.ONE_DAY_MS
         }.toMutableList()
-        if (sameFactorCandidates.isNotEmpty()) {
-            if (activeRemainingMs < ROB_MULTIPLIER_PROLONG_THRESHOLD_MS) {
-                sortRobMultiplierCandidates(sameFactorCandidates)
-                val selected = sameFactorCandidates.first()
-                Log.forest(
-                    "当前${formatRobMultiplierFactor(active.factor)}倍卡剩余${formatTimeDifference(activeRemainingMs)}，" +
-                            "满足少于30天延期条件，选择[${selected.propName}]"
-                )
-                return selected
+        sortRobMultiplierUrgentCandidates(urgent)
+        if (strategy == 2) {
+            val lower = urgent.firstOrNull { it.factor + ROB_MULTIPLIER_FACTOR_EPS < active.factor }
+            if (lower != null) {
+                if (candidates.none { it.factor >= active.factor - ROB_MULTIPLIER_FACTOR_EPS }) {
+                    Log.forest("临期保值使用[${lower.propName}]，无允许使用的恢复卡，本轮停留低倍率")
+                    return lower
+                }
+                Log.forest("临期低倍卡可恢复库存存在，但多步接替限制尚未确认，暂不自动降倍再升倍")
             }
-            Log.forest(
-                "当前${formatRobMultiplierFactor(active.factor)}倍卡剩余${formatTimeDifference(activeRemainingMs)}，" +
-                        "不少于30天，跳过同倍率延期"
-            )
         }
-
-        if (candidates.any { it.factor + ROB_MULTIPLIER_FACTOR_EPS < active.factor }) {
-            Log.forest("背包中仅有低倍率收好友N倍卡或不满足安全替换条件，跳过使用，避免降低当前收益")
+        val higher = candidates.filter { it.factor > active.factor + ROB_MULTIPLIER_FACTOR_EPS }.toMutableList()
+        if (higher.isNotEmpty()) {
+            sortRobMultiplierCandidates(higher)
+            if (strategy != 0) return higher.first()
+            urgent.firstOrNull { it.factor > active.factor + ROB_MULTIPLIER_FACTOR_EPS }?.let { return it }
+            val replaceDays = (robMultiplierCardReplaceRemainDays?.value ?: 0).coerceAtLeast(0)
+            if (replaceDays > 0 && activeRemainingMs <= replaceDays * TimeFormatter.ONE_DAY_MS) return higher.first()
+            Log.forest("高倍卡未达到稳健接替阈值，保留高倍库存，仅继续判断同倍临期权益")
+        }
+        // 同倍率只保住会在生效卡结束前过期的库存，不提前消耗长期有效卡。
+        val expiringSame = candidates.filter {
+            isSameRobMultiplierFactor(it.factor, active.factor) &&
+                it.prop.optLong("holdsNum") == 1L && it.prop.optJSONArray("propIdList")?.length() == 1 &&
+                it.expireTime < active.endTime
+        }.toMutableList()
+        if (expiringSame.isNotEmpty()) {
+            sortRobMultiplierUrgentCandidates(expiringSame)
+            return expiringSame.first()
         }
         return null
     }
@@ -7115,6 +7342,9 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 Log.forest("道具[${getPropName(propJsonObj)}]数量不足，跳过使用")
                 return false
             }
+            if (propJsonObj.optString("propGroup") == "robExpandCard" || isRobMultiplierProp(getPropType(propJsonObj))) {
+                return useRobMultiplierProp(propJsonObj)
+            }
             val propId = propJsonObj.getJSONArray("propIdList").getString(0)
             val propConfigVO = propJsonObj.getJSONObject("propConfigVO")
             val propType = propConfigVO.getString("propType")
@@ -7128,11 +7358,10 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 Log.forest("道具[$propName]已过期，跳过使用")
                 return false
             }
-            var previousMultiplier = currentRobMultiplierState()
             var previousShieldEnd = shieldEndTime
             val jo: JSONObject?
             var usedPropName = propName
-            val isRenewable = propGroup == "robExpandCard" || propGroup == "shield" || isRenewableProp(propType)
+            val isRenewable = propGroup == "shield" || isRenewableProp(propType)
             Log.forest("道具 $propName (类型: $propType), 是否可续用: $isRenewable, 当前持有数量: $holdsNum"
             )
             val actualConsumeContext = consumeContext ?: when (propType) {
@@ -7155,25 +7384,18 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     if (!ResChecker.checkRes(TAG, "道具确认前检查失败:", resData)) {
                         return false
                     }
-                    if (propGroup == "robExpandCard" || propGroup == "shield") {
+                    if (propGroup == "shield") {
                         val home = querySelfHome()
                         if (home == null || !hasUsingPropStatePayload(home)) {
                             Log.error(TAG, "道具[$propName]使用中状态未确认，停止二次确认")
                             return false
                         }
-                        previousMultiplier = currentRobMultiplierState()
                         previousShieldEnd = shieldEndTime
                         val now = System.currentTimeMillis()
                         if (propExpireTime <= now) {
                             return false
                         }
-                        if (propGroup == "robExpandCard") {
-                            val candidateBag = JSONObject().put("forestPropVOList", JSONArray().put(propJsonObj))
-                            if (selectPreferredRobMultiplierProp(candidateBag, now) == null) {
-                                Log.forest("道具[$propName]已不满足当前延期或替换条件，停止二次确认")
-                                return false
-                            }
-                        } else if (!shouldRenewShield(shieldEndTime, now, propExpireTime)) {
+                        if (!shouldRenewShield(shieldEndTime, now, propExpireTime)) {
                             Log.forest("保护罩已不满足当前续用条件，停止二次确认")
                             return false
                         }
@@ -7208,35 +7430,13 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 val reportedEndTime = userProp?.optLong("endTime", 0L) ?: 0L
                 if (userProp?.optString("propGroup") == propGroup && reportedEndTime > System.currentTimeMillis()) {
                     usedPropName = userProp.optString("propName").ifBlank { propName }
-                    when (propGroup) {
-                        "shield" -> shieldEndTime = reportedEndTime
-                        "robExpandCard" -> {
-                            robMultiplierCardEndTime = reportedEndTime
-                            robMultiplierCardPropType = userProp.optString("propType")
-                            robMultiplierCardPropName = usedPropName
-                            robMultiplierCardFactor = parseRobMultiplierFactor(
-                                robMultiplierCardPropType,
-                                usedPropName,
-                                userProp.optJSONObject("detail"),
-                                userProp.optString("description")
-                            )
-                        }
-                    }
+                    if (propGroup == "shield") shieldEndTime = reportedEndTime
                 }
                 if (needRefreshHome) {
                     updateSelfHomePage()
                 }
                 val now = System.currentTimeMillis()
-                val activeMultiplier = currentRobMultiplierState(now)
-                val confirmed = when (propGroup) {
-                    "shield" -> shieldEndTime > maxOf(previousShieldEnd, now)
-                    "robExpandCard" -> activeMultiplier != null &&
-                        isSameRobMultiplierFactor(activeMultiplier.factor, getRobMultiplierFactor(propJsonObj)) &&
-                        (previousMultiplier == null ||
-                            !isSameRobMultiplierFactor(previousMultiplier.factor, activeMultiplier.factor) ||
-                            activeMultiplier.endTime > previousMultiplier.endTime)
-                    else -> true
-                }
+                val confirmed = propGroup != "shield" || shieldEndTime > maxOf(previousShieldEnd, now)
                 if (!confirmed) {
                     Log.error(TAG, "道具[$propName]响应成功但生效状态未确认，停止本轮使用 raw=$jo")
                     return false
@@ -7264,6 +7464,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 return false
             }
         } catch (th: Throwable) {
+            if (th is CancellationException || th is InterruptedException) throw th
             invalidatePropBagCache()
             Log.printStackTrace(TAG, "usePropBag err", th)
             return false
@@ -7673,65 +7874,218 @@ class AntForest : ModelTask(), EnergyCollectCallback {
      * 使用收好友N倍卡
      * 功能：增加收好友能量倍率，适配 1.1 / 1.3 / 1.5 / 1.8 等倍率卡
      */
-    private fun useRobMultiplierCard(bag: JSONObject? = queryPropList()) {
-        try {
-            if (bag == null) {
-                Log.forest("收好友N倍卡背包查询为空，保护性跳过使用/补兑")
-                return
+    private fun reconcileRobMultiplierUse(store: UserDataStore, session: ActiveAccountSession): Boolean {
+        val encoded = store.get(ROB_MULTIPLIER_PENDING_KEY, String::class.java) ?: return true
+        val pending = JSONObject(encoded)
+        if (!AccountSessionCoordinator.isCurrentSession(session.userId, session.sessionEpoch) ||
+            !WorkflowRootGuard.isExecutionAllowed() || !canRunWaitingCollection() || ApplicationHookConstants.isOffline()
+        ) return false
+        val phase = pending.optString("phase")
+        if (phase == "awaitingConfirmation") {
+            // 已收到明确的确认提示，但尚未发送确认请求，未发生消费。
+            store.remove(ROB_MULTIPLIER_PENDING_KEY)
+            return true
+        }
+        val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+        if (phase == "rejected") {
+            StoreAccess.transaction {
+                check(AccountSessionCoordinator.isCurrentSession(session.userId, session.sessionEpoch))
+                Status.load(session.userId, false)
+                if (pending.optString("day") == today) {
+                    Status.setFlagToday(StatusFlags.FLAG_ANTFOREST_ROB_MULTIPLIER_CARD_STOPPED)
+                }
+                store.remove(ROB_MULTIPLIER_PENDING_KEY)
             }
+            return false
+        }
+        val home = querySelfHome() ?: return false
+        if (!hasUsingPropStatePayload(home)) return false
+        queryPropList(true) ?: return false
+        if (!AccountSessionCoordinator.isCurrentSession(session.userId, session.sessionEpoch)) return false
+        val active = currentRobMultiplierState()
+        val activeMatches = active != null && robMultiplierCardPropId == pending.optString("propId") &&
+            active.propType == pending.optString("propType") &&
+            isSameRobMultiplierFactor(active.factor, pending.optDouble("factor"))
+        if (!pending.optBoolean("confirmed") && !activeMatches) {
+            Log.forest("收好友N倍卡请求仍待确认，仅回查，不重复用卡；库存减少不能单独证明消费成功")
+            return false
+        }
+        if (!pending.optBoolean("confirmed")) {
+            pending.put("confirmed", true).put("usedAt", robMultiplierCardEffectTime)
+            store.put(ROB_MULTIPLIER_PENDING_KEY, pending.toString())
+        }
+        val usedAt = pending.optLong("usedAt")
+        val usedDay = if (usedAt > 0L) SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(usedAt)) else today
+        StoreAccess.transaction {
+            check(AccountSessionCoordinator.isCurrentSession(session.userId, session.sessionEpoch))
+            Status.load(session.userId, false)
+            if (usedDay == today) {
+                val count = Status.getIntFlagToday(StatusFlags.FLAG_ANTFOREST_ROB_MULTIPLIER_CARD_USE_COUNT) ?: 0
+                if (pending.optString("day") != today) {
+                    pending.put("day", today).put("targetCount", count + 1).put("slotIndex", -1)
+                    store.put(ROB_MULTIPLIER_PENDING_KEY, pending.toString())
+                }
+                Status.setIntFlagToday(StatusFlags.FLAG_ANTFOREST_ROB_MULTIPLIER_CARD_USE_COUNT,
+                    maxOf(count, pending.getInt("targetCount")))
+                consumeTriggerSlot(StatusFlags.FLAG_ANTFOREST_ROB_MULTIPLIER_CARD_TRIGGER_INDEX,
+                    pending.optInt("slotIndex", -1))
+            }
+            // targetCount 在请求前持久化；写次数后崩溃，重启仍覆盖相同目标而非再次累加。
+            store.remove(ROB_MULTIPLIER_PENDING_KEY)
+        }
+        Log.forest("收好友N倍卡消费已确认，当前${formatRobMultiplierFactor(robMultiplierCardFactor)}倍；旧累计收益以刷新后的服务端余额为准")
+        return true
+    }
 
-            if (currentRobMultiplierState() == null &&
-                verifyMissingRobMultiplierStateBeforeUse() == RobMultiplierStateVerification.INCONCLUSIVE
+    private fun useRobMultiplierProp(prop: JSONObject): Boolean {
+        val session = AccountSessionCoordinator.currentSession() ?: return false
+        if (!AccountSessionCoordinator.isCurrentSession(session.userId, session.sessionEpoch) ||
+            !WorkflowRootGuard.isExecutionAllowed() || !canRunWaitingCollection() || ApplicationHookConstants.isOffline()
+        ) return false
+        val store = UserDataStoreManager.getInstance(session.userId) ?: return false
+        if (store.get(ROB_MULTIPLIER_PENDING_KEY, String::class.java) != null) return false
+        val home = querySelfHome() ?: return false
+        if (!hasUsingPropStatePayload(home)) return false
+        val bag = queryPropList(true) ?: return false
+        val selected = selectPreferredRobMultiplierProp(bag) ?: return false
+        val propId = prop.optJSONArray("propIdList")?.optString(0).orEmpty()
+        if (propId.isBlank() || selected.prop.optJSONArray("propIdList")?.optString(0) != propId ||
+            selected.propType != getPropType(prop) || propId == robMultiplierCardPropId
+        ) return false
+        val now = System.currentTimeMillis()
+        val active = currentRobMultiplierState(now)
+        val projectedMs = (active?.let { (it.endTime - now) * (it.factor - 1.0) / (selected.factor - 1.0) } ?: 0.0) + selected.durationMs
+        if (!projectedMs.isFinite() || projectedMs <= 0.0 || projectedMs >= Long.MAX_VALUE.toDouble()) return false
+        val decision = if (isLimitedRobMultiplierProp(selected.prop)) null else
+            evaluateTriggerDecision(robMultiplierCardTime, StatusFlags.FLAG_ANTFOREST_ROB_MULTIPLIER_CARD_TRIGGER_INDEX)
+        if (!isLimitedRobMultiplierProp(selected.prop) && decision?.allowNow != true) return false
+        val pending = JSONObject().put("propId", propId).put("propType", selected.propType)
+            .put("factor", selected.factor).put("phase", "submitted")
+            .put("day", SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(now)))
+            .put("slotIndex", decision?.matchedSlotIndex ?: -1)
+        val saved = StoreAccess.transaction {
+            if (!AccountSessionCoordinator.isCurrentSession(session.userId, session.sessionEpoch)) return@transaction false
+            Status.load(session.userId, false)
+            val count = Status.getIntFlagToday(StatusFlags.FLAG_ANTFOREST_ROB_MULTIPLIER_CARD_USE_COUNT) ?: 0
+            if (count >= ROB_MULTIPLIER_DAILY_USE_LIMIT ||
+                Status.hasFlagToday(StatusFlags.FLAG_ANTFOREST_ROB_MULTIPLIER_CARD_STOPPED)
+            ) return@transaction false
+            pending.put("targetCount", count + 1)
+            store.put(ROB_MULTIPLIER_PENDING_KEY, pending.toString())
+            true
+        }
+        if (!saved) return false
+        Log.forest("使用[${selected.propName}]，折算后预计剩余${formatTimeDifference(projectedMs.toLong())}，以服务端生效状态为准")
+        if (!AccountSessionCoordinator.isCurrentSession(session.userId, session.sessionEpoch) ||
+            !WorkflowRootGuard.isExecutionAllowed() || !canRunWaitingCollection() || ApplicationHookConstants.isOffline()
+        ) {
+            store.remove(ROB_MULTIPLIER_PENDING_KEY)
+            return false
+        }
+        var result = unwrapResData(JSONObject(AntForestRpcCall.consumeProp("robExpandCard", propId, selected.propType, false)))
+        if (result.optString("resultCode") == "SUCCESS" && result.optString("usePropStatus").startsWith("NEED_CONFIRM")) {
+            pending.put("phase", "awaitingConfirmation")
+            store.put(ROB_MULTIPLIER_PENDING_KEY, pending.toString())
+            if (!AccountSessionCoordinator.isCurrentSession(session.userId, session.sessionEpoch) ||
+                !WorkflowRootGuard.isExecutionAllowed() || !canRunWaitingCollection() || ApplicationHookConstants.isOffline()
+            ) return false
+            val refreshedHome = querySelfHome() ?: return false
+            if (!hasUsingPropStatePayload(refreshedHome)) return false
+            val refreshedBag = queryPropList(true) ?: return false
+            val refreshed = selectPreferredRobMultiplierProp(refreshedBag)
+            if (refreshed == null || refreshed.propType != selected.propType ||
+                refreshed.prop.optJSONArray("propIdList")?.optString(0) != propId
             ) {
-                return
+                store.remove(ROB_MULTIPLIER_PENDING_KEY)
+                Log.forest("收好友N倍卡完整库存或使用时机已变化，取消二次确认")
+                return false
             }
+            val serverSeconds = result.optLong("prolongTimeSeconds")
+            if (serverSeconds > 0L && serverSeconds <= Long.MAX_VALUE / 1000L) {
+                Log.forest("服务端接替提示剩余${formatTimeDifference(serverSeconds * 1000L)}，未将提示写入生效状态")
+            }
+            if (!AccountSessionCoordinator.isCurrentSession(session.userId, session.sessionEpoch) ||
+                !WorkflowRootGuard.isExecutionAllowed() || !canRunWaitingCollection() || ApplicationHookConstants.isOffline()
+            ) return false
+            val ready = StoreAccess.transaction {
+                check(AccountSessionCoordinator.isCurrentSession(session.userId, session.sessionEpoch))
+                Status.load(session.userId, false)
+                val count = Status.getIntFlagToday(StatusFlags.FLAG_ANTFOREST_ROB_MULTIPLIER_CARD_USE_COUNT) ?: 0
+                if (count >= ROB_MULTIPLIER_DAILY_USE_LIMIT ||
+                    Status.hasFlagToday(StatusFlags.FLAG_ANTFOREST_ROB_MULTIPLIER_CARD_STOPPED)
+                ) return@transaction false
+                pending.put("phase", "submitted").put("targetCount", count + 1)
+                    .put("day", SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date()))
+                store.put(ROB_MULTIPLIER_PENDING_KEY, pending.toString())
+                true
+            }
+            if (!ready) return false
+            result = unwrapResData(JSONObject(AntForestRpcCall.consumeProp("robExpandCard", propId, selected.propType, true)))
+        }
+        val userProp = result.optJSONObject("userPropVO")
+        if (result.optString("resultCode") == "SUCCESS" && userProp != null && userProp.optString("propId") == propId &&
+            userProp.optString("propGroup") == "robExpandCard" && userProp.optString("propType") == selected.propType &&
+            userProp.optLong("endTime") > System.currentTimeMillis() &&
+            isSameRobMultiplierFactor(parseRobMultiplierFactor(selected.propType, selected.propName,
+                userProp.optJSONObject("detail")), selected.factor)
+        ) {
+            pending.put("confirmed", true).put("usedAt", userProp.optLong("effectTime", System.currentTimeMillis()))
+            store.put(ROB_MULTIPLIER_PENDING_KEY, pending.toString())
+        } else if (result.optString("resultCode").isNotBlank() && result.optString("resultCode") != "SUCCESS") {
+            val failure = classifyForestTaskFailure(result)
+            if (failure == TaskRpcFailureType.BUSINESS_LIMIT) {
+                pending.put("phase", "rejected")
+                store.put(ROB_MULTIPLIER_PENDING_KEY, pending.toString())
+                Log.forest("收好友N倍卡达到业务限制，本日停止用卡：${result.optString("resultCode")} ${result.optString("resultDesc")}")
+            } else {
+                Log.forest("收好友N倍卡失败，保留待确认并停止本轮：${result.optString("resultCode")} ${result.optString("resultDesc")}")
+            }
+        }
+        invalidatePropBagCache()
+        return reconcileRobMultiplierUse(store, session)
+    }
 
-            val candidates = collectRobMultiplierCandidates(bag)
-            val selected = if (candidates.isNotEmpty()) {
-                selectPreferredRobMultiplierProp(bag)
-                    ?: run {
-                        Log.forest("背包中存在收好友N倍卡但不满足当前替换/延期规则，跳过补兑")
-                        return
-                    }
-            } else {
-                if (currentRobMultiplierState() != null) {
-                    Log.forest("当前有生效收好友N倍卡且背包无可用候选，跳过补兑")
-                    return
+    private fun useRobMultiplierCard() {
+        if (robMultiplierCheckedThisRound) return
+        robMultiplierCheckedThisRound = true
+        try {
+            val session = AccountSessionCoordinator.currentSession() ?: return
+            if (!AccountSessionCoordinator.isCurrentSession(session.userId, session.sessionEpoch) ||
+                !WorkflowRootGuard.isExecutionAllowed() || !canRunWaitingCollection() || ApplicationHookConstants.isOffline()
+            ) return
+            val store = UserDataStoreManager.getInstance(session.userId) ?: return
+            if (!reconcileRobMultiplierUse(store, session)) return
+            var currentBag = queryPropList(true) ?: return
+            repeat(ROB_MULTIPLIER_DAILY_USE_LIMIT) {
+                if (!AccountSessionCoordinator.isCurrentSession(session.userId, session.sessionEpoch) ||
+                    !WorkflowRootGuard.isExecutionAllowed() || !canRunWaitingCollection() || ApplicationHookConstants.isOffline()
+                ) return
+                val remaining = StoreAccess.transaction {
+                    check(AccountSessionCoordinator.isCurrentSession(session.userId, session.sessionEpoch))
+                    Status.load(session.userId, false)
+                    if (Status.hasFlagToday(StatusFlags.FLAG_ANTFOREST_ROB_MULTIPLIER_CARD_STOPPED)) 0 else
+                        ROB_MULTIPLIER_DAILY_USE_LIMIT - (Status.getIntFlagToday(StatusFlags.FLAG_ANTFOREST_ROB_MULTIPLIER_CARD_USE_COUNT) ?: 0)
                 }
-                val replenishedBag = replenishSelectedRewardsForMissingProp(
-                    "收好友N倍卡",
-                    robMultiplierCard?.value != ApplyPropType.CLOSE,
-                    ExchangeEffectNeed.FOREST_ROB_MULTIPLIER
-                )
-                if (replenishedBag == null) {
-                    Log.forest("背包中无可用收好友N倍卡，补兑未完成")
-                    return
+                if (remaining <= 0) return
+                val home = querySelfHome() ?: return
+                if (!hasUsingPropStatePayload(home)) return
+                val candidates = collectRobMultiplierCandidates(currentBag)
+                if (candidates.isEmpty() && currentRobMultiplierState() == null) {
+                    val decision = evaluateTriggerDecision(robMultiplierCardTime, StatusFlags.FLAG_ANTFOREST_ROB_MULTIPLIER_CARD_TRIGGER_INDEX)
+                    currentBag = replenishSelectedRewardsForMissingProp("收好友N倍卡",
+                        robMultiplierCard?.value == ApplyPropType.ALL && decision?.allowNow == true,
+                        ExchangeEffectNeed.FOREST_ROB_MULTIPLIER) ?: return
                 }
-                selectPreferredRobMultiplierProp(replenishedBag)
-                    ?: run {
-                        Log.forest("补兑后仍无可用收好友N倍卡")
-                        return
-                    }
-            }
-
-            val decision = if (!isLimitedRobMultiplierProp(selected.prop)) {
-                evaluateTriggerDecision(robMultiplierCardTime, StatusFlags.FLAG_ANTFOREST_ROB_MULTIPLIER_CARD_TRIGGER_INDEX)
-            } else {
-                null
-            }
-            if (!isLimitedRobMultiplierProp(selected.prop) && decision?.allowNow != true) {
-                logTriggerWaiting("收好友N倍卡", decision)
-                return
-            }
-            if (usePropBag(selected.prop)) {
-                decision?.let {
-                    consumeTriggerSlot(StatusFlags.FLAG_ANTFOREST_ROB_MULTIPLIER_CARD_TRIGGER_INDEX, it.matchedSlotIndex)
-                }
-            } else {
-                Log.forest("收好友N倍卡[${selected.propName}]使用未确认，等待下轮状态回查")
+                val selected = selectPreferredRobMultiplierProp(currentBag) ?: return
+                val before = currentRobMultiplierState()
+                if (!usePropBag(selected.prop)) return
+                currentBag = queryPropList(true) ?: return
+                if (before != null && selected.factor + ROB_MULTIPLIER_FACTOR_EPS < before.factor) return
             }
         } catch (th: Throwable) {
-            Log.printStackTrace(TAG, "useRobMultiplierCard err", th)
+            if (th is CancellationException || th is InterruptedException) throw th
+            invalidatePropBagCache()
+            Log.printStackTrace(TAG, "收好友N倍卡使用中断，保留待确认并停止本轮", th)
         }
     }
 
@@ -7758,95 +8112,75 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         return queryVitalityEnergyRainPropList() ?: queryPropList(forceRefresh)
     }
 
-    internal suspend fun useEnergyRainChanceCard() {
+    internal suspend fun useEnergyRainChanceCard(attemptedPropIds: MutableSet<String>): Boolean {
         try {
-            suspend fun hasPlayableEnergyRainChance(): Boolean {
-                return try {
-                    val jo = JSONObject(AntForestRpcCall.queryEnergyRainHome())
-                    ResChecker.checkRes(TAG, jo) && jo.optBoolean("canPlayToday", false)
-                } catch (t: Throwable) {
-                    Log.printStackTrace(TAG, "queryEnergyRainHome err", t)
-                    false
-                }
+            val home = JSONObject(AntForestRpcCall.queryEnergyRainHome())
+            if (!ResChecker.checkRes(TAG, home)) {
+                Log.error(TAG, "用卡前查询能量雨机会失败，停止本次激活与补兑 raw=$home")
+                return false
             }
+            if (home.optBoolean("canPlayToday", false)) return true
 
-            fun getLimitTimeEnergyRainFlag(propJsonObj: JSONObject): String? {
-                val propId = propJsonObj.optJSONArray("propIdList")?.optString(0).orEmpty()
-                if (propId.isEmpty()) {
-                    return null
-                }
-                return StatusFlags.FLAG_FOREST_RAIN_LIMIT_TIME_CHANCE_PREFIX + propId
-            }
-
-            if (hasPlayableEnergyRainChance()) {
-                Log.forest("当前已有可执行的能量雨机会，跳过重复激活")
-                return
-            }
-
-            var usedAny = false
-            val propTypes = arrayOf("LIMIT_TIME_ENERGY_RAIN_CHANCE", "ENERGY_RAIN_CHANCE")
-            for (propType in propTypes) {
-                while (true) {
+            val propTypes = arrayOf(LIMIT_TIME_ENERGY_RAIN_CHANCE_PROP_TYPE, "ENERGY_RAIN_CHANCE")
+            // 先消费现有库存；补兑成功后只重新查询一次，不连续兑换。
+            for (pass in 0..1) {
+                for (propType in propTypes) {
                     val bag = if (propType == LIMIT_TIME_ENERGY_RAIN_CHANCE_PROP_TYPE) {
                         queryEnergyRainChanceBag(true)
                     } else {
                         queryPropList(true)
-                    }
-                    val jo = findPropBag(bag, propType) ?: break
-                    if (propType == "LIMIT_TIME_ENERGY_RAIN_CHANCE") {
-                        val todayFlag = getLimitTimeEnergyRainFlag(jo)
-                        if (todayFlag != null && Status.hasFlagToday(todayFlag)) {
-                            Log.forest("限时能量雨机会今日已激活，跳过重复使用")
-                            break
+                    } ?: return false
+                    val props = bag.optJSONArray("forestPropVOList") ?: return false
+                    for (i in 0 until props.length()) {
+                        val prop = props.optJSONObject(i) ?: continue
+                        if (getPropType(prop) != propType || !hasPropStock(prop)) continue
+                        val ids = prop.optJSONArray("propIdList") ?: continue
+                        for (j in 0 until ids.length()) {
+                            val propId = ids.optString(j)
+                            if (propId.isBlank()) continue
+                            val todayFlag = StatusFlags.FLAG_FOREST_RAIN_LIMIT_TIME_CHANCE_PREFIX + propId
+                            if (propType == LIMIT_TIME_ENERGY_RAIN_CHANCE_PROP_TYPE && Status.hasFlagToday(todayFlag)) continue
+                            if (!attemptedPropIds.add(propId)) continue
+                            val selected = JSONObject(prop.toString()).put("propIdList", JSONArray().put(propId))
+                            if (!usePropBag(selected)) {
+                                Log.error(TAG, "能量雨道具激活未确认[$propType][$propId]，停止本次用卡")
+                                return false
+                            }
+                            if (propType == LIMIT_TIME_ENERGY_RAIN_CHANCE_PROP_TYPE) Status.setFlagToday(todayFlag)
+                            Log.forest("成功使用一个能量雨道具: $propType，回查并消费机会")
+                            delay(2000)
+                            return true
                         }
-                    }
-                    if (usePropBag(jo)) {
-                        Log.forest("成功使用一个能量雨道具: $propType")
-                        usedAny = true
-                        if (propType == "LIMIT_TIME_ENERGY_RAIN_CHANCE") {
-                            getLimitTimeEnergyRainFlag(jo)?.let { Status.setFlagToday(it) }
-                        }
-                        // 能量雨道具使用后沿用两秒本地状态同步缓冲，再回查背包；不是服务端下发的时长。
-                        delay(2000)
-                        if (propType == "LIMIT_TIME_ENERGY_RAIN_CHANCE") {
-                            break
-                        }
-                    } else {
-                        break
                     }
                 }
-
-                if (propType == "LIMIT_TIME_ENERGY_RAIN_CHANCE" && !hasPlayableEnergyRainChance()) {
-                    val replenishResult = ExchangeReplenisher.replenish(
-                        need = ExchangeEffectNeed.FOREST_ENERGY_RAIN,
-                        reason = "森林能量雨机会不足",
-                        maxCount = 1
-                    ) {
-                        queryPropList(true)
-                    }
-                    if (replenishResult == ExchangeReplenishResult.EXCHANGED) {
-                        // 能量雨次卡兑换后沿用一秒本地到账缓冲，再重新读取可用道具。
-                        delay(1000)
-                        val joExchanged = findPropBag(queryEnergyRainChanceBag(true), propType)
-                        if (joExchanged != null && usePropBag(joExchanged)) {
-                            getLimitTimeEnergyRainFlag(joExchanged)?.let { Status.setFlagToday(it) }
-                            usedAny = true
-                            // 激活补兑的能量雨道具后保留一秒本地缓冲，再继续后续机会检查。
-                            delay(1000)
-                        }
-                    } else if (replenishResult == ExchangeReplenishResult.BUSINESS_LIMIT) {
-                        Log.forest("能量雨次卡今日已达兑换上限，跳过继续补兑")
-                    }
+                if (pass == 1) break
+                val latestHome = JSONObject(AntForestRpcCall.queryEnergyRainHome())
+                if (!ResChecker.checkRes(TAG, latestHome)) {
+                    Log.error(TAG, "补兑前查询能量雨机会失败，停止本次补兑 raw=$latestHome")
+                    return false
                 }
+                if (latestHome.optBoolean("canPlayToday", false)) return true
+                val replenishResult = ExchangeReplenisher.replenish(
+                    need = ExchangeEffectNeed.FOREST_ENERGY_RAIN,
+                    reason = "森林能量雨机会不足",
+                    maxCount = 1,
+                ) { queryPropList(true) }
+                if (replenishResult != ExchangeReplenishResult.EXCHANGED) {
+                    if (replenishResult == ExchangeReplenishResult.BUSINESS_LIMIT) {
+                        Log.forest("能量雨次卡今日已达兑换上限")
+                    }
+                    return false
+                }
+                delay(1000)
             }
-            if (!usedAny) {
-                Log.forest("当前无可激活的能量雨道具")
-            }
-            Log.forest("所有能量雨卡已处理完毕")
+            Log.forest("当前无可激活的能量雨道具")
+            return false
         } catch (e: CancellationException) {
             throw e
         } catch (th: Throwable) {
+            if (th is InterruptedException) throw th
             Log.printStackTrace(TAG, "useEnergyRainChanceCard err", th)
+            return false
         }
     }
 
@@ -8004,8 +8338,14 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 val progressCandidates = buildForestGameCenterProgressCandidates(optionalPlayTasks.orEmpty(), jo)
                 rememberForestGameCenterAppIdsFromCandidates(progressCandidates)
                 var actionSubmitted = false
-                while (advanceForestGameCenterCandidate(progressCandidates, attemptedCandidates, remainingDraws)) {
-                    actionSubmitted = true
+                while (!ApplicationHookConstants.isOffline()) {
+                    val action = advanceForestGameCenterCandidate(
+                        progressCandidates, attemptedCandidates, remainingDraws,
+                        drawRightsSource?.drawRights?.takeUnless { drewAward }?.let(::getForestDrawQuotaCanUse),
+                    ) ?: break
+                    if (action.stopCurrentRound) return
+                    actionSubmitted = actionSubmitted || action.refreshAfterAction || action.success
+                    if (action.refreshAfterAction || action.success) break
                 }
                 if (drewAward || actionSubmitted || rewardedTaskCount > 0) {
                     continue
@@ -8200,7 +8540,8 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 candidate.rawBenefit,
                 candidate.rawGame,
             )
-        return if (decision.mappedTask == GameTask.Forest_sljyd) {
+        return if (candidate.rawTask?.optString("sceneCode") == "ANTFOREST_ENERGY_RAIN_TASK" ||
+            candidate.taskType == "GAME_DONE_SLJYD") {
             GameCenterPlayRpcCall.ownerBusinessDecision("energy-rain candidate is owned by EnergyRainCoroutine")
         } else {
             decision
@@ -8211,7 +8552,8 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         candidates: List<ForestGameCenterProgressCandidate>,
         attemptedCandidates: MutableSet<String>,
         remainingDraws: Int,
-    ): Boolean {
+        beforeQuota: Int?,
+    ): TaskFlowActionResult? {
         val candidate = candidates.firstOrNull { item ->
             val decision = forestGameCenterDecision(item)
             val snapshotKey = "${item.key}:${item.status}:${item.rightTimes}:${item.rightTimesLimit}:$remainingDraws"
@@ -8224,7 +8566,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     GameCenterPlayRpcCall.TaskAction.DEFERRED,
                     GameCenterPlayRpcCall.TaskAction.OWNER_BUSINESS,
                 )
-        } ?: return false
+        } ?: return null
         val snapshotKey = "${candidate.key}:${candidate.status}:${candidate.rightTimes}:${candidate.rightTimesLimit}:$remainingDraws"
         attemptedCandidates += snapshotKey
         val decision = forestGameCenterDecision(candidate)
@@ -8242,26 +8584,58 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         )
         return when (decision.action) {
             GameCenterPlayRpcCall.TaskAction.LEGACY_EXTERNAL_REPORT -> {
-                val gameTask = decision.mappedTask ?: return false
-                val remaining = (candidate.rightTimesLimit - candidate.rightTimes).coerceAtLeast(remainingDraws)
-                val result =
-                    gameTask.reportDetailed(
-                        remaining,
-                        actionFinishChannel = GameTask.Forest_slxcc.channel,
-                    ).completed
-                if (!result) Log.forest("森林乐园旧外部上报未确认成功，等待后续快照")
-                result
+                NonDurationGameTask.advance(
+                    requireNotNull(decision.mappedTask), candidate.rawTask, candidate.rawBenefit, candidate.rawGame,
+                    channel = GameTask.Forest_slxcc.channel,
+                    detail = "taskId=${candidate.taskType} sceneCode=$sceneCode", logger = Log::forest,
+                    confirmProgress = {
+                        val response = JSONObject(AntForestRpcCall.queryGameList(currentForestGameCenterRecentAppRecords()))
+                        if (!ResChecker.checkRes(TAG, "森林游戏上报后列表查询失败:", response)) {
+                            null
+                        } else {
+                            val rights = resolveForestDrawRights(response, true)?.drawRights
+                            val quota = rights?.let(::getForestDrawQuotaCanUse)
+                            if (beforeQuota != null && quota != null && quota > beforeQuota) {
+                                true
+                            } else if (candidate.rawBenefit != null) {
+                                val current = GameCenterPlayRpcCall.collectDeliveryBenefitCandidates(response)
+                                    .firstOrNull { it.appId == candidate.appId && it.taskId == candidate.taskType }
+                                if (current == null) {
+                                    Log.error(TAG, "森林游戏候选消失且权益未确认增加[${candidate.key}]")
+                                    null
+                                } else {
+                                    current.rightTimes > candidate.rightTimes ||
+                                        current.taskStatus != candidate.status &&
+                                        (current.taskStatus in FOREST_LEYUAN_REWARD_READY_STATUSES ||
+                                            isForestGameCenterDeliveryTerminal(current.taskStatus))
+                                }
+                            } else {
+                                val current = queryForestLeyuanOptionalTasks()?.firstOrNull {
+                                    it.sceneCode == sceneCode && it.taskType == candidate.taskType
+                                }
+                                if (current == null) {
+                                    Log.error(TAG, "森林游戏任务缺失且权益未确认增加[${candidate.key}]")
+                                    null
+                                } else current.status in FOREST_LEYUAN_REWARD_READY_STATUSES ||
+                                    isForestGameCenterDeliveryTerminal(current.status)
+                            }
+                        }
+                    },
+                )
             }
 
             GameCenterPlayRpcCall.TaskAction.DURATION_ONLY -> {
-                val contract = decision.contract ?: return false
-                val acknowledgement = GameCenterPlayRpcCall.submitForAck(contract)
+                val acknowledgement = GameCenterPlayRpcCall.submitForAck(requireNotNull(decision.contract))
                 if (!acknowledgement.accepted) {
-                    Log.forest("森林乐园时长上报未接受，等待后续快照")
-                    return false
+                    Log.error(TAG, "森林乐园时长上报失败 raw=${acknowledgement.raw}")
+                    return TaskFlowActionResult.failure(
+                        acknowledgement.failureType, message = "森林乐园时长上报失败",
+                        raw = acknowledgement.raw, stopCurrentRound = ApplicationHookConstants.isOffline(),
+                        continueCurrentRoundOnFailure = true,
+                    )
                 }
                 if (candidate.sourceName != "queryOptionalPlay" || sceneCode.isBlank()) {
-                    return true
+                    return TaskFlowActionResult.defer(DeferredReason.STATE_CONFIRMATION, refreshAfterAction = true)
                 }
                 val finishResponseText = AntForestRpcCall.finishTaskopengreen(
                     candidate.taskType,
@@ -8269,25 +8643,27 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     "task_entry",
                 )
                 if (finishResponseText.isBlank()) {
-                    Log.forest("森林乐园候选[${candidate.title}]完成 RPC 返回空，等待回查")
-                    return false
+                    Log.error(TAG, "森林乐园候选[${candidate.title}]完成 RPC 返回空，等待回查")
+                    return TaskFlowActionResult.failure(
+                        TaskRpcFailureType.RETRYABLE_RPC, message = "完成 RPC 返回空", continueCurrentRoundOnFailure = true,
+                        stopCurrentRound = ApplicationHookConstants.isOffline(),
+                    ).copy(refreshAfterAction = true, progressChanged = false)
                 }
                 val finishResponse = JSONObject(finishResponseText)
                 if (isAntiepSuccess(finishResponse) || isForestTaskAlreadyHandled(finishResponse)) {
-                    true
+                    TaskFlowActionResult.defer(DeferredReason.STATE_CONFIRMATION, refreshAfterAction = true)
                 } else {
-                    Log.forest(
-                        "森林乐园候选[${candidate.title}]完成 RPC 未确认进展: " +
-                            extractForestTaskFailureMessage(finishResponse),
-                    )
-                    false
+                    Log.error(TAG, "森林乐园候选[${candidate.title}]完成 RPC 失败 raw=$finishResponse")
+                    forestTaskActionFailureResult(
+                        finishResponse, "AntForestRpcCall.finishTaskopengreen", "taskId=${candidate.taskType} sceneCode=$sceneCode",
+                    ).copy(refreshAfterAction = true, progressChanged = false)
                 }
             }
 
             GameCenterPlayRpcCall.TaskAction.DIRECT_FINISH,
             GameCenterPlayRpcCall.TaskAction.CLICK_THEN_DURATION,
             GameCenterPlayRpcCall.TaskAction.OWNER_BUSINESS,
-            GameCenterPlayRpcCall.TaskAction.DEFERRED -> false
+            GameCenterPlayRpcCall.TaskAction.DEFERRED -> TaskFlowActionResult.defer(DeferredReason.PREREQUISITE_PENDING, decision.reason)
         }
     }
 
@@ -8675,7 +9051,8 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         private const val LEGACY_FOREST_GAME_TASK_TYPE = "mokuai_senlin_hlz"
         private const val VITALITY_ENERGY_RAIN_RIGHTS_ID = "VITALITY_ENERGYRAIN_3DAYS"
         private const val LIMIT_TIME_ENERGY_RAIN_CHANCE_PROP_TYPE = "LIMIT_TIME_ENERGY_RAIN_CHANCE"
-        private const val ROB_MULTIPLIER_PROLONG_THRESHOLD_MS = 30 * TimeFormatter.ONE_DAY_MS
+        private const val ROB_MULTIPLIER_DAILY_USE_LIMIT = 10
+        private const val ROB_MULTIPLIER_PENDING_KEY = "forestRobMultiplierPending"
         private const val ROB_MULTIPLIER_FACTOR_EPS = 0.0001
         private val FOREST_LEYUAN_REWARD_READY_STATUSES = setOf("FINISHED", "WAIT_RECEIVE", "TO_RECEIVE")
         private val FOREST_LEYUAN_PROGRESS_PENDING_STATUSES = setOf("TODO", "WAIT_COMPLETE", "NOT_TRIGGER")
@@ -9242,7 +9619,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
 
     /**
      * 手动运行能量雨逻辑
-     * @param exchange 是否先尝试兑换并使用能量雨卡
+     * @param exchange 是否在机会耗尽后使用库存卡并按配置补兑
      */
     suspend fun manualUseEnergyRain(exchange: Boolean) {
         try {
@@ -9250,13 +9627,11 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             val obj = querySelfHome()
             if (obj != null) {
 
-                if (exchange) {
-                    Log.forest("尝试兑换并激活能量雨卡...")
-                    useEnergyRainChanceCard()
-                }
-
                 if (EnergyRainCoroutine.execEnergyRain(
                         isManual = true,
+                        chanceCardUser = { attemptedPropIds ->
+                            exchange && useEnergyRainChanceCard(attemptedPropIds)
+                        },
                         gameTaskCloser = EnergyRainCoroutine.EnergyRainGameDriveCloser { request ->
                             closeEnergyRainGameDriveTask(request)
                         }

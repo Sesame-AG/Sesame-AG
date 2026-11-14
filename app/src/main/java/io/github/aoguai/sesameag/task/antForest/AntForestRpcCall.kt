@@ -14,6 +14,22 @@ import java.util.UUID
  * 森林 RPC 调用类
  */
 object AntForestRpcCall {
+    fun queryContinuousCarbonOffsetDetail(projectId: String): String = RequestManager.requestString(
+        RpcEntity(
+            "alipay.antforest.forest.h5.queryContinuousCarbonOffsetDetail",
+            JSONArray().put(JSONObject().put("projectId", projectId).put("source", "ANT_FOREST")).toString(),
+            headers = forestHeaders("ANT_FOREST"),
+        ),
+    )
+
+    fun exchangeContinuousCarbonOffsetProject(projectId: String): String = RequestManager.requestString(
+        RpcEntity(
+            "alipay.antforest.forest.h5.exchangeContinuousCarbonOffsetProject",
+            JSONArray().put(JSONObject().put("projectId", projectId).put("source", "ANT_FOREST")).toString(),
+            headers = forestHeaders("ANT_FOREST"),
+        ),
+    )
+
     fun welfareForestHome(activityId: String): String = RequestManager.requestString(
         "alipay.antforest.forest.h5.welfareForestHome",
         JSONArray().put(JSONObject().put("activityId", activityId).put("source", "chInfo_ch_appid-20000067")).toString(),
@@ -90,7 +106,6 @@ object AntForestRpcCall {
     private var HOME_PAGE_VERSION = "20250818"
     private var TASK_LIST_VERSION = "20250821"
     private var TASK_LIST_EXT_VERSION = "20260109"
-    private var TAKE_LOOK_VERSION = "20260107"
     private const val COLLECT_ENERGY_VERSION = "20250326"
     private const val TAKE_LOOK_COMBINE_BIZ_VERSION = "20260616"
 
@@ -133,7 +148,6 @@ object AntForestRpcCall {
                     HOME_PAGE_VERSION = "20250818"
                     TASK_LIST_VERSION = "20250821"
                     TASK_LIST_EXT_VERSION = "20260109"
-                    TAKE_LOOK_VERSION = "20260107"
                 }
 
                 "10.7.30.8000" -> {
@@ -141,7 +155,6 @@ object AntForestRpcCall {
                     HOME_PAGE_VERSION = "20250813"
                     TASK_LIST_VERSION = "20250813"
                     TASK_LIST_EXT_VERSION = "20250813"
-                    TAKE_LOOK_VERSION = "20250813"
                 }
 
                 "10.5.88.8000" -> {
@@ -149,7 +162,6 @@ object AntForestRpcCall {
                     HOME_PAGE_VERSION = "20240403"
                     TASK_LIST_VERSION = "20240403"
                     TASK_LIST_EXT_VERSION = "20240403"
-                    TAKE_LOOK_VERSION = "20240403"
                 }
 
                 "10.3.96.8100" -> {
@@ -157,7 +169,6 @@ object AntForestRpcCall {
                     HOME_PAGE_VERSION = "20230501"
                     TASK_LIST_VERSION = "20230501"
                     TASK_LIST_EXT_VERSION = "20230501"
-                    TAKE_LOOK_VERSION = "20230501"
                 }
 
                 else -> {
@@ -165,7 +176,6 @@ object AntForestRpcCall {
                     HOME_PAGE_VERSION = "20250818"
                     TASK_LIST_VERSION = "20250821"
                     TASK_LIST_EXT_VERSION = "20260109"
-                    TAKE_LOOK_VERSION = "20260107"
                 }
             }
             Log.forest("使用API版本: $VERSION, 首页版本: $HOME_PAGE_VERSION, 任务版本: $TASK_LIST_VERSION")
@@ -495,6 +505,35 @@ object AntForestRpcCall {
             ""
         }
 
+    fun queryPvpQuizContent(adId: String, adSlotId: String): String = RequestManager.requestString(
+        RpcEntity(
+            "alipay.antforest.forest.h5.ad.queryAdContent",
+            JSONArray().put(JSONObject().put("adId", adId).put("adSlotId", adSlotId)
+                .put("fromAct", "pvp_home_energy_supply_station").put("source", "pvpHome")).toString(),
+            headers = forestHeaders(DEFAULT_SOURCE),
+        ),
+    )
+
+    fun submitPvpQuizAnswer(adId: String, questionId: String, answerId: String): String = RequestManager.requestString(
+        RpcEntity(
+            "alipay.antforest.forest.h5.ad.submitQuizAnswer",
+            JSONArray().put(JSONObject().put("adId", adId).put("questionId", questionId).put("userAnswer", answerId)
+                .put("fromAct", "pvp_home_energy_supply_station").put("source", "pvpHome")).toString(),
+            headers = forestHeaders(DEFAULT_SOURCE),
+        ),
+    )
+
+    fun queryPvpQuizReward(outBizNo: String): String = RequestManager.requestString(
+        RpcEntity(
+            "alipay.antforest.forest.h5.queryMiscInfo",
+            JSONArray().put(JSONObject().put("queryBizType", "queryWelfareLotteryResult")
+                .put("extInfo", JSONObject().put("welfareLotteryBizIdList", JSONArray().put(outBizNo))
+                    .put("welfareLotterySceneCode", "ANTFOREST_1v1BATTLE_DRAW").toString())
+                .put("source", DEFAULT_SOURCE).put("version", "20270201")).toString(),
+            headers = forestHeaders(DEFAULT_SOURCE),
+        ),
+    )
+
     @JvmStatic
     fun receivePvpRewards(source: String = DEFAULT_SOURCE): String =
         try {
@@ -679,37 +718,34 @@ object AntForestRpcCall {
             ""
         }
 
-    /**
-     * 找能量方法 - 查找可收取能量的好友（带跳过用户列表）
-     */
+    /** 找能量推荐流，后续请求承接同一 feedsId 和已访问好友。 */
     @JvmStatic
-    fun takeLook(
+    fun takeLookForFeeds(
         skipUsers: JSONObject,
+        visitedUserIds: JSONArray,
+        feedsId: String = "",
         source: String? = null,
         exposedUserId: String = "",
-        takeLookStart: Boolean = true,
     ): String =
         try {
             val actualSource = source ?: DEFAULT_SOURCE
-            val requestData =
-                JSONObject().apply {
-                    put("contactsStatus", "N")
-                    put("exposedUserId", exposedUserId)
-                    put("skipUsers", skipUsers)
-                    put("source", actualSource)
-                    put("takeLookEnd", false)
-                    put("takeLookStart", takeLookStart)
-                    put("version", TAKE_LOOK_VERSION)
-                }
+            val requestData = JSONObject().apply {
+                put("exposedUserId", exposedUserId)
+                put("skipUsers", skipUsers)
+                put("source", actualSource)
+                put("version", "20260526")
+                put("visitedUserIds", visitedUserIds)
+                if (feedsId.isNotBlank()) put("feedsId", feedsId)
+            }
             RequestManager.requestString(
                 RpcEntity(
-                    "alipay.antforest.forest.h5.takeLook",
-                    "[$requestData]",
+                    "alipay.antforest.forest.h5.takeLookForFeeds",
+                    JSONArray().put(requestData).toString(),
                     headers = forestHeaders(actualSource),
                 ),
             )
         } catch (e: JSONException) {
-            Log.printStackTrace("AntForestRpcCall", "takeLook构建请求参数失败", e)
+            Log.printStackTrace("AntForestRpcCall", "takeLookForFeeds构建请求参数失败", e)
             ""
         }
 
@@ -1230,11 +1266,15 @@ object AntForestRpcCall {
         version: String = PROP_LIST_VERSION,
         propType: String = "",
         pageQuery: Boolean = true,
+        nextCursor: String = "",
+        excludePropTypes: Collection<String> = emptyList(),
     ): String {
         val jo =
             JSONObject().apply {
                 put("onlyGive", if (onlyGive) "Y" else "")
                 put("pageQuery", pageQuery)
+                if (nextCursor.isNotBlank()) put("nextCursor", nextCursor)
+                if (excludePropTypes.isNotEmpty()) put("excludePropTypes", JSONArray(excludePropTypes))
                 if (propType.isNotBlank()) put("propType", propType)
                 put("source", source)
                 put("version", version)

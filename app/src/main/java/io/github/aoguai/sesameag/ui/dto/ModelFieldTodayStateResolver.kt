@@ -66,6 +66,19 @@ object ModelFieldTodayStateResolver {
         modelField: ModelField<*>,
     ): ModelFieldTodayState {
         val state = when ("$modelCode.${modelField.code}") {
+            "AntForest.robExpandCard",
+            "AntForest.robExpandCardStrategy",
+            "AntForest.robExpandCardTime",
+            -> {
+                when {
+                    Status.hasFlagToday(StatusFlags.FLAG_ANTFOREST_ROB_MULTIPLIER_CARD_STOPPED) ->
+                        inactive("今日收好友N倍卡已因服务端业务限制停止")
+                    (Status.getIntFlagToday(StatusFlags.FLAG_ANTFOREST_ROB_MULTIPLIER_CARD_USE_COUNT) ?: 0) >= 10 ->
+                        inactive("今日收好友N倍卡已确认使用10次")
+                    else -> ModelFieldTodayState()
+                }
+            }
+
             "AntForest.pkEnergy" -> {
                 flag(StatusFlags.FLAG_ANTFOREST_PK_SKIP_TODAY, "今日 PK 榜无需处理")
             }
@@ -322,6 +335,12 @@ object ModelFieldTodayStateResolver {
             "AntOcean.cleanOceanList",
             -> {
                 flag(StatusFlags.FLAG_ANTOCEAN_HELP_CLEAN_ALL_FRIEND_LIMIT, "今日帮助好友清理次数已达上限")
+            }
+
+            "AntOcean.aiFishEnable" -> {
+                if (Status.hasFlagToday(StatusFlags.FLAG_ANTOCEAN_AIFISH_APPRAISE_LIMIT)) {
+                    ModelFieldTodayState(reason = "今日摸鱼点赞奖励额度已用完")
+                } else ModelFieldTodayState()
             }
 
             "AntOcean.dailyOceanTask" -> {

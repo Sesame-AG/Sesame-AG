@@ -9,15 +9,20 @@ import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleRegistry
 import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleState
 import io.github.aoguai.sesameag.hook.keepalive.UnifiedScheduler
 import io.github.aoguai.sesameag.hook.rpc.RpcDailyCircuit
+import io.github.aoguai.sesameag.model.BaseModel
+import io.github.aoguai.sesameag.task.TaskCommon
 import io.github.aoguai.sesameag.task.common.DeferredReason
 import io.github.aoguai.sesameag.task.common.TaskFlowActionResult
 import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
 import io.github.aoguai.sesameag.util.Log
+import io.github.aoguai.sesameag.util.TimeTriggerEvaluator
 import io.github.aoguai.sesameag.util.TimeUtil
+import io.github.aoguai.sesameag.util.TimeWindow
 import io.github.aoguai.sesameag.util.UserDataStoreManager
 import org.json.JSONObject
+import java.io.IOException
+import java.io.InterruptedIOException
 import java.net.HttpRetryException
-import java.net.SocketTimeoutException
 import java.util.Calendar
 import java.util.concurrent.TimeUnit
 
@@ -59,6 +64,17 @@ internal fun scheduleForestRead(triggerAtMs: Long) {
 internal object ForestRead {
     fun run(): TaskFlowActionResult {
         if (Status.hasFlagToday(StatusFlags.FLAG_ANTFOREST_READ_DONE)) return TaskFlowActionResult.success(progressChanged = false)
+        TaskCommon.update()
+        if (TaskCommon.IS_ENERGY_TIME) {
+            val spec = BaseModel.energyTime.getTriggerSpec()
+            return TaskFlowActionResult.defer(
+                DeferredReason.PREREQUISITE_PENDING,
+                message = "只收能量时间内保留阅读进度，延后执行",
+                deferredUntil = TimeTriggerEvaluator.nextTriggerAt(
+                    spec.copy(allowWindows = listOf(TimeWindow(0, 86_400)), blockWindows = spec.allowWindows),
+                ),
+            )
+        }
         val identity = RpcDailyCircuit.captureIdentity()
         val store = requireNotNull(UserDataStoreManager.getInstance(identity.userId))
         val key = "forest_read_state"
@@ -213,12 +229,13 @@ internal object ForestRead {
                 }
             }
         } catch (t: Throwable) {
-            if (t is kotlinx.coroutines.CancellationException || t is InterruptedException || !RpcDailyCircuit.isCurrent(identity)) throw t
+            if (t is kotlinx.coroutines.CancellationException || t is InterruptedException ||
+                (t is InterruptedIOException && Thread.currentThread().isInterrupted) || !RpcDailyCircuit.isCurrent(identity)) throw t
             if (t is HttpRetryException && t.responseCode() == 401) state.remove("token")
             save()
             Log.printStackTrace("ForestRead", "无纸阅读失败，保留进度:", t)
-            if (t is SocketTimeoutException) {
-                // 网络超时后按章节的六分钟本地间隔退避；SUBMITTED 只回查收益，不重发结果未知的上报。
+            if (t is IOException && t !is HttpRetryException) {
+                // 超时、断流等 I/O 失败按六分钟间隔退避；SUBMITTED 只回查收益，不重放未知结果。
                 return TaskFlowActionResult.failure(TaskRpcFailureType.RETRYABLE_RPC, message = t.message.orEmpty())
                     .copy(deferredUntil = System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(6))
             }

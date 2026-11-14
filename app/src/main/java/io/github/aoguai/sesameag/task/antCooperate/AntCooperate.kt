@@ -84,6 +84,11 @@ class AntCooperate : ModelTask() {
             "组队合种每天目标浇水总量；填 0 关闭，实际会受官方剩余额度和当前能量限制。",
         )
 
+    private val teamCooperateWaterTotalLimit =
+        IntegerModelField("teamCooperateWaterTotalLimit", "组队合种 | 累计浇水上限(g，0不限)", 0, 0, Int.MAX_VALUE).withDesc(
+            "限制本人在当前队伍的累计浇水量，按服务端totalEnergy计算；包含手动浇水，剩余不足10g时不再浇。",
+        ).withPortScope(ConfigPortScope.ACCOUNT_PRIVATE)
+
     override fun getFields(): ModelFields {
         val modelFields = ModelFields()
         modelFields.addField(cooperateWater)
@@ -95,6 +100,7 @@ class AntCooperate : ModelTask() {
         modelFields.addField(loveCooperateWaterNum)
         // 组队合种配置
         modelFields.addField(teamCooperateWaterNum)
+        modelFields.addField(teamCooperateWaterTotalLimit)
         return modelFields
     }
 
@@ -367,6 +373,21 @@ class AntCooperate : ModelTask() {
             }
             Status.setIntFlagToday(StatusFlags.FLAG_TEAM_WATER_DAILY_COUNT, todayUsed)
             val userRemainingQuota = userDailyTarget - todayUsed
+            val totalLimit = teamCooperateWaterTotalLimit.value ?: 0
+            val totalUsed = self?.opt("totalEnergy")?.toString()?.toLongOrNull()
+            val totalRemainingQuota = if (totalLimit > 0) {
+                if (totalUsed == null || totalUsed < 0) {
+                    Log.error(TAG, "组队合种已设置累计上限，但缺少有效的本人totalEnergy：$memberResponse")
+                    return
+                }
+                (totalLimit.toLong() - totalUsed).coerceAtLeast(0L).toInt()
+            } else {
+                Int.MAX_VALUE
+            }
+            if (totalRemainingQuota < 10) {
+                Log.forest("组队合种累计已浇${totalUsed}g / 上限${totalLimit}g，剩余不足10g")
+                return
+            }
             if (userRemainingQuota < 10) {
                 Log.forest("组队合种今日已浇${todayUsed}g / 目标${userDailyTarget}g，剩余不足10g")
                 return
@@ -427,6 +448,7 @@ class AntCooperate : ModelTask() {
 
             val finalWaterAmount =
                 userRemainingQuota
+                    .coerceAtMost(totalRemainingQuota)
                     .coerceAtMost(serverRemaining)
                     .coerceAtMost(currentEnergy)
             if (finalWaterAmount < 10) {
@@ -453,6 +475,14 @@ class AntCooperate : ModelTask() {
             if (confirmedTotal > todayUsed) {
                 Status.setIntFlagToday(StatusFlags.FLAG_TEAM_WATER_DAILY_COUNT, confirmedTotal)
                 Log.forest("组队合种🌲今日已浇${confirmedTotal}g / 目标${userDailyTarget}g，本轮增加${confirmedTotal - todayUsed}g")
+                if (totalLimit > 0) {
+                    val confirmedCumulative = confirmedSelf?.opt("totalEnergy")?.toString()?.toLongOrNull()
+                    if (confirmedCumulative == null || totalUsed == null || confirmedCumulative <= totalUsed) {
+                        Log.error(TAG, "组队浇水后累计进度未确认，保留后续服务端回查：$confirmation")
+                    } else {
+                        Log.forest("组队合种累计已浇${confirmedCumulative}g / 上限${totalLimit}g")
+                    }
+                }
             } else {
                 Log.error(TAG, "组队浇水后未确认进度，未增加本地计数：$confirmation")
             }

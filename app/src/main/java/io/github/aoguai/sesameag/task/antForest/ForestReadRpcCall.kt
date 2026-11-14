@@ -7,11 +7,15 @@ import io.github.aoguai.sesameag.hook.internal.AuthCodeHelper
 import io.github.aoguai.sesameag.hook.rpc.RpcDailyCircuit
 import io.github.aoguai.sesameag.hook.rpc.capture.RpcTrafficCapture
 import kotlinx.coroutines.CancellationException
+import okhttp3.ConnectionPool
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpRetryException
-import java.net.HttpURLConnection
-import java.net.URL
+import java.util.concurrent.TimeUnit
 
 internal class ForestReadRpcCall(var token: String) {
     private val identity = RpcDailyCircuit.captureIdentity()
@@ -47,60 +51,71 @@ internal class ForestReadRpcCall(var token: String) {
 
     fun recent(bookId: String, chapterId: String, chapterName: String) {
         request("/book/set_read_recently", JSONObject().put("book_id", bookId)
-            .put("chapter_id", chapterId.toLongOrNull() ?: chapterId).put("chapter_name", chapterName))
+            .put("chapter_id", chapterId.toLongOrNull() ?: chapterId).put("chapter_name", chapterName), shortTimeout = true)
     }
 
-    private fun request(path: String, body: JSONObject? = null): JSONObject {
+    private fun request(path: String, body: JSONObject? = null, shortTimeout: Boolean = false): JSONObject {
         if (!RpcDailyCircuit.isCurrent(identity) || ApplicationHookConstants.isOffline() || Thread.currentThread().isInterrupted) {
             throw CancellationException("森林阅读账号会话不可用")
         }
-        val connection = URL("https://m.zhangwenwh.com/api$path").openConnection() as HttpURLConnection
+        val text = body?.toString()
+        val builder = Request.Builder().url("https://m.zhangwenwh.com/api$path")
+            .header("Content-Type", "application/json;charset=UTF-8")
+            .header("alipayminimark", miniMark)
+            .header("Referer", "https://$appId.hybrid.alipay-eco.com/$appId/$version/index.html")
+            .header("x-release-type", "ONLINE")
+        System.getProperty("http.agent")?.takeIf { it.isNotBlank() }?.let { builder.header("User-Agent", it) }
+        if (token.isNotBlank()) builder.header("Authorization", "Bearer $token")
+        if (text != null) builder.post(text.toRequestBody(JSON))
+        val request = builder.build()
         var captureId: String? = null
         try {
-            connection.requestMethod = if (body == null) "GET" else "POST"
-            // 十秒连接、二十秒读取均为网络等待上限，防止阅读请求无限挂起；响应及时则不会等满。
-            connection.connectTimeout = 10_000
-            connection.readTimeout = 20_000
-            connection.instanceFollowRedirects = false
-            connection.useCaches = false
-            // 使用运行设备的平台 UA。
-            System.getProperty("http.agent")?.takeIf { it.isNotBlank() }?.let {
-                connection.setRequestProperty("User-Agent", it)
+            captureId = RpcTrafficCapture.recordModuleHttpRequest(
+                request.url.toString(), request.method, request.headers.toMultimap(), text.orEmpty())
+            val client = (if (shortTimeout) SHORT_CLIENT else CLIENT).newBuilder()
+                // 只读查询可自动恢复连接失败；POST 结果未知时仍由持久状态回查。
+                .retryOnConnectionFailure(request.method == "GET")
+                .build()
+            return client.newCall(request).execute().use { response ->
+                val httpCode = response.code
+                val raw = response.body.string()
+                RpcTrafficCapture.recordModuleHttpResponse(captureId, request.url.toString(), request.method,
+                    response.headers.toMultimap(), httpCode, raw)
+                captureId = null
+                if (!RpcDailyCircuit.isCurrent(identity) || ApplicationHookConstants.isOffline()) {
+                    throw CancellationException("森林阅读请求期间账号会话已变化")
+                }
+                if (httpCode == 401) throw HttpRetryException("森林阅读登录态失效", httpCode)
+                check(httpCode in 200..299) { "森林阅读 HTTP=$httpCode path=$path raw=$raw" }
+                val result = JSONObject(raw)
+                check(result.has("code")) { "森林阅读响应缺少业务状态 path=$path raw=$raw" }
+                val code = result.getInt("code")
+                if (code == 401) throw HttpRetryException("森林阅读登录态失效 path=$path raw=$raw", code)
+                if (code != 2000) throw RejectedResponse("森林阅读请求失败 path=$path raw=$raw")
+                result
             }
-            connection.setRequestProperty("Content-Type", "application/json;charset=UTF-8")
-            connection.setRequestProperty("alipayminimark", miniMark)
-            connection.setRequestProperty("Referer", "https://$appId.hybrid.alipay-eco.com/$appId/$version/index.html")
-            connection.setRequestProperty("x-release-type", "ONLINE")
-            if (token.isNotBlank()) connection.setRequestProperty("Authorization", "Bearer $token")
-            val text = body?.toString()
-            val bytes = text?.toByteArray(Charsets.UTF_8)
-            if (bytes != null) {
-                connection.doOutput = true
-                connection.setFixedLengthStreamingMode(bytes.size)
-            }
-            captureId = RpcTrafficCapture.recordModuleHttpRequest(connection, text.orEmpty())
-            if (bytes != null) connection.outputStream.use { it.write(bytes) }
-            val httpCode = connection.responseCode
-            val stream = if (httpCode in 200..299) connection.inputStream else connection.errorStream
-            val raw = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
-            RpcTrafficCapture.recordModuleHttpResponse(captureId, connection, httpCode, raw)
-            captureId = null
-            if (!RpcDailyCircuit.isCurrent(identity) || ApplicationHookConstants.isOffline()) {
-                throw CancellationException("森林阅读请求期间账号会话已变化")
-            }
-            if (httpCode == 401) throw HttpRetryException("森林阅读登录态失效", httpCode)
-            check(httpCode in 200..299) { "森林阅读 HTTP=$httpCode path=$path raw=$raw" }
-            val response = JSONObject(raw)
-            check(response.has("code")) { "森林阅读响应缺少业务状态 path=$path raw=$raw" }
-            val code = response.getInt("code")
-            if (code == 401) throw HttpRetryException("森林阅读登录态失效 path=$path raw=$raw", code)
-            if (code != 2000) throw RejectedResponse("森林阅读请求失败 path=$path raw=$raw")
-            return response
         } catch (t: Throwable) {
             RpcTrafficCapture.recordModuleHttpError(captureId, t)
             throw t
-        } finally {
-            connection.disconnect()
         }
+    }
+
+    private companion object {
+        val JSON = "application/json;charset=UTF-8".toMediaType()
+        val CLIENT = OkHttpClient.Builder()
+            .connectionPool(ConnectionPool(4, 5, TimeUnit.MINUTES))
+            .connectTimeout(5, TimeUnit.SECONDS)
+            .readTimeout(12, TimeUnit.SECONDS)
+            .writeTimeout(12, TimeUnit.SECONDS)
+            .callTimeout(15, TimeUnit.SECONDS)
+            // 上报结果未知时由持久状态回查，传输层不能自动重放请求。
+            .retryOnConnectionFailure(false)
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .build()
+        val SHORT_CLIENT = CLIENT.newBuilder()
+            .readTimeout(4, TimeUnit.SECONDS)
+            .callTimeout(6, TimeUnit.SECONDS)
+            .build()
     }
 }

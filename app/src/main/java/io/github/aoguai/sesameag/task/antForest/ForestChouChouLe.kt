@@ -8,6 +8,7 @@ import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.task.TaskStatus
 import io.github.aoguai.sesameag.task.common.DeferredReason
 import io.github.aoguai.sesameag.task.common.GameCenterPlayRpcCall
+import io.github.aoguai.sesameag.task.common.NonDurationGameTask
 import io.github.aoguai.sesameag.task.common.TaskFlowAction
 import io.github.aoguai.sesameag.task.common.TaskFlowActionResult
 import io.github.aoguai.sesameag.task.common.TaskFlowAdapter
@@ -16,6 +17,7 @@ import io.github.aoguai.sesameag.task.common.TaskFlowItem
 import io.github.aoguai.sesameag.task.common.TaskFlowPhase
 import io.github.aoguai.sesameag.task.common.TaskFlowSnapshot
 import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
+import io.github.aoguai.sesameag.util.GameTask
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.ResChecker
 import io.github.aoguai.sesameag.util.TaskBlacklist
@@ -645,16 +647,17 @@ class ForestChouChouLe(private val charityWaterEnabled: Boolean = false) {
             }
             val descriptor = GameCenterPlayRpcCall.describeTask(taskBaseInfo, taskBizInfo(item), taskProdPlayParam(item))
             val playContract = forestGamePlayContract(item)
-            val mappedTask = descriptor.mappedTask
-            if (!isExchangeDrawTask(item) && playContract == null && mappedTask != null) {
-                if (!kotlinx.coroutines.runBlocking { mappedTask.report(1) }) {
-                    return TaskFlowActionResult.failure(
-                        failureType = TaskRpcFailureType.RETRYABLE_RPC,
-                        message = "已有游戏业务动作未完成",
-                        rpc = "GameTask.report",
-                        detail = actionDetail(item, TaskFlowAction.COMPLETE),
-                        continueCurrentRoundOnFailure = true,
-                    )
+            val decision = GameCenterPlayRpcCall.resolveTaskAction(taskBaseInfo, taskBizInfo(item), taskProdPlayParam(item))
+            if (!isExchangeDrawTask(item) && playContract == null) {
+                if (decision.action == GameCenterPlayRpcCall.TaskAction.LEGACY_EXTERNAL_REPORT) {
+                    val report = kotlinx.coroutines.runBlocking {
+                        NonDurationGameTask.advance(requireNotNull(decision.mappedTask), taskBaseInfo, taskBizInfo(item), taskProdPlayParam(item),
+                            channel = GameTask.Forest_slxcc.channel,
+                            detail = actionDetail(item, TaskFlowAction.COMPLETE), logger = Log::forest)
+                    }
+                    if (report.deferredReason != DeferredReason.STATE_CONFIRMATION) return report
+                } else if (descriptor.isGameTask && decision.action == GameCenterPlayRpcCall.TaskAction.DEFERRED) {
+                    return TaskFlowActionResult.defer(DeferredReason.PREREQUISITE_PENDING, decision.reason)
                 }
             }
             playContract?.let { contract ->
@@ -708,7 +711,7 @@ class ForestChouChouLe(private val charityWaterEnabled: Boolean = false) {
                     },
             )
             return if (!exchangeDrawTask && actionResult.code == "400000040" && item.sceneCode.isNotBlank()) {
-                AntFarmRpcCall.doSceneTask(item.type, item.sceneCode, actionResult) { fallback ->
+                AntFarmRpcCall.doSceneTask(item.type, item.sceneCode, actionResult, sceneCode = item.sceneCode, source = "ADBASICLIB") { fallback ->
                     handleActionResponse(item, fallback, TaskFlowAction.COMPLETE, "AntFarmRpcCall.doFarmTask")
                 }
             } else actionResult
