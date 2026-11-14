@@ -53,6 +53,7 @@ import io.github.aoguai.sesameag.task.exchange.ExchangeSafety
 import io.github.aoguai.sesameag.task.exchange.ExchangeSafetyRules
 import io.github.aoguai.sesameag.task.common.DeferredReason
 import io.github.aoguai.sesameag.task.common.GameCenterPlayRpcCall
+import io.github.aoguai.sesameag.task.common.NonDurationGameTask
 import io.github.aoguai.sesameag.task.common.TaskFlowAction
 import io.github.aoguai.sesameag.task.common.TaskFlowActionResult
 import io.github.aoguai.sesameag.task.common.TaskFlowAdapter
@@ -61,6 +62,7 @@ import io.github.aoguai.sesameag.task.common.TaskFlowEngine
 import io.github.aoguai.sesameag.task.common.TaskFlowExecutionState
 import io.github.aoguai.sesameag.task.common.TaskFlowItem
 import io.github.aoguai.sesameag.task.common.TaskFlowPhase
+import io.github.aoguai.sesameag.task.common.TaskFlowRunResult
 import io.github.aoguai.sesameag.task.common.TaskFlowSnapshot
 import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
 import io.github.aoguai.sesameag.util.CoroutineUtils
@@ -2682,6 +2684,14 @@ class AntMember : ModelTask() {
         ) {
             if (!isEnable()) return@executePersistentChild TaskExecutionOutcome.SKIPPED
             when (payload.optString("wait_key")) {
+                "goldTicketConsumePending" -> {
+                    if (enableGoldTicketConsume?.value != true ||
+                        UserDataStoreManager.getInstance(ownerUserId)
+                            ?.get("goldTicketConsumePending", String::class.java).isNullOrBlank()
+                    ) return@executePersistentChild TaskExecutionOutcome.SKIPPED
+                    doGoldTicketConsume(allowReplenish = false)
+                    return@executePersistentChild TaskExecutionReport.current()?.outcome() ?: TaskExecutionOutcome.DEFERRED
+                }
                 "memberGameEntrance" -> {
                     if ((memberSign?.value != true && memberTask?.value != true) ||
                         hasFlagToday(StatusFlags.FLAG_ANTMEMBER_MEMBER_TASK_EMPTY_TODAY)
@@ -4770,7 +4780,11 @@ class AntMember : ModelTask() {
         val needSignIn = doSignIn && !hasFlagToday(StatusFlags.FLAG_ANTMEMBER_GOLD_TICKET_SIGN_DONE)
         val needHomeCheck = doSignIn && !hasFlagToday(StatusFlags.FLAG_ANTMEMBER_GOLD_TICKET_HOME_DONE)
         val needWelfareCheck = doSignIn && !hasFlagToday(StatusFlags.FLAG_ANTMEMBER_GOLD_TICKET_WELFARE_DONE)
-        val needConsume = doConsume && !hasFlagToday(StatusFlags.FLAG_ANTMEMBER_GOLD_TICKET_CONSUME_DONE)
+        val needConsume = doConsume && (
+            !UserDataStoreManager.getInstance(AccountSessionCoordinator.currentUserId() ?: UserMap.currentUid)
+                ?.get("goldTicketConsumePending", String::class.java).isNullOrBlank() ||
+                !hasFlagToday(StatusFlags.FLAG_ANTMEMBER_GOLD_TICKET_CONSUME_DONE)
+            )
 
         if (!needSignIn && !needHomeCheck && !needWelfareCheck && !needConsume) {
             Log.member("黄金票🎫[今日已处理] 跳过执行")
@@ -5555,6 +5569,66 @@ class AntMember : ModelTask() {
     private fun doGoldTicketConsume(allowReplenish: Boolean = true) {
         var consumeDone = false
         try {
+            val owner = AccountSessionCoordinator.currentUserId() ?: UserMap.currentUid
+            val store = UserDataStoreManager.getInstance(owner)
+            if (store == null) {
+                TaskExecutionReport.current()?.recordException()
+                Log.error("黄金票🎫[提取未执行] 无法保存待确认单号")
+                return
+            }
+            val pendingKey = "goldTicketConsumePending"
+            val pending = store.get(pendingKey, String::class.java)?.let { JSONObject(it) }
+            if (pending != null) {
+                val state = TaskFlowExecutionState()
+                TaskExecutionReport.current()?.recordFlow(
+                    state, "AntMember", "黄金票提取确认",
+                    TaskFlowRunResult(completed = false, progressed = false, stopped = true, rounds = 0,
+                        deferredCount = 1, deferredReasonCounts = mapOf(DeferredReason.STATE_CONFIRMATION to 1)),
+                )
+                val writeOffNo = pending.optString("writeOffNo")
+                if (writeOffNo.isBlank()) {
+                    TaskExecutionReport.current()?.recordException()
+                    Log.error("黄金票🎫[待确认记录异常] 缺少单号，保留记录并停止再次提取")
+                    return
+                }
+                val now = System.currentTimeMillis()
+                if (pending.optLong("readyAt") > now) {
+                    scheduleMemberTaskContinuation(pendingKey, pending.getLong("readyAt"))
+                    return
+                }
+                val response = AntMemberRpcCall.queryConsumeResult(writeOffNo)
+                if (response.isNullOrBlank()) {
+                    TaskExecutionReport.current()?.recordException()
+                    Log.error("黄金票🎫[提取回查失败] 接口无返回，保留待确认单号")
+                    return
+                }
+                val resultJson = JSONObject(response)
+                if (isMemberMarketingRpcRisk("AntMember.goldTicket.consumeResult", resultJson) ||
+                    !ResChecker.checkRes(TAG, resultJson)
+                ) {
+                    TaskExecutionReport.current()?.recordException()
+                    return
+                }
+                val result = resultJson.optJSONObject("result")
+                val recordState = result?.optJSONObject("recordInfo")?.optString("recordState").orEmpty()
+                if (recordState == "ACCEPTING") {
+                    Log.member("黄金票🎫[提取中] 已受理，等待到账确认，不重复提交")
+                    val interval = result?.optJSONObject("fengdie")?.optLong("pollingTimeStamp") ?: 0L
+                    val attempts = pending.optInt("confirmAttempts")
+                    if (result?.optBoolean("shouldRetry") == true && interval > 0L &&
+                        attempts < MEMBER_CALL_APP_VERIFY_RETRY_LIMIT
+                    ) {
+                        pending.put("confirmAttempts", attempts + 1).put("readyAt", now + interval)
+                        TaskExecutionReport.current()?.ensureCurrent(owner)
+                        store.put(pendingKey, pending.toString())
+                        scheduleMemberTaskContinuation(pendingKey, pending.getLong("readyAt"))
+                    }
+                } else {
+                    TaskExecutionReport.current()?.recordException()
+                    Log.error("黄金票🎫[提取结果待核实] recordState=$recordState，保留单号，不据受理成功标记到账")
+                }
+                return
+            }
             Log.member("黄金票🎫[准备检查余额及提取]")
 
             // 1. 调用新接口 queryConsumeHome 获取最新的资产信息
@@ -5653,11 +5727,13 @@ class AntMember : ModelTask() {
 
             val submitResult = submitJson.optJSONObject("result")
             val writeOffNo = submitResult?.optString("writeOffNo").orEmpty()
-            val successTitle = submitResult?.optString("successTitle").orEmpty()
-            if (writeOffNo.isNotBlank() || successTitle.contains("成功")) {
-                Log.member("黄金票🎫[提取成功]#$exchangeMoney 元#$extractAmount 份")
-                consumeDone = true
+            if (writeOffNo.isNotBlank()) {
+                TaskExecutionReport.current()?.ensureCurrent(owner)
+                store.put(pendingKey, JSONObject().put("writeOffNo", writeOffNo).toString())
+                Log.member("黄金票🎫[提取已受理]#$exchangeMoney 元#$extractAmount 份，等待结果确认")
+                doGoldTicketConsume(allowReplenish = false)
             } else {
+                TaskExecutionReport.current()?.recordException()
                 Log.error("黄金票🎫[提取失败] 未返回核销码")
             }
         } catch (e: Exception) {
@@ -5799,10 +5875,9 @@ class AntMember : ModelTask() {
                 )
                 if (!duration.success) return duration
             } else if (mapped != null && action.action == GameCenterPlayRpcCall.TaskAction.LEGACY_EXTERNAL_REPORT) {
-                val report = runBlocking { mapped.reportDetailed(1, logger = Log::member) }
-                if (!report.completed) return TaskFlowActionResult.failure(
-                    TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW, message = "外部游戏动作未完成", continueCurrentRoundOnFailure = true,
-                )
+                return runBlocking {
+                    NonDurationGameTask.advance(mapped, item.raw, detail = "taskId=${item.id} scene=$scene", logger = Log::member)
+                }
             } else {
                 return TaskFlowActionResult.defer(DeferredReason.PREREQUISITE_PENDING, action.reason)
             }
@@ -6379,13 +6454,12 @@ class AntMember : ModelTask() {
         private fun sendGameCenterTask(item: TaskFlowItem): TaskFlowActionResult {
             val decision = GameCenterPlayRpcCall.resolveTaskAction(item.raw)
             if (decision.action == GameCenterPlayRpcCall.TaskAction.LEGACY_EXTERNAL_REPORT) {
-                val report = runBlocking { requireNotNull(decision.mappedTask).reportDetailed(1, logger = Log::member) }
-                if (!report.completed) return TaskFlowActionResult.failure(
-                    failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
-                    message = report.failureMessage, rpc = "GameTask.reportDetailed",
-                    detail = gameCenterTaskActionDetail(item, "gameReport"), continueCurrentRoundOnFailure = true,
-                )
-                return TaskFlowActionResult.success(refreshAfterAction = true, progressChanged = false)
+                return runBlocking {
+                    NonDurationGameTask.advance(
+                        requireNotNull(decision.mappedTask), item.raw,
+                        detail = gameCenterTaskActionDetail(item, "gameReport"), logger = Log::member,
+                    )
+                }
             }
             decision.contract?.let { contract ->
                 val ack = GameCenterPlayRpcCall.submitForAck(contract)
@@ -6429,7 +6503,7 @@ class AntMember : ModelTask() {
                 val sceneCode = item.raw?.optString("sceneCode").orEmpty()
                 if (failure.code == "400000040" && sceneCode.isNotBlank()) {
                     val bizKey = item.raw?.optString("bizKey").orEmpty().ifBlank { item.id }
-                    return AntFarmRpcCall.doSceneTask(bizKey, sceneCode, failure) { fallback ->
+                    return AntFarmRpcCall.doSceneTask(bizKey, sceneCode, failure, sceneCode = sceneCode, source = "H5") { fallback ->
                         gameCenterTaskFailureResult(item, fallback, fallback.toString(), "AntFarmRpcCall.doFarmTask")
                     }
                 }
@@ -6777,13 +6851,12 @@ class AntMember : ModelTask() {
             }
             val decision = GameCenterPlayRpcCall.resolveTaskAction(raw)
             if (decision.action == GameCenterPlayRpcCall.TaskAction.LEGACY_EXTERNAL_REPORT) {
-                val report = runBlocking { requireNotNull(decision.mappedTask).reportDetailed(1, logger = Log::member) }
-                if (!report.completed) return TaskFlowActionResult.failure(
-                    failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
-                    message = report.failureMessage, rpc = "GameTask.reportDetailed",
-                    detail = gameCenterTaskActionDetail(item, "gameReport"), continueCurrentRoundOnFailure = true,
-                )
-                return TaskFlowActionResult.success(refreshAfterAction = true, progressChanged = false)
+                return runBlocking {
+                    NonDurationGameTask.advance(
+                        requireNotNull(decision.mappedTask), item.raw,
+                        detail = gameCenterTaskActionDetail(item, "gameReport"), logger = Log::member,
+                    )
+                }
             }
             val contract = decision.contract
                 ?: return TaskFlowActionResult.defer(

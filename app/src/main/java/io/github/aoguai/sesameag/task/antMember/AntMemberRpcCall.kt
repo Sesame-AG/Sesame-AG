@@ -1758,6 +1758,17 @@ object AntMemberRpcCall {
         }
 
     @JvmStatic
+    fun queryConsumeResult(writeOffNo: String): String? =
+        try {
+            RequestManager.requestString(
+                "com.alipay.wealthgoldtwa.goldbill.v4.consume.result",
+                JSONArray().put(JSONObject().put("writeOffNo", writeOffNo)).toString(),
+            )
+        } catch (e: Exception) {
+            null
+        }
+
+    @JvmStatic
     fun taskQueryPush(taskId: String): String? =
         try {
             val args =

@@ -14,10 +14,12 @@ internal fun AntMember.scheduleGoldTicketWorkflows(
     }
     deferredTasks.add(
         scope.async(Dispatchers.IO) {
-            doGoldTicketTask(
-                enableGoldTicket?.value == true,
-                enableGoldTicketConsume?.value == true
-            )
+            memberFloatingBallQueue.submit {
+                doGoldTicketTask(
+                    enableGoldTicket?.value == true,
+                    enableGoldTicketConsume?.value == true
+                )
+            }
         }
     )
 }
