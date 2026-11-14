@@ -30,6 +30,7 @@ import io.github.aoguai.sesameag.task.TaskStatus
 import io.github.aoguai.sesameag.task.antOrchard.UrlUtil
 import io.github.aoguai.sesameag.task.common.DeferredReason
 import io.github.aoguai.sesameag.task.common.GameCenterPlayRpcCall
+import io.github.aoguai.sesameag.task.common.NonDurationGameTask
 import io.github.aoguai.sesameag.task.common.TaskFlowAction
 import io.github.aoguai.sesameag.task.common.TaskFlowActionResult
 import io.github.aoguai.sesameag.task.common.TaskFlowAdapter
@@ -1626,26 +1627,10 @@ class AntStall : ModelTask() {
                         StallTaskCompleteRoute.BUSINESS_ACTION -> {
                             val decision = GameCenterPlayRpcCall.resolveTaskAction(item.raw)
                             if (decision.action == GameCenterPlayRpcCall.TaskAction.LEGACY_EXTERNAL_REPORT) {
-                                val game = requireNotNull(decision.mappedTask)
-                                val report = kotlinx.coroutines.runBlocking {
-                                    game.reportDetailed(
-                                        1,
-                                        actionFinishChannel = GameCenterPlayRpcCall.describeTask(item.raw).urlParameters["channel"]
-                                            ?.takeIf { it.isNotBlank() } ?: game.channel,
-                                        includeSafetyReport = false,
-                                    ) { Log.stall(it) }
+                                kotlinx.coroutines.runBlocking {
+                                    NonDurationGameTask.advance(requireNotNull(decision.mappedTask), item.raw,
+                                        detail = stallTaskActionDetail(item, "gameReport"), logger = Log::stall)
                                 }
-                                if (!report.completed) TaskFlowActionResult.failure(
-                                    failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
-                                    message = report.failureMessage,
-                                    rpc = "GameTask.reportDetailed",
-                                    detail = stallTaskActionDetail(item, "gameReport"),
-                                    continueCurrentRoundOnFailure = true,
-                                ) else TaskFlowActionResult.defer(
-                                    DeferredReason.STATE_CONFIRMATION,
-                                    message = "游戏业务已上报，回查新村任务进度",
-                                    refreshAfterAction = true,
-                                )
                             } else {
                                 finishTask(item)
                             }
@@ -2173,7 +2158,7 @@ class AntStall : ModelTask() {
                 detail = stallTaskActionDetail(item, "finishTask"),
             )
             if (failure.code == "400000040") {
-                AntFarmRpcCall.doSceneTask(item.type, "ANTSTALL_TASK", failure) { fallback ->
+                AntFarmRpcCall.doSceneTask(item.type, "ANTSTALL_TASK", failure, sceneCode = "ANTSTALL_TASK", source = "AST") { fallback ->
                     stallTaskActionFailureResult(fallback, "AntFarmRpcCall.doFarmTask", stallTaskActionDetail(item, "finishTask"))
                 }
             } else failure

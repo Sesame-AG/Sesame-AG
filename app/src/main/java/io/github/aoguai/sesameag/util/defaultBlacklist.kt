@@ -54,6 +54,7 @@ private val sesameAlchemyDefaultBlacklist =
         "hjwf_zcylt_zhuanhua",
         "hjwf_eduka_renwu",
         "alchemy_check_in_subscribe_task", // joinActivity 返回 PROMISE_TEMPLATE_NOT_EXIST
+        "zm_1Dufr06Z_C902HUcd", // 生活记录 pushActivity 明确拒绝，taskFeedback 后任务仍未完成
         "hjwf_xiangjiangshikaipao_renwu", // 游戏事件不能由pushActivity完成，返回ILLEGAL_ARGUMENT
         "hjwf_zcylt_chongzhi", // 真实充值不能由pushActivity完成，返回ILLEGAL_ARGUMENT
         "hjwf_langmancanting_renwu", // 完成3个订单的游戏事件，pushActivity返回ILLEGAL_ARGUMENT
@@ -111,11 +112,6 @@ private val goldenBeanDefaultBlacklist =
         "GOLDEN_BEAN_MASTER_TASK:GOLDEN_BEAN_TASK_XIANSHANGZHIFU", // 线上支付
         "GOLDEN_BEAN_MASTER_TASK:GOLDEN_BEAN_TASK_XIANXIAZHIFU", // 线下支付
         "GOLDEN_BEAN_MASTER_TASK:GOLDEN_BEAN_TASK_YUEBAO", // 余额宝真实业务动作
-        "GOLDEN_BEAN_ZHIMA_LIST:ZHIMA_youxi_dageluosi", // 无可验证的外部游戏完成RPC闭环
-        "GOLDEN_BEAN_ZHIMA_LIST:ZHIMA_youxi_zheguanwohenxing", // 无可验证的外部游戏完成RPC闭环
-        "GOLDEN_BEAN_ZHIMA_LIST:ZHIMA_youxi_hebuguowoba", // 无可验证的外部游戏完成RPC闭环
-        "GOLDEN_BEAN_ZHIMA_LIST:ZHIMA_youxi_wodehuayuanshijie", // 无可验证的外部游戏完成RPC闭环
-        "GOLDEN_BEAN_ZHIMA_LIST:ZHIMA_youxi_qingyunjuezhifumo", // 无可验证的外部游戏完成RPC闭环
     )
 
 private val farmDefaultBlacklist =
@@ -180,7 +176,7 @@ private val forestDefaultBlacklist =
         "ENERGY_XUANJIAO_dianzizhangdan电子账单",
         "ENERGY_XUANJIAO_faxianlvseshenhuo探动植物",
         "ENERGY_XUANJIAO_lvsebaozhuang绿色包装",
-        "ENERGY_XUANJIAO_etcjiaofeiETC缴费",
+        "ENERGY_XUANJIAO_etcjiaofei",
         "ENERGY_XUANJIAO_linqishipin临期食品",
         "ENERGY_XUANJIAO_lvsechexian绿色车险",
         "ENERGY_XUANJIAO_lvsewaimai绿色外卖",

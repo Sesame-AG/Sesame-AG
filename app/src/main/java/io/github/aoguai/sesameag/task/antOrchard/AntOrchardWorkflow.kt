@@ -4,6 +4,7 @@ package io.github.aoguai.sesameag.task.antOrchard
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.util.GameTask
+import io.github.aoguai.sesameag.task.common.NonDurationGameTask
 import io.github.aoguai.sesameag.util.Log
 import org.json.JSONObject
 
@@ -20,32 +21,55 @@ internal suspend fun AntOrchard.runOrchardRewardWorkflow(indexJson: JSONObject, 
 
     extraInfoGet("entry")
 
-    indexJson.optJSONObject("goldenEggInfo")?.let { goldenEggInfo ->
+    indexJson.optJSONObject("goldenEggInfo")?.let { initialEggInfo ->
         try {
-            val unsmashed = goldenEggInfo.optInt("unsmashedGoldenEggs")
-            if (unsmashed > 0) {
-                smashedGoldenEgg(unsmashed)
-                return@let
+            var eggInfo = initialEggInfo
+            val attemptedSnapshots = mutableSetOf<String>()
+            while (!io.github.aoguai.sesameag.hook.ApplicationHookConstants.isOffline()) {
+                val unsmashed = eggInfo.optInt("unsmashedGoldenEggs").coerceAtLeast(0)
+                val smashed = eggInfo.optInt("smashedGoldenEggs")
+                val limit = eggInfo.optInt("goldenEggLimit")
+                if (unsmashed <= 0 && smashed >= limit) break
+                if (!attemptedSnapshots.add("$smashed:$unsmashed:$limit")) {
+                    Log.orchard("金蛋任务回查未确认进展，保留后续调度")
+                    break
+                }
+                if (unsmashed > 0) {
+                    smashedGoldenEgg(unsmashed)
+                } else {
+                    val action = NonDurationGameTask.advance(
+                        GameTask.Orchard_ncscc, channel = GameTask.Orchard_ncscc.channel,
+                        detail = "sceneCode=ORCHARD taskId=goldenEgg", logger = Log::orchard,
+                        confirmProgress = {
+                            val response = JSONObject(AntOrchardRpcCall.orchardIndex())
+                            val current = response.optJSONObject("goldenEggInfo")
+                            if (response.optString("resultCode") != "100" ||
+                                current == null || !current.has("unsmashedGoldenEggs")
+                            ) {
+                                Log.error("AntOrchard", "金蛋上报后首页状态查询失败:$response")
+                                null
+                            } else current.optInt("unsmashedGoldenEggs") > unsmashed ||
+                                current.has("smashedGoldenEggs") && current.has("goldenEggLimit") &&
+                                current.optInt("smashedGoldenEggs") >= current.optInt("goldenEggLimit")
+                        },
+                    )
+                    if (action.stopCurrentRound) return
+                    if (!action.refreshAfterAction) break
+                }
+                val refreshedIndex = JSONObject(AntOrchardRpcCall.orchardIndex())
+                if (refreshedIndex.optString("resultCode") != "100") {
+                    Log.error("AntOrchard", "金蛋动作后首页回查失败 raw=$refreshedIndex")
+                    break
+                }
+                val refreshedEggInfo = refreshedIndex.optJSONObject("goldenEggInfo")
+                if (refreshedEggInfo == null || !refreshedEggInfo.has("unsmashedGoldenEggs")) {
+                    Log.error("AntOrchard", "金蛋动作后首页回查缺少goldenEggInfo.unsmashedGoldenEggs")
+                    break
+                }
+                eggInfo = refreshedEggInfo
             }
-            val remain = goldenEggInfo.optInt("goldenEggLimit") - goldenEggInfo.optInt("smashedGoldenEggs")
-            if (remain <= 0) return@let
-            if (!GameTask.Orchard_ncscc.report(remain)) {
-                Log.error("AntOrchard", "金蛋游戏上报失败")
-                return@let
-            }
-            val refreshedIndex = JSONObject(AntOrchardRpcCall.orchardIndex())
-            if (refreshedIndex.optString("resultCode") != "100") {
-                Log.error("AntOrchard", "金蛋游戏上报后首页回查失败 raw=$refreshedIndex")
-                return@let
-            }
-            val refreshedGoldenEggInfo = refreshedIndex.optJSONObject("goldenEggInfo")
-            if (refreshedGoldenEggInfo == null || !refreshedGoldenEggInfo.has("unsmashedGoldenEggs")) {
-                Log.error("AntOrchard", "金蛋游戏上报后首页回查缺少goldenEggInfo.unsmashedGoldenEggs")
-                return@let
-            }
-            val refreshedUnsmashed = refreshedGoldenEggInfo.optInt("unsmashedGoldenEggs").coerceAtLeast(0)
-            if (refreshedUnsmashed > 0) smashedGoldenEgg(refreshedUnsmashed)
         } catch (t: Throwable) {
+            if (t is kotlinx.coroutines.CancellationException || t is InterruptedException) throw t
             Log.printStackTrace("AntOrchard", "金蛋奖励处理异常:", t)
         }
     }
@@ -53,6 +77,7 @@ internal suspend fun AntOrchard.runOrchardRewardWorkflow(indexJson: JSONObject, 
     if (receiveOrchardTaskAward.value == true) {
         syncTaobaoLimitBalloon()
         doOrchardDailyTask(userId)
+        doOrchardGameCenterTasks()
         doOrchardHomeGameTasks()
         receiveLeyuanDailyTaskAwards()
         runCampTakeover()

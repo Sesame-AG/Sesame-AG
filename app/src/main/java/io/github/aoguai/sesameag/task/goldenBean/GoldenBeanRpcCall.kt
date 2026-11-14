@@ -42,7 +42,7 @@ internal object GoldenBeanRpcCall {
     internal val ENTRIES = listOf(MASTER_ENTRY, ZHIMA_ENTRY)
 
     internal const val TASK_SCENE_CODE = "GOLDEN_BEAN_MASTER_TASK"
-    internal const val VERSION = "20260901.01"
+    internal const val VERSION = "20261106.01"
     internal const val MINER_SOURCE =
         "ch_url-https://render.alipay.com/p/yuyan/180020010001291350/index.html"
     internal const val GAME_SCENE_CODE = "GOLDENBEAN"

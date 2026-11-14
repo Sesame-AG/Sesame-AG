@@ -14,7 +14,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 object AntOrchardRpcCall {
-    private const val VERSION = "20260721.01"
+    private const val VERSION = "20261022.01"
     private const val CHARITY_GAME_CENTER_VERSION = "10.8.20"
     private const val ENTRY_SOURCE = "ch_appcenter__chsub_9patch"
     private const val ACTION_SOURCE = "gonggexiguan"
@@ -75,6 +75,12 @@ object AntOrchardRpcCall {
             JSONArray().put(requestData).toString(),
         )
     }
+
+    fun queryGameCenter(): String = RequestManager.requestString(
+        "com.alipay.antorchard.queryGameCenter",
+        JSONArray().put(JSONObject().put("requestType", "NORMAL").put("sceneCode", "ORCHARD")
+            .put("source", ENTRY_SOURCE).put("version", VERSION)).toString(),
+    )
 
     fun orchardSeedList(): String = RequestManager.requestString(
         "com.alipay.antfarm.orchardSeedList",

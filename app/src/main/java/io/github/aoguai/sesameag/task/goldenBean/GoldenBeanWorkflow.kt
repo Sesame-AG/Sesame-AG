@@ -16,6 +16,7 @@ import io.github.aoguai.sesameag.util.UserDataStore
 import io.github.aoguai.sesameag.util.UserDataStoreManager
 import io.github.aoguai.sesameag.util.maps.UserMap
 import io.github.aoguai.sesameag.task.common.GameCenterPlayRpcCall
+import io.github.aoguai.sesameag.task.common.NonDurationGameTask
 import io.github.aoguai.sesameag.task.common.DeferredReason
 import io.github.aoguai.sesameag.util.CoroutineUtils
 import kotlinx.coroutines.runBlocking
@@ -485,15 +486,13 @@ private class GoldenBeanTaskFlowAdapter(
                     if (!result.success || result.deferredReason != null) return result
                 }
                 GameCenterPlayRpcCall.TaskAction.LEGACY_EXTERNAL_REPORT -> {
-                    val report = runBlocking {
-                        requireNotNull(decision.mappedTask).reportDetailed(1, GOLDEN_BEAN_GAME_CHANNEL,
-                            includeSafetyReport = false) { Log.goldenBean(it) }
+                    val result = runBlocking {
+                        NonDurationGameTask.advance(
+                            requireNotNull(decision.mappedTask), item.raw, channel = GOLDEN_BEAN_GAME_CHANNEL,
+                            detail = "taskId=${item.type}", logger = Log::goldenBean,
+                        )
                     }
-                    if (!report.completed) return TaskFlowActionResult.failure(
-                        failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
-                        message = report.failureMessage, rpc = "GameTask.reportDetailed",
-                        detail = "taskId=${item.type}", continueCurrentRoundOnFailure = true,
-                    )
+                    if (result.deferredReason != DeferredReason.STATE_CONFIRMATION) return result
                 }
                 else -> return TaskFlowActionResult.defer(
                     DeferredReason.PREREQUISITE_PENDING, "等待对应游戏业务条件", refreshAfterAction = true,
