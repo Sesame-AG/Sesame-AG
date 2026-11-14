@@ -8,6 +8,7 @@ import android.content.Context
 import android.os.Environment
 import android.provider.MediaStore
 import com.fasterxml.jackson.core.type.TypeReference
+import io.github.aoguai.sesameag.data.Config
 import io.github.aoguai.sesameag.data.General
 import io.github.aoguai.sesameag.storage.PrivateStorage
 import io.github.aoguai.sesameag.storage.StoreAccess
@@ -230,6 +231,17 @@ object Files {
             }
         }
         return confV2File
+    }
+
+    /** 删除时不调用迁移入口，防止残留旧配置再次恢复账号。 */
+    fun deleteAccountConfig(userId: String): Unit = StoreAccess.withHostStopped {
+        withAccountLock(userId) {
+            val legacy = child(CONFIG_DIR, "config_v2-$userId.json")
+            check(!legacy.exists() || legacy.delete()) { "旧版账号配置删除失败" }
+            val directory = child(CONFIG_DIR, userId)
+            check(!directory.exists() || directory.delete()) { "账号配置目录删除失败，可能仍有文件残留" }
+            if (Config.isLoadedFor(userId)) Config.unload()
+        }
     }
 
     @JvmStatic

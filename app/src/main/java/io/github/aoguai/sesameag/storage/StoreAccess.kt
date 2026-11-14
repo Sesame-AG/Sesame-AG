@@ -13,8 +13,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.RandomAccessFile
+import java.nio.channels.FileLock
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.Semaphore
 import kotlin.concurrent.thread
@@ -35,6 +38,39 @@ object StoreAccess {
         override fun onChanged(collection: Int, owner: String, name: String) = dispatchLocal(Change(collection, owner, name))
     }
     @Volatile private var remote = false
+    private var hostLockInput: FileInputStream? = null
+    private var hostFileLock: FileLock? = null
+
+    /** 宿主通过只读描述符持有共享锁，直到进程退出；配置删除方持有同文件排他锁。 */
+    fun holdHostLock(): Unit = transaction {
+        check(remote) { "只有宿主进程持有存活锁" }
+        if (hostFileLock?.isValid == true) return@transaction
+        val file = StoreFile(StoreFile.root, "host.lock")
+        if (!file.exists()) write(file, "")
+        val descriptor = remoteSession.get()!!.read(file.collection, file.owner, file.resourceName)
+            ?: throw IOException("无法取得宿主存活锁")
+        val input = ParcelFileDescriptor.AutoCloseInputStream(descriptor)
+        try {
+            val lock = input.channel.tryLock(0L, Long.MAX_VALUE, true)
+                ?: throw IOException("账号配置正在维护，请稍后重新打开支付宝")
+            hostLockInput = input
+            hostFileLock = lock
+        } catch (failure: Throwable) {
+            input.close()
+            throw failure
+        }
+    }
+
+    fun <T> withHostStopped(block: () -> T): T = transaction {
+        check(!remote) { "账号删除只能由模块应用执行" }
+        val file = StoreFile(StoreFile.root, "host.lock")
+        if (!file.exists()) write(file, "")
+        RandomAccessFile(file.localFile(), "rw").use { handle ->
+            val lock = handle.channel.tryLock()
+                ?: throw IOException("请先彻底关闭支付宝后再删除账号配置")
+            lock.use { block() }
+        }
+    }
 
     fun useRemote() { remote = true }
     val isRemote: Boolean get() = remote

@@ -177,7 +177,7 @@ class BaseModel : Model() {
          */
         val taskTimeout: MultiplyIntegerModelField =
             MultiplyIntegerModelField("taskTimeout", "单任务超时(分钟)", 10, 1, 24 * 60, 60000).withDesc(
-                "普通任务单轮执行超过该时间会被判定超时；森林、庄园、运动等白名单长任务不受限制。",
+                "普通任务限制单轮总耗时；森林、庄园、运动限制连续无执行活动的时间，RPC 返回和任务流结束会重新计时，显式等待按原时长保留。",
             )
 
         /**

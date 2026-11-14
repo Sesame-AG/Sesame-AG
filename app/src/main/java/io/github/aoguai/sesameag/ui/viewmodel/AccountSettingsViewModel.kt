@@ -389,9 +389,12 @@ class AccountSettingsViewModel(
 
     suspend fun deleteConfig(): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
-            check(Files.delFile(Files.getUserConfigDir(userId))) { "配置删除失败" }
+            Files.deleteAccountConfig(userId)
             clearSavedDrafts()
-        }
+            fields.clear()
+            modelFieldsByCode.clear()
+            _uiState.value = AccountSettingsUiState(isLoading = false)
+        }.onFailure { Log.printStackTrace(TAG, "账号配置删除失败", it) }
     }
 
     suspend fun runFieldAction(key: FieldKey): Result<String> {

@@ -23,6 +23,20 @@ object WakeLockManager {
     ) : AutoCloseable {
         private val closed = AtomicBoolean(false)
 
+        @SuppressLint("WakelockTimeout")
+        @Synchronized
+        fun renew(timeoutMs: Long): Boolean {
+            if (closed.get()) return false
+            val lock = wakeLock ?: return false
+            return runCatching {
+                lock.acquire(timeoutMs)
+                true
+            }.onFailure { error ->
+                Log.printStackTrace(TAG, "续期唤醒锁失败[source=$source schedule=${scheduleId.orEmpty()}]", error)
+            }.getOrDefault(false)
+        }
+
+        @Synchronized
         override fun close() {
             if (!closed.compareAndSet(false, true)) return
             val heldMs = (SystemClock.elapsedRealtime() - acquiredAtElapsedMs).coerceAtLeast(0L)

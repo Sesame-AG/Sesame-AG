@@ -136,7 +136,10 @@ object RequestManager {
         }
 
         // 在途请求可能触发本轮取消，先退出任务，再判断账号与业务结果。
-        TaskExecutionReport.current()?.ensureSessionActive()
+        TaskExecutionReport.current()?.let { report ->
+            report.ensureSessionActive()
+            report.recordActivity()
+        }
         // 4. 结果校验与状态维护
         if (!RpcDailyCircuit.isSameSession(identity)) {
             return RpcRequestOutcome.Stopped(RpcFallbackJsonFactory.build("账号会话已变化", methodLog))

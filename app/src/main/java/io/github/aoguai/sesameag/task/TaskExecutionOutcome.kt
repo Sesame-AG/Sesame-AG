@@ -1,5 +1,6 @@
 package io.github.aoguai.sesameag.task
 
+import android.os.SystemClock
 import io.github.aoguai.sesameag.task.common.TaskFlowExecutionState
 import io.github.aoguai.sesameag.task.common.TaskFlowRunResult
 import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
@@ -9,6 +10,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.asContextElement
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 enum class TaskExecutionOutcome {
     SUCCESS,
@@ -26,6 +28,16 @@ internal class TaskExecutionReport(
         ?: AccountSessionIdentity("", 0L),
 ) {
     var executionJob: Job? = current()?.executionJob
+    private val activityUntil = AtomicLong(SystemClock.elapsedRealtime())
+
+    val activityUntilElapsedMs: Long
+        get() = activityUntil.get()
+
+    // 显式等待期间沿用调用方的时长预算，不把正常请求间隔算作停滞。
+    fun recordActivity(expectedWaitMs: Long = 0L) {
+        val until = SystemClock.elapsedRealtime() + expectedWaitMs.coerceAtLeast(0L)
+        activityUntil.updateAndGet { previous -> maxOf(previous, until) }
+    }
 
     fun ensureSessionActive(userId: String? = null) {
         if (Thread.currentThread().isInterrupted || executionJob?.isActive == false) {
@@ -62,6 +74,7 @@ internal class TaskExecutionReport(
 
     fun recordFlow(state: TaskFlowExecutionState, module: String, flow: String, result: TaskFlowRunResult) {
         flows[Triple(state, module, flow)] = result
+        recordActivity()
     }
 
     fun outcome(): TaskExecutionOutcome = when {

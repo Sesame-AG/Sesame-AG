@@ -1,5 +1,6 @@
 package io.github.aoguai.sesameag.util
 
+import io.github.aoguai.sesameag.task.TaskExecutionReport
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.TimeoutCancellationException
@@ -24,6 +25,7 @@ object CoroutineUtils {
      */
     @JvmStatic
     fun sleepCompat(millis: Long) {
+        TaskExecutionReport.current()?.recordActivity(millis)
         try {
             runBlocking {
                 delay(millis)

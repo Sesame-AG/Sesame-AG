@@ -90,6 +90,9 @@ import io.github.aoguai.sesameag.util.maps.UserMap.currentUid
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.lang.AutoCloseable
 import java.lang.reflect.Method
@@ -234,6 +237,9 @@ class ApplicationHook {
                         android.util.Log.w(TAG, "模块存储未就绪，请打开模块完成数据迁移")
                         return@execute
                     }
+                    if (runCatching { io.github.aoguai.sesameag.storage.StoreAccess.holdHostLock() }.onFailure {
+                            android.util.Log.e(TAG, "无法持有宿主存活锁，停止初始化", it)
+                        }.isFailure) return@execute
                     XposedEnv.runtimeIdentity = RuntimeIdentityGuard.trustedIdentity()
                     Log.init(context)
                     val activeLoader = classLoader ?: return@execute
@@ -271,6 +277,9 @@ class ApplicationHook {
                         android.util.Log.w(TAG, "模块存储未就绪，请打开模块完成数据迁移")
                         return@execute
                     }
+                    if (runCatching { io.github.aoguai.sesameag.storage.StoreAccess.holdHostLock() }.onFailure {
+                            android.util.Log.e(TAG, "无法持有宿主存活锁，停止初始化", it)
+                        }.isFailure) return@execute
                     init(Files.CONFIG_DIR)
                     appContext = context
                     mainHandler = Handler(Looper.getMainLooper())
@@ -1032,8 +1041,7 @@ class ApplicationHook {
                         }
 
                         val models = Model.modelArray.filterNotNull()
-                        // 保持唤醒是显式的耗电策略；默认关闭时不应隐式持有覆盖整轮任务的 10 分钟 CPU 锁。
-                        // 定时 Receiver 仍以短锁完成路由，任务需要持续后台执行时由用户开启 stayAwake。
+                        // 定时 Receiver 只持短锁；用户开启 stayAwake 时才在主任务执行期间续期。
                         val executionLease =
                             appContext
                                 ?.takeIf { BaseModel.stayAwake.value == true }
@@ -1045,10 +1053,23 @@ class ApplicationHook {
                                         scheduleId = activePersistentScheduleId,
                                     )
                                 }
+                        val leaseRenewal = executionLease?.let { lease ->
+                            launch(Dispatchers.Default) {
+                                while (isActive) {
+                                    delay(PersistentScheduleDefaults.TASK_EXECUTION_WAKELOCK_MS / 2)
+                                    if (BaseModel.stayAwake.value != true) {
+                                        lease.close()
+                                        break
+                                    }
+                                    if (!lease.renew(PersistentScheduleDefaults.TASK_EXECUTION_WAKELOCK_MS)) break
+                                }
+                            }
+                        }
                         try {
                             CoroutineTaskRunner(models).run(isFirst = true)
                             mainTaskRunCompletedAtMs = System.currentTimeMillis()
                         } finally {
+                            leaseRenewal?.cancel()
                             executionLease?.close()
                         }
                         activePersistentScheduleId?.let { scheduleId ->

@@ -55,11 +55,17 @@ abstract class ModelTask : Model() {
         val scope: CoroutineScope? = null,
         val startJob: Deferred<TaskExecutionOutcome>? = null,
         val predecessors: List<Job> = emptyList(),
+        val report: TaskExecutionReport? = null,
     )
     private val taskState = java.util.concurrent.atomic.AtomicReference(TaskState())
     private val currentStartJob: Deferred<TaskExecutionOutcome>?
         get() = taskState.get().startJob
     private val executionQueue = io.github.aoguai.sesameag.util.SerialTaskQueue()
+
+    internal fun executionActivityUntilElapsedMs(job: Deferred<TaskExecutionOutcome>): Long? {
+        val state = taskState.get()
+        return state.report?.takeIf { state.startJob === job }?.activityUntilElapsedMs
+    }
 
     /** 子任务映射表，存储当前任务的所有子任务 */
     private val childTaskMap: MutableMap<String, ChildModelTask> = ConcurrentHashMap()
@@ -514,13 +520,13 @@ abstract class ModelTask : Model() {
                     report.outcome()
                 }
             }
-            if (!taskState.compareAndSet(state, TaskState(scope, job, predecessors))) {
+            if (!taskState.compareAndSet(state, TaskState(scope, job, predecessors, report))) {
                 job.cancel()
                 if (force) scope.cancel()
                 continue
             }
             job.invokeOnCompletion {
-                taskState.updateAndGet { current -> if (current.startJob === job) current.copy(startJob = null) else current }
+                taskState.updateAndGet { current -> if (current.startJob === job) current.copy(startJob = null, report = null) else current }
             }
             if (stopping != null) {
                 stoppingJobs.add(stopping)

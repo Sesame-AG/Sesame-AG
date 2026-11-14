@@ -1,6 +1,7 @@
 package io.github.aoguai.sesameag.util
 
 import android.annotation.SuppressLint
+import io.github.aoguai.sesameag.task.TaskExecutionReport
 import java.text.DateFormat
 import java.text.SimpleDateFormat
 import java.util.*
@@ -388,6 +389,7 @@ object TimeUtil {
     @JvmStatic
     fun sleepCompat(millis: Long) {
         if (millis <= 0) return
+        TaskExecutionReport.current()?.recordActivity(millis)
         java.util.concurrent.locks.LockSupport.parkNanos(millis * NANOS_PER_MILLISECOND)
     }
 }
