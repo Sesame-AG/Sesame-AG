@@ -38,7 +38,6 @@ import org.json.JSONObject
 internal const val GOLDEN_BEAN_BLACKLIST_MODULE = "金豆夺宝"
 internal const val MARKETING_POPUP_CLICKED = "MARKETING_POPUP_CLICKED"
 internal const val GOLDEN_BEAN_GAME_CHANNEL = "goldenbean"
-internal const val GOLDEN_BEAN_CONVERGENCE_LIMIT = 64
 
 /**
  * Module-local orchestration for the Golden Bean Treasure domain. Task-list
@@ -99,37 +98,36 @@ internal suspend fun GoldenBeanTreasure.runGoldenBeanTreasure() {
         }
     }
     val attemptedGameSnapshots = mutableSetOf<String>()
-    var convergenceRound = 1
+    val identity = RpcDailyCircuit.captureIdentity()
     var taskResults = entryRuns.associateWith { it.runTaskFlow(executeIntervalInt) }
     var confirmedTaskProgress = taskResults.values.any { it.progressed }
-    var reachedConvergenceLimit = false
+    val scheduleGameConfirmation: (Long) -> Unit = { triggerAt ->
+        val now = System.currentTimeMillis()
+        if (TimeUtil.isSameDay(now, triggerAt)) scheduleGoldenBeanTasks("game_center", triggerAt)
+    }
     var gameResult =
         if (masterRun == null) {
             GoldenBeanGameFlowResult(completed = false, progressed = false, blocked = true)
         } else {
-            GoldenBeanTreasureSupport.runGameCenterOpportunityFlow(attemptedGameSnapshots)
+            GoldenBeanTreasureSupport.runGameCenterOpportunityFlow(attemptedGameSnapshots, scheduleGameConfirmation)
         }
     var needsTaskRefresh =
         taskResults.values.any { it.progressed } || gameResult.progressed || gameResult.taskRefreshRequested
-    while (!gameResult.blocked && needsTaskRefresh && convergenceRound < GOLDEN_BEAN_CONVERGENCE_LIMIT) {
-        convergenceRound++
+    while (!gameResult.blocked && needsTaskRefresh) {
+        if (Thread.currentThread().isInterrupted) throw InterruptedException("金豆任务流程已中断")
+        if (ApplicationHookConstants.isOffline() || !RpcDailyCircuit.isCurrent(identity)) return
         taskResults = entryRuns.associateWith { it.runTaskFlow(executeIntervalInt) }
         confirmedTaskProgress = confirmedTaskProgress || taskResults.values.any { it.progressed }
         val shouldRunGameCenter = taskResults.values.any { it.progressed } || gameResult.progressed
         gameResult =
             if (masterRun != null && shouldRunGameCenter) {
-                GoldenBeanTreasureSupport.runGameCenterOpportunityFlow(attemptedGameSnapshots)
+                GoldenBeanTreasureSupport.runGameCenterOpportunityFlow(attemptedGameSnapshots, scheduleGameConfirmation)
             } else {
                 gameResult.copy(taskRefreshRequested = false)
             }
         needsTaskRefresh =
             taskResults.values.any { it.progressed } || gameResult.progressed || gameResult.taskRefreshRequested
     }
-    if (convergenceRound >= GOLDEN_BEAN_CONVERGENCE_LIMIT && needsTaskRefresh) {
-        reachedConvergenceLimit = true
-        Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "金豆夺宝达到收敛轮次上限$GOLDEN_BEAN_CONVERGENCE_LIMIT")
-    }
-
     val exchangedEntries = runGoldenBeanExchanges(entryRuns)
     if (exchangedEntries.isNotEmpty()) {
         val refreshedResults = exchangedEntries.associateWith { it.runTaskFlow(executeIntervalInt) }
@@ -143,7 +141,7 @@ internal suspend fun GoldenBeanTreasure.runGoldenBeanTreasure() {
     val allEntrancesQueried = entryRuns.size == GoldenBeanRpcCall.ENTRIES.size
     val allTaskFlowsConfirmed = taskResults.values.all { it.completed && !it.stopped }
     val hasUnresolvedTasks = entryRuns.any { it.adapter.hasUnresolvedTasks() }
-    if (allEntrancesQueried && floatingConfirmed && minerConfirmed && !reachedConvergenceLimit && allTaskFlowsConfirmed && gameResult.completed && !hasUnresolvedTasks) {
+    if (allEntrancesQueried && floatingConfirmed && minerConfirmed && allTaskFlowsConfirmed && gameResult.completed && !hasUnresolvedTasks) {
         Status.setFlagToday(StatusFlags.FLAG_GOLDEN_BEAN_TASKS_DONE)
     } else if (!hasUnresolvedTasks) {
         Log.goldenBean("金豆夺宝任务未写入当日完成标记：任务流、矿工或金豆乐园状态尚未完成确认")
@@ -183,11 +181,10 @@ internal fun GoldenBeanTreasure.runGoldenBeanMall() {
             Log.goldenBean("金豆商城未选择商品，仅更新兑换候选")
             return@execute
         }
-        var confirmed = 0
         for ((selectedId, configuredCount) in selected) {
             if (selectedId.isNullOrBlank() || configuredCount == null || configuredCount < 0) continue
             val countFlag = StatusFlags.FLAG_GOLDEN_BEAN_MALL_EXCHANGE_COUNT_PREFIX + selectedId
-            while (confirmed < GOLDEN_BEAN_CONVERGENCE_LIMIT) {
+            while (true) {
                 checkCurrent()
                 val done = Status.getIntFlagToday(countFlag) ?: 0
                 if (configuredCount > 0 && done >= configuredCount) break
@@ -259,13 +256,8 @@ internal fun GoldenBeanTreasure.runGoldenBeanMall() {
                 store.put(GOLDEN_BEAN_MALL_PENDING, request.toString(), requirePersistence = true)
                 if (!acknowledged) Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "金豆商城兑换未确认成功，保留订单回查:$response")
                 if (!confirmGoldenBeanMallExchange(store, request, checkCurrent)) return@execute
-                confirmed++
                 // 保留金豆 executeInterval 配置的连续兑换间隔，并沿用原有 425–500ms 随机下限。
                 CoroutineUtils.sleepCompat(executeIntervalInt.toLong().coerceAtLeast(RandomUtil.nextLong(425, 501)))
-            }
-            if (confirmed >= GOLDEN_BEAN_CONVERGENCE_LIMIT) {
-                Log.goldenBean("金豆商城本轮已确认${confirmed}笔，剩余配置留待后续调度")
-                return@execute
             }
         }
     }
@@ -486,13 +478,13 @@ private class GoldenBeanTaskFlowAdapter(
                     if (!result.success || result.deferredReason != null) return result
                 }
                 GameCenterPlayRpcCall.TaskAction.LEGACY_EXTERNAL_REPORT -> {
-                    val result = runBlocking {
+                    nextQuerySyncTypes = TASK_STATUS_SYNC_TYPES
+                    return runBlocking {
                         NonDurationGameTask.advance(
                             requireNotNull(decision.mappedTask), item.raw, channel = GOLDEN_BEAN_GAME_CHANNEL,
                             detail = "taskId=${item.type}", logger = Log::goldenBean,
                         )
                     }
-                    if (result.deferredReason != DeferredReason.STATE_CONFIRMATION) return result
                 }
                 else -> return TaskFlowActionResult.defer(
                     DeferredReason.PREREQUISITE_PENDING, "等待对应游戏业务条件", refreshAfterAction = true,

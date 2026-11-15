@@ -1,5 +1,7 @@
 package io.github.aoguai.sesameag.task.goldenBean
 
+import io.github.aoguai.sesameag.data.Status
+import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.model.ModelFields
 import io.github.aoguai.sesameag.model.ConfigPortScope
 import io.github.aoguai.sesameag.hook.ExchangeOptionsRefreshBridge
@@ -175,7 +177,17 @@ class GoldenBeanTreasure : ModelTask() {
                 io.github.aoguai.sesameag.task.TaskExecutionOutcome.SKIPPED
             } else {
                 executeIntervalInt = max(executeInterval.value ?: 0, 500)
-                resumeGoldenBeanTasks()
+                if (payload.optString("wait_key") == "game_center") {
+                    val result = GoldenBeanTreasureSupport.runGameCenterOpportunityFlow(
+                        mutableSetOf(), { triggerAt -> scheduleGoldenBeanTasks("game_center", triggerAt) },
+                        resumeOnly = true)
+                    if (result.progressed || result.taskRefreshRequested) resumeGoldenBeanTasks()
+                    when {
+                        result.blocked -> io.github.aoguai.sesameag.task.TaskExecutionOutcome.FAILED
+                        result.completed -> io.github.aoguai.sesameag.task.TaskExecutionOutcome.SUCCESS
+                        else -> io.github.aoguai.sesameag.task.TaskExecutionOutcome.DEFERRED
+                    }
+                } else resumeGoldenBeanTasks()
             }
         }
     }
