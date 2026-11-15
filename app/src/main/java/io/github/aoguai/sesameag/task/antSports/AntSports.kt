@@ -114,9 +114,6 @@ class AntSports : ModelTask() {
         /** @brief 训练好友目标变更重试上限 */
         private const val MAX_TRAIN_MEMBER_CHANGED_RETRIES = 5
 
-        /** @brief 运动首页任务最大补拉轮次 */
-        private const val MAX_SPORTS_HOME_BUBBLE_ROUNDS = 10
-
         /** @brief 步数同步子任务 ID，用于避免同一天重复排队 */
         private const val SYNC_STEP_CHILD_TASK_ID = "syncStep"
         private const val SYNC_STEP_CONFIRM_CHILD_TASK_ID = "syncStepConfirm"
@@ -1941,29 +1938,6 @@ class AntSports : ModelTask() {
             }
         }
 
-        override fun estimateRoundLimit(items: List<TaskFlowItem>): Int {
-            var visibleTaskCount = 0
-            var pendingTransitions = 0
-            for (item in items) {
-                if (shouldSkipByTodayState(item)) continue
-                val phase = mapPhase(item)
-                if ((phase != TaskFlowPhase.REWARD_READY && isBlacklisted(item)) || shouldSkip(item)) continue
-                visibleTaskCount++
-                when (phase) {
-                    TaskFlowPhase.REWARD_READY -> pendingTransitions += 1
-                    TaskFlowPhase.SIGNUP_REQUIRED -> pendingTransitions += 1
-                    TaskFlowPhase.READY_TO_COMPLETE -> {
-                        val currentNum = item.current ?: 0
-                        val limitConfigNum = item.limit ?: (currentNum + 1)
-                        val remainingNum = max(1, limitConfigNum - currentNum)
-                        pendingTransitions += remainingNum * 2
-                    }
-                    else -> Unit
-                }
-            }
-            return max(1, pendingTransitions + visibleTaskCount)
-        }
-
         override fun actionKey(item: TaskFlowItem, action: TaskFlowAction): String {
             val taskDetail = item.raw ?: return super<TaskFlowAdapter>.actionKey(item, action)
             return when (action) {
@@ -3346,9 +3320,12 @@ class AntSports : ModelTask() {
 
     private fun sportsEnergyBubbleTask() {
         try {
+            val identity = RpcDailyCircuit.captureIdentity()
             var round = 1
             val handledSportsHomeRewardRecordIds = mutableSetOf<String>()
-            while (round <= MAX_SPORTS_HOME_BUBBLE_ROUNDS) {
+            while (true) {
+                if (Thread.currentThread().isInterrupted) throw InterruptedException("运动首页气泡处理已中断")
+                if (ApplicationHookConstants.isOffline() || !RpcDailyCircuit.isCurrent(identity)) return
                 val jo = JSONObject(AntSportsRpcCall.queryEnergyBubbleModule())
                 if (!ResChecker.checkRes(TAG, jo)) {
                     Log.error(TAG, "queryEnergyBubbleModule fail: $jo")
@@ -4090,43 +4067,43 @@ class AntSports : ModelTask() {
                 ?.let { RouteDecision(it, "显式配置路线") }
         }
 
+        val currentTheme = currentCandidate?.themeId
+        val themes = if (config.themeLoop && !currentTheme.isNullOrBlank() &&
+            (config.themeIds.isEmpty() || currentTheme in config.themeIds)
+        ) listOf(currentTheme) else config.themeIds
         if (walkPathTheme.value == WalkPathTheme.LOWEST_COMPLETION) {
-            val currentTheme = currentCandidate?.themeId
-            val themes = if (config.themeLoop && !currentTheme.isNullOrBlank() &&
-                (config.themeIds.isEmpty() || currentTheme in config.themeIds)
-            ) listOf(currentTheme) else config.themeIds
-            return selectLeastCompletedRoute(themes, currentPathId)
+            return selectThemeRoute(themes, currentPathId, userPathSnapshots = userPathSnapshots)
         }
 
         findMissingKnowledgeRoute(
+            allowedThemes = themes,
+            userPathSnapshots = userPathSnapshots,
             excludePathId = currentPathId.takeIf { currentRouteTerminal },
             excludePathName = currentCandidate?.name?.takeIf {
                 it.isNotBlank() && currentRouteTerminal
             },
         )?.let { return it }
 
-        selectRecommendedRoute(currentPathData, currentPathId)?.let {
+        selectRecommendedRoute(currentPathData, currentPathId, themes, userPathSnapshots)?.let {
             return RouteDecision(it, "服务端推荐路线未完成优先")
         }
 
         val historyCandidates = userPathSnapshots.values
             .asSequence()
             .filter { snapshot ->
-                snapshot.pathCompleteStatus in setOf("JOIN", "NOT_COMPLETED") &&
-                    snapshot.dayLimit == false &&
+                snapshot.pathCompleteStatus in setOf("JOIN", "NOT_COMPLETED", "INTERRUPT", "NOT_JOIN") &&
+                    snapshot.dayLimit != true &&
                     snapshot.pathOnlineStatus?.equals("ONLINE", ignoreCase = true) != false &&
                     snapshot.pathId != currentPathId
             }
             .mapNotNull { snapshot ->
                 val pathData = fetchRoutePathData(snapshot.pathId) ?: return@mapNotNull null
                 val candidate = buildRouteCandidateFromPathData(pathData) ?: return@mapNotNull null
-                if (candidate.pathId != snapshot.pathId || !isActiveRouteStatus(candidate.status)) {
+                if (candidate.pathId != snapshot.pathId ||
+                    !isRouteCandidateActionable(pathData, snapshot)) {
                     return@mapNotNull null
                 }
-                if (!isRouteCandidateWalkable(pathData)) {
-                    return@mapNotNull null
-                }
-                if (config.themeIds.isNotEmpty() && candidate.themeId !in config.themeIds) {
+                if (themes.isNotEmpty() && candidate.themeId !in themes) {
                     return@mapNotNull null
                 }
                 candidate
@@ -4140,9 +4117,15 @@ class AntSports : ModelTask() {
             }
         }
         return historyCandidates.firstOrNull()?.let { RouteDecision(it, "用户已走路线未完成优先") }
+            ?: selectThemeRoute(themes, currentPathId, preferLeastCompleted = false, userPathSnapshots = userPathSnapshots)
     }
 
-    private fun selectLeastCompletedRoute(restrictedThemes: List<String>, currentPathId: String?): RouteDecision? {
+    private fun selectThemeRoute(
+        restrictedThemes: List<String>,
+        currentPathId: String?,
+        preferLeastCompleted: Boolean = true,
+        userPathSnapshots: Map<String, UserPathSnapshot>,
+    ): RouteDecision? {
         val themes = if (restrictedThemes.isNotEmpty()) restrictedThemes else {
             val response = JSONObject(AntSportsRpcCall.queryThemeList())
             if (!ResChecker.checkRes(TAG, "查询路线主题失败:", response)) return null
@@ -4172,8 +4155,10 @@ class AntSports : ModelTask() {
                 }
             }
         }
-        val ordered = candidates.distinctBy { it.first.pathId }
+        val unique = candidates.distinctBy { it.first.pathId }
+        val ordered = if (preferLeastCompleted) unique
             .sortedWith(compareBy<Pair<RouteCandidate, Int>> { it.second }.thenBy { it.first.pathId == currentPathId })
+            else unique.filter { it.first.pathId != currentPathId }
         for ((candidate, count) in ordered) {
             if (ApplicationHookConstants.isOffline()) return null
             val data = fetchRoutePathData(candidate.pathId) ?: continue
@@ -4181,12 +4166,14 @@ class AntSports : ModelTask() {
             if (verified.pathId != candidate.pathId) continue
             if (restrictedThemes.isNotEmpty() && !verified.themeId.isNullOrBlank() && verified.themeId !in restrictedThemes) continue
             val step = data.optJSONObject("userPathStep")
+            if (userPathSnapshots[verified.pathId]?.pathOnlineStatus?.equals("ONLINE", ignoreCase = true) == false) continue
             if (step?.optBoolean("dayLimit", false) == true) continue
-            if (isActiveRouteStatus(verified.status) && isRouteStepUnavailable(data, step)) continue
+            if (!isRouteCandidateActionable(data, userPathSnapshots[verified.pathId]) &&
+                !(preferLeastCompleted && isRouteCompleted(verified.status))) continue
             return RouteDecision(
                 verified.copy(name = verified.name.ifBlank { candidate.name }, themeId = verified.themeId ?: candidate.themeId,
                     cityId = verified.cityId ?: candidate.cityId),
-                "优先低完成次数路线，当前${count}次",
+                if (preferLeastCompleted) "优先低完成次数路线，当前${count}次" else "主题内可加入路线",
             )
         }
         return null
@@ -4232,16 +4219,13 @@ class AntSports : ModelTask() {
         )
     }
 
-    private fun isRouteCandidateWalkable(pathData: JSONObject): Boolean {
+    private fun isRouteCandidateActionable(pathData: JSONObject, snapshot: UserPathSnapshot? = null): Boolean {
+        if (ApplicationHookConstants.isOffline() ||
+            snapshot?.pathOnlineStatus?.equals("ONLINE", ignoreCase = true) == false) return false
         val userPathStep = pathData.optJSONObject("userPathStep") ?: return false
-        return isActiveRouteStatus(userPathStep.optString("pathCompleteStatus", "")) &&
-            !isRouteStepUnavailable(pathData, userPathStep)
-    }
-
-    private fun isRouteCandidateActionable(pathData: JSONObject): Boolean {
-        val userPathStep = pathData.optJSONObject("userPathStep") ?: return false
+        if (userPathStep.optBoolean("dayLimit", false)) return false
         val status = userPathStep.optString("pathCompleteStatus", "")
-        return status == "NOT_JOIN" || (
+        return status == "NOT_JOIN" || status == "INTERRUPT" || (
             isActiveRouteStatus(status) &&
                 !isRouteStepUnavailable(pathData, userPathStep)
             )
@@ -4250,6 +4234,8 @@ class AntSports : ModelTask() {
     private fun selectRecommendedRoute(
         currentPathData: JSONObject?,
         currentPathId: String?,
+        allowedThemes: List<String>,
+        userPathSnapshots: Map<String, UserPathSnapshot>,
     ): RouteCandidate? {
         val recommendPath = currentPathData?.optJSONObject("recommendPath")
         val recommendPathId = recommendPath?.optString("pathId", "")?.trim().orEmpty()
@@ -4260,7 +4246,8 @@ class AntSports : ModelTask() {
                 candidate != null &&
                 candidate.pathId == recommendPathId &&
                 !isRouteCompleted(candidate.status) &&
-                isRouteCandidateActionable(pathData)
+                (allowedThemes.isEmpty() || candidate.themeId in allowedThemes) &&
+                isRouteCandidateActionable(pathData, userPathSnapshots[candidate.pathId])
             ) {
                 return candidate.copy(
                     name = candidate.name.ifBlank { recommendPath?.optString("name", recommendPathId) ?: recommendPathId },
@@ -4270,13 +4257,17 @@ class AntSports : ModelTask() {
             }
         }
         // 路线完成后 queryPath 的 recommendPath 会指向自身或缺失，回退到真实页面的推荐列表接口选下一条未加入路线
-        return selectRecommendPathListRoute(currentPathId)
+        return selectRecommendPathListRoute(currentPathId, allowedThemes, userPathSnapshots)
     }
 
     /**
      * 通过推荐列表接口选取未加入的新路线，返回第一条可加入候选。
      */
-    private fun selectRecommendPathListRoute(currentPathId: String?): RouteCandidate? {
+    private fun selectRecommendPathListRoute(
+        currentPathId: String?,
+        allowedThemes: List<String>,
+        userPathSnapshots: Map<String, UserPathSnapshot>,
+    ): RouteCandidate? {
         if (currentPathId.isNullOrBlank()) {
             return null
         }
@@ -4301,22 +4292,26 @@ class AntSports : ModelTask() {
             if (item.optString("pathCompleteStatus", "") != "NOT_JOIN") {
                 continue
             }
-            return RouteCandidate(
-                pathId = pathId,
-                name = item.optString("name", "").ifBlank { pathId },
-                status = item.optString("pathCompleteStatus", ""),
-            )
+            val pathData = fetchRoutePathData(pathId) ?: continue
+            val candidate = buildRouteCandidateFromPathData(pathData) ?: continue
+            if (candidate.pathId != pathId || isRouteCompleted(candidate.status) ||
+                allowedThemes.isNotEmpty() && candidate.themeId !in allowedThemes ||
+                !isRouteCandidateActionable(pathData, userPathSnapshots[pathId])) continue
+            return candidate.copy(name = candidate.name.ifBlank { item.optString("name", pathId) })
         }
         return null
     }
 
     private fun findMissingKnowledgeRoute(
+        allowedThemes: List<String>,
+        userPathSnapshots: Map<String, UserPathSnapshot>,
         excludePathId: String? = null,
         excludePathName: String? = null,
     ): RouteDecision? {
         val cityList = queryRouteKnowledgeCities()
         for (city in cityList) {
-            if (city.cityId.isBlank() || city.total <= 0 || city.received >= city.total) {
+            if (city.cityId.isBlank() || city.total <= 0 || city.received >= city.total ||
+                allowedThemes.isNotEmpty() && city.themeId != null && city.themeId !in allowedThemes) {
                 continue
             }
             val knowledgeEntries = queryRouteKnowledgeEntries(city.cityId) ?: continue
@@ -4345,10 +4340,12 @@ class AntSports : ModelTask() {
                     continue
                 }
 
+                if (allowedThemes.isNotEmpty() && path.themeId !in allowedThemes) continue
+                if (userPathSnapshots[path.pathId]?.pathOnlineStatus?.equals("ONLINE", ignoreCase = true) == false) continue
                 if (receiveRouteKnowledgeEventIfAvailable(pathData, knowledge)) {
                     continue
                 }
-                if (isRouteCompleted(path.status) || !isRouteCandidateActionable(pathData)) {
+                if (isRouteCompleted(path.status) || !isRouteCandidateActionable(pathData, userPathSnapshots[path.pathId])) {
                     continue
                 }
 
@@ -7183,11 +7180,6 @@ class AntSports : ModelTask() {
             if (taskId.isBlank()) {
                 return NeverlandTaskPendingDecision.PROCESS
             }
-            val status = task.optString("taskStatus", "")
-            if (status !in setOf("SIGNUP_COMPLETE", "INIT", "TO_RECEIVE")) {
-                clearNeverlandTaskPendingConfirmation(taskId)
-                return NeverlandTaskPendingDecision.PROCESS
-            }
             return if (isNeverlandTaskSubmittedToday(taskId)) {
                 NeverlandTaskPendingDecision.DEFER_CURRENT_CYCLE
             } else {
@@ -7946,9 +7938,6 @@ class AntSports : ModelTask() {
                     val awards = response.optJSONObject("data")?.optJSONArray("userItems")
                     val rewards = (0 until (awards?.length() ?: 0)).mapNotNull { awards?.optJSONObject(it) }
                         .filter { it.optInt("modifyCount") > 0 }
-                    if (rewards.any { it.optString("itemId") == "H1" }) {
-                        Status.removeFlag(StatusFlags.FLAG_ANTSPORTS_NEVERLAND_ENERGY_LIMIT)
-                    }
                     Log.sports("健康岛离线奖励已受理 " + rewards.joinToString("、") {
                         "${it.optString("name").ifBlank { it.optString("itemId") }}+${it.optInt("modifyCount")}" })
                     return TaskFlowActionResult.defer(DeferredReason.STATE_CONFIRMATION, "回查离线奖励", refreshAfterAction = true)
