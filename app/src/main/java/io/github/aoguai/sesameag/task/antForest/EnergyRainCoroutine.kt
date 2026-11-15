@@ -574,8 +574,17 @@ object EnergyRainCoroutine {
                                     },
                                 )
                                 if (report.stopCurrentRound) return EnergyRainGameExecutionResult.STOPPED
-                                if (report.deferredReason != DeferredReason.STATE_CONFIRMATION) {
-                                    return EnergyRainGameExecutionResult.UNKNOWN_FAILURE
+                                if (report.deferredReason !in setOf(DeferredReason.STATE_CONFIRMATION, DeferredReason.NO_PROGRESS_COOLDOWN)) {
+                                    Log.error(TAG, "能量雨游戏上报未完成[${candidate.taskType}] rpc=${report.rpc} code=${report.code} msg=${report.message} detail=${report.detail} raw=${report.raw}")
+                                    val failure = when (report.failureType) {
+                                        TaskRpcFailureType.RETRYABLE_RPC -> EnergyRainGameExecutionResult.RETRYABLE_FAILED
+                                        TaskRpcFailureType.BUSINESS_LIMIT, TaskRpcFailureType.NON_RETRYABLE_INVALID,
+                                        TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE -> EnergyRainGameExecutionResult.NON_RETRYABLE_FAILED
+                                        else -> EnergyRainGameExecutionResult.UNKNOWN_FAILURE
+                                    }
+                                    if (report.code != "GAME_ACTION_CONTRACT_MISSING" &&
+                                        report.deferredReason != DeferredReason.PREREQUISITE_PENDING) return failure
+                                    actionFailure = failure
                                 }
                                 confirmedResult?.let { return it }
                             }

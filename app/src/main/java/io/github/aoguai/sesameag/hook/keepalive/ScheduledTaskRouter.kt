@@ -383,6 +383,16 @@ object ScheduledTaskRouter {
             }
             return routeResult(dispatchExecute(context, schedule, source, wakenAtTime = false, wakenTime = null))
         }
+        if (childKind == AntForest.FOREST_GAME_CHILD_KIND) {
+            if (targetProcess) {
+                val forest = Model.getModel(AntForest::class.java) ?: return RouteResult.DEFERRED
+                if (!forest.isEnable()) return RouteResult.SKIPPED
+                return if (forest.triggerPersistentGameTask(schedule.payloadJson, schedule.id, source)) {
+                    RouteResult.HANDLED
+                } else RouteResult.FAILED
+            }
+            return routeResult(dispatchExecute(context, schedule, source, wakenAtTime = false, wakenTime = null))
+        }
         if (childKind == FOREST_READ_CHILD_KIND) {
             if (targetProcess) {
                 val forest = Model.getModel(AntForest::class.java) ?: return RouteResult.DEFERRED

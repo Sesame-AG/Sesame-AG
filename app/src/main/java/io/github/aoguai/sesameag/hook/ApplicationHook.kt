@@ -1113,29 +1113,60 @@ class ApplicationHook {
         fun scheduleNextExecutionInternal(baseTime: Long, preservedPoll: PersistentSchedule? = null) {
             try {
                 checkInactiveTime()
-                val checkInterval = checkInterval.value ?: 0
-                val execScheduleField = execAtTimeList
-                var delayMillis = checkInterval.toLong()
-                var targetTime: Long = 0
-                if (preservedPoll != null) {
-                    targetTime = preservedPoll.triggerAtMs
-                    record(TAG, "配置重载保留原轮询时间:${TimeUtil.getCommonDate(targetTime)}")
-                } else if (execScheduleField.isDisabled()) {
-                    record(TAG, "定时执行已关闭，保留轮询间隔调度")
-                } else {
-                    val intervalTargetTime = baseTime + checkInterval.toLong()
-                    val nextPointAt =
-                        TimeTriggerEvaluator.nextCheckpointAt(
-                            execScheduleField.getTriggerSpec(),
-                            baseTime,
-                        )
-                    if (nextPointAt != null && nextPointAt <= intervalTargetTime) {
-                        record(TAG, "设置定时执行:${TimeUtil.getCommonDate(nextPointAt)}")
-                        targetTime = nextPointAt
-                        delayMillis = targetTime - baseTime
+                val interval = (checkInterval.value ?: 0).toLong()
+                var triggerAt = baseTime + interval
+                var precision = PersistentSchedulePrecisionPolicy.FLEXIBLE_POLL
+                var tolerance = maxOf(interval, PersistentScheduleDefaults.DEFAULT_TOLERANCE_MS)
+                val nextPointAt = if (execAtTimeList.isDisabled()) null else
+                    TimeTriggerEvaluator.nextCheckpointAt(execAtTimeList.getTriggerSpec(), baseTime)
+                if (nextPointAt != null && nextPointAt <= triggerAt) {
+                    triggerAt = nextPointAt
+                    precision = PersistentSchedulePrecisionPolicy.USER_EXACT
+                    record(TAG, "设置定时执行:${TimeUtil.getCommonDate(triggerAt)}")
+                }
+                if (preservedPoll != null && preservedPoll.deadlineAtMs() >= baseTime &&
+                    preservedPoll.triggerAtMs < triggerAt) {
+                    triggerAt = preservedPoll.triggerAtMs.coerceAtLeast(baseTime)
+                    precision = preservedPoll.effectivePrecisionPolicy()
+                    tolerance = (preservedPoll.deadlineAtMs() - triggerAt).coerceAtLeast(0L)
+                    record(TAG, "配置重载保留原轮询时间:${TimeUtil.getCommonDate(triggerAt)}")
+                }
+                val energySpec = BaseModel.energyTime.getTriggerSpec()
+                val currentWindowEnd = TimeTriggerEvaluator.activeWindowEndAt(energySpec, baseTime)
+                val energyInterval = minOf(interval, 5 * 60_000L)
+                val energyAt = when {
+                    energySpec.disabled -> null
+                    currentWindowEnd != null -> minOf(baseTime + energyInterval, currentWindowEnd)
+                    else -> TimeTriggerEvaluator.nextTriggerAt(energySpec, baseTime) ?: run {
+                        val tomorrow = Calendar.getInstance().apply {
+                            timeInMillis = baseTime
+                            add(Calendar.DAY_OF_YEAR, 1)
+                            set(Calendar.HOUR_OF_DAY, 0)
+                            set(Calendar.MINUTE, 0)
+                            set(Calendar.SECOND, 0)
+                            set(Calendar.MILLISECOND, 0)
+                        }.timeInMillis
+                        val nextDay = TimeTriggerEvaluator.evaluateNow(energySpec, tomorrow)
+                        if (nextDay.allowNow) tomorrow else nextDay.nextTriggerAt
                     }
                 }
-                val triggerAt = if (targetTime > 0) targetTime else (baseTime + delayMillis)
+                if (energyAt != null && energyAt <= triggerAt) {
+                    triggerAt = energyAt
+                    precision = PersistentSchedulePrecisionPolicy.USER_EXACT
+                    tolerance = minOf(tolerance, energyInterval)
+                    record(TAG, "设置能量窗口执行:${TimeUtil.getCommonDate(triggerAt)}")
+                }
+                val triggerWindowEnd = TimeTriggerEvaluator.activeWindowEndAt(energySpec, triggerAt)
+                if (triggerWindowEnd != null) {
+                    precision = PersistentSchedulePrecisionPolicy.USER_EXACT
+                    tolerance = minOf(tolerance, energyInterval, (triggerWindowEnd - triggerAt - 1L).coerceAtLeast(0L))
+                } else if (energyAt != null && triggerAt + tolerance >= energyAt) {
+                    // 更早的普通轮询也不能因长容忍期跨过后面的能量窗口。
+                    precision = PersistentSchedulePrecisionPolicy.USER_EXACT
+                    val energyEnd = TimeTriggerEvaluator.activeWindowEndAt(energySpec, energyAt)
+                    tolerance = minOf(tolerance, energyAt - triggerAt + energyInterval)
+                    if (energyEnd != null) tolerance = minOf(tolerance, (energyEnd - triggerAt - 1L).coerceAtLeast(0L))
+                }
                 ensureScheduler()
                 val context = appContext
                 if (context != null) {
@@ -1147,12 +1178,9 @@ class ApplicationHook {
                             kind = PersistentScheduleKind.GLOBAL_POLL,
                             triggerAtMs = triggerAt,
                             dedupeKey = "alarm_poll",
-                            precisionPolicy = preservedPoll?.effectivePrecisionPolicy()
-                                ?: if (targetTime > 0) PersistentSchedulePrecisionPolicy.USER_EXACT
-                                else PersistentSchedulePrecisionPolicy.FLEXIBLE_POLL,
+                            precisionPolicy = precision,
                             payloadJson = "{}",
-                            toleranceMs = preservedPoll?.let { (it.deadlineAtMs() - it.triggerAtMs).coerceAtLeast(0L) }
-                                ?: maxOf(checkInterval.toLong(), PersistentScheduleDefaults.DEFAULT_TOLERANCE_MS),
+                            toleranceMs = tolerance,
                             ownerUserId = activeSession?.userId ?: currentUid,
                             sessionEpoch = activeSession?.sessionEpoch ?: AccountSessionCoordinator.currentSessionEpoch(),
                         )

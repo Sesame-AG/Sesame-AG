@@ -439,6 +439,18 @@ object TimeTriggerEvaluator {
         return evaluateNow(spec, now, consumedIndex).nextTriggerAt
     }
 
+    /** 当前允许时间窗的截止点；排期不能借用普通轮询容忍期跨过该点。 */
+    @JvmStatic
+    fun activeWindowEndAt(spec: TimeTriggerSpec, now: Long = System.currentTimeMillis()): Long? {
+        if (spec.disabled) return null
+        val secondOfDay = getSecondOfDay(now)
+        if (spec.blockWindows.any { it.contains(secondOfDay) }) return null
+        val window = spec.allowWindows.firstOrNull { it.contains(secondOfDay) } ?: return null
+        val nextBlockedStart = spec.blockWindows.firstOrNull { it.startSecond > secondOfDay }?.startSecond
+        val endSecond = minOf(window.endSecond, nextBlockedStart ?: window.endSecond)
+        return toTodayTimeMillis(now, endSecond)
+    }
+
     @JvmStatic
     fun nextCheckpointTodayAt(
         spec: TimeTriggerSpec,

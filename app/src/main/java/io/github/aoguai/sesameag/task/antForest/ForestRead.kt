@@ -88,6 +88,7 @@ internal object ForestRead {
             val now = System.currentTimeMillis()
             if (!TimeUtil.isSameDay(state.optLong("day"), now)) {
                 state.remove("chapter")
+                state.remove("catalog")
                 state.put("day", now)
                 save()
             }
@@ -124,19 +125,31 @@ internal object ForestRead {
                     return TaskFlowActionResult.success()
                 }
                 if (reading == null) {
-                    val catalog = client.index()
-                    val freeBooks = linkedMapOf<String, JSONObject>()
-                    for (i in 0 until catalog.length()) {
-                        val resources = catalog.getJSONObject(i).optJSONArray("block_resource") ?: continue
-                        for (j in 0 until resources.length()) {
-                            val book = resources.getJSONObject(j)
-                            val id = book.optString("book_id")
-                            if (id.isNotBlank() && book.optString("price").toBigDecimalOrNull()?.signum() == 0 && !finished.has(id)) {
-                                freeBooks[id] = book
+                    var catalog = state.optJSONArray("catalog")
+                    var book: JSONObject?
+                    while (true) {
+                        val fromCache = catalog != null
+                        val currentCatalog = catalog ?: client.index()
+                        val freeBooks = linkedMapOf<String, JSONObject>()
+                        for (i in 0 until currentCatalog.length()) {
+                            val resources = currentCatalog.getJSONObject(i).optJSONArray("block_resource") ?: continue
+                            for (j in 0 until resources.length()) {
+                                val candidate = resources.getJSONObject(j)
+                                val id = candidate.optString("book_id")
+                                if (id.isNotBlank() && candidate.optString("price").toBigDecimalOrNull()?.signum() == 0 && !finished.has(id)) {
+                                    freeBooks[id] = candidate
+                                }
                             }
                         }
+                        if (!fromCache) {
+                            // index() 已校验 code=2000；只保存已解析的非空首页。
+                            if (currentCatalog.length() > 0) state.put("catalog", currentCatalog) else state.remove("catalog")
+                            save()
+                        }
+                        book = freeBooks[state.optString("bookId")] ?: freeBooks.values.firstOrNull()
+                        if (book != null || !fromCache) break
+                        catalog = null
                     }
-                    val book = freeBooks[state.optString("bookId")] ?: freeBooks.values.firstOrNull()
                     if (book == null) {
                         Log.record("ForestRead", "无纸阅读当前没有未读免费书籍")
                         return TaskFlowActionResult.success(progressChanged = false)

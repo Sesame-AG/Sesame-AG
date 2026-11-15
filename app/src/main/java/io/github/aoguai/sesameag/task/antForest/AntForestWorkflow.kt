@@ -109,11 +109,11 @@ internal suspend fun AntForest.runForestPreparationAndCollectionWorkflow(tc: Tim
     return selfHomeObj
 }
 
-internal fun AntForest.runEnergyOnlyCollectionWorkflow(tc: TimeCounter): JSONObject? {
+internal suspend fun AntForest.runEnergyOnlyCollectionWorkflow(tc: TimeCounter): JSONObject? {
     val collectEnergyEnabled = isCollectEnergyEnabled()
 
     Log.forest("🌳 【只收能量】查询自己的森林主页...")
-    val selfHomeObj = querySelfHome()
+    var selfHomeObj = querySelfHome()
     updateSelfHomePage(selfHomeObj)
     if (selfHomeObj != null) {
         if (collectEnergyEnabled) {
@@ -136,6 +136,30 @@ internal fun AntForest.runEnergyOnlyCollectionWorkflow(tc: TimeCounter): JSONObj
     } else {
         Log.forest("找能量开关关闭，跳过找能量接口")
         tc.countDebug("只收能量-跳过找能量接口（找能量未开启）")
+    }
+
+    if (collectEnergyEnabled && pkEnergy?.value == true) {
+        collectPKEnergyCoroutine()
+        tc.countDebug("只收能量-PK排行榜补全")
+    }
+    if (hasFriendRankingWorkEnabled()) {
+        collectFriendEnergyCoroutine()
+        tc.countDebug("只收能量-好友排行榜补全")
+    }
+    if (energyRain?.value == true &&
+        (energyRainTime?.let { it.isDisabled() || it.isReachedToday() } ?: true)) {
+        // 窗口内仅消耗已有能量雨机会和已启用的道具，不启动游戏补机会任务。
+        if (EnergyRainCoroutine.execEnergyRain(
+                chanceCardUser = { attemptedPropIds ->
+                    energyRainChance?.value == true && useEnergyRainChanceCard(attemptedPropIds)
+                },
+            )) {
+            querySelfHome()?.let { refreshed ->
+                selfHomeObj = refreshed
+                if (collectEnergyEnabled) collectEnergy(UserMap.currentUid, refreshed, "self")
+            }
+        }
+        tc.countDebug("只收能量-能量雨")
     }
 
     return selfHomeObj
