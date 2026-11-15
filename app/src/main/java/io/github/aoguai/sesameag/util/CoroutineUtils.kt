@@ -1,6 +1,7 @@
 package io.github.aoguai.sesameag.util
 
 import io.github.aoguai.sesameag.task.TaskExecutionReport
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.TimeoutCancellationException
@@ -25,9 +26,11 @@ object CoroutineUtils {
      */
     @JvmStatic
     fun sleepCompat(millis: Long) {
-        TaskExecutionReport.current()?.recordActivity(millis)
+        val report = TaskExecutionReport.current()
+        report?.ensureCurrent()
+        report?.recordActivity(millis)
         try {
-            runBlocking {
+            runBlocking((report?.context ?: EmptyCoroutineContext) + (report?.executionJob ?: EmptyCoroutineContext)) {
                 delay(millis)
             }
         } catch (e: InterruptedException) {
@@ -38,6 +41,7 @@ object CoroutineUtils {
         } catch (e: Exception) {
             // 协程暂停异常时由传统线程暂停承接同一 millis 请求；正常路径不会重复执行此等待。
             Log.printStackTrace("协程延迟异常,已尝试降级到 Thread.sleep()", e)
+            report?.ensureCurrent()
             try {
                 Thread.sleep(millis)
             } catch (ie: InterruptedException) {
@@ -45,6 +49,7 @@ object CoroutineUtils {
                 throw ie
             }
         }
+        report?.ensureCurrent()
     }
 
     /**

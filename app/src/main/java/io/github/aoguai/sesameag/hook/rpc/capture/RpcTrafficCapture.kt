@@ -32,6 +32,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import android.os.FileObserver
 import android.os.Handler
@@ -192,16 +193,18 @@ object RpcTrafficCapture {
     private val pendingCleanupHandler by lazy { Handler(Looper.getMainLooper()) }
     private val pendingCleanup = object : Runnable {
         override fun run() {
-            runCatching {
-                if (isCaptureEnabled()) {
-                    activeSessionId()
-                    drainCollectedPendingAriverRequests()
-                    expirePendingAriverRequests()
+            captureScope.launch {
+                runCatching {
+                    if (isCaptureEnabled()) {
+                        activeSessionId()
+                        drainCollectedPendingAriverRequests()
+                        expirePendingAriverRequests()
+                    }
+                }.onFailure {
+                    runCatching { Log.runtime(TAG, "抓包上下文清理失败: ${it.stackTraceToString()}") }
                 }
-            }.onFailure {
-                runCatching { Log.runtime(TAG, "抓包上下文清理失败: ${it.stackTraceToString()}") }
+                synchronized(pendingLock) { schedulePendingCleanupLocked() }
             }
-            synchronized(pendingLock) { schedulePendingCleanupLocked() }
         }
     }
     private val eventSequence = AtomicLong(0L)
@@ -226,7 +229,7 @@ object RpcTrafficCapture {
     private var stopCaptureConfigObservation: (() -> Unit)? = null
     private val captureConfigRefresh = Runnable {
         captureScope.launch {
-            runCatching { refreshCaptureState() }.onFailure {
+            runCatching { refreshCaptureStateInBackground() }.onFailure {
                 Log.error(TAG, "同步抓包开关失败: ${it.stackTraceToString()}")
             }
         }
@@ -258,23 +261,40 @@ object RpcTrafficCapture {
         return if (RuntimeIdentityGuard.isMainProcess()) false else refreshCaptureState()
     }
 
-    @Synchronized
     fun refreshCaptureState(): Boolean {
-        val classLoader = captureClassLoader ?: return false
         captureEnabledCache = null
+        captureUserId = null
+        authorizationJob?.cancel()
+        captureConfigRefresh.run()
+        return false
+    }
+
+    @Synchronized
+    private fun refreshCaptureStateInBackground(): Boolean {
+        val classLoader = captureClassLoader ?: return false
         if (captureUserId == null && authorizationJob?.isActive != true) {
             val context = captureContext ?: return false
             authorizationJob = captureScope.launch {
                 val userId = CommandUtil.authorizeCapture(context, captureEnabledProvider)
                 if (userId != null) {
                     synchronized(this@RpcTrafficCapture) {
+                        ensureActive()
                         captureUserId = userId
-                        refreshCaptureState()
+                        refreshCaptureStateInBackground()
                     }
                 }
             }
         }
-        if (!isCaptureEnabled()) {
+        val userId = captureUserId
+        val enabled = userId != null && runCatching { captureEnabledProvider(userId) }.getOrDefault(false)
+        if (enabled) {
+            readPersistedSessionId()
+            if (captureSessionCache == null && RuntimeIdentityGuard.isMainProcess()) {
+                persistSessionId(UUID.randomUUID().toString())
+            }
+        }
+        captureEnabledCache = CaptureEnabledCache(userId.orEmpty(), enabled, Long.MAX_VALUE)
+        if (!enabled) {
             captureUserId = null
             synchronized(installLock) {
                 captureHooks.entries.toList().forEach { (method, handle) ->
@@ -342,11 +362,16 @@ object RpcTrafficCapture {
     private fun observeCaptureConfig(configDir: File, userDir: File?) {
         if (stopCaptureConfigObservation != null) return
         stopCaptureConfigObservation = io.github.aoguai.sesameag.storage.StoreAccess.observe { change ->
-            if (change.collection == 0 || (change.name.isNotEmpty() &&
-                    change.name != "config_v2.json" && change.name != "DataStore.json")) return@observe
-            captureEnabledCache = null
-            pendingCleanupHandler.removeCallbacks(captureConfigRefresh)
-            pendingCleanupHandler.post(captureConfigRefresh)
+            if (change.collection == 0) return@observe
+            if (change.name == CAPTURE_SESSION_FILE_NAME) {
+                captureScope.launch {
+                    readPersistedSessionId()
+                    if (isCaptureEnabled()) activeSessionId()
+                }
+                return@observe
+            }
+            if (change.name.isNotEmpty() && change.name != "config_v2.json" && change.name != "DataStore.json") return@observe
+            refreshCaptureState()
         }
     }
 
@@ -2362,18 +2387,20 @@ object RpcTrafficCapture {
             captureSessionCache = null
             reportedHttpClasses.clear()
             reportedHttpCallSites.set(emptySet())
-            runCatching { Files.child(Files.CONFIG_DIR, CAPTURE_SESSION_FILE_NAME).delete() }
+        }
+        captureScope.launch {
+            synchronized(this@RpcTrafficCapture) {
+                if (sessionId == null && !isCaptureEnabled()) {
+                    runCatching { Files.child(Files.CONFIG_DIR, CAPTURE_SESSION_FILE_NAME).delete() }
+                }
+            }
         }
     }
 
     private fun activeSessionId(): String =
         synchronized(sessionLock) {
-            val persisted = readPersistedSessionId()
-            val resolved = when {
-                persisted != null -> persisted
-                RuntimeIdentityGuard.isMainProcess() -> UUID.randomUUID().toString().also(::persistSessionId)
-                else -> sessionId ?: UUID.randomUUID().toString()
-            }
+            val persisted = captureSessionCache?.sessionId
+            val resolved = persisted ?: sessionId ?: UUID.randomUUID().toString()
             if (sessionId != resolved) {
                 clearPendingAriverRequests()
                 webSocketConnections.clear()
@@ -2627,9 +2654,7 @@ object RpcTrafficCapture {
     }
 
     private fun isCaptureEnabled(): Boolean {
-        val enabled = captureUserId?.let { userId ->
-            runCatching { captureEnabledProvider(userId) }.getOrDefault(false)
-        } ?: false
+        val enabled = captureUserId != null && captureEnabledCache?.enabled == true
         if (!enabled) clearPendingAriverRequests()
         return enabled
     }

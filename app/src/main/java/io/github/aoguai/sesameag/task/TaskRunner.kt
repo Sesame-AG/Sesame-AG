@@ -473,28 +473,23 @@ class CoroutineTaskRunner(allModels: List<Model>) {
 
         val isLongRunning = isLongRunningTask(task)
         val timeout = (BaseModel.taskTimeout.value ?: DEFAULT_TASK_TIMEOUT).toLong()
-        var acquiredConcurrencySlot = false
-        var acquiredLongRunningSlot = false
+        val acquiredConcurrencySlot = AtomicBoolean(false)
+        val acquiredLongRunningSlot = AtomicBoolean(false)
+        var executionJob: Deferred<TaskExecutionOutcome>? = null
         var trackedLongRunningJob: LongRunningJob? = null
 
         fun releaseTaskSlots() {
-            if (acquiredConcurrencySlot) {
-                taskConcurrencyLimiter.release()
-                acquiredConcurrencySlot = false
-            }
-            if (acquiredLongRunningSlot) {
-                longRunningTaskLimiter.release()
-                acquiredLongRunningSlot = false
-            }
+            if (acquiredConcurrencySlot.compareAndSet(true, false)) taskConcurrencyLimiter.release()
+            if (acquiredLongRunningSlot.compareAndSet(true, false)) longRunningTaskLimiter.release()
         }
 
         try {
             if (isLongRunning) {
                 longRunningTaskLimiter.acquire()
-                acquiredLongRunningSlot = true
+                acquiredLongRunningSlot.set(true)
             }
             taskConcurrencyLimiter.acquire()
-            acquiredConcurrencySlot = true
+            acquiredConcurrencySlot.set(true)
 
             val acquiredSlotSessionCheck = runSessionCheck()
             if (acquiredSlotSessionCheck !is AccountSessionCheck.Current) {
@@ -518,6 +513,8 @@ class CoroutineTaskRunner(allModels: List<Model>) {
             Log.record(TAG, "▶️ 启动: $taskId")
 
             val job = task.startTask(force = false, rounds = 1)
+            executionJob = job
+            job.invokeOnCompletion { releaseTaskSlots() }
             val outcome = if (isLongRunning) {
                 val longRunningJob = LongRunningJob(taskId, startTime, task, job) { releaseTaskSlots() }
                 longRunningJobs.add(longRunningJob)
@@ -563,9 +560,7 @@ class CoroutineTaskRunner(allModels: List<Model>) {
                 throw e
             }
         } finally {
-            if (trackedLongRunningJob == null) {
-                releaseTaskSlots()
-            }
+            if (executionJob == null) releaseTaskSlots()
         }
     }
 
@@ -676,6 +671,7 @@ class CoroutineTaskRunner(allModels: List<Model>) {
     private fun isLongRunningTask(task: ModelTask): Boolean {
         return task is AntForest ||
             task is AntFarm ||
+            task is AntOrchard ||
             task is AntSports
     }
 

@@ -142,7 +142,7 @@ body:
       label: 证据、示例或参考
       description: 可以附类似实现、截图、原型或其他参考信息；这些内容均为可选佐证。
       placeholder: |
-        可附上现有界面截图、上游参考实现或你自己的原型描述。
+        可附上现有界面截图、参考实现或你自己的原型描述。
 
   - type: textarea
     id: additional_information

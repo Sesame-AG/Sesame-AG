@@ -1,5 +1,7 @@
 package io.github.aoguai.sesameag.util
 
+import io.github.aoguai.sesameag.task.TaskExecutionReport
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -29,5 +31,14 @@ class SerialTaskQueue {
     }
 
     /** 供现有同步入口提交使用；队列内部直接调用私有实现，避免再次入队。 */
-    fun <T> execute(block: () -> T): T = runBlocking { submit { block() } }
+    fun <T> execute(block: () -> T): T {
+        val report = TaskExecutionReport.current()
+        report?.ensureCurrent()
+        return runBlocking((report?.context ?: EmptyCoroutineContext) + (report?.executionJob ?: EmptyCoroutineContext)) {
+            submit {
+                report?.ensureCurrent()
+                block().also { report?.ensureCurrent() }
+            }
+        }
+    }
 }

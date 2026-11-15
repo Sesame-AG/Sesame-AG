@@ -83,7 +83,6 @@ class ManualTaskModel : ModelTask() {
         val extraParams = HashMap<String, Any>()
         extraParams["exchangeEnergyRainCard"] = exchangeEnergyRainCard.value == true
 
-        // 使用上游推荐的 GlobalThreadPools 执行手动流
         GlobalThreadPools.execute {
             ManualTask.run(selectedTasks, extraParams)
         }
