@@ -638,18 +638,12 @@ class AntOcean : ModelTask() {
                     taskType.startsWith("CLEAN_")
             )
 
-    private fun markOceanTasksDoneInvalidated() {
-        Status.removeFlag(StatusFlags.FLAG_ANTOCEAN_TASKS_DONE)
-    }
-
     private fun markOceanNoticeLinkedRefreshNeeded() {
         noticeLinkedRefreshNeeded = true
-        markOceanTasksDoneInvalidated()
     }
 
     private fun markOceanHomeRefreshNeeded() {
         oceanHomeRefreshNeeded = true
-        markOceanTasksDoneInvalidated()
     }
 
     private suspend fun refreshOceanHomeIfNeeded(reason: String) {
@@ -2488,8 +2482,9 @@ class AntOcean : ModelTask() {
                         NonDurationGameTask.advance(mappedTask, item.raw,
                             detail = oceanTaskActionDetail(item, "gameReport"), logger = Log::ocean)
                     }
-                    if (report.deferredReason != DeferredReason.STATE_CONFIRMATION) return report
-                    return finishOceanTask(item).copy(progressChanged = false, refreshAfterAction = true)
+                    if (report.deferredReason !in setOf(DeferredReason.STATE_CONFIRMATION, DeferredReason.NO_PROGRESS_COOLDOWN)) return report
+                    val completedAction = finishOceanTask(item).copy(progressChanged = false, refreshAfterAction = true)
+                    return if (completedAction.success && report.deferredReason == DeferredReason.NO_PROGRESS_COOLDOWN) report else completedAction
                 }
             }
             if (gameDecision.action == GameCenterPlayRpcCall.TaskAction.DURATION_ONLY) {

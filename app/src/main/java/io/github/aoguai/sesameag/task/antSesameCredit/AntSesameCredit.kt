@@ -6128,11 +6128,10 @@ class AntSesameCredit : ModelTask() {
                 detail = "$actionDetail reason=${gameDecision.reason} missingFields=${gameDecision.missingFields.joinToString(",")}",
             )
         }
-        gameDecision.mappedTask?.let { mappedTask ->
-            val report = kotlinx.coroutines.runBlocking {
+        gameDecision.mappedTask?.takeIf { gameDecision.action == GameCenterPlayRpcCall.TaskAction.LEGACY_EXTERNAL_REPORT }?.let { mappedTask ->
+            return kotlinx.coroutines.runBlocking {
                 NonDurationGameTask.advance(mappedTask, task, detail = actionDetail, logger = Log::sesame)
             }
-            if (report.deferredReason != DeferredReason.STATE_CONFIRMATION) return report
         }
         val templateId = task.optString("templateId").trim()
         val recordId = task.optString("recordId").trim()
