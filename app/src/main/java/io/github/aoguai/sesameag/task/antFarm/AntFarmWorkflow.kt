@@ -174,7 +174,9 @@ internal suspend fun AntFarm.runFarmSocialWorkflow(
         tc.countDebug("一起拿饲料")
     }
     if (enableDdrawGameCenterAward?.value == true) {
-        FarmGame.drawGameCenterAward()
+        FarmGame.drawGameCenterAward { triggerAt ->
+            registerPersistentChildTask("game_center", "GAME", triggerAt)
+        }
         tc.countDebug("开宝箱")
     }
     if (paradiseCoinExchangeBenefit?.value == true) {

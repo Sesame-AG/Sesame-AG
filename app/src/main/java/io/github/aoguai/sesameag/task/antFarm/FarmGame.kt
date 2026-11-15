@@ -9,6 +9,12 @@ import io.github.aoguai.sesameag.task.common.DeferredReason
 import io.github.aoguai.sesameag.task.common.TaskFlowActionResult
 import io.github.aoguai.sesameag.task.common.TaskFlowAdapter
 import io.github.aoguai.sesameag.task.common.TaskFlowEngine
+import io.github.aoguai.sesameag.task.common.TaskFlowExecutionState
+import io.github.aoguai.sesameag.task.common.TaskFlowAction
+import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
+import io.github.aoguai.sesameag.hook.AccountSessionIdentity
+import io.github.aoguai.sesameag.util.UserDataStoreManager
+import io.github.aoguai.sesameag.util.TimeUtil
 import io.github.aoguai.sesameag.task.common.TaskFlowItem
 import io.github.aoguai.sesameag.task.common.TaskFlowPhase
 import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
@@ -362,7 +368,22 @@ object FarmGame {
         }
     }
 
-    internal suspend fun drawGameCenterAward() {
+    internal suspend fun drawGameCenterAward(resumeOnly: Boolean = false, scheduleContinuation: (Long) -> Unit) {
+        val session = AccountSessionCoordinator.currentSession() ?: return
+        val store = UserDataStoreManager.getCurrentInstance()?.takeIf { it.uid == session.userId } ?: return
+        val day = System.currentTimeMillis()
+        val saved = store.get("farmGameCenterAttempts", String::class.java)?.let(::JSONObject)
+            ?.takeIf { TimeUtil.isSameDay(it.optLong("day"), day) }
+        val state = TaskFlowExecutionState(saved?.optJSONObject("state"))
+        val resumeKeys = (state.pendingActionConfirmations.values.map { it.first.id } +
+            state.deferredActionKeys.keys.map { it.substringBefore('|') }).toSet()
+        val newlyPending = mutableSetOf<String>()
+        val persist: () -> Unit = {
+            AccountSessionCoordinator.withCurrentSession(AccountSessionIdentity(session.userId, session.sessionEpoch)) {
+                store.put("farmGameCenterAttempts", JSONObject().put("day", day)
+                    .put("state", state.toJson()).toString(), requirePersistence = true)
+            }
+        }
         var totalParadiseCoins = 0 // 🚀 统计总共获得的乐园币
         val attemptedCandidates = mutableSetOf<String>()
         var drawBlocked = false
@@ -375,7 +396,9 @@ object FarmGame {
                 }
             }
             while (true) {
-                if (ApplicationHookConstants.isOffline()) break
+                if (ApplicationHookConstants.isOffline() ||
+                    !AccountSessionCoordinator.isCurrentSession(session.userId, session.sessionEpoch) ||
+                    !TimeUtil.isSameDay(day, System.currentTimeMillis())) break
                 val response = AntFarmRpcCall.queryGameList()
                 val responseJo = JSONObject(response)
                 val jo = responseJo.optJSONObject("resData") ?: responseJo
@@ -404,7 +427,7 @@ object FarmGame {
                     Log.farm("宝箱提交后权益未确认减少，停止本轮开箱，继续独立游戏")
                 }
                 previousDrawRights = null
-                if (quotaCanUse > 0 && !drawBlocked) {
+                if (quotaCanUse > 0 && !drawBlocked && !resumeOnly) {
                     previousDrawRights = quotaCanUse
                     val batchDrawCount = quotaCanUse.coerceAtMost(10)
                     Log.farm("当前有 $quotaCanUse 个宝箱待开启，本次提交 $batchDrawCount 个")
@@ -447,9 +470,19 @@ object FarmGame {
                 val used = currentRights?.optInt("usedQuota", currentRights.optInt("usedTimes")) ?: 0
                 val remainingDraws = if (drawBlocked || quotaCanUse < 0) 0 else (limit - used - quotaCanUse).coerceAtLeast(0)
                 val candidates = buildFarmGameCenterCandidates(jo, remainingDraws)
+                    .filter { !resumeOnly || it.key in resumeKeys }
+                for (candidate in candidates) {
+                    val key = "${candidate.key}|${candidate.snapshotKey}"
+                    val oldKeys = state.pendingActionConfirmations.keys.filter { it.substringBefore('|') == candidate.key && it != key }
+                    oldKeys.forEach { state.pendingActionConfirmations.remove(it) }
+                    state.deferredActionKeys.keys.filter { it.substringBefore('|') == candidate.key && it != key }
+                        .forEach { state.deferredActionKeys.remove(it); state.deferredActionReasons.remove(it) }
+                }
+                persist()
                 var actionSubmitted = false
                 while (!ApplicationHookConstants.isOffline()) {
-                    val action = advanceFarmGameCenterCandidate(candidates, attemptedCandidates, remainingDraws, quotaCanUse) ?: break
+                    val action = advanceFarmGameCenterCandidate(candidates, attemptedCandidates, quotaCanUse,
+                        state, newlyPending, persist) ?: break
                     if (action.stopCurrentRound) return
                     actionSubmitted = actionSubmitted || action.refreshAfterAction || action.success
                     if (action.refreshAfterAction || action.success) break
@@ -466,6 +499,13 @@ object FarmGame {
                 break
             }
             receiveLeyuanLimitedBenefitAwards()
+            val waiting = state.pendingActionConfirmations.keys + state.deferredActionKeys.keys
+            val now = System.currentTimeMillis()
+            val nextAt = waiting.mapNotNull { key ->
+                if (key in newlyPending && key in state.pendingActionConfirmations) now
+                else state.deferredActionKeys[key]?.takeIf { it > 0L }
+            }.minOrNull()
+            nextAt?.let { scheduleContinuation(maxOf(now, it)) }
         } catch (e: CancellationException) {
             throw e
         } catch (t: Throwable) {
@@ -498,14 +538,21 @@ object FarmGame {
     private suspend fun advanceFarmGameCenterCandidate(
         candidates: List<GameCenterPlayRpcCall.DeliveryBenefitCandidate>,
         attemptedCandidates: MutableSet<String>,
-        remainingDraws: Int,
         beforeQuota: Int,
+        state: TaskFlowExecutionState,
+        newlyPending: MutableSet<String>,
+        persist: () -> Unit,
     ): TaskFlowActionResult? {
         val candidate = candidates.firstOrNull { item ->
-            "${item.snapshotKey}:$remainingDraws" !in attemptedCandidates &&
+            val key = "${item.key}|${item.snapshotKey}"
+            val until = state.deferredActionKeys[key]
+            key !in attemptedCandidates && key !in state.failedActionSnapshotKeys &&
+                key !in state.pendingActionConfirmations &&
+                (until == null || until > 0L && until <= System.currentTimeMillis()) &&
                 farmGameCenterDecision(item).action != GameCenterPlayRpcCall.TaskAction.DEFERRED
         } ?: return null
-        attemptedCandidates += "${candidate.snapshotKey}:$remainingDraws"
+        val key = "${candidate.key}|${candidate.snapshotKey}"
+        attemptedCandidates += key
         val decision = farmGameCenterDecision(candidate)
         Log.farm(
             "庄园乐园候选[${candidate.title}] " +
@@ -518,7 +565,7 @@ object FarmGame {
                     candidate.rightTimesLimit,
                 ),
         )
-        return when (decision.action) {
+        val result = when (decision.action) {
             GameCenterPlayRpcCall.TaskAction.LEGACY_EXTERNAL_REPORT -> {
                 NonDurationGameTask.advance(
                     requireNotNull(decision.mappedTask), candidate.rawBenefit, candidate.rawGame,
@@ -571,6 +618,28 @@ object FarmGame {
             GameCenterPlayRpcCall.TaskAction.OWNER_BUSINESS,
             GameCenterPlayRpcCall.TaskAction.DEFERRED -> TaskFlowActionResult.defer(DeferredReason.PREREQUISITE_PENDING, decision.reason)
         }
+        state.deferredActionKeys.remove(key)
+        state.deferredActionReasons.remove(key)
+        when {
+            result.deferredReason == DeferredReason.STATE_CONFIRMATION && !result.progressChanged -> {
+                state.pendingActionConfirmations[key] = TaskFlowItem(candidate.key, candidate.title,
+                    candidate.taskStatus, current = candidate.rightTimes, limit = candidate.rightTimesLimit) to TaskFlowAction.COMPLETE
+                newlyPending.add(key)
+            }
+            result.deferredReason != null && !result.progressChanged -> {
+                state.deferredActionKeys[key] = result.deferredUntil ?: 0L
+                state.deferredActionReasons[key] = result.deferredReason
+                newlyPending.add(key)
+            }
+            !result.success && result.deferredReason == null -> {
+                state.failedActionSnapshotKeys.add(key)
+                state.actionFailures[key] = JSONObject().put("type", result.failureType?.name).put("code", result.code)
+                    .put("message", result.message).put("raw", result.raw).put("detail", result.detail)
+                Log.error(TAG, "庄园游戏执行失败[taskId=${candidate.taskId}] code=${result.code} ${result.message}")
+            }
+        }
+        persist()
+        return result
     }
 
     private fun receiveLeyuanLimitedBenefitAwards() {

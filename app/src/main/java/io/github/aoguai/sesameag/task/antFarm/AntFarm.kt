@@ -401,7 +401,7 @@ class AntFarm : ModelTask() {
             .withDesc("使用食材和饲料制作菜品，优先满足当前喂养和雇佣。关闭后仍按任务设置领取食材。")
             .also { aiKitchen = it })
         modelFields.addField(ChoiceModelField("aiKitchenStrategy", "小鸡大厨 | 制作策略", 0,
-            arrayOf("优先收集", "优先提分")).also { aiKitchenStrategy = it })
+            arrayOf("优先收集", "优先提分", "随机制作")).also { aiKitchenStrategy = it })
         modelFields.addField(IntegerModelField("aiKitchenFoodReserve", "小鸡大厨 | 额外保留饲料(g)", 0, 0, null)
             .withDesc("在当前照料所需之外额外保留的饲料。")
             .also { aiKitchenFoodReserve = it })
@@ -1278,15 +1278,7 @@ modelFields.addField(
         val worker =
             runCatching {
                 GlobalThreadPools.execute(GlobalThreadPools.computeDispatcher) {
-                    PersistentScheduleRegistry.markRunning(scheduleId, source = "farm_worker_start:$source")
-                    val executionLease = ApplicationHook.appContext?.let { context ->
-                        WakeLockManager.acquire(
-                            context = context,
-                            timeoutMs = PersistentScheduleDefaults.TASK_EXECUTION_WAKELOCK_MS,
-                            source = "farm_persistent_child",
-                            scheduleId = scheduleId,
-                        )
-                    }
+                    if (!PersistentScheduleRegistry.markRunning(scheduleId, source = "farm_worker_start:$source")) return@execute
                     try {
                         runPersistentChildTask(childId, group, payload, source, currentOwnerUserId.orEmpty(), payloadSessionEpoch)
                         PersistentScheduleRegistry.markFired(
@@ -1302,8 +1294,6 @@ modelFields.addField(
                             t.message ?: t.javaClass.name,
                             source = "farm_worker_exception:$source",
                         )
-                    } finally {
-                        executionLease?.close()
                     }
                 }
             }.onFailure { error ->
@@ -1339,7 +1329,12 @@ modelFields.addField(
         source: String,
         ownerUserId: String,
         sessionEpoch: Long
-    ) = farmWorkflowQueue.submit {
+    ) {
+        farmWorkflowQueue.submit {
+            val executionLease = ApplicationHook.appContext?.let {
+                WakeLockManager.acquire(it, PersistentScheduleDefaults.TASK_EXECUTION_WAKELOCK_MS, source = "farm_child:$source")
+            }
+            try {
         if (!isPersistentChildSessionCurrent(ownerUserId, sessionEpoch)) {
             Log.farm("庄园持久子任务[$group][$childId]会话已切换，取消执行: owner=$ownerUserId session=$sessionEpoch")
             return@submit
@@ -1385,11 +1380,18 @@ modelFields.addField(
             "DR" -> if (donationCompetition?.value == true) runDonationCompetitionPersistentTask(payload)
             "LC" -> if (loveChickenGathering?.value == true) runLoveChickenGatheringPersistentTask(payload)
             "FD" -> runDueFarmWork()
+            "GAME" -> if (enableDdrawGameCenterAward?.value == true) FarmGame.drawGameCenterAward(resumeOnly = true) { triggerAt ->
+                registerPersistentChildTask("game_center", "GAME", triggerAt)
+            }
             else -> Log.farm("未知庄园持久子任务[$group][$childId]，跳过")
         }
         if (!isPersistentChildSessionCurrent(ownerUserId, sessionEpoch)) return@submit
         refreshFarmFeedingSchedule()
         scheduleFarmPendingWork()
+            } finally {
+                executionLease?.close()
+            }
+        }
     }
 
     private suspend fun runSleepChildTask() {
@@ -5362,12 +5364,13 @@ modelFields.addField(
             val cabinJo = JSONObject(AntFarmRpcCall.queryLoveCabin(UserMap.currentUid))
             if (!ResChecker.checkRes(TAG, "数字公仔补签查询小屋失败:", cabinJo)) return
             val owned = mutableSetOf<String>()
-            val dollList = cabinJo.optJSONArray("loveCabinDollList")
-            if (dollList != null) {
-                for (i in 0..<dollList.length()) {
-                    val id = dollList.optJSONObject(i)?.optString("dollId").orEmpty()
-                    if (id.isNotEmpty()) owned.add(id)
-                }
+            val dollList = cabinJo.optJSONObject("loveCabinVO")?.optJSONArray("loveCabinDollList") ?: run {
+                Log.error(TAG, "数字公仔补签查询小屋未返回公仔库存：$cabinJo")
+                return
+            }
+            for (i in 0..<dollList.length()) {
+                val id = dollList.optJSONObject(i)?.optString("dollId").orEmpty()
+                if (id.isNotEmpty()) owned.add(id)
             }
             // 月度公仔 id 形如 2023_06_MONTH_DOLL，枚举到当前月；已拥有集全量对比，全拥有时零补签消耗
             val cal = Calendar.getInstance()
@@ -5380,12 +5383,12 @@ modelFields.addField(
                 idx++
             }
             if (missing.isEmpty()) {
-                Log.farm("数字公仔补签🎭[月度公仔已集齐，无须补签]")
+                Log.farm("数字公仔补签🎭[未发现待核实的月度公仔]")
                 return
             }
             val newToOld = dollSupplementOrder?.value == DollSupplementOrder.NEW_TO_OLD
             val ordered = if (newToOld) missing.reversed() else missing
-            Log.farm("数字公仔补签🎭[补签卡x${tool.toolCount} 缺${missing.size}只 顺序:${if (newToOld) "从晚到早" else "从早到晚"}]")
+            Log.farm("数字公仔补签🎭[补签卡x${tool.toolCount} 待核实月度公仔${missing.size}只 顺序:${if (newToOld) "从晚到早" else "从早到晚"}]")
             var remaining = tool.toolCount
             var failStreak = 0
             for (dollId in ordered) {
@@ -5401,8 +5404,13 @@ modelFields.addField(
                     failStreak++
                     continue
                 }
+                if (!ResChecker.checkRes(TAG, "数字公仔补签查询[$dollId]失败:", dollJo)) {
+                    failStreak++
+                    continue
+                }
                 val info = dollJo.optJSONObject("dollInfoVO")
                 if (info == null) {
+                    Log.error(TAG, "数字公仔补签查询[$dollId]未返回公仔信息：$dollJo")
                     failStreak++
                     continue
                 }
@@ -6752,15 +6760,38 @@ modelFields.addField(
                 }
             }
             selectIngredients(0)
-            val priority = if (aiKitchenStrategy?.value == 1) {
-                compareBy<List<String>> { if (history[it].isNullOrEmpty()) 1 else 0 }
-                    .thenBy { history[it]?.maxOfOrNull { dish -> dish.optInt("highestScore") } ?: 0 }
-                    .thenBy { history[it]?.sumOf { dish -> dish.optInt("cookCount") } ?: 0 }
+            val unfinished = history.filterValues { dishes -> dishes.any { it.optInt("highestScore") < 100 } }
+            val reserved = mutableMapOf<String, Int>()
+            for (knownRecipe in unfinished.keys) {
+                for ((id, count) in knownRecipe.groupingBy { it }.eachCount()) {
+                    reserved[id] = maxOf(reserved[id] ?: 0, count)
+                }
+            }
+            // 请求只能选择食材；同组任一已知烹饪方式未满分时，仍允许继续提分。
+            val eligible = candidates.filter { history[it].isNullOrEmpty() || it in unfinished }
+            val mastery = eligible.filter { it in unfinished }
+            val exploration = eligible.filter { candidate ->
+                history[candidate].isNullOrEmpty() && candidate.groupingBy { it }.eachCount().all { (id, count) ->
+                    stock.getValue(id) - count >= (reserved[id] ?: 0)
+                }
+            }
+            val strategy = aiKitchenStrategy?.value ?: 0
+            val pool = when (strategy) {
+                1 -> mastery.ifEmpty { exploration }
+                2 -> mastery + exploration
+                else -> exploration.ifEmpty { mastery }
+            }
+            val priority = if (strategy == 1) {
+                compareByDescending<List<String>> { candidate ->
+                    history[candidate]?.filter { it.optInt("highestScore") < 100 }
+                        ?.maxOfOrNull { it.optInt("highestScore") } ?: -1
+                }.thenBy { history[it]?.sumOf { dish -> dish.optInt("cookCount") } ?: 0 }
             } else {
                 compareBy<List<String>> { history[it]?.sumOf { dish -> dish.optInt("cookCount") } ?: 0 }
                     .thenBy { history[it]?.maxOfOrNull { dish -> dish.optInt("highestScore") } ?: 0 }
             }
-            val recipe = candidates.shuffled().minWithOrNull(priority) ?: return result()
+            val recipe = (if (strategy == 2) pool.randomOrNull() else pool.shuffled().minWithOrNull(priority))
+                ?: return result()
             if (ApplicationHookConstants.isOffline()) return result()
             if (!AccountSessionCoordinator.isCurrentSession(owner, epoch)) throw CancellationException("厨神制作前账号变化")
             val cooked = JSONObject(AntFarmRpcCall.cookAiKitchen(seasonId, recipe))
