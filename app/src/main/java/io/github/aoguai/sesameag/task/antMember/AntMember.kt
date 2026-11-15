@@ -795,6 +795,7 @@ class AntMember : ModelTask() {
         val userId = UserMap.currentUid
         val candidateMap = queryMemberExchangeCandidates(userId, null, 850L, forceRefresh = forceRefresh)
         val memberBenefitMap = IdMapManager.getInstance(MemberBenefitsMap::class.java)
+        memberBenefitMap.load(userId)
         candidateMap.values.forEach { memberBenefitMap.add(it.item.id, it.item.displayName()) }
         memberBenefitMap.save(userId)
         return candidateMap.values.map { it.item.toOptionRow() }
@@ -1214,6 +1215,7 @@ class AntMember : ModelTask() {
             val memberBenefitMap = IdMapManager.getInstance(MemberBenefitsMap::class.java)
             Log.member("会员积分🎐兑换列表刷新..")
             val candidateMap = queryMemberExchangeCandidates(userId, pointBalance, 850L)
+            memberBenefitMap.load(userId)
             candidateMap.values.forEach { candidate ->
                 memberBenefitMap.add(candidate.item.id, candidate.item.displayName())
                 if (!selectedIds.contains(candidate.item.id)) {
@@ -2034,18 +2036,6 @@ class AntMember : ModelTask() {
             return "${action.logName}:${buildCurrentMemberTaskFlowKey(task)}:${item.status}:${item.progress}"
         }
 
-        override fun estimateRoundLimit(items: List<TaskFlowItem>): Int {
-            val visibleTaskCount = items.count { item ->
-                if (shouldSkipByTodayState(item)) {
-                    false
-                } else {
-                    val phase = mapPhase(item)
-                    (phase == TaskFlowPhase.REWARD_READY || !isBlacklisted(item)) && !shouldSkip(item)
-                }
-            }
-            return max(1, visibleTaskCount * MEMBER_TASK_REPEAT_LIMIT * 2 + visibleTaskCount)
-        }
-
         override fun afterSuccess(item: TaskFlowItem, action: TaskFlowAction, result: TaskFlowActionResult) {
             if (action == TaskFlowAction.COMPLETE &&
                 (result.code == "VERIFY_PARTIAL" || result.code == "VERIFY_PENDING")
@@ -2098,11 +2088,6 @@ class AntMember : ModelTask() {
                 "会员任务[${item.title}]#未知状态 module=$moduleName taskId=${item.id.ifBlank { "UNKNOWN" }} " +
                     "status=${item.status.ifBlank { "UNKNOWN" }} progress=${item.progress.ifBlank { "UNKNOWN" }} raw=${item.raw}"
             )
-        }
-
-        override fun onRoundLimit(roundLimit: Int) {
-            hasRetryableFailure = true
-            Log.error(TAG, "会员任务[达到动态轮次上限$roundLimit，停止以避免重复循环]")
         }
 
         override fun logInfo(message: String) {
@@ -2663,7 +2648,9 @@ class AntMember : ModelTask() {
                 },
             ))
         }
-        Log.member("会员任务[浮球]#已安排${TimeUtil.getCommonDate(triggerAt)}继续领取")
+        if (schedule.state == PersistentScheduleState.SCHEDULED) {
+            Log.member("会员任务[浮球]#已安排${TimeUtil.getCommonDate(triggerAt)}继续领取")
+        }
     }
 
     internal fun triggerPersistentMemberFloatingBall(
@@ -2684,6 +2671,11 @@ class AntMember : ModelTask() {
         ) {
             if (!isEnable()) return@executePersistentChild TaskExecutionOutcome.SKIPPED
             when (payload.optString("wait_key")) {
+                "goldTicketBigPrize" -> {
+                    if (enableGoldTicket?.value != true) return@executePersistentChild TaskExecutionOutcome.SKIPPED
+                    doGoldTicketTask(doSignIn = true, doConsume = false)
+                    return@executePersistentChild TaskExecutionReport.current()?.outcome() ?: TaskExecutionOutcome.DEFERRED
+                }
                 "goldTicketConsumePending" -> {
                     if (enableGoldTicketConsume?.value != true ||
                         UserDataStoreManager.getInstance(ownerUserId)
@@ -3828,11 +3820,6 @@ class AntMember : ModelTask() {
             )
         }
 
-        override fun onRoundLimit(roundLimit: Int) {
-            hasRetryableFailure = true
-            Log.error(TAG, "$flowName[达到动态轮次上限$roundLimit，停止以避免重复循环]")
-        }
-
         override fun logInfo(message: String) {
             Log.member(message)
         }
@@ -4808,7 +4795,17 @@ class AntMember : ModelTask() {
                 }
             }
 
-            if (needHomeCheck) {
+            if (needWelfareCheck) {
+                val welfareHandleResult = handleGoldTicketWelfareTasks()
+                if (!welfareHandleResult.querySuccess) {
+                    Log.error("黄金票🎫[福利中心任务查询失败]")
+                } else if (welfareHandleResult.canMarkDone) {
+                    setFlagToday(StatusFlags.FLAG_ANTMEMBER_GOLD_TICKET_WELFARE_DONE)
+                }
+                homeUpsertData = queryGoldTicketHomeUpsert()
+            }
+
+            if (needHomeCheck || needWelfareCheck) {
                 if (homeUpsertData == null) {
                     Log.error("黄金票🎫[首页查询失败] 跳过收取与任务扫描")
                 } else {
@@ -4819,15 +4816,6 @@ class AntMember : ModelTask() {
                     } else if (homeTaskHandleResult.canMarkDone) {
                         setFlagToday(StatusFlags.FLAG_ANTMEMBER_GOLD_TICKET_HOME_DONE)
                     }
-                }
-            }
-
-            if (needWelfareCheck) {
-                val welfareHandleResult = handleGoldTicketWelfareTasks()
-                if (!welfareHandleResult.querySuccess) {
-                    Log.error("黄金票🎫[福利中心任务查询失败]")
-                } else if (welfareHandleResult.canMarkDone) {
-                    setFlagToday(StatusFlags.FLAG_ANTMEMBER_GOLD_TICKET_WELFARE_DONE)
                 }
             }
 
@@ -5080,14 +5068,18 @@ class AntMember : ModelTask() {
     }
 
     private fun extractGoldTicketHomeTasks(homeUpsertData: JSONObject): JSONArray {
-        val groups = homeUpsertData.optJSONObject("task")?.optJSONObject("tasks")
-            ?: return JSONArray()
+        val taskModule = homeUpsertData.optJSONObject("task")
+        val groups = taskModule?.optJSONObject("tasks")
         val tasks = JSONArray()
         for (group in listOf("todo", "done")) {
-            val entries = groups.optJSONArray(group) ?: continue
+            val entries = groups?.optJSONArray(group) ?: continue
             for (index in 0 until entries.length()) {
                 entries.optJSONObject(index)?.let { tasks.put(it) }
             }
+        }
+        if (taskModule?.has("canTriggerBigPrize") == true) {
+            tasks.put(JSONObject().put("taskId", "goldTicketBigPrize").put("title", "黄金票任务大奖")
+                .put("taskProcessStatus", if (taskModule.optBoolean("canTriggerBigPrize")) "TO_RECEIVE" else "RECEIVE_SUCCESS"))
         }
         return tasks
     }
@@ -5163,7 +5155,12 @@ class AntMember : ModelTask() {
                 autoTaskPredicate = ::isGoldTicketKnownWelfareAutoTask,
                 recordUnsupportedTasks = true
             )
-            val runResult = TaskFlowEngine(adapter, roundSleepMs = 425L).run()
+            val executionState = TaskFlowExecutionState()
+            val runResult = TaskFlowEngine(adapter, roundSleepMs = 425L, executionState = executionState).run()
+            if (runResult.actionAttempted &&
+                executionState.pendingActionConfirmations.values.any { it.first.id == "goldTicketBigPrize" }) {
+                scheduleMemberTaskContinuation("goldTicketBigPrize", System.currentTimeMillis())
+            }
             adapter.logSummary()
             GoldTicketTaskFlowHandleResult(
                 querySuccess = !adapter.queryFailed,
@@ -5324,6 +5321,27 @@ class AntMember : ModelTask() {
         }
 
         override fun receive(item: TaskFlowItem): TaskFlowActionResult {
+            if (source == "首页" && item.id == "goldTicketBigPrize") {
+                val response = AntMemberRpcCall.goldTicketTriggerBigPrize()
+                if (response.isNullOrBlank()) return TaskFlowActionResult.defer(
+                    DeferredReason.STATE_CONFIRMATION, "大奖领取结果未知，回查首页确认",
+                    rpc = "AntMemberRpcCall.goldTicketTriggerBigPrize", refreshAfterAction = true,
+                )
+                val result = runCatching { JSONObject(response) }.getOrNull()
+                    ?: return TaskFlowActionResult.defer(
+                        DeferredReason.STATE_CONFIRMATION, "大奖领取响应无法解析，回查首页确认",
+                        rpc = "AntMemberRpcCall.goldTicketTriggerBigPrize", raw = response, refreshAfterAction = true,
+                    )
+                if (!ResChecker.checkRes(TAG, result) || isMemberMarketingRpcRisk("AntMember.goldTicket.bigPrize", result)) {
+                    return goldTicketActionFailureResult(result, "AntMemberRpcCall.goldTicketTriggerBigPrize", item, "receive", source)
+                }
+                val amount = result.optJSONObject("result")?.optJSONObject("bigPrizeInfo")?.optString("amount").orEmpty()
+                Log.member("黄金票🎫[任务大奖领取已受理]${if (amount.isNotBlank()) "#$amount 元" else ""}，回查首页确认")
+                return TaskFlowActionResult.defer(
+                    DeferredReason.STATE_CONFIRMATION, "确认任务大奖领取状态",
+                    rpc = "AntMemberRpcCall.goldTicketTriggerBigPrize", raw = response, refreshAfterAction = true,
+                )
+            }
             return pushGoldTicketTask(item, "receive")
         }
 
@@ -5568,8 +5586,9 @@ class AntMember : ModelTask() {
      */
     private fun doGoldTicketConsume(allowReplenish: Boolean = true) {
         var consumeDone = false
+        var confirmRetryAt: Long? = null
+        val owner = AccountSessionCoordinator.currentUserId() ?: UserMap.currentUid
         try {
-            val owner = AccountSessionCoordinator.currentUserId() ?: UserMap.currentUid
             val store = UserDataStoreManager.getInstance(owner)
             if (store == null) {
                 TaskExecutionReport.current()?.recordException()
@@ -5596,6 +5615,11 @@ class AntMember : ModelTask() {
                     scheduleMemberTaskContinuation(pendingKey, pending.getLong("readyAt"))
                     return
                 }
+                val pollingInterval = pending.optLong("pollingTimeStamp").takeIf { it > 0L }
+                confirmRetryAt = pollingInterval?.let { now + it }
+                pending.put("readyAt", confirmRetryAt ?: 0L)
+                TaskExecutionReport.current()?.ensureCurrent(owner)
+                store.put(pendingKey, pending.toString())
                 val response = AntMemberRpcCall.queryConsumeResult(writeOffNo)
                 if (response.isNullOrBlank()) {
                     TaskExecutionReport.current()?.recordException()
@@ -5603,9 +5627,14 @@ class AntMember : ModelTask() {
                     return
                 }
                 val resultJson = JSONObject(response)
-                if (isMemberMarketingRpcRisk("AntMember.goldTicket.consumeResult", resultJson) ||
-                    !ResChecker.checkRes(TAG, resultJson)
-                ) {
+                if (isMemberMarketingRpcRisk("AntMember.goldTicket.consumeResult", resultJson)) {
+                    confirmRetryAt = null
+                    pending.put("readyAt", 0L)
+                    TaskExecutionReport.current()?.ensureCurrent(owner)
+                    store.put(pendingKey, pending.toString())
+                    return
+                }
+                if (!ResChecker.checkRes(TAG, resultJson)) {
                     TaskExecutionReport.current()?.recordException()
                     return
                 }
@@ -5613,20 +5642,21 @@ class AntMember : ModelTask() {
                 val recordState = result?.optJSONObject("recordInfo")?.optString("recordState").orEmpty()
                 if (recordState == "ACCEPTING") {
                     Log.member("黄金票🎫[提取中] 已受理，等待到账确认，不重复提交")
-                    val interval = result?.optJSONObject("fengdie")?.optLong("pollingTimeStamp") ?: 0L
-                    val attempts = pending.optInt("confirmAttempts")
-                    if (result?.optBoolean("shouldRetry") == true && interval > 0L &&
-                        attempts < MEMBER_CALL_APP_VERIFY_RETRY_LIMIT
-                    ) {
-                        pending.put("confirmAttempts", attempts + 1).put("readyAt", now + interval)
-                        TaskExecutionReport.current()?.ensureCurrent(owner)
-                        store.put(pendingKey, pending.toString())
-                        scheduleMemberTaskContinuation(pendingKey, pending.getLong("readyAt"))
-                    }
                 } else {
                     TaskExecutionReport.current()?.recordException()
-                    Log.error("黄金票🎫[提取结果待核实] recordState=$recordState，保留单号，不据受理成功标记到账")
+                    Log.error("黄金票🎫[提取结果待核实] recordState=$recordState，保留单号，不据受理成功标记到账 raw=$resultJson")
                 }
+                if (result?.optBoolean("shouldRetry", recordState == "ACCEPTING") == true) {
+                    val interval = result.optJSONObject("fengdie")?.optLong("pollingTimeStamp")
+                        ?.takeIf { it > 0L } ?: pollingInterval
+                    confirmRetryAt = interval?.let { System.currentTimeMillis() + it }
+                    pending.put("pollingTimeStamp", interval ?: 0L).put("readyAt", confirmRetryAt ?: 0L)
+                } else {
+                    confirmRetryAt = null
+                    pending.put("readyAt", 0L)
+                }
+                TaskExecutionReport.current()?.ensureCurrent(owner)
+                store.put(pendingKey, pending.toString())
                 return
             }
             Log.member("黄金票🎫[准备检查余额及提取]")
@@ -5708,10 +5738,13 @@ class AntMember : ModelTask() {
             val exchangeMoney = result.optJSONObject("calcInfo")?.optString("exchangeMoney")
                 ?.takeIf { it.isNotBlank() } ?: String.format(Locale.US, "%.2f", extractAmount / 1000.0)
             Log.member("黄金票🎫[开始提取] 计划: $extractAmount 份 => $exchangeMoney 元 (持有: $availableAmount)")
+            TaskExecutionReport.current()?.ensureCurrent(owner)
+            store.put(pendingKey, JSONObject().put("writeOffNo", "").toString())
             val submitRes = AntMemberRpcCall.submitConsume(extractAmount, productId, bonusAmount)
 
             if (submitRes.isNullOrBlank()) {
-                Log.error("黄金票🎫[提取失败] 接口无返回")
+                TaskExecutionReport.current()?.recordException()
+                Log.error("黄金票🎫[提取结果未知] 接口无返回，保留待确认记录")
                 return
             }
 
@@ -5721,6 +5754,10 @@ class AntMember : ModelTask() {
                 val submitDesc = submitJson.optString("resultDesc", submitJson.optString("memo"))
                 if (submitDesc.isNotBlank()) {
                     Log.error("黄金票🎫[提取失败] $submitDesc")
+                }
+                if (submitJson.has("success") && !submitJson.optBoolean("success")) {
+                    TaskExecutionReport.current()?.ensureCurrent(owner)
+                    store.remove(pendingKey)
                 }
                 return
             }
@@ -5734,11 +5771,14 @@ class AntMember : ModelTask() {
                 doGoldTicketConsume(allowReplenish = false)
             } else {
                 TaskExecutionReport.current()?.recordException()
-                Log.error("黄金票🎫[提取失败] 未返回核销码")
+                Log.error("黄金票🎫[提取结果未知] 未返回核销码，保留待确认记录")
             }
         } catch (e: Exception) {
             Log.printStackTrace(TAG, e)
         } finally {
+            if (AccountSessionCoordinator.currentUserId() == owner) {
+                confirmRetryAt?.let { scheduleMemberTaskContinuation("goldTicketConsumePending", it) }
+            }
             if (consumeDone) {
                 setFlagToday(StatusFlags.FLAG_ANTMEMBER_GOLD_TICKET_CONSUME_DONE)
             }
@@ -5752,7 +5792,11 @@ class AntMember : ModelTask() {
         if (ApplicationHookConstants.isOffline()) return
         receiveExternalGamePrizes(scene, source)
         try {
-            TaskFlowEngine(ExternalGameFeedTaskFlowAdapter(scene, source)).run()
+            while (uid == UserMap.currentUid && !ApplicationHookConstants.isOffline() && !Thread.currentThread().isInterrupted) {
+                TaskFlowEngine(ExternalGameFeedTaskFlowAdapter(scene, source)).run()
+                if (!receiveExternalGamePrizes(scene, source)) break
+                // 宝箱领取可能开放下一批任务，重新使用原入口取列表。
+            }
         } catch (t: Throwable) {
             if (t is CancellationException || t is InterruptedException) throw t
             Log.printStackTrace(TAG, "会员外部游戏任务失败", t)
@@ -5763,8 +5807,8 @@ class AntMember : ModelTask() {
         }
     }
 
-    private fun receiveExternalGamePrizes(scene: String, source: String) {
-        try {
+    private fun receiveExternalGamePrizes(scene: String, source: String): Boolean {
+        return try {
             TaskFlowEngine(object : TaskFlowAdapter {
                 override val moduleName = "AntMember"
                 override val flowName = "会员外部游戏宝箱"
@@ -5783,18 +5827,30 @@ class AntMember : ModelTask() {
                     ))
                 }
                 override fun mapPhase(item: TaskFlowItem) = TaskFlowPhase.REWARD_READY
+                override fun isPendingActionResolved(
+                    item: TaskFlowItem, action: TaskFlowAction, response: JSONObject, items: List<TaskFlowItem>,
+                ): Boolean {
+                    val data = response.optJSONObject("data") ?: return false
+                    val task = data.optJSONObject("taskModule") ?: return false
+                    return action == TaskFlowAction.RECEIVE && task.has("needReceive") &&
+                        !task.optBoolean("needReceive") && task.optInt("needReceiveTaskCertCnt") == 0 &&
+                        data.optJSONObject("taskPrizePopup") == null
+                }
                 override fun receive(item: TaskFlowItem): TaskFlowActionResult {
                     val ack = GameCenterPlayRpcCall.batchReceiveExternalTaskPrize(scene, source)
                     if (!ack.accepted) return TaskFlowActionResult.failure(ack.failureType, message = "游戏宝箱领取失败", raw = ack.raw)
                     Log.member("会员游戏宝箱🎁领取已受理，回查剩余宝箱")
-                    return TaskFlowActionResult.defer(DeferredReason.STATE_CONFIRMATION, "回查外部游戏宝箱", refreshAfterAction = true)
+                    return TaskFlowActionResult.defer(DeferredReason.STATE_CONFIRMATION, "回查外部游戏宝箱",
+                        rpc = "external.gamecenter.batchReceiveTaskPrize", raw = ack.raw, refreshAfterAction = true)
+                        .copy(submissionStarted = true)
                 }
                 override fun logInfo(message: String) = Log.member(message)
                 override fun logError(message: String) = Log.error(TAG, message)
-            }).run()
+            }).run().progressed
         } catch (t: Throwable) {
             if (t is CancellationException || t is InterruptedException) throw t
             Log.printStackTrace(TAG, "外部游戏宝箱处理失败", t)
+            false
         }
     }
 
@@ -5824,7 +5880,23 @@ class AntMember : ModelTask() {
                 if (!seenPages.add(list.toString()) || (list.length() == 0 && pageData.optBoolean("haveNextPage"))) {
                     return JSONObject().put("success", false).put("errorMsg", "外部游戏分页没有进展")
                 }
-                for (i in 0 until list.length()) list.optJSONObject(i)?.let { feeds.put(it) }
+                for (i in 0 until list.length()) {
+                    val feed = list.optJSONObject(i) ?: continue
+                    val descriptor = GameCenterPlayRpcCall.describeTask(feed)
+                    val game = descriptor.mappedTask
+                    if (game != null && GameCenterPlayRpcCall.resolveTaskAction(feed).action ==
+                        GameCenterPlayRpcCall.TaskAction.LEGACY_EXTERNAL_REPORT) {
+                        val channel = descriptor.urlParameters["channel"].orEmpty().ifBlank { game.channel }
+                        val component = GameCenterPlayRpcCall.queryNonDurationTasks(descriptor, channel)
+                        if (!component.accepted) return JSONObject().put("success", false)
+                            .put("errorMsg", "外部游戏组件查询失败").put("response", component.response ?: component.raw)
+                        val componentData = component.response?.optJSONObject("data")
+                        for (key in listOf("externalGameCenterTaskComponentVO", "ladderTaskComponentVO")) {
+                            componentData?.optJSONObject(key)?.let { feed.put(key, it) }
+                        }
+                    }
+                    feeds.put(feed)
+                }
                 if (!pageData.optBoolean("haveNextPage")) {
                     data.put("feedsList", feeds)
                     return root
@@ -5840,7 +5912,6 @@ class AntMember : ModelTask() {
         override fun extractItems(response: JSONObject): List<TaskFlowItem> {
             val data = response.optJSONObject("data") ?: return emptyList()
             val feeds = data.optJSONArray("feedsList") ?: return emptyList()
-            val progress = data.optJSONObject("taskModule")?.optString("taskProgressDesc").orEmpty()
             return (0 until feeds.length()).mapNotNull { index ->
                 val feed = feeds.optJSONObject(index) ?: return@mapNotNull null
                 val descriptor = GameCenterPlayRpcCall.describeTask(feed)
@@ -5850,16 +5921,52 @@ class AntMember : ModelTask() {
                 }
                 // 保留已有游戏协议及其异常诊断；appId仅用于本地动作去重。
                 val id = taskId.ifBlank { descriptor.gameAppId }
+                val component = (feed.optJSONObject("externalGameCenterTaskComponentVO")
+                    ?: feed.optJSONObject("ladderTaskComponentVO"))?.optJSONArray("mainTaskList")
+                val contract = descriptor.mappedTask?.takeIf { component != null }?.let { NonDurationGameTask.resolve(it, feed) }
+                val selectedIds = contract?.componentTasks?.values?.flatten()?.toSet().orEmpty()
+                val tasks = (0 until (component?.length() ?: 0)).mapNotNull { component?.optJSONObject(it) }
+                    .filter { it.optString("appId") == descriptor.gameAppId && it.optString("taskId") in selectedIds }
+                val progress = tasks.sortedBy { it.optString("taskId") }.joinToString("|") {
+                    val taskProgress = it.optJSONObject("taskProgressVO")
+                    listOf(scene, it.optString("taskId"),
+                        GameCenterPlayRpcCall.nonDurationAction(it, descriptor.gameAppId)?.first.orEmpty(),
+                        taskProgress?.optInt("currentProgress"), taskProgress?.optInt("totalProgress"),
+                        it.optString("taskStatus")).joinToString(":")
+                }
+                val componentDone = tasks.isNotEmpty() && contract?.actions?.values?.all { it == 0 } == true
                 TaskFlowItem(
                     id, feed.optString("mainTitle").ifBlank { feed.optString("subTitle") }.ifBlank { id },
-                    feed.optString("taskStatus"), raw = feed, progress = progress,
+                    if (componentDone) "COMPLETED" else feed.optString("taskStatus"), raw = feed, progress = progress,
                 )
             }
         }
 
+        override fun hasProgress(previous: TaskFlowItem, current: TaskFlowItem): Boolean {
+            val before = (previous.raw?.optJSONObject("externalGameCenterTaskComponentVO")
+                ?: previous.raw?.optJSONObject("ladderTaskComponentVO"))?.optJSONArray("mainTaskList") ?: return false
+            val after = (current.raw?.optJSONObject("externalGameCenterTaskComponentVO")
+                ?: current.raw?.optJSONObject("ladderTaskComponentVO"))?.optJSONArray("mainTaskList") ?: return false
+            val descriptor = GameCenterPlayRpcCall.describeTask(current.raw)
+            val game = descriptor.mappedTask ?: return false
+            val contract = NonDurationGameTask.resolve(game, current.raw)
+            val selectedIds = contract.componentTasks.values.flatten().toSet()
+            for (index in 0 until before.length()) {
+                val task = before.optJSONObject(index) ?: continue
+                val id = task.optString("taskId")
+                if (task.optString("appId") != game.appId || id !in selectedIds) continue
+                val refreshed = (0 until after.length()).mapNotNull { after.optJSONObject(it) }
+                    .firstOrNull { it.optString("appId") == game.appId && it.optString("taskId") == id } ?: continue
+                val oldAction = GameCenterPlayRpcCall.nonDurationAction(task, game.appId) ?: continue
+                val newAction = GameCenterPlayRpcCall.nonDurationAction(refreshed, game.appId) ?: continue
+                if (oldAction.first == newAction.first && newAction.second < oldAction.second) return true
+            }
+            return false
+        }
+
         override fun isBlacklisted(item: TaskFlowItem): Boolean = isMemberTaskInBlacklist(item.id, item.title)
         override fun mapPhase(item: TaskFlowItem): TaskFlowPhase {
-            if (item.status in setOf("FINISHED", "RECEIVED", "DONE")) return TaskFlowPhase.TERMINAL
+            if (item.status in setOf("FINISHED", "RECEIVED", "DONE", "COMPLETED")) return TaskFlowPhase.TERMINAL
             if (item.id.isBlank()) return TaskFlowPhase.UNKNOWN
             val descriptor = GameCenterPlayRpcCall.describeTask(item.raw)
             return if (descriptor.contract != null || descriptor.mappedTask != null) TaskFlowPhase.READY_TO_COMPLETE else TaskFlowPhase.UNKNOWN
@@ -9271,7 +9378,6 @@ class AntMember : ModelTask() {
         private const val MERCHANT_EXAM_PRODUCE_CHANNEL = "GW_MRCHSERVEBASE_DEFAULT"
         private const val MERCHANT_UNCLOSED_AD_TASK_CODE = "SYH_RTB_SHOW_TASK_INDEX_1"
         private const val INSURED_GOLD_WAIT_LIST_QUERY_LIMIT = 3
-        private const val MEMBER_TASK_REPEAT_LIMIT = 6
         private const val MEMBER_CALL_APP_VERIFY_RETRY_LIMIT = 5
         private const val BEAN_DRAW_PLAN_ID = "INSP29990111"
 

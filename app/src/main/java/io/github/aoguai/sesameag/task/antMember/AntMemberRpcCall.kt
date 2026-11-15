@@ -1674,6 +1674,17 @@ object AntMemberRpcCall {
         }
 
     @JvmStatic
+    fun goldTicketTriggerBigPrize(): String? =
+        try {
+            RequestManager.requestString(
+                "com.alipay.wealthgoldtwa.needle.task.triggerBigPrize",
+                "[null]",
+            )
+        } catch (e: Exception) {
+            null
+        }
+
+    @JvmStatic
     fun queryWelfareHome(): String? =
         try {
             val args =
