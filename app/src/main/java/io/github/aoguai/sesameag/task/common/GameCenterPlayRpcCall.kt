@@ -67,7 +67,7 @@ object GameCenterPlayRpcCall {
             get() = "$key:$taskStatus:$rightTimes:$rightTimesLimit"
 
         val hasPendingReward: Boolean
-            get() = !taskStatus.equals("RECEIVED", ignoreCase = true) && rightTimes < rightTimesLimit
+            get() = rightTimesLimit > 0 && rightTimes < rightTimesLimit
 
         val remainingRewards: Int
             get() = (rightTimesLimit - rightTimes).coerceAtLeast(0)
@@ -105,6 +105,13 @@ object GameCenterPlayRpcCall {
         val mappedTask: GameTask?,
         val isGameTask: Boolean,
     ) {
+        /** 组件场景只来自游戏合同，所属业务的 sceneCode 不参与推导。 */
+        val componentScene: String
+            get() = urlParameters["originalMap"]?.let {
+                runCatching { JSONObject(it).optString("scene") }.getOrNull()
+            }.orEmpty().ifBlank { urlParameters["scene"].orEmpty() }
+                .ifBlank { objects.firstNotNullOfOrNull { it.optString("scene").takeIf(String::isNotBlank) }.orEmpty() }
+
         val missingDurationFields: List<String>
             get() = buildList {
                 if (gameAppId.isBlank()) add("gameAppId")
@@ -197,13 +204,7 @@ object GameCenterPlayRpcCall {
                 reason = "structured duration protocol",
             )
         }
-        val originalMap = descriptor.urlParameters["originalMap"]?.let {
-            runCatching { JSONObject(it) }.getOrNull()
-        }
-        if (descriptor.gameTaskType.equals("zhuanhua", ignoreCase = true) ||
-            descriptor.gameTaskType.equals("chongzhi", ignoreCase = true) ||
-            originalMap?.optString("scene") == "outer_multi_type_task"
-        ) {
+        if (descriptor.gameTaskType.equals("chongzhi", ignoreCase = true)) {
             return TaskActionDecision(
                 action = TaskAction.DEFERRED,
                 reason = "structured game task requires its business event",
@@ -215,6 +216,11 @@ object GameCenterPlayRpcCall {
                 reason = "duration protocol is present but its contract is incomplete",
                 missingFields = descriptor.missingDurationFields,
             )
+        }
+        if (directFinishSupported && descriptor.gameTaskType.isBlank() &&
+            objects.any { it.optString("actionType") in setOf("VIEW", "COUNT_DOWN") }
+        ) {
+            return directFinishDecision("module-provided browse completion contract")
         }
         descriptor.mappedTask?.let { mappedTask ->
             return TaskActionDecision(
@@ -230,6 +236,54 @@ object GameCenterPlayRpcCall {
             } else {
                 "game task has no direct, click, duration or supported business completion contract"
             },
+        )
+    }
+
+    fun nonDurationAction(task: JSONObject, appId: String): Pair<String, Int>? {
+        if (task.optString("appId").let { it.isNotBlank() && it != appId } ||
+            task.optString("taskType") == "GAME_PAY") return null
+        val taskId = task.optString("taskId")
+        val countedId = taskId.contains("__")
+        val parts = taskId.split(if (countedId) "__" else "#")
+        val action = task.optString("action_code").ifBlank { task.optString("actionCode") }.ifBlank {
+            when {
+                parts.size == 3 && parts[0] == appId -> parts[1]
+                !countedId && parts.size == 2 && parts[0] != appId -> parts[0]
+                else -> ""
+            }
+        }
+        if (action.isBlank()) return null
+        val progress = task.optJSONObject("taskProgressVO")
+        val remaining = if (progress != null && progress.has("totalProgress")) {
+            if (task.optString("taskStatus") in setOf("FINISHED", "RECEIVED", "COMPLETED")) 0
+            else (progress.optInt("totalProgress") - progress.optInt("currentProgress")).coerceAtLeast(0)
+        } else if (countedId && parts.size == 3 && parts[0] == appId) {
+            parts[2].toIntOrNull()?.coerceAtLeast(0) ?: return null
+        } else 1
+        return action to remaining
+    }
+
+    fun queryNonDurationTasks(descriptor: GameTaskDescriptor, channel: String): FloatingBallAck {
+        val originalMap = descriptor.urlParameters["originalMap"]?.let {
+            runCatching { JSONObject(it) }.getOrNull()
+        }
+        return requestAck(
+            METHOD_GAME_COMPONENT_QUERY,
+            JSONObject()
+                .put("appId", descriptor.gameAppId)
+                .put("chInfo", descriptor.source)
+                .put("channel", channel)
+                .put("reqType", "START_APP_FIRST_REQ")
+                .put("closeAd", false)
+                .put("deviceLevel", "high")
+                .put("unityDeviceLevel", "high")
+                .apply {
+                    descriptor.componentScene.takeIf(String::isNotBlank)?.let { put("scene", it) }
+                    for (key in listOf("taskId", "subScene", "channelTaskPassThrough")) {
+                        originalMap?.optString(key).orEmpty().ifBlank { descriptor.urlParameters[key].orEmpty() }
+                            .takeIf(String::isNotBlank)?.let { put(key, it) }
+                    }
+                },
         )
     }
 
@@ -450,6 +504,9 @@ object GameCenterPlayRpcCall {
                 "p2eHomePageRequest",
                 "p2eTaskListRequest",
                 "p2eFeedsGameListRequest",
+                "originalMap",
+                "external_task_param",
+                "params",
             ).forEach { key -> addObject(parseObject(current.opt(key))) }
         }
         return objects
@@ -459,10 +516,12 @@ object GameCenterPlayRpcCall {
         val parameters = linkedMapOf<String, String>()
         val queue = ArrayDeque<Pair<String, String?>>()
         val nestedKeys = listOf(
-            "url", "sourceUrl", "schema", "query", "channelTaskPassThrough", "cdpQueryParams", "originalMap",
+            "url", "targetUrl", "sourceUrl", "schema", "query", "channelTaskPassThrough", "cdpQueryParams", "originalMap",
+            "external_task_param", "params",
         )
         objects.forEach { objectValue ->
-            listOf("targetUrl", "actionUrl", "jumpUrl", "jumpLink", "pageUrl", "taskJumpUrl", "gameUrl")
+            listOf("url", "targetUrl", "actionUrl", "jumpUrl", "jumpLink", "pageUrl", "taskJumpUrl", "gameUrl",
+                "schema", "query", "originalMap", "external_task_param")
                 .map(objectValue::optString)
                 .filter { it.isNotBlank() }
                 .forEach { queue.add(it to null) }
@@ -511,6 +570,10 @@ object GameCenterPlayRpcCall {
             } else {
                 val decoded = Uri.decode(value)
                 if (decoded != value) queue.add(decoded to parentKey)
+            }
+            uri.encodedFragment?.let { fragment ->
+                val query = if ('?' in fragment) fragment.substringAfter('?') else fragment
+                if ('=' in query) queue.add(query to "query")
             }
         }
         return parameters
