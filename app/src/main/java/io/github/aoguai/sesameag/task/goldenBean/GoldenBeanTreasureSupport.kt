@@ -867,7 +867,8 @@ internal object GoldenBeanTreasureSupport {
                 candidates.firstOrNull { game ->
                     (game.hasPendingReward || remainingDraws > 0) &&
                         resolveGoldenBeanGameTask(game) != null &&
-                        game.snapshotKey !in attemptedSnapshots && !failures.has(game.key) &&
+                        game.snapshotKey !in attemptedSnapshots &&
+                        !Status.hasFlagToday(StatusFlags.FLAG_GOLDEN_BEAN_GAME_ACTION_STOP_PREFIX + game.snapshotKey) &&
                         (pendingTasks.optJSONObject(game.key)?.let {
                             it.optString("reason") == io.github.aoguai.sesameag.task.common.DeferredReason.NO_PROGRESS_COOLDOWN.name &&
                                 it.optLong("until") <= System.currentTimeMillis()
@@ -947,6 +948,9 @@ internal object GoldenBeanTreasureSupport {
                 failures.put(candidate.key, JSONObject().put("snapshot", candidate.snapshotKey)
                     .put("type", reportResult.failureType?.name).put("code", reportResult.code)
                     .put("message", reportResult.message).put("raw", reportResult.raw).put("detail", reportResult.detail))
+                if (reportResult.failureType == TaskRpcFailureType.NON_RETRYABLE_INVALID) {
+                    Status.setFlagToday(StatusFlags.FLAG_GOLDEN_BEAN_GAME_ACTION_STOP_PREFIX + candidate.snapshotKey)
+                }
             }
             persist()
             if (reportResult.stopCurrentRound) return GoldenBeanGameFlowResult(false, progressed, blocked = true)

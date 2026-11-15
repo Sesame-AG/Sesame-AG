@@ -102,9 +102,6 @@ class AntSports : ModelTask() {
         /** @brief 日志 TAG */
         private val TAG: String = AntSports::class.java.simpleName
 
-        /** @brief 训练好友 0 金币达上限日期缓存键 */
-        private const val TRAIN_FRIEND_ZERO_COIN_DATE = "TRAIN_FRIEND_ZERO_COIN_DATE"
-
         /** @brief 运动任务黑名单模块名 */
         private const val SPORTS_TASK_BLACKLIST_MODULE = "运动"
         private const val SPORTS_CHECK_IN_TITLE = "运动签到"
@@ -337,8 +334,6 @@ class AntSports : ModelTask() {
     internal lateinit var trainFriend: BooleanModelField
     private lateinit var zeroCoinLimit: IntegerModelField
 
-    /** @brief 记录训练好友连续获得 0 金币的次数 */
-    private var zeroTrainCoinCount: Int = 0
     private val handledClubBubbleRecordIds = mutableSetOf<String>()
 
     // 健康岛任务
@@ -1577,7 +1572,7 @@ class AntSports : ModelTask() {
 
     private fun hasReachedTrainFriendZeroCoinLimit(): Boolean {
         val maxCount = getTrainFriendZeroCoinLimit() ?: return false
-        return zeroTrainCoinCount >= maxCount
+        return (Status.getIntFlagToday(StatusFlags.FLAG_ANTSPORTS_TRAIN_FRIEND_ZERO_COIN_COUNT) ?: 0) >= maxCount
     }
 
     private fun shouldOverrideDailyStep(originStep: Int, targetStep: Int): Boolean {
@@ -6126,11 +6121,11 @@ class AntSports : ModelTask() {
                 Log.sports("club泡泡💰️ [获得:$amount 金币]")
 
                 if (amount <= 0) {
-                    zeroTrainCoinCount++
+                    val zeroTrainCoinCount =
+                        (Status.getIntFlagToday(StatusFlags.FLAG_ANTSPORTS_TRAIN_FRIEND_ZERO_COIN_COUNT) ?: 0) + 1
+                    Status.setIntFlagToday(StatusFlags.FLAG_ANTSPORTS_TRAIN_FRIEND_ZERO_COIN_COUNT, zeroTrainCoinCount)
                     val maxCount = getTrainFriendZeroCoinLimit()
                     if (maxCount != null && hasReachedTrainFriendZeroCoinLimit()) {
-                        val today = TimeUtil.getDateStr2()
-                        DataStore.put(TRAIN_FRIEND_ZERO_COIN_DATE, today)
                         Log.sports("✅ 连续获得0金币已达${maxCount}次，今日停止执行")
                         return
                     } else if (maxCount != null) {

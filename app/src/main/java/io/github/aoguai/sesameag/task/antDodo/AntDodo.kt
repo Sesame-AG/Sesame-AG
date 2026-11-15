@@ -510,6 +510,7 @@ class AntDodo : ModelTask() {
     private inner class DodoTaskFlowAdapter : TaskFlowAdapter {
         override val moduleName: String = TASK_BLACKLIST_MODULE
         override val flowName: String = "神奇物种任务"
+        override val nonRetryableActionFlagPrefix: String = StatusFlags.FLAG_ANTDODO_TASK_ACTION_STOP_PREFIX
 
         override fun isFlowHandledToday(): Boolean = Status.hasFlagToday(StatusFlags.FLAG_ANTDODO_TASKS_DONE)
 

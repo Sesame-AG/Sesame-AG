@@ -25,6 +25,20 @@ package io.github.aoguai.sesameag.data
  * - 新增 flag 时优先使用“模块名::业务名::状态”的值格式；是否保留历史 key 由对应重构策略决定。
  */
 object StatusFlags {
+    // 任务动作的当日止损；错误详情和提交进度仍保存在业务状态中。
+    const val FLAG_ANTFOREST_CHOUCHOULE_ACTION_STOP_PREFIX = "AntForest::chouChouLeActionStop::"
+    const val FLAG_ANTFOREST_GAME_CENTER_ACTION_STOP_PREFIX = "AntForest::gameCenterActionStop::"
+    const val FLAG_FARM_GAME_CENTER_ACTION_STOP_PREFIX = "AntFarm::gameCenterActionStop::"
+    const val FLAG_ANTORCHARD_GAME_ACTION_STOP_PREFIX = "AntOrchard::gameActionStop::"
+    const val FLAG_ANTMEMBER_GAME_ACTION_STOP_PREFIX = "AntMember::gameActionStop::"
+    const val FLAG_ANTDODO_TASK_ACTION_STOP_PREFIX = "AntDodo::taskActionStop::"
+    const val FLAG_SESAME_TASK_ACTION_STOP_PREFIX = "AntSesameCredit::taskActionStop::"
+    const val FLAG_SESAME_ALCHEMY_ACTION_STOP_PREFIX = "AntSesameCredit::alchemyActionStop::"
+    const val FLAG_GOLDEN_BEAN_TASK_ACTION_STOP_PREFIX = "GoldenBeanTreasure::taskActionStop::"
+    const val FLAG_GOLDEN_BEAN_GAME_ACTION_STOP_PREFIX = "GoldenBeanTreasure::gameActionStop::"
+    const val FLAG_FARM_LOVE_CHICKEN_DAILY_STOP_PREFIX = "AntFarm::loveChickenDailyStop::"
+    const val FLAG_ANTSPORTS_TRAIN_FRIEND_ZERO_COIN_COUNT = "AntSports::trainFriendZeroCoinCount"
+
     // ============================================================
     // 通用 / 调度
     // ============================================================

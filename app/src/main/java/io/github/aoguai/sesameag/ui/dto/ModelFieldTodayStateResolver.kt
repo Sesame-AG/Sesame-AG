@@ -279,6 +279,16 @@ object ModelFieldTodayStateResolver {
                 )
             }
 
+            "AntSports.trainFriend",
+            "AntSports.zeroCoinLimit",
+            -> {
+                limitReached(
+                    current = Status.getIntFlagToday(StatusFlags.FLAG_ANTSPORTS_TRAIN_FRIEND_ZERO_COIN_COUNT),
+                    limit = intValue(modelFields["zeroCoinLimit"]),
+                    reason = "今日训练好友零金币次数已达止损上限",
+                )
+            }
+
             "AntSports.syncStepCount" -> {
                 if ((intValue(modelField) ?: 0) > 0) {
                     flag(StatusFlags.FLAG_ANTSPORTS_SYNC_STEP_DONE, "今日步数已同步")

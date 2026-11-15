@@ -342,6 +342,7 @@ private class GoldenBeanTaskFlowAdapter(
 
     override val moduleName: String = GOLDEN_BEAN_BLACKLIST_MODULE
     override val flowName: String = "金豆夺宝任务"
+    override val nonRetryableActionFlagPrefix: String = StatusFlags.FLAG_GOLDEN_BEAN_TASK_ACTION_STOP_PREFIX
     override val stateScope: String = "$flowName:${entry.taskSceneCode}"
     override val continueCurrentRoundOnRetryableFailure: Boolean = true
 

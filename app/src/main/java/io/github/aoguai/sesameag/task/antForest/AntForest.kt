@@ -8348,6 +8348,10 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     failedTasks.put(candidate.key, JSONObject().put("snapshot", key)
                         .put("type", result.failureType?.name).put("code", result.code)
                         .put("message", result.message).put("raw", result.raw).put("detail", result.detail))
+                    if (result.failureType == TaskRpcFailureType.NON_RETRYABLE_INVALID) {
+                        Status.setFlagToday(StatusFlags.FLAG_ANTFOREST_GAME_CENTER_ACTION_STOP_PREFIX + key,
+                            expectedUserId = session.userId)
+                    }
                 }
                 persist()
             }
@@ -8456,8 +8460,10 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     val action = advanceForestGameCenterCandidate(
                         progressCandidates.filter { candidate ->
                             val pending = pendingTasks.optJSONObject(candidate.key)
+                            val stoppedToday = Status.hasFlagToday(StatusFlags.FLAG_ANTFOREST_GAME_CENTER_ACTION_STOP_PREFIX +
+                                "${candidate.key}:${candidate.status}:${candidate.rightTimes}:${candidate.rightTimesLimit}")
                             (resumeTasks == null || candidate.key in resumeTasks) &&
-                                !failedTasks.has(candidate.key) &&
+                                !stoppedToday &&
                                 (pending == null || pending.optString("reason") == DeferredReason.NO_PROGRESS_COOLDOWN.name &&
                                     pending.optLong("until") <= System.currentTimeMillis())
                         }, attemptedCandidates, remainingDraws,
@@ -8618,7 +8624,8 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 attemptedCandidates.remove(snapshotKey)
                 continue
             }
-            if (failedTasks.has(snapshotKey) || !attemptedCandidates.add(snapshotKey)) continue
+            if (Status.hasFlagToday(StatusFlags.FLAG_ANTFOREST_GAME_CENTER_ACTION_STOP_PREFIX + snapshotKey) ||
+                !attemptedCandidates.add(snapshotKey)) continue
             val requestTask = JSONObject(task.rawTask.toString()).apply {
                 put("source", AntForestRpcCall.OPEN_GREEN_RIGHTS_SOURCE)
             }
@@ -8643,7 +8650,11 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 }
 
                 else -> {
-                    failedTasks.put(snapshotKey, JSONObject().put("raw", awardResponse.toString()))
+                    val failureType = classifyForestTaskFailure(awardResponse)
+                    failedTasks.put(snapshotKey, JSONObject().put("type", failureType.name).put("raw", awardResponse.toString()))
+                    if (failureType == TaskRpcFailureType.NON_RETRYABLE_INVALID) {
+                        Status.setFlagToday(StatusFlags.FLAG_ANTFOREST_GAME_CENTER_ACTION_STOP_PREFIX + snapshotKey)
+                    }
                     persist()
                     handleForestTaskRpcFailure(
                         action = "receiveTaskAwardopengreen",

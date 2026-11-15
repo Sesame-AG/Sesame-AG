@@ -546,7 +546,8 @@ object FarmGame {
         val candidate = candidates.firstOrNull { item ->
             val key = "${item.key}|${item.snapshotKey}"
             val until = state.deferredActionKeys[key]
-            key !in attemptedCandidates && key !in state.failedActionSnapshotKeys &&
+            key !in attemptedCandidates &&
+                !Status.hasFlagToday(StatusFlags.FLAG_FARM_GAME_CENTER_ACTION_STOP_PREFIX + key) &&
                 key !in state.pendingActionConfirmations &&
                 (until == null || until > 0L && until <= System.currentTimeMillis()) &&
                 farmGameCenterDecision(item).action != GameCenterPlayRpcCall.TaskAction.DEFERRED
@@ -632,7 +633,9 @@ object FarmGame {
                 newlyPending.add(key)
             }
             !result.success && result.deferredReason == null -> {
-                state.failedActionSnapshotKeys.add(key)
+                if (result.failureType == TaskRpcFailureType.NON_RETRYABLE_INVALID) {
+                    Status.setFlagToday(StatusFlags.FLAG_FARM_GAME_CENTER_ACTION_STOP_PREFIX + key)
+                }
                 state.actionFailures[key] = JSONObject().put("type", result.failureType?.name).put("code", result.code)
                     .put("message", result.message).put("raw", result.raw).put("detail", result.detail)
                 Log.error(TAG, "庄园游戏执行失败[taskId=${candidate.taskId}] code=${result.code} ${result.message}")

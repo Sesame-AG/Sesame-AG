@@ -550,6 +550,7 @@ class ForestChouChouLe(private val charityWaterEnabled: Boolean = false) {
     ) : TaskFlowAdapter {
         override val moduleName: String = FOREST_BLACKLIST_MODULE
         override val flowName: String = scene.name
+        override val nonRetryableActionFlagPrefix: String = StatusFlags.FLAG_ANTFOREST_CHOUCHOULE_ACTION_STOP_PREFIX
         override val continueCurrentRoundOnRetryableFailure: Boolean = true
 
         override fun query(): JSONObject = fetchFreshTaskList(scene) ?: JSONObject().put("success", false).put("message", "任务列表返回空")

@@ -997,6 +997,7 @@ class AntOrchard : ModelTask() {
         private val dailyTasks = OrchardDailyTaskFlowAdapter()
         override val moduleName: String = ORCHARD_TASK_BLACKLIST_MODULE
         override val flowName: String = "农场乐园独立游戏任务"
+        override val nonRetryableActionFlagPrefix: String = StatusFlags.FLAG_ANTORCHARD_GAME_ACTION_STOP_PREFIX
         override val continueCurrentRoundOnRetryableFailure: Boolean = true
 
         override fun query(): JSONObject = JSONObject(AntOrchardRpcCall.queryGameCenter())

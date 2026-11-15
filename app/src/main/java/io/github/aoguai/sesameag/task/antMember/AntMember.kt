@@ -5857,6 +5857,7 @@ class AntMember : ModelTask() {
     private inner class ExternalGameFeedTaskFlowAdapter(private val scene: String, private val source: String) : TaskFlowAdapter {
         override val moduleName = "AntMember"
         override val flowName = "会员外部游戏任务"
+        override val nonRetryableActionFlagPrefix: String = StatusFlags.FLAG_ANTMEMBER_GAME_ACTION_STOP_PREFIX
         override val continueCurrentRoundOnRetryableFailure = true
 
         override fun query(): JSONObject {
@@ -6219,6 +6220,7 @@ class AntMember : ModelTask() {
     private inner class GameCenterPlatformTaskFlowAdapter : TaskFlowAdapter {
         override val moduleName: String = memberTaskBlacklistModule
         override val flowName: String = "游戏中心🎮平台任务"
+        override val nonRetryableActionFlagPrefix: String = StatusFlags.FLAG_ANTMEMBER_GAME_ACTION_STOP_PREFIX
 
         var queryFailed: Boolean = false
             private set
@@ -6678,6 +6680,7 @@ class AntMember : ModelTask() {
     private inner class GameCenterP2eTaskFlowAdapter : TaskFlowAdapter {
         override val moduleName: String = memberTaskBlacklistModule
         override val flowName: String = "游戏中心🎮赚现金任务"
+        override val nonRetryableActionFlagPrefix: String = StatusFlags.FLAG_ANTMEMBER_GAME_ACTION_STOP_PREFIX
 
         var queryFailed: Boolean = false
             private set
