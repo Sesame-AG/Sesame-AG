@@ -140,17 +140,6 @@ object ForestUtil {
         }
     }
 
-    /**
-     * 手动清除指定用户的频率限制（用于测试或手动恢复）
-     * @param userId 用户ID
-     */
-    @JvmStatic
-    fun clearUserFrequencyLimit(userId: String?) {
-        if (userId != null && userFrequencyMap.remove(userId) != null) {
-            Log.forest("[${UserMap.getMaskName(userId)}] 频率限制已清除")
-        }
-    }
-
     @JvmStatic
     fun hasShield(userHomeObj: JSONObject, serverTime: Long): Boolean {
         return hasPropGroup(userHomeObj, "shield", serverTime)

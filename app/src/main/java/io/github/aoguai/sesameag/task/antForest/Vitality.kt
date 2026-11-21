@@ -13,7 +13,10 @@ import io.github.aoguai.sesameag.util.maps.VitalityRewardsMap
 import io.github.aoguai.sesameag.task.exchange.ExchangeFetchPacing
 import io.github.aoguai.sesameag.task.exchange.ExchangeOptionsCache
 import io.github.aoguai.sesameag.task.exchange.ExchangeOptionsSnapshot
+import io.github.aoguai.sesameag.task.exchange.ExchangeReplenishResult
+import io.github.aoguai.sesameag.task.exchange.ExchangeSafety
 import io.github.aoguai.sesameag.hook.ExchangeOptionsRefreshBridge
+import kotlinx.coroutines.CancellationException
 import io.github.aoguai.sesameag.util.ResChecker
 import io.github.aoguai.sesameag.util.TimeUtil
 
@@ -38,20 +41,17 @@ object Vitality {
         return null
     }
 
-    @JvmStatic
-    fun ItemDetailBySpuId(spuId: String): Boolean {
-        try {
-            val jo = JsonUtil.parseJSONObjectOrNull(AntForestRpcCall.itemDetail(spuId)) ?: return false
-            if (ResChecker.checkRes("${TAG}查询森林活力值商品详情失败:", jo)) {
-                val itemDetail = jo.optJSONObject("spuItemInfoVO") ?: return false
-                handleItemDetail(itemDetail)
-                return true
-            }
-        } catch (th: Throwable) {
-            Log.runtime(TAG, "ItemDetailBySpuId err")
-            Log.printStackTrace(TAG, th)
-        }
-        return false
+    private fun queryVitalitySkuDetail(spuId: String, skuId: String): JSONObject? {
+        val response = JsonUtil.parseJSONObjectOrNull(AntForestRpcCall.itemDetail(spuId)) ?: return null
+        if (!ResChecker.checkRes("${TAG}查询森林活力值商品详情失败:", response)) return null
+        val detail = response.optJSONObject("spuItemInfoVO") ?: return null
+        val skus = HashMap<String, JSONObject>()
+        handleVitalityItem(detail, skus)
+        skuInfo.putAll(skus)
+        val rewardsMap = IdMapManager.getInstance(VitalityRewardsMap::class.java)
+        skus.forEach { (id, sku) -> rewardsMap.add(id, sku.optString("skuName")) }
+        UserMap.currentUid?.let { rewardsMap.save(it) }
+        return skus[skuId]
     }
 
     @JvmStatic
@@ -159,31 +159,6 @@ object Vitality {
         }
     }
 
-    @Suppress("LoopWithTooManyJumpStatements")
-    private fun handleItemDetail(ItemDetail: JSONObject) {
-        try {
-            val spuId = ItemDetail.optString("spuId")
-            val skuModelList = ItemDetail.optJSONArray("skuModelList") ?: return
-            for (i in 0 until skuModelList.length()) {
-                val skuModel = skuModelList.optJSONObject(i) ?: continue
-                val skuId = skuModel.optString("skuId")
-                if (skuId.isEmpty()) continue
-
-                val skuName = skuModel.optString("skuName")
-                if (!skuModel.has("spuId")) {
-                    skuModel.put("spuId", spuId)
-                }
-                copyParentItemFields(skuModel, ItemDetail)
-                skuInfo[skuId] = skuModel
-                IdMapManager.getInstance(VitalityRewardsMap::class.java).add(skuId, skuName)
-            }
-            UserMap.currentUid?.let { IdMapManager.getInstance(VitalityRewardsMap::class.java).save(it) }
-        } catch (th: Throwable) {
-            Log.runtime(TAG, "handleItemDetail err:")
-            Log.printStackTrace(TAG, th)
-        }
-    }
-
     private fun copyParentItemFields(skuModel: JSONObject, parentItem: JSONObject) {
         listOf("spuName", "subTitle", "labelTypeList", "itemStatus", "spuExtendInfo").forEach { key ->
             if (!skuModel.has(key) && parentItem.has(key)) {
@@ -192,94 +167,73 @@ object Vitality {
         }
     }
 
-    @JvmStatic
-    fun handleVitalityExchange(skuId: String): Boolean {
-        if (Status.hasFlagToday(StatusFlags.FLAG_ANTFOREST_VITALITY_EXCHANGE_LIMIT_PREFIX + skuId)) {
-            Log.forest("活力兑换🍃[$skuId]今日已达上限，跳过兑换")
-            return false
-        }
-
-        if (skuInfo.isEmpty()) {
-            initVitality("")
-        }
-        
-        var sku = skuInfo[skuId] ?: run {
-            Log.forest("活力兑换🍃找不到要兑换的权益！")
-            return false
-        }
-        
-        try {
-            var skuName = sku.optString("skuName")
-            val spuId = sku.optString("spuId")
-            if (spuId.isEmpty()) return false
-            if (!ItemDetailBySpuId(spuId)) {
-                Log.forest("活力兑换🍃[$skuName]兑换前详情复核失败")
-                return false
+    internal fun handleVitalityExchange(skuId: String): ExchangeReplenishResult {
+        val dailyLimit = StatusFlags.FLAG_ANTFOREST_VITALITY_EXCHANGE_LIMIT_PREFIX + skuId
+        if (Status.hasFlagToday(dailyLimit)) return ExchangeReplenishResult.BUSINESS_LIMIT
+        val userId = UserMap.currentUid ?: return ExchangeReplenishResult.RETRY_LATER
+        val spuId = skuInfo[skuId]?.optString("spuId")?.takeIf { it.isNotBlank() }
+            ?: return ExchangeReplenishResult.NOT_AVAILABLE
+        val forest = AntForest.instance ?: return ExchangeReplenishResult.RETRY_LATER
+        return try {
+            val sku = queryVitalitySkuDetail(spuId, skuId) ?: run {
+                Log.forest("活力兑换🍃[$skuId]未从最新详情确认要兑换的商品")
+                return ExchangeReplenishResult.RETRY_LATER
             }
-            sku = skuInfo[skuId] ?: sku
-            skuName = sku.optString("skuName").ifBlank { skuName }
-            val itemStatusList = sku.optJSONArray("itemStatusList") ?: JSONArray()
-            for (i in 0 until itemStatusList.length()) {
-                val itemStatus = itemStatusList.optString(i)
-                val status = runCatching { ExchangeStatus.valueOf(itemStatus) }.getOrNull() ?: continue
-                if (status.name == itemStatus) {
-                    Log.forest("活力兑换🍃[$skuName]停止:${status.nickName}")
-                    if (ExchangeStatus.REACH_LIMIT.name == itemStatus) {
-                        Status.setFlagToday(StatusFlags.FLAG_ANTFOREST_VITALITY_EXCHANGE_LIMIT_PREFIX + skuId)
-                        Log.forest("活力兑换🍃[$skuName]已达上限,停止兑换！")
-                    }
-                    return false
+            val item = forest.buildVitalityExchangeItem(skuId, sku)
+            if (sku.optInt("userDayLeftAmount", -1) == 0) {
+                Status.setFlagToday(dailyLimit, expectedUserId = userId)
+                Log.forest("活力兑换🍃[${item.name}]个人当日兑换额度已用尽")
+                return ExchangeReplenishResult.BUSINESS_LIMIT
+            }
+            if (sku.optInt("userTotalLeftAmount", -1) == 0) {
+                Log.forest("活力兑换🍃[${item.name}]个人总兑换额度已用尽")
+                return ExchangeReplenishResult.BUSINESS_LIMIT
+            }
+            if (item.safety != ExchangeSafety.AUTO) {
+                Log.forest("活力兑换🍃[${item.name}]停止:${item.safetyReason}")
+                val statuses = sku.optJSONArray("itemStatusList")
+                val reachLimit = (0 until (statuses?.length() ?: 0)).any {
+                    statuses?.optString(it) == ExchangeStatus.REACH_LIMIT.name
                 }
+                return if (reachLimit) ExchangeReplenishResult.BUSINESS_LIMIT else ExchangeReplenishResult.NOT_AVAILABLE
             }
-            
-            if (VitalityExchange(spuId, skuId, skuName)) {
-                if (skuName.contains("限时")) {
-                    Status.setFlagToday(StatusFlags.FLAG_ANTFOREST_VITALITY_EXCHANGE_LIMIT_PREFIX + skuId)
-                }
-                ItemDetailBySpuId(spuId)
-                return true
-            }
-            ItemDetailBySpuId(spuId)
-        } catch (th: Throwable) {
-            Log.runtime(TAG, "VitalityExchange err")
-            Log.printStackTrace(TAG, th)
-        }
-        return false
-    }
 
-    @JvmStatic
-    fun VitalityExchange(spuId: String, skuId: String, skuName: String): Boolean {
-        try {
-            if (VitalityExchange(spuId, skuId)) {
-                Status.vitalityExchangeToday(skuId)
-                val exchangedCount = Status.getVitalityCount(skuId)
-                Log.forest("活力兑换🍃[$skuName]#第${exchangedCount}次")
-                return true
-            }
-        } catch (th: Throwable) {
-            Log.runtime(TAG, "VitalityExchange err:$spuId,$skuId")
-            Log.printStackTrace(TAG, th)
-        }
-        return false
-    }
-
-    private fun VitalityExchange(spuId: String, skuId: String): Boolean {
-        try {
-            val jo = JsonUtil.parseJSONObjectOrNull(AntForestRpcCall.exchangeBenefit(spuId, skuId)) ?: return false
-            if (!jo.optBoolean("success")) {
-                val resultCode = jo.optString("resultCode", "")
-                if ("QUOTA_USER_NOT_ENOUGH" == resultCode) {
-                    Log.forest("活力兑换🍃[兑换次数已达上限]#${jo.optString("resultDesc", "")}")
-                    Status.setFlagToday(StatusFlags.FLAG_ANTFOREST_VITALITY_EXCHANGE_LIMIT_PREFIX + skuId)
-                    return false
+            val response = JsonUtil.parseJSONObjectOrNull(AntForestRpcCall.exchangeBenefit(spuId, skuId))
+            val result = when {
+                response == null -> {
+                    Log.error(TAG, "森林活力值兑换结果未确认 skuId=$skuId")
+                    ExchangeReplenishResult.RETRY_LATER
                 }
+                !response.optBoolean("success") && response.optString("resultCode") == "QUOTA_USER_NOT_ENOUGH" -> {
+                    Log.forest("活力兑换🍃[${item.name}]${response.optString("resultDesc")}")
+                    ExchangeReplenishResult.BUSINESS_LIMIT
+                }
+                ResChecker.checkRes("${TAG}森林活力值兑换失败:", response) -> {
+                    Status.vitalityExchangeToday(skuId)
+                    Log.forest("活力兑换🍃[${item.name}]#第${Status.getVitalityCount(skuId)}次")
+                    ExchangeReplenishResult.EXCHANGED
+                }
+                else -> ExchangeReplenishResult.RETRY_LATER
             }
-            return ResChecker.checkRes("${TAG}森林活力值兑换失败:", jo)
-        } catch (th: Throwable) {
-            Log.runtime(TAG, "VitalityExchange err:$spuId,$skuId")
-            Log.printStackTrace(TAG, th)
+            try {
+                val confirmed = queryVitalitySkuDetail(spuId, skuId)
+                if (confirmed == null) {
+                    Log.forest("活力兑换🍃[${item.name}]兑换后详情未确认")
+                } else if (confirmed.optInt("userDayLeftAmount", -1) == 0) {
+                    Status.setFlagToday(dailyLimit, expectedUserId = userId)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.printStackTrace(TAG, "森林活力值兑换后详情复核失败 skuId=$skuId", e)
+            }
+            result
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.printStackTrace(TAG, "森林活力值兑换失败 skuId=$skuId", e)
+            ExchangeReplenishResult.RETRY_LATER
         }
-        return false
     }
 
     @JvmStatic

@@ -150,8 +150,8 @@ internal fun AntForest.runMemberPlantTasks(continuation: JSONObject? = null): Ta
                 raw = result.toString(),
             )
             if (stage == "AWARD") {
-                Log.forest("绿植浏览🌱领奖响应：${result.opt("awardResult") ?: "待回查任务状态"}")
-                return TaskFlowActionResult.success()
+                Log.forest("绿植浏览🌱领奖响应：${result.opt("awardResult") ?: "回查任务状态"}")
+                return TaskFlowActionResult.success(progressChanged = false)
             }
             val items = result.optJSONArray("itemDTOList") ?: return TaskFlowActionResult.failure(
                 TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW, message = "绿植浏览缺少商品列表", raw = result.toString(),

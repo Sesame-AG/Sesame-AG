@@ -550,7 +550,6 @@ class ForestChouChouLe(private val charityWaterEnabled: Boolean = false) {
     ) : TaskFlowAdapter {
         override val moduleName: String = FOREST_BLACKLIST_MODULE
         override val flowName: String = scene.name
-        override val nonRetryableActionFlagPrefix: String = StatusFlags.FLAG_ANTFOREST_CHOUCHOULE_ACTION_STOP_PREFIX
         override val continueCurrentRoundOnRetryableFailure: Boolean = true
 
         override fun query(): JSONObject = fetchFreshTaskList(scene) ?: JSONObject().put("success", false).put("message", "任务列表返回空")
@@ -796,15 +795,14 @@ class ForestChouChouLe(private val charityWaterEnabled: Boolean = false) {
 
                 response.isTaskRightsLimitReached() -> {
                     val message = response.taskResultDesc().ifBlank { "任务权益次数已达上限" }
-                    Log.forest(
-                        "${scene.name} ${item.title} 权益次数已达上限，延后当前任务[code=${response.taskResultCode()}]",
-                    )
-                    return TaskFlowActionResult.defer(
-                        deferredReason = DeferredReason.CAPACITY_LIMIT,
-                        message = "$message [code=${response.taskResultCode()}]",
+                    return TaskFlowActionResult.failure(
+                        failureType = TaskRpcFailureType.BUSINESS_LIMIT,
+                        code = response.taskResultCode(),
+                        message = message,
                         rpc = rpc,
                         raw = response.toString(),
                         detail = actionDetail(item, action),
+                        continueCurrentRoundOnFailure = true,
                     )
                 }
 
@@ -820,8 +818,10 @@ class ForestChouChouLe(private val charityWaterEnabled: Boolean = false) {
                 }
 
                 response.check() -> {
-                    val actionName = if (action == TaskFlowAction.RECEIVE) "奖励领取请求已受理" else "任务提交请求已受理"
-                    Log.forest("${scene.name} $actionName: ${item.title}，等待任务列表确认")
+                    val awardIncreased = response.optInt("incAwardCount") > 0 ||
+                        (response.optJSONObject("finishAwardResultVO")?.optInt("deltaAwardCount") ?: 0) > 0
+                    val actionName = if (awardIncreased) "奖励已增加" else if (action == TaskFlowAction.RECEIVE) "奖励领取请求已受理" else "任务提交请求已受理"
+                    Log.forest("${scene.name} $actionName: ${item.title}，刷新任务列表")
                     return TaskFlowActionResult.defer(
                         deferredReason = DeferredReason.STATE_CONFIRMATION,
                         message = "${action.logName}已返回成功，等待${scene.name}任务列表确认",
@@ -829,6 +829,7 @@ class ForestChouChouLe(private val charityWaterEnabled: Boolean = false) {
                         raw = response.toString(),
                         detail = actionDetail(item, action),
                         refreshAfterAction = true,
+                        progressChanged = awardIncreased,
                     )
                 }
 
