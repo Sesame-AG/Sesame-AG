@@ -17,7 +17,7 @@ enum class TaskExecutionOutcome {
     FAILED,
     SKIPPED,
     CANCELLED,
-    /** 本轮尚未完成；不表示已经注册持久续接，也不代替具体失败原因。 */
+    /** 本轮存在有到期时间的业务等待。 */
     DEFERRED,
 }
 
@@ -28,6 +28,8 @@ internal class TaskExecutionReport(
         ?: AccountSessionIdentity("", 0L),
 ) {
     var executionJob: Job? = current()?.executionJob
+    @Volatile
+    var startupStage: String = "等待任务协程启动"
     private val activityUntil = AtomicLong(SystemClock.elapsedRealtime())
 
     val activityUntilElapsedMs: Long
@@ -73,14 +75,20 @@ internal class TaskExecutionReport(
     }
 
     fun recordFlow(state: TaskFlowExecutionState, module: String, flow: String, result: TaskFlowRunResult) {
-        flows[Triple(state, module, flow)] = result
+        flows.compute(Triple(state, module, flow)) { _, previous ->
+            result.copy(
+                failureCount = (previous?.failureCount ?: 0) + result.failureCount,
+                progressChanged = previous?.progressChanged == true || result.progressChanged,
+                actionAttempted = previous?.actionAttempted == true || result.actionAttempted,
+            )
+        }
         recordActivity()
     }
 
     fun outcome(): TaskExecutionOutcome = when {
         hasException || flows.values.any { it.failureCount > 0 } -> TaskExecutionOutcome.FAILED
         flows.values.any { it.interrupted } -> TaskExecutionOutcome.CANCELLED
-        flows.values.any { !it.completed } -> TaskExecutionOutcome.DEFERRED
+        flows.values.any { it.deferredUntil != null } -> TaskExecutionOutcome.DEFERRED
         else -> TaskExecutionOutcome.SUCCESS
     }
 }

@@ -1,6 +1,7 @@
 package io.github.aoguai.sesameag.util
 
-import com.fasterxml.jackson.core.type.TypeReference
+import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
+import io.github.aoguai.sesameag.hook.AccountSessionIdentity
 
 /**
  * 通用任务黑名单管理器
@@ -62,45 +63,21 @@ object TaskBlacklist {
     }
 
     private fun updateBlacklists(change: (MutableMap<String, Set<String>>) -> Unit): DailyBlacklist {
-        var result: DailyBlacklist? = null
-        var cleanupMessage: String? = null
-        DataStore.update(BLACKLIST_KEY, object : TypeReference<Map<String, Any>>() {}) { stored ->
-            val today = TimeUtil.getDateStr2()
-            val modules = when {
-                stored == null -> emptyMap()
-                stored.containsKey("date") || stored.containsKey("modules") -> {
-                    val date = stored["date"]
-                    require(date is String) { "自动黑名单日期格式无效" }
-                    val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.ROOT).apply {
-                        isLenient = false
-                    }
-                    require(dateFormat.format(requireNotNull(dateFormat.parse(date))) == date) {
-                        "自动黑名单日期格式无效"
-                    }
-                    val savedModules = readModules(stored["modules"])
-                    if (date == today) {
-                        savedModules
-                    } else {
-                        cleanupMessage = "清理过期自动黑名单，所属日期$date，共${savedModules.values.sumOf { it.size }}条"
-                        emptyMap()
-                    }
-                }
-                else -> {
-                    val legacyModules = readModules(stored)
-                    cleanupMessage = "清理无日期的旧自动黑名单，共${legacyModules.values.sumOf { it.size }}条"
-                    emptyMap()
-                }
-            }.toMutableMap()
+        val today = TimeUtil.getDateStr2()
+        val session = AccountSessionCoordinator.currentSession() ?: return DailyBlacklist(today, emptyMap())
+        return AccountSessionCoordinator.withCurrentSession(AccountSessionIdentity(session.userId, session.sessionEpoch)) {
+            val store = requireNotNull(UserDataStoreManager.getInstance(session.userId))
+            val stored = store.get(BLACKLIST_KEY, Map::class.java)
+            val saved = stored?.takeIf { it["date"] == today }?.let { readModules(it["modules"]) }.orEmpty()
+            val modules = saved.toMutableMap()
             change(modules)
-            result = DailyBlacklist(today, modules.toMap())
-            if (stored == null && modules.isEmpty()) {
-                null
-            } else {
-                mapOf("date" to today, "modules" to modules.mapValues { it.value.toList() })
+            if (modules.isEmpty()) {
+                if (stored != null) store.remove(BLACKLIST_KEY)
+            } else if (modules != saved) {
+                store.put(BLACKLIST_KEY, mapOf("date" to today, "modules" to modules.mapValues { it.value.toList() }))
             }
+            DailyBlacklist(today, modules)
         }
-        cleanupMessage?.let { Log.record(TAG, it) }
-        return requireNotNull(result)
     }
 
     private fun getDailyBlacklist(): DailyBlacklist =
@@ -128,7 +105,7 @@ object TaskBlacklist {
 
     /**
      * 检查任务是否在黑名单中
-     * 采用包含匹配逻辑，确保 ID 或 标题 任意一项命中即可
+     * 默认黑名单沿用原匹配规则，自动黑名单精确匹配任务标识。
      */
     fun isTaskInBlacklist(
         moduleName: String?,
@@ -144,7 +121,7 @@ object TaskBlacklist {
             }
         }
         val dailyBlacklist = getDailyBlacklist()
-        return collectModuleBlacklist(dailyBlacklist.modules, moduleName).firstOrNull { isMatch(taskInfo, it) }?.let {
+        return collectModuleBlacklist(dailyBlacklist.modules, moduleName).firstOrNull { taskInfo == it }?.let {
             "自动（当日，${dailyBlacklist.date}）" to it
         }
     }
@@ -207,17 +184,19 @@ object TaskBlacklist {
         taskTitle: String = "",
     ) {
         if (moduleName.isNullOrBlank() || taskId.isBlank()) return
-        addBlacklistEntry(moduleName, taskId, taskTitle)
+        if (addBlacklistEntry(moduleName, taskId)) {
+            Log.record(TAG, "模块[$moduleName]任务[${taskTitle.ifBlank { taskId }}]已加入当日自动黑名单 taskId=$taskId")
+        }
     }
 
-    private fun addBlacklistEntry(moduleName: String, taskId: String, taskTitle: String): Boolean {
-        // 使用分隔符 | 拼接 ID 和 标题，便于后续精确匹配
-        val blacklistItem = if (taskTitle.isNotBlank() && taskId != taskTitle) "$taskId|$taskTitle" else taskId
+    private fun addBlacklistEntry(moduleName: String, taskId: String): Boolean {
         val canonicalName = canonicalModuleName(moduleName)
         return try {
+            var added = false
             updateBlacklists { allBlacklists ->
                 val moduleSet = collectModuleBlacklist(allBlacklists, canonicalName).toMutableSet()
-                if (moduleSet.add(blacklistItem)) {
+                if (moduleSet.add(taskId)) {
+                    added = true
                     relatedModuleNames(canonicalName).forEach { name ->
                         if (name != canonicalName) {
                             allBlacklists.remove(name)
@@ -226,7 +205,7 @@ object TaskBlacklist {
                     allBlacklists[canonicalName] = moduleSet
                 }
             }
-            true
+            added
         } catch (e: Exception) {
             Log.printStackTrace(TAG, "保存当日自动黑名单失败", e)
             false
@@ -259,7 +238,7 @@ object TaskBlacklist {
                 else -> return
             }
 
-        if (!addBlacklistEntry(moduleName, taskId, taskTitle)) return
+        if (!addBlacklistEntry(moduleName, taskId)) return
         val taskInfo = if (taskTitle.isNotBlank()) "$taskId - $taskTitle" else taskId
         Log.record(
             TAG,

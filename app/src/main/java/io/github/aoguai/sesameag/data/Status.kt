@@ -11,7 +11,6 @@ import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.TimeUtil
 import io.github.aoguai.sesameag.util.maps.UserMap
-import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -49,7 +48,6 @@ class Status {
     // =========================== forest
     var waterFriendLogList: MutableMap<String, Int> = HashMap()
     var wateredFriendLogList: MutableMap<String, Int> = HashMap() // 统计“被浇水”(好友->次数)
-    var wateringFriendLogList: MutableMap<String, Int> = HashMap() // 统计“浇水”(好友->次数)
     var cooperateWaterList: MutableSet<String> = HashSet() // 合作浇水
     var reserveLogList: MutableMap<String, Int> = HashMap()
     var ancientTreeCityCodeList: MutableSet<String> = HashSet() // 古树
@@ -81,9 +79,6 @@ class Status {
     // ========================== sport
     var syncStepList: MutableSet<String> = HashSet()
     var exchangeList: MutableSet<String> = HashSet()
-
-    /** 捐运动币 */
-    var donateCharityCoin: Boolean = false
 
     // ======================= other
     var memberSignInList: MutableSet<String> = HashSet()
@@ -210,11 +205,6 @@ class Status {
         }
 
         @JvmStatic
-        fun canAnimalSleep(): Boolean = StoreAccess.transaction {
-            return@transaction !INSTANCE.animalSleep
-        }
-
-        @JvmStatic
         fun animalSleep(): Unit = StoreAccess.transaction {
             if (!INSTANCE.animalSleep) {
                 INSTANCE.animalSleep = true
@@ -270,26 +260,6 @@ class Status {
             if (taskUid != UserMap.currentUid) return@transaction
             val key = "$taskUid-$id"
             INSTANCE.waterFriendLogList[key] = count
-            save()
-        }
-
-        /**
-         * 记录“浇水”次数（给好友浇水 SUCCESS 时触发）。
-         *
-         * @param id 好友 UID
-         * @param addTimes 本次新增次数（SUCCESS 次数）
-         * @param taskUid 任务启动时捕获的 UID（避免切号后写入到错误账号）
-         */
-        @JvmStatic
-        fun wateringFriendToday(id: String, addTimes: Int, taskUid: String?): Unit = StoreAccess.transaction {
-            if (id.isBlank() || addTimes <= 0) return@transaction
-            val uid = if (taskUid.isNullOrBlank()) UserMap.currentUid else taskUid
-            if (uid.isNullOrBlank()) return@transaction
-            if (!taskUid.isNullOrBlank() && taskUid != UserMap.currentUid) return@transaction
-
-            val key = "$uid-$id"
-            val count = INSTANCE.wateringFriendLogList[key] ?: 0
-            INSTANCE.wateringFriendLogList[key] = count + addTimes
             save()
         }
 
@@ -490,19 +460,6 @@ class Status {
         }
 
         @JvmStatic
-        fun canDonateCharityCoin(): Boolean = StoreAccess.transaction {
-            return@transaction !INSTANCE.donateCharityCoin
-        }
-
-        @JvmStatic
-        fun donateCharityCoin(): Unit = StoreAccess.transaction {
-            if (!INSTANCE.donateCharityCoin) {
-                INSTANCE.donateCharityCoin = true
-                save()
-            }
-        }
-
-        @JvmStatic
         fun canExchangeToday(uid: String): Boolean = StoreAccess.transaction {
             return@transaction !INSTANCE.exchangeList.contains(uid)
         }
@@ -628,22 +585,6 @@ class Status {
             } catch (e: JsonMappingException) {
                 Log.printStackTrace(TAG, e)
                 throw RuntimeException("初始化配置失败", e)
-            }
-        }
-
-        private fun resetAndSaveConfig() {
-            try {
-                JsonUtil.copyMapper().updateValue(INSTANCE, Status())
-                val statusFile = Files.getStatusFile(UserMap.currentUid)!!
-                INSTANCE.currentUid = UserMap.currentUid
-                INSTANCE.saveTime = System.currentTimeMillis()
-                Files.write2File(JsonUtil.formatJson(INSTANCE), statusFile)
-                // 同步缓存标记
-                lastModifiedTime = statusFile.lastModified()
-                lastUid = UserMap.currentUid
-            } catch (e: JsonMappingException) {
-                Log.printStackTrace(TAG, e)
-                throw RuntimeException("重置配置失败", e)
             }
         }
 
@@ -829,30 +770,6 @@ class Status {
                     INSTANCE.moduleFlags = previous
                     throw e
                 }
-            }
-        }
-
-        /**
-         * 🚀 完善的 RPC 结果自动补标记工具
-         * 适配光盘打卡、健康岛签到等“远程已完成”场景。
-         * @param jo RPC 返回的 JSONObject
-         * @param extraDoneCodes 额外的“视为完成”的 resultCode 或 errorCode
-         */
-        @JvmStatic
-        fun setFlagIfDone(flag: String, jo: JSONObject?, vararg extraDoneCodes: String): Unit = StoreAccess.transaction {
-            if (jo == null) return@transaction
-            val resultCode = jo.optString("resultCode")
-            val errorCode = jo.optString("errorCode")
-            val success = jo.optBoolean("success") || jo.optBoolean("isSuccess") ||
-                    "SUCCESS" == jo.optString("memo")
-
-            val isAlreadyDone = resultCode == "ACTION_ALREADY_TICKED" ||
-                    resultCode == "ALREADY_SIGN_IN" ||
-                    errorCode == "ALREADY_SIGN_IN" ||
-                    extraDoneCodes.any { it == resultCode || it == errorCode }
-
-            if (success || isAlreadyDone) {
-                setFlagToday(flag)
             }
         }
 

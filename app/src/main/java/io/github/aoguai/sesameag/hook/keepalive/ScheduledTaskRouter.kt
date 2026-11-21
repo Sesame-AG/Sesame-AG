@@ -15,12 +15,11 @@ import io.github.aoguai.sesameag.task.antForest.EnergyWaitingManager
 import io.github.aoguai.sesameag.task.antForest.AntForest
 import io.github.aoguai.sesameag.task.antForest.FOREST_PLANT_CHILD_KIND
 import io.github.aoguai.sesameag.task.antForest.FOREST_READ_CHILD_KIND
+import io.github.aoguai.sesameag.task.goldenBean.GoldenBeanTreasure
 import io.github.aoguai.sesameag.task.antMember.AntMember
 import io.github.aoguai.sesameag.task.antOrchard.AntOrchard
-import io.github.aoguai.sesameag.task.antSesameCredit.AntSesameCredit
 import io.github.aoguai.sesameag.task.antSports.AntSports
 import io.github.aoguai.sesameag.task.antStall.AntStall
-import io.github.aoguai.sesameag.task.goldenBean.GoldenBeanTreasure
 import io.github.aoguai.sesameag.util.DataStore
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.TimeUtil
@@ -243,6 +242,18 @@ object ScheduledTaskRouter {
     ): RouteResult {
         val appContext = context.applicationContext ?: context
         val targetProcess = isTargetProcess(appContext)
+        if (schedule.kind == PersistentScheduleKind.MODULE_CHILD) {
+            val payload = payloadOf(schedule)
+            val childKind = payload.optString("child_kind")
+            if (childKind in setOf("forest_game_confirmation", GoldenBeanTreasure.PERSISTENT_CHILD_KIND, "sesame_confirmation") ||
+                childKind == AntOrchard.PERSISTENT_CHILD_KIND && payload.optString("action") in setOf("game_center", "camp") ||
+                childKind == AntFarm.PERSISTENT_CHILD_KIND && payload.optString("group") == "GAME" ||
+                childKind == AntDodo.PERSISTENT_CHILD_KIND && payload.optString("child_id") == "task_flow" ||
+                childKind == AntSports.PERSISTENT_CHILD_KIND && payload.optString("group") in setOf("healthIsland", "healthIslandCenter") ||
+                childKind == AntMember.PERSISTENT_FLOATING_BALL_KIND && payload.optBoolean("task_list") &&
+                (payload.optString("wait_key").startsWith("memberTaskWait:") || payload.optString("wait_key") == "goldTicketBigPrize")
+            ) return RouteResult.SKIPPED
+        }
         val currentSession = AccountSessionCoordinator.currentSession()
         if (targetProcess && currentSession == null) {
             Log.record(
@@ -383,16 +394,6 @@ object ScheduledTaskRouter {
             }
             return routeResult(dispatchExecute(context, schedule, source, wakenAtTime = false, wakenTime = null))
         }
-        if (childKind == AntForest.FOREST_GAME_CHILD_KIND) {
-            if (targetProcess) {
-                val forest = Model.getModel(AntForest::class.java) ?: return RouteResult.DEFERRED
-                if (!forest.isEnable()) return RouteResult.SKIPPED
-                return if (forest.triggerPersistentGameTask(schedule.payloadJson, schedule.id, source)) {
-                    RouteResult.HANDLED
-                } else RouteResult.FAILED
-            }
-            return routeResult(dispatchExecute(context, schedule, source, wakenAtTime = false, wakenTime = null))
-        }
         if (childKind == FOREST_READ_CHILD_KIND) {
             if (targetProcess) {
                 val forest = Model.getModel(AntForest::class.java) ?: return RouteResult.DEFERRED
@@ -435,29 +436,9 @@ object ScheduledTaskRouter {
             }
             return routeResult(dispatchExecute(context, schedule, source, wakenAtTime = false, wakenTime = null))
         }
-        if (childKind == GoldenBeanTreasure.PERSISTENT_CHILD_KIND) {
-            if (targetProcess) {
-                val goldenBean = Model.getModel(GoldenBeanTreasure::class.java) ?: return RouteResult.DEFERRED
-                if (!goldenBean.isEnable() || goldenBean.goldenBeanTreasure.value != true) return RouteResult.SKIPPED
-                return if (goldenBean.triggerPersistentGoldenBeanTasks(schedule.payloadJson, schedule.id, source)) {
-                    RouteResult.HANDLED
-                } else RouteResult.FAILED
-            }
-            return routeResult(dispatchExecute(context, schedule, source, wakenAtTime = false, wakenTime = null))
-        }
-        if (childKind == AntSesameCredit.PERSISTENT_CONFIRMATION_KIND) {
-            if (targetProcess) {
-                val sesame = Model.getModel(AntSesameCredit::class.java) ?: return RouteResult.DEFERRED
-                if (!sesame.isEnable()) return RouteResult.SKIPPED
-                return if (sesame.triggerPersistentConfirmation(schedule.payloadJson, schedule.id, source)) {
-                    RouteResult.HANDLED
-                } else RouteResult.FAILED
-            }
-            return routeResult(dispatchExecute(context, schedule, source, wakenAtTime = false, wakenTime = null))
-        }
         if (childKind == AntDodo.PERSISTENT_CHILD_KIND) {
             val childId = payload.optString("child_id").trim()
-            if (childId !in setOf(AntDodo.COLLECT_TO_FRIEND_CHILD_ID, AntDodo.TASK_FLOW_CHILD_ID)) {
+            if (childId != AntDodo.COLLECT_TO_FRIEND_CHILD_ID) {
                 Log.record(TAG, "神奇物种持久子任务缺少或未知 child_id: ${schedule.name}")
                 return RouteResult.FAILED
             }
@@ -468,11 +449,7 @@ object ScheduledTaskRouter {
                         Log.record(TAG, "神奇物种持久子任务触发时模块已关闭，标记完成: ${schedule.name}")
                         return RouteResult.SKIPPED
                     }
-                    val handled = if (childId == AntDodo.TASK_FLOW_CHILD_ID) {
-                        antDodo.triggerPersistentTaskFlow(schedule.payloadJson, schedule.id, source)
-                    } else {
-                        antDodo.triggerPersistentCollectToFriend(schedule.payloadJson, schedule.id, source)
-                    }
+                    val handled = antDodo.triggerPersistentCollectToFriend(schedule.payloadJson, schedule.id, source)
                     return if (handled) {
                         RouteResult.HANDLED
                     } else {
