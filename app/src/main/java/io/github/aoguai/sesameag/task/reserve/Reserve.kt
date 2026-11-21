@@ -18,6 +18,7 @@ import io.github.aoguai.sesameag.task.exchange.ExchangeOptionRow
 import io.github.aoguai.sesameag.task.exchange.ExchangeOptionsCache
 import io.github.aoguai.sesameag.task.exchange.ExchangeOptionsSnapshot
 import io.github.aoguai.sesameag.util.GlobalThreadPools
+import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.ResChecker
 import io.github.aoguai.sesameag.util.SerialTaskQueue
@@ -116,25 +117,42 @@ class Reserve : ModelTask() {
                 Log.error(TAG, "保护项目保留能量不能小于 0")
                 return
             }
-            var s: String? = ReserveRpcCall.queryTreeItemsForExchange()
-            if (s == null) {
-                s = ReserveRpcCall.queryTreeItemsForExchange()
+            val treeItems = ReserveRpcCall.treeItemsForExchange(JSONObject(ReserveRpcCall.queryTreeItemsForExchange()))
+            val configuredIds = configuredReserveMap.keys + targets.keys
+            val listedProjects = LinkedHashMap<String, JSONObject>()
+            for (i in 0 until treeItems.length()) {
+                val item = treeItems.optJSONObject(i) ?: continue
+                val id = item.optString("itemId").trim()
+                if (id in configuredIds) listedProjects.putIfAbsent(id, item)
             }
-            val jo = JSONObject(s)
-            if (ResChecker.checkRes(TAG, jo)) {
-                val ja = jo.getJSONArray("treeItems")
-                for (i in 0 until ja.length()) {
-                    val item = ja.getJSONObject(i)
-                    if (item.optString("projectType") !in setOf("RESERVE", "TREE", "ANIMAL")) continue
-                    val projectId = item.getString("itemId")
-                    val itemName = item.getString("itemName")
-                    val target = targets[projectId]
-                    val dailyLimit = configuredReserveMap[projectId]
-                        ?: if (target != null && reserveList?.value?.containsKey(projectId) != true) 1 else continue
-                    exchangeTree(projectId, itemName, dailyLimit, target, energyReserve)
+            for (projectId in listedProjects.keys + configuredIds) {
+                val target = targets[projectId]
+                val dailyLimit = configuredReserveMap[projectId]
+                    ?: if (target != null && reserveList?.value?.containsKey(projectId) != true) 1 else continue
+                val item = listedProjects[projectId]
+                if (item != null) {
+                    if (item.optString("projectType") !in PROJECT_TYPES) continue
+                    exchangeTree(projectId, item.optString("itemName", projectId), dailyLimit, target, energyReserve)
+                    continue
                 }
-            } else {
-                Log.runtime(TAG, jo.getString("resultDesc"))
+
+                if (projectId.toIntOrNull()?.let { it > 0 } != true) {
+                    Log.error(TAG, "保护项目配置 ID 无效[$projectId]")
+                    continue
+                }
+                val response = ReserveRpcCall.queryTreeForExchange(projectId)
+                val detail = JsonUtil.parseJSONObjectOrNull(response)?.let { it.optJSONObject("resData") ?: it }
+                if (detail == null) {
+                    Log.error(TAG, "配置的保护项目详情无法解析[$projectId]")
+                    continue
+                }
+                if (!ResChecker.checkRes(TAG, "查询配置的保护项目[$projectId]失败", detail)) continue
+                val tree = detail.optJSONObject("exchangeableTree")
+                if (tree == null || tree.optString("projectId") != projectId || tree.optString("type") !in PROJECT_TYPES) {
+                    Log.error(TAG, "配置的保护项目详情身份或类型不符[$projectId]")
+                    continue
+                }
+                exchangeTree(projectId, tree.optString("projectName", projectId), dailyLimit, target, energyReserve, detail)
             }
         } catch (t: Throwable) {
             Log.runtime(TAG, "animalReserve err:")
@@ -161,6 +179,7 @@ class Reserve : ModelTask() {
 
     companion object {
         private val TAG = Reserve::class.java.simpleName
+        private val PROJECT_TYPES = setOf("RESERVE", "TREE", "ANIMAL")
         private val exchangeQueue = SerialTaskQueue()
 
         internal fun exchangeTree(
@@ -189,8 +208,8 @@ class Reserve : ModelTask() {
                     val tree = detail.getJSONObject("exchangeableTree")
                     val type = tree.getString("type")
                     val owned = tree.getInt("certCount")
-                    if (owned < 0 || type !in setOf("RESERVE", "TREE", "ANIMAL", "MONOPOLY")) {
-                        Log.error(TAG, "保护项目类型或证书数量无效[$itemName] raw=$detail")
+                    if (tree.optString("projectId") != projectId || owned < 0 || (type != "MONOPOLY" && type !in PROJECT_TYPES)) {
+                        Log.error(TAG, "保护项目身份、类型或证书数量无效[$itemName] raw=$detail")
                         return@execute false
                     }
                     val aliases = if (type == "ANIMAL") detail.getJSONArray("subTreeVOs") else null
@@ -273,7 +292,12 @@ class Reserve : ModelTask() {
                         Log.error(TAG, "保护项目申请后回查失败[$itemName] raw=$refreshed")
                         return@execute false
                     }
-                    val after = refreshed.getJSONObject("exchangeableTree").getInt("certCount")
+                    val refreshedTree = refreshed.getJSONObject("exchangeableTree")
+                    if (refreshedTree.optString("projectId") != projectId || refreshedTree.optString("type") != type) {
+                        Log.error(TAG, "保护项目申请后回查身份或类型不符[$itemName] raw=$refreshed")
+                        return@execute false
+                    }
+                    val after = refreshedTree.getInt("certCount")
                     val afterAliases = if (aliasCounts != null && !golden) {
                         val list = refreshed.getJSONArray("subTreeVOs")
                         (0 until list.length()).sumOf { list.getJSONObject(it).getInt("certCountForAlias") }
@@ -309,16 +333,11 @@ class Reserve : ModelTask() {
                 val jsonResponse = session.read("treeItems", JSONObject(), "保护项目目录") {
                     JSONObject(ReserveRpcCall.queryTreeItemsForExchange())
                 }
-                check(ResChecker.checkRes(TAG, jsonResponse)) {
-                    "刷新保护项目候选失败: ${jsonResponse.optString("resultDesc", "未知错误")}"
-                }
-                val treeItems = checkNotNull(jsonResponse.optJSONArray("treeItems")) {
-                    "刷新保护项目候选失败: 缺少treeItems"
-                }
+                val treeItems = ReserveRpcCall.treeItemsForExchange(jsonResponse)
                 val rows = ArrayList<ExchangeOptionRow>()
                 for (i in 0 until treeItems.length()) {
                     val item = treeItems.optJSONObject(i) ?: continue
-                    if (item.optString("projectType") !in setOf("RESERVE", "TREE", "ANIMAL")) {
+                    if (item.optString("projectType") !in PROJECT_TYPES) {
                         continue
                     }
                     val itemId = item.optString("itemId").trim()

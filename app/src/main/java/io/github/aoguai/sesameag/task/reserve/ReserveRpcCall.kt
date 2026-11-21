@@ -1,6 +1,7 @@
 package io.github.aoguai.sesameag.task.reserve
 
 import io.github.aoguai.sesameag.hook.RequestManager
+import io.github.aoguai.sesameag.util.ResChecker
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -10,7 +11,6 @@ import org.json.JSONObject
 object ReserveRpcCall {
 
     private const val VERSION = "20230501"
-    private const val VERSION2 = "20230522"
 
     /**
      * 查询可兑换的树木列表
@@ -21,8 +21,16 @@ object ReserveRpcCall {
     fun queryTreeItemsForExchange(): String {
         return RequestManager.requestString(
             "alipay.antforest.forest.h5.queryTreeItemsForExchange",
-            "[{\"cityCode\":\"370100\",\"itemTypes\":\"\",\"source\":\"chInfo_ch_appcenter__chsub_9patch\",\"version\":\"$VERSION2\"}]"
+            """[{"applyActions":"AVAILABLE,ENERGY_LACK,COMING","itemTypes":"","source":"chInfo_ch_appcenter__chsub_9patch","version":"20241204"}]""",
         )
+    }
+
+    internal fun treeItemsForExchange(response: JSONObject): JSONArray {
+        val payload = response.optJSONObject("resData") ?: response
+        check(ResChecker.checkRes("Reserve", payload)) {
+            "查询保护项目目录失败：${payload.optString("resultDesc", "未知错误")}"
+        }
+        return payload.getJSONArray("treeItems")
     }
 
     /**

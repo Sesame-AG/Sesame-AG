@@ -58,7 +58,7 @@ internal object MonopolyPatrolWorkflow {
         if (!ResChecker.checkRes(TAG, "新巡护首页道具处理失败:", props)) return
         state = parsePatrolResponse(AntForestPatrolRpcCall.queryMonopolyEntryInfo())
         if (!ResChecker.checkRes(TAG, "刷新新巡护状态失败:", state)) return
-        pendingEvent = pendingEvent ?: state.optJSONObject("eventInfo")
+        if (state.has("eventInfo")) pendingEvent = state.optJSONObject("eventInfo")
         val confirmedEvents = mutableSetOf<String>()
         val completedMaps = mutableSetOf<String>()
         var tasksMayHaveChanged = false
@@ -74,11 +74,11 @@ internal object MonopolyPatrolWorkflow {
                 if (eventId.isBlank() || action == null ||
                     event.optJSONObject("displayInfo")?.optString("flowType") != "SINGLE_ACTION_CONFIRM") {
                     Log.error(TAG, "新巡护事件缺少可执行决策，保留当前事件:$event")
-                    return
+                    break
                 }
                 if (eventId in confirmedEvents) {
                     Log.forestPatrol("新巡护事件[$eventId]已提交确认，等待后续调度刷新")
-                    return
+                    break
                 }
                 val confirmation = parsePatrolResponse(AntForestPatrolRpcCall.confirmMonopolyEvent(eventId, action))
                 if (!ResChecker.checkRes(TAG, "新巡护事件确认失败:", confirmation)) return
@@ -144,7 +144,11 @@ internal object MonopolyPatrolWorkflow {
             Log.forestPatrol("新巡护掷骰🎲[${roll.optInt("diceNumber")}] 剩余${roll.optInt("totalDiceCount")}次")
             state = parsePatrolResponse(AntForestPatrolRpcCall.queryMonopolyEntryInfo())
             if (!ResChecker.checkRes(TAG, "刷新新巡护掷骰状态失败:", state)) return
-            pendingEvent = pendingEvent ?: state.optJSONObject("eventInfo")
+            if (state.has("eventInfo")) pendingEvent = state.optJSONObject("eventInfo")
+        }
+        if (tasksEnabled && tasksMayHaveChanged && !ApplicationHookConstants.isOffline() &&
+            !Thread.currentThread().isInterrupted) {
+            runTasks(state.optJSONObject("regionInfo")?.optString("regionCode").orEmpty(), taskState)
         }
     }
 

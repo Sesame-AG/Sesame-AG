@@ -13,6 +13,7 @@ internal object AntForestPatrolRpcCall {
     private const val PATROL_SOURCE = "ant_forest"
     private const val PATROL_TIMEZONE = "Asia/Shanghai"
     private const val PATROL_GO_VERSION = "20231123"
+    private const val MONOPOLY_BOARD_SOURCE = "monopoly_home_board"
 
     private fun buildPatrolPayload(block: JSONObject.() -> Unit = {}): JSONObject =
         JSONObject().apply {
@@ -37,19 +38,19 @@ internal object AntForestPatrolRpcCall {
     fun queryMonopolyEntryInfo(): String = RequestManager.requestString(
         "alipay.antisle.monopoly.h5.queryMonopolyEntryInfo",
         JSONArray().put(JSONObject()
-            .put("source", "monopoly_home_popup")
+            .put("source", MONOPOLY_BOARD_SOURCE)
             .put("uniqueId", RandomUtil.getRandomTag())).toString(),
     )
 
     fun queryMonopolyMapPage(): String = RequestManager.requestString(
         "alipay.antisle.monopoly.h5.queryMonopolyMapPage",
-        JSONArray().put(JSONObject().put("source", "monopoly_home_animal")
+        JSONArray().put(JSONObject().put("source", MONOPOLY_BOARD_SOURCE)
             .put("uniqueId", RandomUtil.getRandomTag())).toString(),
     )
 
     fun queryMonopolyRanking(rankType: String): String = RequestManager.requestString(
         "alipay.antisle.monopoly.h5.queryMonopolyRanking",
-        JSONArray().put(JSONObject().put("rankType", rankType).put("source", "monopoly_home_animal")
+        JSONArray().put(JSONObject().put("rankType", rankType).put("source", MONOPOLY_BOARD_SOURCE)
             .put("uniqueId", RandomUtil.getRandomTag())).toString(),
     )
 
@@ -62,13 +63,13 @@ internal object AntForestPatrolRpcCall {
     fun switchMonopolyMap(mapCode: String, regionCode: String): String = RequestManager.requestString(
         "alipay.antisle.monopoly.h5.switchMonopolyMap",
         JSONArray().put(JSONObject().put("mapCode", mapCode).put("regionCode", regionCode)
-            .put("source", "monopoly_home_animal").put("uniqueId", RandomUtil.getRandomTag())).toString(),
+            .put("source", MONOPOLY_BOARD_SOURCE).put("uniqueId", RandomUtil.getRandomTag())).toString(),
     )
 
     fun triggerMonopolyHomeProps(): String = RequestManager.requestString(
         "alipay.antisle.monopoly.h5.triggerHomePageProps",
         JSONArray().put(JSONObject()
-            .put("source", "monopoly_home_popup")
+            .put("source", MONOPOLY_BOARD_SOURCE)
             .put("uniqueId", RandomUtil.getRandomTag())).toString(),
     )
 

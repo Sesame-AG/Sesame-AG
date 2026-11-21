@@ -34,20 +34,12 @@ class DebugRpc {
 
     private fun getNewTreeItems() {
         try {
-            val s = ReserveRpcCall.queryTreeItemsForExchange() ?: return
-            val jo = JSONObject(s)
-            if (ResChecker.checkRes(TAG, jo)) {
-                val ja = jo.getJSONArray("treeItems")
-                for (i in 0 until ja.length()) {
-                    val item = ja.getJSONObject(i)
-                    if (!item.has("projectType")) continue
-                    if (item.optString("projectType") != "TREE") continue
-                    if (item.optString("applyAction") != "COMING") continue
-                    val projectId = item.optString("itemId")
-                    queryTreeForExchange(projectId)
-                }
-            } else {
-                Log.runtime(TAG, jo.optString("resultDesc", "Unknown error"))
+            val items = ReserveRpcCall.treeItemsForExchange(JSONObject(ReserveRpcCall.queryTreeItemsForExchange()))
+            for (i in 0 until items.length()) {
+                val item = items.getJSONObject(i)
+                if (item.optString("projectType") != "TREE" || item.optString("applyAction") != "COMING") continue
+                val projectId = item.optString("itemId")
+                queryTreeForExchange(projectId)
             }
         } catch (t: Throwable) {
             Log.runtime(TAG, "getTreeItems err:")
@@ -97,22 +89,15 @@ class DebugRpc {
      */
     private fun getTreeItems() {
         try {
-            val response = ReserveRpcCall.queryTreeItemsForExchange() ?: return
-            val jo = JSONObject(response)
-            if (ResChecker.checkRes(TAG, jo)) {
-                val ja = jo.getJSONArray("treeItems")
-                for (i in 0 until ja.length()) {
-                    val item = ja.getJSONObject(i)
-                    if (!item.has("projectType")) continue
-                    if (item.optString("applyAction") != "AVAILABLE") continue
-                    val projectId = item.optString("itemId")
-                    val itemName = item.optString("itemName")
-                    getTreeCurrentBudget(projectId, itemName)
-                    // 调试批量预算查询沿用 100ms 本地节流，避免对多个项目无间隔连续查询。
-                    GlobalThreadPools.sleepCompat(100)
-                }
-            } else {
-                Log.runtime(TAG, jo.optString("resultDesc", "Unknown error"))
+            val items = ReserveRpcCall.treeItemsForExchange(JSONObject(ReserveRpcCall.queryTreeItemsForExchange()))
+            for (i in 0 until items.length()) {
+                val item = items.getJSONObject(i)
+                if (!item.has("projectType") || item.optString("applyAction") != "AVAILABLE") continue
+                val projectId = item.optString("itemId")
+                val itemName = item.optString("itemName")
+                getTreeCurrentBudget(projectId, itemName)
+                // 调试批量预算查询沿用 100ms 本地节流，避免对多个项目无间隔连续查询。
+                GlobalThreadPools.sleepCompat(100)
             }
         } catch (e: JSONException) {
             Log.runtime(TAG, "JSON解析错误:")
