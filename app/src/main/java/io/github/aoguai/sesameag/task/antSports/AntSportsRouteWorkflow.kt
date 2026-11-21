@@ -17,10 +17,6 @@ internal fun AntSports.runNewRouteWorkflow() {
 }
 
 internal fun AntSports.runStepDonationWorkflow() {
-    if (donateCharityCoin.value == true && Status.canDonateCharityCoin()) {
-        queryProjectList()
-    }
-
     val currentUid = UserMap.currentUid
     if ((minExchangeCount.value ?: 0) > 0 &&
         currentUid != null &&

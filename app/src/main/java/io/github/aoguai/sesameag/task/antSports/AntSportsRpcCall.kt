@@ -50,6 +50,7 @@ object AntSportsRpcCall {
     private const val CITY_CODE = "330100"
 
     private const val SPORTS_WALK_SOURCE = "ch_othertinyapp"
+    private const val SPORTS_WALK_APP_ID = "2019072565980504"
 
     /**
      * @brief 路线推荐页来源 - 真实页面查询推荐路线列表使用的渠道标识
@@ -513,41 +514,7 @@ object AntSportsRpcCall {
         return RequestManager.requestString("com.alipay.sportshealth.biz.rpc.SportsHealthItemCenterRpc.queryItemDetail", arg)
     }
 
-    /**
-     * @brief 查询项目列表
-     *
-     * @param index 页码索引，从0开始
-     *
-     * @return RPC调用结果的 JSON 字符串
-     *
-     * @deprecated 该为旧版接口
-     * @remark 对应API：alipay.antsports.walk.charity.queryProjectList
-     */
-    fun queryProjectList(index: Int): String =
-        RequestManager.requestString(
-            "alipay.antsports.walk.charity.queryProjectList",
-            """[{"chInfo":"$CH_INFO","clientOS":"android","features":["DAILY_STEPS_RANK_V2","STEP_BATTLE","CLUB_HOME_CARD","NEW_HOME_PAGE_STATIC","CLOUD_SDK_AUTH","STAY_ON_COMPLETE","EXTRA_TREASURE_BOX","NEW_HOME_PAGE_STATIC","SUPPORT_TAB3","SUPPORT_FLYRABBIT","PROP","PROPV2","ASIAN_GAMES"],"index":$index,"projectListUseVertical":true}]""",
-        )
 
-    /**
-     * @brief 捐赠慈善能量
-     *
-     * @param donateCharityCoin 捐赠慈善能量数量
-     * @param projectId 项目ID
-     *
-     * @return RPC调用结果的 JSON 字符串
-     *
-     * @deprecated 该为旧版接口
-     * @remark 对应API：alipay.antsports.walk.charity.donate
-     */
-    fun donate(
-        donateCharityCoin: Int,
-        projectId: String,
-    ): String =
-        RequestManager.requestString(
-            "alipay.antsports.walk.charity.donate",
-            """[{"chInfo":"$CH_INFO","clientOS":"android","donateCharityCoin":$donateCharityCoin,"features":["DAILY_STEPS_RANK_V2","STEP_BATTLE","CLUB_HOME_CARD","NEW_HOME_PAGE_STATIC","CLOUD_SDK_AUTH","STAY_ON_COMPLETE","EXTRA_TREASURE_BOX","NEW_HOME_PAGE_STATIC","SUPPORT_TAB3","SUPPORT_FLYRABBIT","PROP","PROPV2","ASIAN_GAMES"],"projectId":"$projectId"}]""",
-        )
 
     /**
      * @brief 查询当前可用步数
@@ -664,7 +631,7 @@ object AntSportsRpcCall {
      */
 
     fun queryUser(): String {
-        val data = """[{"chInfo":"$SPORTS_WALK_SOURCE","clientOS":"android","features":$FEATURES,"mainPage":true,"timeZone":"$TIME_ZONE"}]"""
+        val data = """[{"apiVersion":"energy","mainPage":true,"source":"$SPORTS_WALK_SOURCE","timeZone":"$TIME_ZONE"}]"""
         return RequestManager.requestString("com.alipay.sportsplay.biz.rpc.walk.queryUser", data)
     }
 
@@ -761,7 +728,7 @@ object AntSportsRpcCall {
     ): String =
         RequestManager.requestString(
             "com.alipay.sportsplay.biz.rpc.walk.queryPath",
-            """[{"chInfo":"$SPORTS_WALK_SOURCE","clientOS":"android","date":"$date","enableNewVersion":true,"features":$FEATURES,"pathId":"$pathId","timeZone":"$TIME_ZONE"}]""",
+            """[{"apiVersion":"energy","appId":"$SPORTS_WALK_APP_ID","chInfo":"$SPORTS_WALK_SOURCE","date":"$date","pathId":"$pathId","source":"$SPORTS_WALK_SOURCE","timeZone":"$TIME_ZONE"}]""",
         )
 
     /**
@@ -789,7 +756,7 @@ object AntSportsRpcCall {
      * @remark 对应API：com.alipay.sportsplay.biz.rpc.walk.joinPath
      */
     fun joinPath(pathId: String): String {
-        val requestBody = """[{"chInfo":"$SPORTS_WALK_SOURCE","clientOS":"android","features":$FEATURES,"pathId":"$pathId"}]"""
+        val requestBody = """[{"apiVersion":"energy","pathId":"$pathId","source":"$SPORTS_WALK_SOURCE"}]"""
         return RequestManager.requestString("com.alipay.sportsplay.biz.rpc.walk.joinPath", requestBody)
     }
 
@@ -809,7 +776,7 @@ object AntSportsRpcCall {
         pathId: String,
         useStepCount: Int,
     ): String {
-        val requestBody = """[{"chInfo":"$SPORTS_WALK_SOURCE","clientOS":"android","date":"$date","features":$FEATURES,"pathId":"$pathId","source":"$SPORTS_WALK_SOURCE","timeZone":"$TIME_ZONE","useStepCount":$useStepCount}]"""
+        val requestBody = """[{"apiVersion":"energy","appId":"$SPORTS_WALK_APP_ID","date":"$date","pathId":"$pathId","source":"$SPORTS_WALK_SOURCE","timeZone":"$TIME_ZONE","useStepCount":$useStepCount}]"""
         return RequestManager.requestString("com.alipay.sportsplay.biz.rpc.walk.go", requestBody)
     }
 

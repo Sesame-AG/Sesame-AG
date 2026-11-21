@@ -29,8 +29,6 @@ object StatusFlags {
     const val FLAG_ANTFOREST_CHOUCHOULE_ACTION_STOP_PREFIX = "AntForest::chouChouLeActionStop::"
     const val FLAG_ANTFOREST_GAME_CENTER_ACTION_STOP_PREFIX = "AntForest::gameCenterActionStop::"
     const val FLAG_FARM_GAME_CENTER_ACTION_STOP_PREFIX = "AntFarm::gameCenterActionStop::"
-    const val FLAG_ANTORCHARD_GAME_ACTION_STOP_PREFIX = "AntOrchard::gameActionStop::"
-    const val FLAG_ANTMEMBER_GAME_ACTION_STOP_PREFIX = "AntMember::gameActionStop::"
     const val FLAG_ANTDODO_TASK_ACTION_STOP_PREFIX = "AntDodo::taskActionStop::"
     const val FLAG_SESAME_TASK_ACTION_STOP_PREFIX = "AntSesameCredit::taskActionStop::"
     const val FLAG_SESAME_ALCHEMY_ACTION_STOP_PREFIX = "AntSesameCredit::alchemyActionStop::"
@@ -276,6 +274,13 @@ object StatusFlags {
     /** 运动任务大厅：今日是否已循环处理 */
     const val FLAG_ANTSPORTS_TASK_CENTER_DONE: String = "Flag_AntSports_TaskCenter_Done"
 
+    /** 人人3小时：已确认的捐赠次数及独立业务完成状态 */
+    const val FLAG_THREE_HOURS_DONATE_COUNT = "AntSports::threeHoursDonateCount"
+    const val FLAG_THREE_HOURS_DONATE_NO_REWARD = "AntSports::threeHoursDonateNoReward"
+    const val FLAG_THREE_HOURS_VOTE_DONE = "AntSports::threeHoursVoteDone"
+    const val FLAG_THREE_HOURS_WISH_DONE = "AntSports::threeHoursWishDone"
+    const val FLAG_THREE_HOURS_STEPS_DONE = "AntSports::threeHoursStepsDone"
+
     /** 今日步数同步是否已完成 */
     const val FLAG_ANTSPORTS_SYNC_STEP_DONE: String = "FLAG_ANTSPORTS_syncStep_Done"
 
@@ -505,13 +510,10 @@ object StatusFlags {
     /** 庄园：普通每日公益捐蛋今日已完成前缀 */
     const val FLAG_FARM_DAILY_DONATION_DONE_PREFIX = "antFarm::dailyDonationDone|"
 
-    /** 庄园：今日已捐蛋总数，普通公益捐蛋与捐蛋排位赛共享 */
+    /** 庄园：今日已捐蛋总数，普通公益捐蛋与爱心鸡结号共享 */
     const val FLAG_FARM_DONATION_COUNT = "antFarm::donationCount|"
 
-    /** 庄园：捐蛋排位赛奖励今日已领取 */
-    const val FLAG_FARM_DONATION_COMPETITION_AWARD_RECEIVED = "antFarm::donationCompetitionAwardReceived"
-
-    /** 庄园：服务端明确报告排位赛活动不存在，今日停止该业务链 */
+    /** 庄园：服务端明确报告活动入口未开启，今日停止爱心鸡结号入口 */
     const val FLAG_FARM_DONATION_COMPETITION_UNAVAILABLE = "antFarm::donationCompetitionUnavailable"
 
     /** 庄园家庭：今日签到已处理 */

@@ -67,7 +67,8 @@ object ModelFieldTodayStateResolver {
     ): ModelFieldTodayState {
         val state = when ("$modelCode.${modelField.code}") {
             "AntForest.robExpandCard",
-            "AntForest.robExpandCardStrategy",
+            "AntForest.robExpandCardGoal",
+            "AntForest.robExpandCardDowngrade",
             "AntForest.robExpandCardTime",
             -> {
                 when {
@@ -289,6 +290,27 @@ object ModelFieldTodayStateResolver {
                 )
             }
 
+            "AntSports.threeHoursDonate",
+            "AntSports.threeHoursDonateTier",
+            "AntSports.threeHoursDonateCount",
+            -> if (intValue(modelFields["threeHoursDonateCount"]) == -1) {
+                flag(StatusFlags.FLAG_THREE_HOURS_DONATE_NO_REWARD, "今日捐赠已无公益时奖励，自动捐赠已停止")
+            } else {
+                limitReached(
+                    current = Status.getIntFlagToday(StatusFlags.FLAG_THREE_HOURS_DONATE_COUNT),
+                    limit = intValue(modelFields["threeHoursDonateCount"]),
+                    reason = "今日健康能量捐赠次数已达设置上限",
+                )
+            }
+
+            "AntSports.threeHoursVote",
+            "AntSports.threeHoursVoteStrategy",
+            -> flag(StatusFlags.FLAG_THREE_HOURS_VOTE_DONE, "今日话题已投票")
+
+            "AntSports.threeHoursWish" -> flag(StatusFlags.FLAG_THREE_HOURS_WISH_DONE, "当前心愿已助力")
+
+            "AntSports.threeHoursSteps" -> flag(StatusFlags.FLAG_THREE_HOURS_STEPS_DONE, "今日公益捐步已处理")
+
             "AntSports.syncStepCount" -> {
                 if ((intValue(modelField) ?: 0) > 0) {
                     flag(StatusFlags.FLAG_ANTSPORTS_SYNC_STEP_DONE, "今日步数已同步")
@@ -472,7 +494,6 @@ object ModelFieldTodayStateResolver {
             }
 
             "AntFarm.activitySpecialFoodCount",
-            "AntFarm.donationCompetitionTrySpecialFood",
             "AntFarm.loveChickenTrySpecialFood",
             -> {
                 limitReached(

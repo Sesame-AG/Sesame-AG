@@ -32,6 +32,8 @@ import io.github.aoguai.sesameag.hook.XposedEnv.processName
 import io.github.aoguai.sesameag.hook.internal.AlipayMiniMarkHelper
 import io.github.aoguai.sesameag.hook.internal.AuthCodeHelper
 import io.github.aoguai.sesameag.hook.internal.LocationHelper
+import io.github.aoguai.sesameag.hook.internal.OfficialRequestObserver
+import io.github.aoguai.sesameag.task.antSports.ThreeHours
 import io.github.aoguai.sesameag.hook.internal.SecurityBodyHelper
 import io.github.aoguai.sesameag.hook.keepalive.PersistentLaunchPolicy
 import io.github.aoguai.sesameag.hook.keepalive.PersistentReconcileMode
@@ -243,6 +245,7 @@ class ApplicationHook {
                     XposedEnv.runtimeIdentity = RuntimeIdentityGuard.trustedIdentity()
                     Log.init(context)
                     val activeLoader = classLoader ?: return@execute
+                    OfficialRequestObserver.install(activeLoader, context)
                     val installed = RpcTrafficCapture.installForCaptureOnlyProcess(activeLoader, context)
                     Log.runtime(
                         TAG,
@@ -289,6 +292,7 @@ class ApplicationHook {
                         ensureScheduler()
                         application?.let { PageStructureSnapshotter.install(it) }
                         RpcTrafficCapture.install(classLoader!!, context)
+                        OfficialRequestObserver.install(classLoader!!, context, ThreeHours::onSessionChanged)
 
                         SecurityBodyHelper.init(classLoader!!)
                         AlipayMiniMarkHelper.init(classLoader!!)
