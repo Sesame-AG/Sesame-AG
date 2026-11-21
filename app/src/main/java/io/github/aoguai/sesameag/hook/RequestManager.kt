@@ -38,12 +38,6 @@ object RequestManager {
         }
     }
 
-    internal fun failExchangeSettingsRefresh() {
-        val context = settingsRefreshContext.get() ?: return
-        context.failed = true
-        throw IllegalStateException("兑换列表未完整刷新，保留 RPC 每日停止标识")
-    }
-
     // reOpenApp() 会通过 SmartScheduler 延迟 20s 拉起 Activity。
     // 若恢复冷却时间小于 20s，会导致“每 15s 触发一次恢复 -> 取消并重新调度 20s 任务”，
     // 从而永远无法真正执行 reOpenApp（日志表现为反复 RPC 拦截 + 20s 延迟，直到用户手动重启 App）。

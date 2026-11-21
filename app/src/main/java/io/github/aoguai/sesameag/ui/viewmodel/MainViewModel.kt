@@ -34,6 +34,7 @@ import io.github.aoguai.sesameag.util.ToastUtil
 import io.github.aoguai.sesameag.util.maps.UserMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
@@ -104,7 +105,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var permissionQueueBusy = false
     private var homeDialogVisible = false
     private var configRefreshJob: Job? = null
-    private var legalRefreshJob: Job? = null
     private var collectionJob: Job? = null
     private var retriedCollection = false
 
@@ -179,8 +179,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             fetchOneWord()
             // 初始检查状态
             refreshModuleFrameworkStatus()
-            refreshActiveUser()
-            refreshLegalAcceptanceState()
             startConfigDirectoryObserver()
         }
         return true
@@ -346,33 +344,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         ModuleDiagnostics.event("account_guide", "dismissed")
     }
 
-    /**
-     * 刷新当前激活用户
-     * 从 DataStore (文件) 读取
-     */
-    private fun refreshActiveUser() {
-        try {
-            val activeUserEntity = DataStore.get("activedUser", UserEntity::class.java)
-            val resolvedActiveUser = activeUserEntity ?: recoverActiveUserSnapshot()
-            if (_activeUser.value?.userId != resolvedActiveUser?.userId) _isLegalAccepted.value = false
-            _activeUser.value = resolvedActiveUser
-            UserMap.setCurrentUserId(resolvedActiveUser?.userId?.trim()?.takeIf { it.isNotEmpty() })
-        } catch (e: Exception) {
-            Log.e(TAG, "Read active user failed", e)
-            _activeUser.value = null
-            UserMap.setCurrentUserId(null)
-        }
-    }
-
-    private fun recoverActiveUserSnapshot(): UserEntity? {
-        val fallbackUserId = UserMap.currentUid
-            ?.trim()
-            ?.takeIf { it.isNotEmpty() }
-            ?: resolveExistingUserConfigIds().singleOrNull()
+    private fun recoverActiveUserSnapshot(userIds: List<String>, expectedUser: UserEntity?): UserEntity? {
+        val fallbackUserId = expectedUser?.userId
+            ?: UserMap.currentUid?.trim()?.takeIf { it.isNotEmpty() }
+            ?: userIds.singleOrNull()
             ?: return null
         val snapshot = UserMap.readSelf(fallbackUserId) ?: return null
-        runCatching { DataStore.put("activedUser", snapshot) }
-            .onFailure { Log.w(TAG, "Recover active user snapshot failed: ${it.message}") }
+        runCatching {
+            io.github.aoguai.sesameag.storage.StoreAccess.transaction {
+                if (_activeUser.value === expectedUser && DataStore.get("activedUser", UserEntity::class.java) == null) {
+                    DataStore.put("activedUser", snapshot)
+                }
+            }
+        }.onFailure { Log.w(TAG, "Recover active user snapshot failed: ${it.message}") }
         return snapshot
     }
 
@@ -397,6 +381,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
 
+        if (_activeUser.value?.userId != activeUserId) {
+            _isLegalAccepted.value = false
+            _accountConfigState.value = AccountConfigState.Loading
+            _accountGuide.value = null
+        }
         if (activeUserId != null) {
             _activeUser.value = UserEntity(
                 userId = activeUserId,
@@ -412,14 +401,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
             UserMap.setCurrentUserId(activeUserId)
         } else {
-            refreshActiveUser()
+            _activeUser.value = null
+            UserMap.setCurrentUserId(null)
         }
 
-        if (intent.hasExtra("legalAccepted")) {
+        if (activeUserId != null && intent.hasExtra("legalAccepted")) {
             _isLegalAccepted.value = intent.getBooleanExtra("legalAccepted", false)
-        } else {
-            refreshLegalAcceptanceState()
         }
+        refreshModuleFrameworkStatus()
     }
 
     @OptIn(FlowPreview::class)
@@ -428,11 +417,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 DirectoryWatcher.observeDirectoryChanges(Files.CONFIG_DIR)
                 // 合并同一轮配置写入产生的连续目录事件，避免反复刷新账号与配置列表。
                 .debounce(100)
-                .collectLatest {
-                    refreshUserConfigs()
-                    refreshActiveUser()
-                    refreshLegalAcceptanceState()
-                }
+                .collectLatest { refreshUserConfigs() }
         }
     }
 
@@ -440,31 +425,51 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 刷新用户配置
      */
     fun refreshUserConfigs() {
-        configRefreshJob?.cancel()
-        configRefreshJob = viewModelScope.launch(Dispatchers.IO) {
-            try {
-                io.github.aoguai.sesameag.storage.PrivateStorage.requireReady()
-                val latestUserIds = Files.listExistingUserConfigIds(requireReadable = true)
-                val newList = mutableListOf<UserEntity>()
-                for (userId in latestUserIds) {
-                    UserMap.readSelf(userId)?.let { newList.add(it) }
+        viewModelScope.launch(Dispatchers.Main.immediate) {
+            val previous = configRefreshJob
+            configRefreshJob = viewModelScope.launch(Dispatchers.Main.immediate, start = CoroutineStart.LAZY) refresh@{
+                // 同步存储读取不能随协程取消立即结束，串行等待并合并尚未开始的刷新。
+                previous?.join()
+                val requestJob = currentCoroutineContext()[Job]
+                if (configRefreshJob !== requestJob) return@refresh
+                val expectedUser = _activeUser.value
+                try {
+                    val applySnapshot = withContext(Dispatchers.IO) {
+                        io.github.aoguai.sesameag.storage.PrivateStorage.requireReady()
+                        val userIds = Files.listExistingUserConfigIds(requireReadable = true)
+                        val users = userIds.mapNotNull { UserMap.readSelf(it) }
+                        val slots = AccountSlotRegistry.snapshot()
+                        val active = DataStore.get("activedUser", UserEntity::class.java)
+                            ?: recoverActiveUserSnapshot(userIds, expectedUser)
+                        val activeId = active?.userId
+                        val accepted = !activeId.isNullOrBlank() && activeId in userIds &&
+                            Config.readLegalAcceptedForCurrentVersion(activeId)
+                        val apply: () -> Unit = {
+                            _userList.value = users
+                            _accountSlots.value = slots
+                            _activeUser.value = active
+                            UserMap.setCurrentUserId(activeId?.trim()?.takeIf { it.isNotEmpty() })
+                            _accountConfigState.value = AccountConfigState.Ready(userIds)
+                            _isLegalAccepted.value = accepted
+                        }
+                        apply
+                    }
+                    currentCoroutineContext().ensureActive()
+                    if (configRefreshJob !== requestJob || _activeUser.value !== expectedUser) return@refresh
+                    applySnapshot()
+                    refreshModuleFrameworkStatus()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    if (configRefreshJob !== requestJob || _activeUser.value !== expectedUser) return@refresh
+                    _accountConfigState.value = AccountConfigState.Unavailable
+                    // 读取失败不能撤销同一账号已确认的协议；切账号时已单独清除旧状态。
+                    ModuleDiagnostics.event("account_config", "unreadable", "error=${e.javaClass.simpleName}")
+                    Log.e(TAG, "Error reloading account and legal state", e)
+                    refreshModuleFrameworkStatus()
                 }
-                currentCoroutineContext().ensureActive()
-                _userList.value = newList
-                _accountSlots.value = AccountSlotRegistry.snapshot()
-                refreshActiveUser()
-                _accountConfigState.value = AccountConfigState.Ready(latestUserIds)
-                refreshLegalAcceptanceState()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                _accountConfigState.value = AccountConfigState.Unavailable
-                _isLegalAccepted.value = false
-                ModuleDiagnostics.event("account_config", "unreadable", "error=${e.javaClass.simpleName}")
-                Log.e(TAG, "Error reloading user configs", e)
-            } finally {
-                refreshModuleFrameworkStatus()
             }
+            configRefreshJob?.start()
         }
     }
 
@@ -591,26 +596,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun refreshLegalAcceptanceState() {
-        legalRefreshJob?.cancel()
-        legalRefreshJob = viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val activeUserId = _activeUser.value?.userId
-                val config = _accountConfigState.value as? AccountConfigState.Ready
-                val accepted = !activeUserId.isNullOrBlank() && config != null && activeUserId in config.userIds &&
-                    Config.readLegalAcceptedForCurrentVersion(activeUserId)
-                currentCoroutineContext().ensureActive()
-                if (_activeUser.value?.userId == activeUserId) _isLegalAccepted.value = accepted
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e(TAG, "Read legal acceptance failed", e)
-                _isLegalAccepted.value = false
-            } finally {
-                refreshModuleFrameworkStatus()
-            }
-        }
-    }
+    private fun refreshLegalAcceptanceState() = refreshUserConfigs()
 
     fun fetchOneWord() {
         viewModelScope.launch {
@@ -630,6 +616,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun updatePermissionHealth(snapshot: PermissionHealthSnapshot) {
         _permissionHealth.value = snapshot
         if (snapshot.item(PermissionRequirement.MODULE_FILE)?.isGranted != true) {
+            configRefreshJob?.cancel()
             _accountConfigState.value = AccountConfigState.Unavailable
             _isLegalAccepted.value = false
             _accountGuide.value = null

@@ -540,7 +540,8 @@ class CoroutineTaskRunner(allModels: List<Model>) {
 
             allTasksSucceeded.set(false)
             failureCount.incrementAndGet()
-            Log.error(TAG, "⏰ 超时: $taskId (${time}ms > ${timeout}ms)")
+            val stage = executionJob?.let(task::executionStartupStage) ?: "未取得启动阶段"
+            Log.error(TAG, "⏰ 超时: $taskId (${time}ms > ${timeout}ms)，最后阶段：$stage")
             // 尝试停止任务
             task.stopTask()
 

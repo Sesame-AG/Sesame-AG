@@ -34,6 +34,7 @@ import kotlinx.coroutines.launch
 import io.github.aoguai.sesameag.util.SerialTaskQueue
 import kotlinx.coroutines.withTimeout
 import java.io.File
+import java.io.IOException
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -79,7 +80,13 @@ class CommandService : Service() {
     private val binder = object : ICommandService.Stub() {
         override fun beginStoreTransaction(client: IBinder): io.github.aoguai.sesameag.IStoreTransaction {
             val uid = enforceTrustedCaller()
-            return io.github.aoguai.sesameag.storage.StoreAccess.begin(client, uid)
+            return try {
+                io.github.aoguai.sesameag.storage.StoreAccess.begin(client, uid)
+            } catch (failure: IOException) {
+                // Binder 不支持直接传递 IOException；原始堆栈留在服务端，错误原因传给宿主。
+                android.util.Log.e(TAG, "申请存储事务失败", failure)
+                throw IllegalStateException(failure.message, failure)
+            }
         }
         override fun isStoreReady(): Boolean {
             enforceTrustedCaller()

@@ -102,6 +102,7 @@ object RpcTrafficCapture {
         val startedAtMs: Long,
         val source: TrafficSource,
         val startedAtElapsedMs: Long = SystemClock.elapsedRealtime(),
+        val bridgeRequestUrl: String? = null,
     ) {
         @Volatile
         var lastActivityElapsedMs: Long = startedAtElapsedMs
@@ -185,6 +186,7 @@ object RpcTrafficCapture {
     private val reportedHttpCallSites = AtomicReference<Set<String>>(emptySet())
     private val httpClassDeclarations = ConcurrentHashMap<Class<*>, String>()
     private val responseHookCalls = ThreadLocal<IdentityHashMap<Any, Boolean>>()
+    private val miniHttpRequestContext = ThreadLocal<Pair<String, PendingHostRequest>>()
     private val bodyAccessorCalls = ThreadLocal<IdentityHashMap<PendingHostRequest, Boolean>>()
     private val pendingLock = Any()
     private val pendingAriverRequestQueue = ReferenceQueue<Any>()
@@ -935,6 +937,7 @@ object RpcTrafficCapture {
                                 }
                                 if (completed) return@capture null
                                 val existing = transportRequest?.let(::peekPendingAriverRequest)
+                                    ?: pendingHttpDispatch(transportRequest)
                                 (existing ?: PendingHostRequest(
                                     requestId = newRequestId(),
                                     method = "${targetClass.name}#$methodName",
@@ -951,17 +954,31 @@ object RpcTrafficCapture {
                                     }
                                 }
                             } else {
-                                emit(
-                                    RpcTrafficEvent(
-                                        title = TrafficSource.MINI_HTTP.title,
-                                        phase = TrafficPhase.RESPONSE,
-                                        source = TrafficSource.MINI_HTTP,
-                                        method = args.getOrNull(0) as? String ?: "${targetClass.name}#$methodName",
-                                        payload = payload,
-                                        note = responseNote,
-                                        correlationStatus = "UNMATCHED",
-                                    ),
-                                )
+                                val observedObjects = (args + chain.getThisObject()).filterNotNull()
+                                val linkedRequests = observedObjects.mapNotNull(::peekPendingAriverRequest)
+                                val associated = linkedRequests.distinctBy { it.requestId }.singleOrNull()
+                                val alreadyCompleted = synchronized(pendingLock) {
+                                    observedObjects.any { pendingAriverRequests[WeakIdentityKey(it)]?.completed == true }
+                                }
+                                if (!alreadyCompleted) {
+                                    if (associated != null && args.getOrNull(1) != null) {
+                                        recordHostResponse(associated, payload, note = responseNote)
+                                    } else if (associated != null) {
+                                        recordHostResponse(associated, payload, terminal = false, note = "response_body_not_observed; $responseNote")
+                                    } else {
+                                        emit(
+                                            RpcTrafficEvent(
+                                                title = TrafficSource.MINI_HTTP.title,
+                                                phase = TrafficPhase.RESPONSE,
+                                                source = TrafficSource.MINI_HTTP,
+                                                method = args.getOrNull(0) as? String ?: "${targetClass.name}#$methodName",
+                                                payload = payload,
+                                                note = "${if (args.getOrNull(1) == null) "response_body_not_observed; " else ""}no_request_object; $responseNote",
+                                                correlationStatus = "UNMATCHED",
+                                            ),
+                                        )
+                                    }
+                                }
                                 null
                             }
                         }.onFailure { error ->
@@ -980,6 +997,10 @@ object RpcTrafficCapture {
                             }
                         }.getOrNull()
                         val associatedCallback = linkedCallback
+                        val previousHttpRequest = miniHttpRequestContext.get()
+                        if (isRequest && pending != null) {
+                            sessionId?.let { miniHttpRequestContext.set(it to pending) }
+                        }
                         val result = try {
                             chain.proceed()
                         } catch (error: Throwable) {
@@ -1007,6 +1028,9 @@ object RpcTrafficCapture {
                                 runCatching { Log.runtime(TAG, "记录小程序 HTTP 异常失败: ${it.stackTraceToString()}") }
                             }
                             throw error
+                        } finally {
+                            if (previousHttpRequest == null) miniHttpRequestContext.remove()
+                            else miniHttpRequestContext.set(previousHttpRequest)
                         }
                         if (associatedCallback != null) {
                             runCatching { tryRecordAriverResponseFromField(associatedCallback) }.onFailure {
@@ -1071,47 +1095,80 @@ object RpcTrafficCapture {
                     if (!installCaptureHook(method) intercept@ { chain ->
                         val startedAt = SystemClock.elapsedRealtime()
                         var callSession: String? = null
-                        val event = runCatching capture@ {
-                            if (!isCaptureEnabled()) return@capture null
-                            callSession = activeSessionId()
-                            RpcTrafficEvent(
-                                title = TrafficSource.MINI_HTTP.title,
-                                phase = if (isRequest) TrafficPhase.REQUEST else TrafficPhase.RESPONSE,
-                                source = TrafficSource.MINI_HTTP,
-                                method = "${targetClass.name}#${method.name}",
-                                requestId = if (isRequest) newRequestId() else null,
-                                payload = snapshotMiniHttpArguments(method, chain.args.toList()),
-                                note = if (isRequest) "response_correlation_unavailable" else
-                                    "response_correlation_unavailable; ${recordHttpResponseCallSite(method)}",
-                                correlationStatus = if (isRequest) null else "UNMATCHED",
-                            ).also(::emit)
+                        var pending: PendingHostRequest? = null
+                        runCatching {
+                            if (isCaptureEnabled()) {
+                                callSession = activeSessionId()
+                                val args = chain.args.toList()
+                                val payload = snapshotMiniHttpArguments(method, args)
+                                val methodName = "${targetClass.name}#${method.name}"
+                                if (isRequest) {
+                                    val rawUrl = runCatching {
+                                        args.getOrNull(1)?.let { JSONObject(it.toString()).optString("url") }
+                                    }.getOrNull().orEmpty()
+                                    pending = PendingHostRequest(
+                                        requestId = newRequestId(),
+                                        method = methodName,
+                                        requestPayload = payload,
+                                        startedAtMs = System.currentTimeMillis(),
+                                        source = TrafficSource.MINI_HTTP,
+                                        bridgeRequestUrl = rawUrl,
+                                    ).also(::recordHostRequest)
+                                } else {
+                                    // 桥回调没有请求对象，URL 和页面不能区分同页的并发请求。
+                                    val note = if (args.getOrNull(1) == null) "response_body_not_observed; " else ""
+                                    emit(RpcTrafficEvent(
+                                        title = TrafficSource.MINI_HTTP.title,
+                                        phase = TrafficPhase.RESPONSE,
+                                        source = TrafficSource.MINI_HTTP,
+                                        method = methodName,
+                                        payload = payload,
+                                        note = "${note}no_request_object; ${recordHttpResponseCallSite(method)}",
+                                        correlationStatus = "UNMATCHED",
+                                    ))
+                                }
+                            }
                         }.onFailure {
                             runCatching { Log.runtime(TAG, "记录 XRiver HTTP 调用失败: $method ${it.stackTraceToString()}") }
-                        }.getOrNull()
+                        }
+                        val request = pending
+                        val session = callSession
+                        val previousHttpRequest = miniHttpRequestContext.get()
+                        if (request != null && session != null) miniHttpRequestContext.set(session to request)
                         val result = try {
                             chain.proceed()
                         } catch (error: Throwable) {
                             runCatching {
-                                if (event != null && isCaptureEnabled() && activeSessionId() == callSession) {
-                                    emit(event.copy(
-                                        phase = TrafficPhase.ERROR,
-                                        payload = null,
-                                        elapsedMs = SystemClock.elapsedRealtime() - startedAt,
-                                        note = "${error.javaClass.name}: ${error.message.orEmpty()}",
-                                    ))
+                                if (request != null && isCaptureEnabled() && activeSessionId() == session) {
+                                    recordHostError(request, "bridge_call_error: ${error.javaClass.name}")
                                 }
                             }.onFailure {
                                 runCatching { Log.runtime(TAG, "记录 XRiver HTTP 异常失败: ${it.stackTraceToString()}") }
                             }
                             throw error
+                        } finally {
+                            if (previousHttpRequest == null) miniHttpRequestContext.remove()
+                            else miniHttpRequestContext.set(previousHttpRequest)
                         }
-                        if (isRequest && event != null) runCatching {
-                            if (isCaptureEnabled() && activeSessionId() == callSession) {
-                                // boolean 是桥调用的返回值；异步 HTTP 终态需要独立的关联依据。
-                                emit(event.copy(
+                        if (request != null) runCatching {
+                            if (isCaptureEnabled() && activeSessionId() == session) {
+                                val noTransport = synchronized(pendingLock) {
+                                    pendingAriverRequestsById[request.requestId] === request &&
+                                        pendingAriverRequests.values.none { request in it.requests } &&
+                                        takePendingHostRequest(request)
+                                }
+                                // boolean 只表示桥函数返回，响应是否执行由实际传输观察确认。
+                                val note = if (noTransport) "bridge_dispatch_return_not_http_response; transport_not_observed"
+                                    else "bridge_dispatch_return_not_http_response"
+                                emit(RpcTrafficEvent(
+                                    title = request.source.title,
+                                    phase = TrafficPhase.REQUEST,
+                                    source = request.source,
+                                    method = request.method,
+                                    requestId = request.requestId,
                                     payload = JSONObject().put("returnValue", result ?: JSONObject.NULL).toString(),
                                     elapsedMs = SystemClock.elapsedRealtime() - startedAt,
-                                    note = "bridge_dispatch_return_not_http_response",
+                                    note = note,
                                 ))
                             }
                         }.onFailure {
@@ -1193,6 +1250,19 @@ object RpcTrafficCapture {
         }
     }
 
+    private fun pendingHttpDispatch(transport: Any?): PendingHostRequest? {
+        val (session, pending) = miniHttpRequestContext.get() ?: return null
+        if (session != activeSessionId() || synchronized(pendingLock) {
+                pendingAriverRequestsById[pending.requestId] !== pending
+            }
+        ) return null
+        val bridgeUrl = pending.bridgeRequestUrl ?: return pending
+        // URL 只用于核对同一调用栈内实际创建的请求，传输后的响应只认对象身份。
+        if (transport == null || bridgeUrl.isBlank()) return null
+        val transportUrl = runCatching { findField(transport.javaClass, "mUrl")?.get(transport) as? String }.getOrNull()
+        return pending.takeIf { bridgeUrl == transportUrl }
+    }
+
     private fun installH5NetworkHook(targetClass: Class<*>): Boolean {
         synchronized(installLock) {
             if (!isCaptureEnabled()) return false
@@ -1219,7 +1289,7 @@ object RpcTrafficCapture {
                             if (requestObject == null || !isCaptureEnabled()) return@capture null
                             val payload = snapshotMiniHttpArguments(method, chain.args.toList(), setOf(0))
                             val httpMethod = findField(requestObject.javaClass, "requestMethod")?.get(requestObject) as? String
-                            val existing = peekPendingAriverRequest(requestObject)
+                            val existing = peekPendingAriverRequest(requestObject) ?: pendingHttpDispatch(requestObject)
                             val request = existing ?: PendingHostRequest(
                                 requestId = newRequestId(),
                                 method = "${targetClass.name}#enqueue",
@@ -1245,6 +1315,8 @@ object RpcTrafficCapture {
                         }.onFailure {
                             runCatching { Log.runtime(TAG, "记录 HTTP 传输请求失败: ${it.stackTraceToString()}") }
                         }.getOrNull()
+                        val previousHttpRequest = miniHttpRequestContext.get()
+                        if (pending != null) sessionId?.let { miniHttpRequestContext.set(it to pending) }
                         val result = try {
                             chain.proceed()
                         } catch (error: Throwable) {
@@ -1254,6 +1326,9 @@ object RpcTrafficCapture {
                                 runCatching { Log.runtime(TAG, "记录 HTTP 传输异常失败: ${it.stackTraceToString()}") }
                             }
                             throw error
+                        } finally {
+                            if (previousHttpRequest == null) miniHttpRequestContext.remove()
+                            else miniHttpRequestContext.set(previousHttpRequest)
                         }
                         if (pending != null) runCatching {
                             if (result is Future<*>) {
@@ -1316,6 +1391,10 @@ object RpcTrafficCapture {
                     if (calls.put(future, true) != null) return@intercept chain.proceed()
                     val pending = observed.first
                     val capturedSession = sessionId
+                    val previousHttpRequest = miniHttpRequestContext.get()
+                    if (pending != null && capturedSession != null) {
+                        miniHttpRequestContext.set(capturedSession to pending)
+                    }
                     try {
                         val result = try {
                             chain.proceed()
@@ -1381,6 +1460,8 @@ object RpcTrafficCapture {
                         }
                         result
                     } finally {
+                        if (previousHttpRequest == null) miniHttpRequestContext.remove()
+                        else miniHttpRequestContext.set(previousHttpRequest)
                         calls.remove(future)
                         if (calls.isEmpty()) responseHookCalls.remove()
                     }
@@ -2234,6 +2315,7 @@ object RpcTrafficCapture {
                 method = pending.method,
                 requestId = pending.requestId,
                 payload = pending.requestPayload,
+                note = if (pending.bridgeRequestUrl != null) "bridge_request" else null,
             ),
         )
         synchronized(pendingLock) {
@@ -2595,7 +2677,7 @@ object RpcTrafficCapture {
         pendingAriverRequestsById.values.toList()
             .filter { now - it.lastActivityElapsedMs >= PENDING_RESPONSE_TIMEOUT_MS }
             .forEach { pending ->
-                recordHostError(pending, "capture_response_timeout", "TIMEOUT")
+                recordHostError(pending, "response_observation_timeout; network_result_unknown", "OBSERVATION_TIMEOUT")
             }
     }
 

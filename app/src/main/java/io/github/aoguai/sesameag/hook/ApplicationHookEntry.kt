@@ -50,19 +50,6 @@ object ApplicationHookEntry {
         )
     }
 
-    fun onPollAlarm() {
-        ApplicationHookCore.requestExecution(
-            ApplicationHookConstants.TriggerInfo(
-                type = ApplicationHookConstants.TriggerType.ALARM_POLL,
-                priority = ApplicationHookConstants.TriggerPriority.LOW,
-                alarmTriggered = true,
-                dedupeKey = "alarm_poll",
-                ownerUserId = currentOwnerUserId(),
-                sessionEpoch = currentSessionEpoch()
-            )
-        )
-    }
-
     fun onWakeupMidnight() {
         ApplicationHookCore.requestExecution(
             ApplicationHookConstants.TriggerInfo(

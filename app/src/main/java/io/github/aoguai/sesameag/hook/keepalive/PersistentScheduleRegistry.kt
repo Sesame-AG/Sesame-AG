@@ -344,7 +344,7 @@ object PersistentScheduleRegistry {
         now: Long = System.currentTimeMillis(),
     ) {
         val changed = withRegistryLock { activateSessionUnlocked(context, ownerUserId, sessionEpoch, now) }
-        if (changed) SystemWakeScheduler.schedule(context, PersistentSchedule(), silent = true)
+        if (changed) StoreAccess.afterTransaction { SystemWakeScheduler.refresh(context) }
     }
 
     private fun activateSessionUnlocked(

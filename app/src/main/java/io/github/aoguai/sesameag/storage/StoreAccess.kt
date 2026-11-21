@@ -26,6 +26,12 @@ import kotlin.concurrent.thread
 object StoreAccess {
     internal val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val permit = Semaphore(1, true)
+    private class TransactionOwner(source: String) {
+        val startedAtNanos = System.nanoTime()
+        val origin = Throwable("$source; process=${android.os.Process.myPid()}; thread=${Thread.currentThread().name}")
+        @Volatile var operation = source
+    }
+    @Volatile private var permitOwner: TransactionOwner? = null
     private val localDepth = ThreadLocal.withInitial { 0 }
     private val remoteSession = ThreadLocal<IStoreTransaction?>()
     private val remoteClient = ThreadLocal<IBinder?>()
@@ -113,8 +119,11 @@ object StoreAccess {
                 val client = Binder()
                 remoteClient.set(client)
                 try {
-                    val session = CommandUtil.storageService().beginStoreTransaction(client)
-                        ?: throw IOException("模块存储尚未就绪，请在模块中完成数据迁移")
+                    val session = try {
+                        CommandUtil.storageService().beginStoreTransaction(client)
+                    } catch (failure: IllegalStateException) {
+                        throw IOException(failure.message ?: "模块存储事务获取失败", failure)
+                    } ?: throw IOException("模块存储事务获取失败：服务未返回事务，请稍后重试")
                     remoteSession.set(session)
                     try { return block() } finally {
                         remoteSession.remove()
@@ -125,15 +134,22 @@ object StoreAccess {
             PrivateStorage.requireReady()
             // 本地存储事务互斥以避免交叉写入；最多等待五秒争用许可，获得后立即执行。
             if (!permit.tryAcquire(5L, java.util.concurrent.TimeUnit.SECONDS)) {
-                throw IOException("模块存储正忙，请稍后重试")
+                val owner = permitOwner
+                val heldMs = owner?.let { (System.nanoTime() - it.startedAtNanos) / 1_000_000 }
+                throw IOException("模块存储正忙，请稍后重试；holder=${owner?.operation} heldMs=$heldMs", owner?.origin)
             }
+            val owner = TransactionOwner("local transaction")
+            permitOwner = owner
             localDepth.set(1)
             checkNotNull(localChanges.get()).clear()
             try { return block() } finally {
                 val changes = checkNotNull(localChanges.get()).toSet()
                 localDepth.remove()
                 localChanges.remove()
+                permitOwner = null
                 permit.release()
+                val heldMs = (System.nanoTime() - owner.startedAtNanos) / 1_000_000
+                if (heldMs >= 5_000L) android.util.Log.w("PrivateStorage", "长事务已释放: ${owner.operation}, heldMs=$heldMs", owner.origin)
                 if (changes.isNotEmpty()) publish(changes)
             }
         } finally {
@@ -248,18 +264,27 @@ object StoreAccess {
         PrivateStorage.requireReady()
         // Binder 同步调用不能随客户端协程取消，事务申请必须能够有界返回。
         if (!permit.tryAcquire(5L, java.util.concurrent.TimeUnit.SECONDS)) {
-            throw IOException("模块存储正忙，请稍后重试")
+            val owner = permitOwner
+            val heldMs = owner?.let { (System.nanoTime() - it.startedAtNanos) / 1_000_000 }
+            throw IOException("模块存储正忙，请稍后重试；holder=${owner?.operation} heldMs=$heldMs", owner?.origin)
         }
-        return try { Session(client, uid) } catch (failure: Throwable) { permit.release(); throw failure }
+        val owner = TransactionOwner("remote transaction pid=${Binder.getCallingPid()} uid=$uid")
+        permitOwner = owner
+        return try { Session(client, uid, owner) } catch (failure: Throwable) {
+            permitOwner = null
+            permit.release()
+            throw failure
+        }
     }
 
-    private class Session(private val client: IBinder, private val uid: Int) : IStoreTransaction.Stub(), IBinder.DeathRecipient {
+    private class Session(private val client: IBinder, private val uid: Int, private val ownership: TransactionOwner) : IStoreTransaction.Stub(), IBinder.DeathRecipient {
         private var closed = false
         private val changes = linkedSetOf<Change>()
         init { client.linkToDeath(this, 0) }
         private fun target(collection: Int, owner: String, name: String): File {
             check(!closed) { "Storage transaction closed" }
             check(Binder.getCallingUid() == uid) { "Storage caller changed" }
+            ownership.operation = "remote transaction uid=$uid collection=$collection resource=$name"
             return resolve(collection, owner, name)
         }
         @Synchronized override fun stat(collection: Int, owner: String, name: String): Bundle =
@@ -310,7 +335,12 @@ object StoreAccess {
                 closed = true
                 changes.toSet()
             }
-            try { client.unlinkToDeath(this, 0) } finally { permit.release() }
+            try { client.unlinkToDeath(this, 0) } finally {
+                permitOwner = null
+                permit.release()
+                val heldMs = (System.nanoTime() - ownership.startedAtNanos) / 1_000_000
+                if (heldMs >= 5_000L) android.util.Log.w("PrivateStorage", "长事务已释放: ${ownership.operation}, heldMs=$heldMs", ownership.origin)
+            }
             if (pending.isNotEmpty()) publish(pending)
         }
     }
@@ -328,8 +358,12 @@ object StoreAccess {
     internal fun installSnapshot(snapshot: File) {
         // 恢复快照需排除并发事务；五秒为获取独占许可的上限，不是固定恢复延迟。
         if (!permit.tryAcquire(5L, java.util.concurrent.TimeUnit.SECONDS)) {
-            throw IOException("模块存储正忙，未开始恢复，请稍后重试")
+            val owner = permitOwner
+            val heldMs = owner?.let { (System.nanoTime() - it.startedAtNanos) / 1_000_000 }
+            throw IOException("模块存储正忙，未开始恢复，请稍后重试；holder=${owner?.operation} heldMs=$heldMs", owner?.origin)
         }
+        val owner = TransactionOwner("snapshot restore")
+        permitOwner = owner
         val root = PrivateStorage.root
         val previous = File(PrivateStorage.context.noBackupFilesDir, "store-restore-previous")
         var installed = false
@@ -360,7 +394,10 @@ object StoreAccess {
             }
             if (root.exists()) io.github.aoguai.sesameag.util.Logback.withFileLoggingPaused(install) else install()
         } finally {
+            permitOwner = null
             permit.release()
+            val heldMs = (System.nanoTime() - owner.startedAtNanos) / 1_000_000
+            if (heldMs >= 5_000L) android.util.Log.w("PrivateStorage", "长事务已释放: ${owner.operation}, heldMs=$heldMs", owner.origin)
             if (installed) publish(setOf(Change(1, "", "")))
         }
     }

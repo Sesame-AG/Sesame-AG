@@ -67,6 +67,11 @@ abstract class ModelTask : Model() {
         return state.report?.takeIf { state.startJob === job }?.activityUntilElapsedMs
     }
 
+    internal fun executionStartupStage(job: Deferred<TaskExecutionOutcome>): String? {
+        val state = taskState.get()
+        return state.report?.takeIf { state.startJob === job }?.startupStage
+    }
+
     /** 子任务映射表，存储当前任务的所有子任务 */
     private val childTaskMap: MutableMap<String, ChildModelTask> = ConcurrentHashMap()
     
@@ -241,9 +246,14 @@ abstract class ModelTask : Model() {
      */
     suspend fun run() {
         currentCoroutineContext().ensureActive()
-        TaskExecutionReport.current()?.ensureCurrent()
+        val report = TaskExecutionReport.current()
+        report?.ensureCurrent()
         if (!WorkflowRootGuard.isExecutionAllowed()) {
             throw CancellationException("必需权限或使用协议未就绪，任务已取消")
+        }
+        if (report != null) {
+            report.startupStage = "已进入模块执行"
+            Log.debug(TAG, "任务 ${getName()} ${report.startupStage}")
         }
         runSuspend()
     }
@@ -382,7 +392,7 @@ abstract class ModelTask : Model() {
                         when (outcome) {
                             TaskExecutionOutcome.SUCCESS,
                             TaskExecutionOutcome.DEFERRED -> {
-                                // FIRED 表示本次执行结束；待确认数据和下一次回查仍由模块保留。
+                                // FIRED 表示本次执行结束，已登记的到期动作由所属流程继续处理。
                                 if (persistent) PersistentScheduleRegistry.markFired(context, scheduleId, source = source)
                                 if (outcome == TaskExecutionOutcome.DEFERRED) {
                                     Log.record(TAG, "持久任务本次执行结束，业务待续接[${getName()}] id=$scheduleId")
@@ -485,8 +495,16 @@ abstract class ModelTask : Model() {
             val predecessors = (state.predecessors + listOfNotNull(stopping)).filterNot { it.isCompleted }
             val job = scope.async(report.context, start = CoroutineStart.LAZY) {
                 report.executionJob = currentCoroutineContext()[Job]
-                predecessors.joinAll()
+                if (predecessors.isNotEmpty()) {
+                    report.startupStage = "等待 ${predecessors.size} 个前序任务退出"
+                    Log.debug(TAG, "任务 ${getName()} ${report.startupStage}")
+                    predecessors.joinAll()
+                }
+                report.startupStage = "等待模块执行队列"
+                Log.debug(TAG, "任务 ${getName()} ${report.startupStage}")
                 executionQueue.submit {
+                    report.startupStage = "已进入执行队列，检查执行条件"
+                    Log.debug(TAG, "任务 ${getName()} ${report.startupStage}")
                     report.ensureCurrent()
                     if (!WorkflowRootGuard.isExecutionAllowed()) {
                         Log.record(TAG, "必需权限或使用协议未就绪，拒绝启动任务 ${getName()}")
@@ -500,7 +518,9 @@ abstract class ModelTask : Model() {
                     try {
                         isRunning = true
                         addRunCents()
+                        report.startupStage = "发布模块运行状态"
                         startTaskRunning(runningName)
+                        report.startupStage = "已发布运行状态，等待进入模块"
                         withContext(report.context) {
                             executeMultiRoundTask(rounds)
                             ensureActive()
