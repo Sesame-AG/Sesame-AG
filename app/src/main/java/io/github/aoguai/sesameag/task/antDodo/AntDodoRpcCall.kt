@@ -187,13 +187,15 @@ object AntDodoRpcCall {
      *
      * @param targetAnimalId 目标动物ID
      * @param targetUserId 目标用户ID
+     * @param cardInstanceId 本次帮好友抽到的卡片实例ID
      */
     @JvmStatic
-    fun socialExchangeMsg(targetAnimalId: String, targetUserId: String): String {
+    fun socialExchangeMsg(targetAnimalId: String, targetUserId: String, cardInstanceId: String): String {
         val args = JSONObject()
         args.put("actionCode", "EXCHANGE_MSG")
         args.put("targetAnimalId", targetAnimalId)
         args.put("targetUserId", targetUserId)
+        args.put("cardInstanceId", cardInstanceId)
         return RequestManager.requestString(METHOD_SOCIAL, "[$args]")
     }
 
@@ -245,11 +247,12 @@ object AntDodoRpcCall {
      * @param targetUserId 目标用户ID
      */
     @JvmStatic
-    fun exchange(animalId: String, targetAnimalId: String, targetUserId: String): String {
+    fun exchange(animalId: String, targetAnimalId: String, targetUserId: String, targetCardInstanceId: String): String {
         val args = JSONObject()
         args.put("animalId", animalId)
         args.put("targetAnimalId", targetAnimalId)
         args.put("targetUserId", targetUserId)
+        args.put("targetCardInstanceId", targetCardInstanceId)
         return RequestManager.requestString(METHOD_EXCHANGE, "[$args]")
     }
 

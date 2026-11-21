@@ -90,6 +90,7 @@ class AntOcean : ModelTask() {
         private const val TAG = "AntOcean"
         private const val TASK_BLACKLIST_MODULE = "神奇海洋"
         private const val AI_FISH_SCENE_CODE = "ANTAIFISH"
+        private const val AI_FISH_RESTORE_SCENE_CODE = "ANTAIFISH_RESCUE_AND_RESTORE"
         private const val AI_FISH_STATUS_DEFAULT = "DEFAULT_AI_FISH"
         private const val AI_FISH_STATUS_CAPTURED = "CAPTURED"
         private const val AI_FISH_IMAGE_URL =
@@ -214,7 +215,6 @@ class AntOcean : ModelTask() {
     private var currentSeaAreaCode: String? = null
     private var lastKnownRubbishNumber: Int = -1
     private var selfOceanCleanRetried = false
-    private var noticeLinkedRefreshNeeded = false
     private var oceanHomeRefreshNeeded = false
 
     override fun getName(): String = "海洋"
@@ -336,7 +336,6 @@ class AntOcean : ModelTask() {
             currentSeaAreaCode = null
             lastKnownRubbishNumber = -1
             selfOceanCleanRetried = false
-            noticeLinkedRefreshNeeded = false
             oceanHomeRefreshNeeded = false
             oceanTaskExecutionState = TaskFlowExecutionState()
             if (!queryOceanStatus()) {
@@ -349,12 +348,7 @@ class AntOcean : ModelTask() {
             queryHomePage()
 
             if (dailyOceanTask?.value == true) {
-                receiveTaskAward() // 清理流程后复查日常任务
-                if (noticeLinkedRefreshNeeded) {
-                    // 公告提示到存在待完成/待领取任务时，再做一次晚刷新，
-                    // 尽量承接前置模块已完成后的联动状态，减少同轮碎片漏领。
-                    receiveTaskAward()
-                }
+                receiveTaskAward() // 统一回查主页、清理和公告带来的任务进展
             }
 
             if (userprotectType?.value != ProtectType.DONT_PROTECT) {
@@ -638,10 +632,6 @@ class AntOcean : ModelTask() {
                     taskType.startsWith("CLEAN_")
             )
 
-    private fun markOceanNoticeLinkedRefreshNeeded() {
-        noticeLinkedRefreshNeeded = true
-    }
-
     private fun markOceanHomeRefreshNeeded() {
         oceanHomeRefreshNeeded = true
     }
@@ -876,19 +866,36 @@ class AntOcean : ModelTask() {
                 drawAiFish()
             }
 
-            var homeJo = queryAiFishHomepage(logSummary = true) ?: return
-            if (extractAiFishInteractStatus(homeJo) == AI_FISH_STATUS_CAPTURED && rescueAiFish()) {
-                homeJo = queryAiFishHomepage(logSummary = true) ?: homeJo
+            val initialHome = queryAiFishHomepage(logSummary = true) ?: return
+            val hadGraffiti = initialHome.optJSONObject("myFish")?.optJSONObject("interactVO")
+                ?.opt("graffitiedFlag") == true
+            var homeJo: JSONObject? = initialHome
+            if (extractAiFishInteractStatus(initialHome) == AI_FISH_STATUS_CAPTURED && rescueAiFish()) {
+                homeJo = queryAiFishHomepage(logSummary = true)
             }
 
             if (aiFishAutoTask?.value == true) {
-                val taskResult = runAiFishTaskFlow()
-                if (taskResult?.actionAttempted == true) {
-                    homeJo = queryAiFishHomepage(logSummary = false) ?: homeJo
+                val graffitiAfterRescue = homeJo?.optJSONObject("myFish")?.optJSONObject("interactVO")?.opt("graffitiedFlag")
+                if (hadGraffiti && graffitiAfterRescue != false) {
+                    runAiFishTaskFlow(AI_FISH_RESTORE_SCENE_CODE)
+                    homeJo = queryAiFishHomepage(logSummary = false)
+                }
+                val taskResult = runAiFishTaskFlow(AI_FISH_SCENE_CODE)
+                if (taskResult?.actionAttempted == true || taskResult?.progressChanged == true) {
+                    homeJo = queryAiFishHomepage(logSummary = false)
                 }
             }
 
-            touchAiFish(homeJo)
+            if (hadGraffiti) {
+                val graffitied = homeJo?.optJSONObject("myFish")?.optJSONObject("interactVO")
+                    ?.opt("graffitiedFlag") as? Boolean
+                when (graffitied) {
+                    false -> Log.ocean("海洋摸鱼🐟主页已确认自己的鱼涂鸦已清除")
+                    true -> Log.ocean("海洋摸鱼🐟自己的鱼仍有涂鸦")
+                    null -> Log.ocean("海洋摸鱼🐟未能回查自己的鱼涂鸦状态")
+                }
+            }
+            homeJo?.let(::touchAiFish)
             appraiseAiFish()
             if (aiFishExchangeCertificate?.value == true) {
                 exchangeAiFishCertificates()
@@ -951,7 +958,11 @@ class AntOcean : ModelTask() {
     }
 
     private fun queryAiFishHomepage(logSummary: Boolean): JSONObject? {
-        val jo = JsonUtil.parseJSONObjectOrNull(AntOceanRpcCall.aiFishHomepage()) ?: return null
+        val raw = AntOceanRpcCall.aiFishHomepage()
+        val jo = JsonUtil.parseJSONObjectOrNull(raw) ?: run {
+            Log.error(TAG, "海洋摸鱼主页返回空或无法解析 raw=$raw")
+            return null
+        }
         if (!ResChecker.checkRes(TAG, "海洋摸鱼主页查询失败:", jo)) {
             Log.ocean("海洋摸鱼🐟主页查询失败：${extractOceanResultDesc(jo)}")
             return null
@@ -1046,22 +1057,24 @@ class AntOcean : ModelTask() {
         }
     }
 
-    private fun runAiFishTaskFlow(): TaskFlowRunResult? =
+    private fun runAiFishTaskFlow(sceneCode: String): TaskFlowRunResult? =
         try {
-            TaskFlowEngine(AiFishTaskFlowAdapter(), roundSleepMs = 425L).run()
+            TaskFlowEngine(AiFishTaskFlowAdapter(sceneCode), roundSleepMs = 425L).run()
         } catch (t: Throwable) {
+            if (t is CancellationException || t is InterruptedException) throw t
             Log.runtime(TAG, "runAiFishTaskFlow err:")
             Log.printStackTrace(TAG, t)
             null
         }
 
-    private inner class AiFishTaskFlowAdapter : TaskFlowAdapter {
+    private inner class AiFishTaskFlowAdapter(private val sceneCode: String) : TaskFlowAdapter {
+        private val restoreScene = sceneCode == AI_FISH_RESTORE_SCENE_CODE
         override val moduleName: String = TASK_BLACKLIST_MODULE
-        override val flowName: String = "海洋摸鱼任务"
-        override val nonRetryableActionFlagPrefix: String = StatusFlags.FLAG_ANTOCEAN_AIFISH_ACTION_STOP_PREFIX
+        override val flowName: String = if (restoreScene) "海洋摸鱼去涂鸦任务" else "海洋摸鱼任务"
+        override val continueCurrentRoundOnRetryableFailure: Boolean = true
 
         override fun query(): JSONObject {
-            val response = AntOceanRpcCall.aiFishListTask()
+            val response = AntOceanRpcCall.aiFishListTask(sceneCode)
             return JsonUtil.parseJSONObjectOrNull(response) ?: JSONObject()
                 .put("success", false)
                 .put("resultDesc", "aiFishListTask返回空或无法解析")
@@ -1076,7 +1089,8 @@ class AntOcean : ModelTask() {
                 val taskInfo = taskInfoList.optJSONObject(i) ?: continue
                 val taskBaseInfo = taskInfo.optJSONObject("taskBaseInfo") ?: continue
                 val taskType = taskBaseInfo.optString("taskType").trim()
-                if (taskType.isBlank()) {
+                val taskScene = taskBaseInfo.optString("sceneCode").ifBlank { sceneCode }
+                if (taskType.isBlank() || taskScene != sceneCode) {
                     continue
                 }
                 val bizInfo = parseJSONObject(taskBaseInfo.opt("bizInfo")) ?: JSONObject()
@@ -1098,7 +1112,8 @@ class AntOcean : ModelTask() {
                         title = taskTitle,
                         status = taskStatus,
                         type = taskType,
-                        sceneCode = AI_FISH_SCENE_CODE,
+                        sceneCode = taskScene,
+                        actionType = if (restoreScene) taskBaseInfo.optString("taskProdPlayType") else "",
                         blacklistKeys = listOf(taskType, taskTitle),
                         raw = raw,
                         progress = "progress=${taskBaseInfo.opt("taskProgress")}/${taskBaseInfo.opt("taskRequire")} " +
@@ -1112,7 +1127,11 @@ class AntOcean : ModelTask() {
 
         override fun mapPhase(item: TaskFlowItem): TaskFlowPhase =
             when {
-                isRewardReadyStatus(item.status) -> TaskFlowPhase.REWARD_READY
+                isRewardReadyStatus(item.status) -> {
+                    if (restoreScene && item.raw?.optJSONObject("taskRights")?.optBoolean("directReceiveAward") == true) {
+                        TaskFlowPhase.BUSINESS_ACTION
+                    } else TaskFlowPhase.REWARD_READY
+                }
 
                 isRewardReceivedStatus(item.status) ||
                     item.status == "DONE" ||
@@ -1124,7 +1143,7 @@ class AntOcean : ModelTask() {
             }
 
         override fun receive(item: TaskFlowItem): TaskFlowActionResult {
-            val response = AntOceanRpcCall.aiFishReceiveTaskAward(item.type)
+            val response = AntOceanRpcCall.aiFishReceiveTaskAward(item.type, item.sceneCode)
             val result =
                 JsonUtil.parseJSONObjectOrNull(response) ?: return TaskFlowActionResult.failure(
                     failureType = TaskRpcFailureType.RETRYABLE_RPC,
@@ -1134,20 +1153,36 @@ class AntOcean : ModelTask() {
                     detail = aiFishTaskActionDetail(item, "receiveTaskAward"),
                     stopCurrentRound = true,
                 )
+            val graffitied = if (restoreScene) queryAiFishHomepage(logSummary = false)
+                ?.optJSONObject("myFish")?.optJSONObject("interactVO")?.opt("graffitiedFlag") as? Boolean else null
             if (isOceanTaskRpcSuccess(result)) {
                 val awardCount = item.raw?.optInt("awardCount", 0) ?: 0
-                Log.ocean("摸鱼任务🎖️[${item.title}]获得摸鱼次数*$awardCount")
-                return TaskFlowActionResult.success()
+                Log.ocean("摸鱼任务🎖️[${item.title}]领奖已受理，回查摸鱼次数*$awardCount")
+                return TaskFlowActionResult.defer(
+                    DeferredReason.STATE_CONFIRMATION, message = "摸鱼奖励领取已受理，回查任务及主页",
+                    rpc = "AntOceanRpcCall.aiFishReceiveTaskAward", raw = response, refreshAfterAction = true,
+                    progressChanged = result.optInt("incAwardCount") > 0 || restoreScene && graffitied == false,
+                    stopCurrentRound = restoreScene && graffitied != true,
+                )
             }
-            return aiFishTaskActionFailureResult(
+            val failure = aiFishTaskActionFailureResult(
                 item = item,
                 response = result,
                 rpc = "AntOceanRpcCall.aiFishReceiveTaskAward",
                 detail = aiFishTaskActionDetail(item, "receiveTaskAward"),
             )
+            if (restoreScene && failure.failureType == TaskRpcFailureType.TERMINAL_DONE) {
+                return TaskFlowActionResult.defer(
+                    DeferredReason.STATE_CONFIRMATION, message = failure.message, rpc = failure.rpc,
+                    raw = failure.raw, detail = failure.detail, refreshAfterAction = true,
+                    progressChanged = graffitied == false, stopCurrentRound = graffitied != true,
+                ).copy(code = failure.code)
+            }
+            return failure
         }
 
         override fun complete(item: TaskFlowItem): TaskFlowActionResult {
+            if (restoreScene) return handleAiFishFinishTask(item)
             val gameDecision = GameCenterPlayRpcCall.resolveTaskAction(item.raw)
             val contract = gameDecision.contract
             val mappedTask = gameDecision.mappedTask
@@ -1177,9 +1212,10 @@ class AntOcean : ModelTask() {
         }
 
         private fun handleAiFishFinishTask(item: TaskFlowItem): TaskFlowActionResult {
-            val response = AntOceanRpcCall.aiFishFinishTask(item.type)
+            val response = AntOceanRpcCall.aiFishFinishTask(item.type, item.sceneCode)
+            val parsed = JsonUtil.parseJSONObjectOrNull(response)
             val result =
-                JsonUtil.parseJSONObjectOrNull(response) ?: return TaskFlowActionResult.failure(
+                parsed ?: return TaskFlowActionResult.failure(
                     failureType = TaskRpcFailureType.RETRYABLE_RPC,
                     message = "aiFishFinishTask返回空或无法解析",
                     rpc = "AntOceanRpcCall.aiFishFinishTask",
@@ -1187,14 +1223,20 @@ class AntOcean : ModelTask() {
                     detail = aiFishTaskActionDetail(item, "finishTask"),
                     stopCurrentRound = true,
                 )
+            val graffitied = if (restoreScene) queryAiFishHomepage(logSummary = false)
+                ?.optJSONObject("myFish")?.optJSONObject("interactVO")?.opt("graffitiedFlag") as? Boolean else null
             if (isOceanTaskRpcSuccess(result)) {
-                Log.ocean("摸鱼任务🧾️[${item.title}]完成请求已受理，等待任务列表确认")
+                Log.ocean("摸鱼任务🧾️[${item.title}]完成请求已受理，刷新任务及主页状态")
                 return TaskFlowActionResult.defer(
                     deferredReason = DeferredReason.STATE_CONFIRMATION,
                     message = "摸鱼任务完成请求已受理，回查摸鱼任务及奖励",
                     rpc = "AntOceanRpcCall.aiFishFinishTask",
                     raw = response,
                     refreshAfterAction = true,
+                    progressChanged = result.optInt("incAwardCount") > 0 ||
+                        (result.optJSONObject("finishAwardResultVO")?.optInt("deltaAwardCount") ?: 0) > 0 ||
+                        restoreScene && graffitied == false,
+                    stopCurrentRound = restoreScene && graffitied != true,
                 )
             }
             val failure = aiFishTaskActionFailureResult(
@@ -1203,17 +1245,42 @@ class AntOcean : ModelTask() {
                 rpc = "AntOceanRpcCall.aiFishFinishTask",
                 detail = aiFishTaskActionDetail(item, "finishTask"),
             )
+            if (restoreScene) {
+                if (failure.failureType == TaskRpcFailureType.TERMINAL_DONE) {
+                    return TaskFlowActionResult.defer(
+                        DeferredReason.STATE_CONFIRMATION, message = failure.message,
+                        rpc = failure.rpc, raw = failure.raw, detail = failure.detail, refreshAfterAction = true,
+                        progressChanged = graffitied == false, stopCurrentRound = graffitied != true,
+                    ).copy(code = failure.code)
+                }
+                return failure.copy(
+                    failureType = if (failure.failureType == TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE) {
+                        TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW
+                    } else failure.failureType,
+                    continueCurrentRoundOnFailure = true,
+                )
+            }
             return if (failure.code == "400000040") {
-                AntFarmRpcCall.doSceneTask(item.type, "ANTAIFISH", failure, sceneCode = "ANTAIFISH", source = "ANTAIFISH") { fallback ->
+                AntFarmRpcCall.doSceneTask(item.type, item.sceneCode, failure, sceneCode = item.sceneCode, source = AI_FISH_SCENE_CODE) { fallback ->
                     aiFishTaskActionFailureResult(item, fallback, "AntFarmRpcCall.doFarmTask", aiFishTaskActionDetail(item, "finishTask"))
                 }
             } else failure
         }
 
+        override fun hasProgress(previous: TaskFlowItem, current: TaskFlowItem): Boolean {
+            val beforeBase = previous.raw?.optJSONObject("taskBaseInfo") ?: return false
+            val afterBase = current.raw?.optJSONObject("taskBaseInfo") ?: return false
+            val beforeRights = previous.raw?.optJSONObject("taskRights") ?: return false
+            val afterRights = current.raw?.optJSONObject("taskRights") ?: return false
+            return (afterBase.optInt("taskProgress") > beforeBase.optInt("taskProgress") ||
+                afterRights.optInt("rightsTimes") > beforeRights.optInt("rightsTimes") ||
+                afterRights.optInt("alreadyReceiveAwardCount") > beforeRights.optInt("alreadyReceiveAwardCount"))
+        }
+
         override fun actionKey(item: TaskFlowItem, action: TaskFlowAction): String {
-            val instance = item.raw?.optJSONObject("taskBaseInfo")?.optString("entityGenerateTime").orEmpty()
+            if (restoreScene) return "${action.logName}:${item.sceneCode}:${item.type}"
             val game = GameCenterPlayRpcCall.describeTask(item.raw)
-            return "${action.logName}:${item.sceneCode}:${item.type}:$instance:" +
+            return "${action.logName}:${item.sceneCode}:${item.type}:" +
                 "${game.gameAppId}:${game.source}:${game.gameTaskType}:${game.contract?.playTime}"
         }
 
@@ -2159,7 +2226,7 @@ class AntOcean : ModelTask() {
                 roundSleepMs = 425L,
                 executionState = oceanTaskExecutionState,
             ).run()
-            if (!result.stopped && !result.interrupted && adapter.canMarkTasksDoneForToday()) {
+            if (result.completed && adapter.canMarkTasksDoneForToday()) {
                 Status.setFlagToday(StatusFlags.FLAG_ANTOCEAN_TASKS_DONE)
                 Log.ocean("海洋任务🌊今日已确认完成")
             }
@@ -2212,7 +2279,6 @@ class AntOcean : ModelTask() {
 
         override val moduleName: String = TASK_BLACKLIST_MODULE
         override val flowName: String = "神奇海洋任务"
-        override val nonRetryableActionFlagPrefix: String = StatusFlags.FLAG_ANTOCEAN_ACTION_STOP_PREFIX
         override val continueCurrentRoundOnRetryableFailure: Boolean = true
 
         override fun isFlowHandledToday(): Boolean =
@@ -2354,6 +2420,16 @@ class AntOcean : ModelTask() {
             }
         }
 
+        override fun hasProgress(previous: TaskFlowItem, current: TaskFlowItem): Boolean {
+            val previousTask = previous.raw?.optJSONObject("task") ?: return false
+            val currentTask = current.raw?.optJSONObject("task") ?: return false
+            return listOf("taskProgress", "rightsTimes").any { field ->
+                val before = parseOceanTaskProgressInt(previousTask, field)
+                val after = parseOceanTaskProgressInt(currentTask, field)
+                before != null && after != null && after > before
+            }
+        }
+
         override fun shouldSkipByTodayState(item: TaskFlowItem): Boolean {
             if (Status.hasFlagToday(StatusFlags.FLAG_ANTOCEAN_CONSECUTIVE_VISIT_DONE) &&
                 isConsecutiveVisitTaskWaitingForLaterDay(item, mapPhase(item))
@@ -2420,9 +2496,16 @@ class AntOcean : ModelTask() {
             }
             if (isOceanTaskRpcSuccess(result)) {
                 val awardCount = item.raw?.optString("awardCount", "0") ?: "0"
-                Log.ocean("海洋奖励🌊[${item.title}]# $awardCount 拼图")
+                Log.ocean("海洋奖励🌊[${item.title}]领取请求已受理，回查 $awardCount 拼图奖励")
                 markOceanHomeRefreshNeeded()
-                return TaskFlowActionResult.success()
+                return TaskFlowActionResult.defer(
+                    DeferredReason.STATE_CONFIRMATION,
+                    message = "海洋奖励领取已受理，回查任务及奖励",
+                    rpc = "AntOceanRpcCall.receiveTaskAward",
+                    raw = response,
+                    refreshAfterAction = true,
+                    progressChanged = result.optInt("incAwardCount") > 0,
+                )
             }
             return oceanTaskActionFailureResult(
                 item = item,
@@ -2483,8 +2566,11 @@ class AntOcean : ModelTask() {
                             detail = oceanTaskActionDetail(item, "gameReport"), logger = Log::ocean)
                     }
                     if (report.deferredReason !in setOf(DeferredReason.STATE_CONFIRMATION, DeferredReason.NO_PROGRESS_COOLDOWN)) return report
-                    val completedAction = finishOceanTask(item).copy(progressChanged = false, refreshAfterAction = true)
-                    return if (completedAction.success && report.deferredReason == DeferredReason.NO_PROGRESS_COOLDOWN) report else completedAction
+                    val completedAction = finishOceanTask(item)
+                    return if (completedAction.success || completedAction.deferredReason == DeferredReason.STATE_CONFIRMATION) {
+                        completedAction.copy(progressChanged = completedAction.progressChanged || report.progressChanged,
+                            refreshAfterAction = true)
+                    } else completedAction
                 }
             }
             if (gameDecision.action == GameCenterPlayRpcCall.TaskAction.DURATION_ONLY) {
@@ -2503,9 +2589,8 @@ class AntOcean : ModelTask() {
             item: TaskFlowItem,
             action: TaskFlowAction,
         ): String {
-            val instance = item.raw?.optJSONObject("task")?.optString("entityGenerateTime").orEmpty()
             val game = GameCenterPlayRpcCall.describeTask(item.raw)
-            return "${action.logName}:${buildOceanTaskBizKey(item.sceneCode, item.type, item.title)}:$instance:" +
+            return "${action.logName}:${buildOceanTaskBizKey(item.sceneCode, item.type, item.title)}:" +
                 "${game.gameAppId}:${game.source}:${game.gameTaskType}:${game.contract?.playTime}:${item.progress}"
         }
 
@@ -2779,8 +2864,7 @@ class AntOcean : ModelTask() {
             val game = games.optJSONObject(index) ?: continue
             val gameId = game.optString("gameId")
             val appId = game.optString("appId")
-            val instance = item.raw?.optJSONObject("task")?.optString("entityGenerateTime").orEmpty()
-            if (gameId.isBlank() || appId.isBlank() || !handledGames.add("${item.id}:$instance:${item.progress}:$gameId")) continue
+            if (gameId.isBlank() || appId.isBlank() || !handledGames.add("${item.id}:${item.progress}:$gameId")) continue
             val consult = GameCenterPlayRpcCall.consultGameFloatingBall(gameId, source, source, trafficDriverId)
             if (!consult.accepted) {
                 return TaskFlowActionResult.failure(
@@ -2891,11 +2975,13 @@ class AntOcean : ModelTask() {
             Log.ocean("海洋任务🌊完成请求已受理[${item.title}]，等待任务列表确认")
             return TaskFlowActionResult.defer(
                 deferredReason = DeferredReason.STATE_CONFIRMATION,
-                message = "finishTask已返回成功，等待海洋任务列表确认",
+                message = "finishTask已返回成功，刷新海洋任务列表及奖励",
                 rpc = rpc,
                 raw = result.toString(),
                 detail = oceanTaskActionDetail(item, "finishTask"),
                 refreshAfterAction = true,
+                progressChanged = result.optInt("incAwardCount") > 0 ||
+                    (result.optJSONObject("finishAwardResultVO")?.optInt("deltaAwardCount") ?: 0) > 0,
             )
         }
         val failure = oceanTaskActionFailureResult(
@@ -3173,7 +3259,6 @@ class AntOcean : ModelTask() {
                         val todoTaskNum = extendInfo?.optInt("todoTaskNum", 0) ?: 0
                         val taskCanReceiveRewardNum = extendInfo?.optInt("taskCanReceiveRewardNum", 0) ?: 0
                         if (haveNotice || todoTaskNum > 0 || taskCanReceiveRewardNum > 0) {
-                            markOceanNoticeLinkedRefreshNeeded()
                             Log.ocean("海洋任务🌊[待完成:$todoTaskNum,待领取:$taskCanReceiveRewardNum]")
                         }
                     }
@@ -3188,7 +3273,6 @@ class AntOcean : ModelTask() {
                     "INDEX_GAME_ENTRY_NOTICE" -> {
                         if (haveNotice) {
                             val todoTaskNum = extendInfo?.optInt("todoTaskNum", 0) ?: 0
-                            markOceanNoticeLinkedRefreshNeeded()
                             Log.ocean("海洋任务🌊[游戏入口待处理:$todoTaskNum]")
                             needQueryPopup = true
                         }
@@ -3196,7 +3280,6 @@ class AntOcean : ModelTask() {
 
                     "INTERACT_RECEIVE_PIECE" -> {
                         if (haveNotice) {
-                            markOceanNoticeLinkedRefreshNeeded()
                             Log.ocean("海洋拼图🌊[存在可领取互动拼图]")
                         }
                     }

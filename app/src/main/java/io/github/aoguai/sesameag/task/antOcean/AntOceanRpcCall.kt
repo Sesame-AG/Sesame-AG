@@ -169,26 +169,26 @@ object AntOceanRpcCall {
     )
 
     @JvmStatic
-    fun aiFishListTask(): String {
+    fun aiFishListTask(sceneCode: String): String {
         return RequestManager.requestString(
             "com.alipay.antieptask.listTaskopengreen",
-            "[{\"extend\":{\"appMode\":\"normal\"},\"requestType\":\"RPC\",\"sceneCode\":\"ANTAIFISH\",\"source\":\"ANTAIFISH\",\"uniqueId\":\"${getUniqueId()}\"}]"
+            "[{\"extend\":{\"appMode\":\"normal\"},\"requestType\":\"RPC\",\"sceneCode\":\"$sceneCode\",\"source\":\"ANTAIFISH\",\"uniqueId\":\"${getUniqueId()}\"}]"
         )
     }
 
     @JvmStatic
-    fun aiFishFinishTask(taskType: String): String {
+    fun aiFishFinishTask(taskType: String, sceneCode: String): String {
         return RequestManager.requestString(
             "com.alipay.antiep.finishTask",
-            "[{\"outBizNo\":\"${taskType}_${RandomUtil.nextDouble()}\",\"requestType\":\"H5\",\"sceneCode\":\"ANTAIFISH\",\"source\":\"ANTAIFISH\",\"taskType\":\"$taskType\"}]"
+            "[{\"outBizNo\":\"${taskType}_${RandomUtil.nextDouble()}\",\"requestType\":\"H5\",\"sceneCode\":\"$sceneCode\",\"source\":\"ANTAIFISH\",\"taskType\":\"$taskType\"}]"
         )
     }
 
     @JvmStatic
-    fun aiFishReceiveTaskAward(taskType: String): String {
+    fun aiFishReceiveTaskAward(taskType: String, sceneCode: String): String {
         return RequestManager.requestString(
             "com.alipay.antieptask.receiveTaskAwardopengreen",
-            "[{\"ignoreLimit\":false,\"requestType\":\"RPC\",\"sceneCode\":\"ANTAIFISH\",\"source\":\"ANTAIFISH\",\"taskType\":\"$taskType\",\"uniqueId\":\"${getUniqueId()}\"}]"
+            "[{\"ignoreLimit\":false,\"requestType\":\"RPC\",\"sceneCode\":\"$sceneCode\",\"source\":\"ANTAIFISH\",\"taskType\":\"$taskType\",\"uniqueId\":\"${getUniqueId()}\"}]"
         )
     }
     
