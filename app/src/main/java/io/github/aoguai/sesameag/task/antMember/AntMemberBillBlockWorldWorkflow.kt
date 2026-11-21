@@ -88,6 +88,7 @@ private data class BlockWorldBlock(
     val recordId: String,
     val configId: String,
     val level: Int,
+    val maxLevel: Boolean,
     val width: Int,
     val length: Int,
     val posX: Int? = null,
@@ -383,6 +384,7 @@ private class BillBlockWorldWorkflow {
                         recordId = recordId,
                         configId = block.optString("blockConfigId"),
                         level = block.optInt("level", 0),
+                        maxLevel = block.optBoolean("maxLevel", false),
                         width = block.optInt("width", 0),
                         length = block.optInt("length", 0),
                         posX = if (includePosition) optionalInt(block, "posX") else null,
@@ -874,7 +876,8 @@ private class BillBlockWorldWorkflow {
         first.configId.isNotBlank() &&
             first.configId == second.configId &&
             first.level > 0 &&
-            first.level == second.level
+            first.level == second.level &&
+            !first.maxLevel && !second.maxLevel
 
     private fun findFreePosition(
         snapshot: BlockWorldSnapshot,

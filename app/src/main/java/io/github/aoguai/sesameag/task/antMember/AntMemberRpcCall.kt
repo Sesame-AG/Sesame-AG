@@ -2,6 +2,8 @@ package io.github.aoguai.sesameag.task.antMember
 
 import io.github.aoguai.sesameag.entity.RpcEntity
 import io.github.aoguai.sesameag.hook.RequestManager
+import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
+import io.github.aoguai.sesameag.util.maps.UserMap
 import io.github.aoguai.sesameag.util.RandomUtil
 import org.json.JSONArray
 import org.json.JSONException
@@ -11,6 +13,9 @@ import java.util.UUID
 object AntMemberRpcCall {
     internal const val GAME_CENTER_SOURCE = "ch_appcollect__chsub_my-recentlyUsed"
     internal const val GAME_CENTER_P2E_SOURCE = "ch_appcenter__chsub_recentUSE"
+    // P2E 页面协议参数，与任务目标小游戏的 appId 和版本无关。
+    private const val GAME_CENTER_P2E_APP_ID = "2021003125685383"
+    private const val GAME_CENTER_P2E_FRONT_END_VERSION = "20260820"
     internal const val GAME_CENTER_GIT = "9e159d58cce04c13a"
     internal const val INSURED_GOLD_DEFAULT_ENTRANCE = "cfsy"
     private const val INSURED_GOLD_PRODUCT_CODE = "GIFT_UNIVERSAL_COVERAGE"
@@ -403,7 +408,9 @@ object AntMemberRpcCall {
             JSONArray().put(JSONObject()
                 .put("adBizId", bizId).put("bizNo", bizId).put("extMap", extMap)
                 .put("scene", "TASK_WALL").put("sourcePassMap", buildMemberSourcePassMap())
-                .put("spaceCode", "ant_member_xlight_task")
+                .put("spaceCode", extMap.optString("spaceCode"))
+                .put("subScene", "")
+                .put("userId", AccountSessionCoordinator.currentUserId() ?: UserMap.currentUid)
                 .apply {
                     if (adId.isNotBlank()) put("adId", adId)
                     if (awardNum != null) put("awardNum", awardNum)
@@ -415,6 +422,7 @@ object AntMemberRpcCall {
         val args =
             JSONObject().apply {
                 put("alipayGrowthTask", false)
+                put("source", "antmember")
                 put("sourcePassMap", buildMemberSourcePassMap())
                 put("taskConfigId", taskConfigId)
             }
@@ -465,6 +473,7 @@ object AntMemberRpcCall {
                 put("adType", adType)
                 put("bizNo", bizNo)
                 put("extMap", JSONObject())
+                put("sourceInfo", "signin")
                 put("sourcePassMap", buildMemberSourcePassMap())
             }
         return RequestManager.requestString(
@@ -523,6 +532,8 @@ object AntMemberRpcCall {
     fun querySingleAdTaskProcessDetail(
         taskConfigId: String,
         adBizId: String,
+        continueComplete: Boolean = false,
+        spaceCode: String = "",
     ): String {
         val args =
             JSONObject().apply {
@@ -530,6 +541,8 @@ object AntMemberRpcCall {
                 put("adTaskFlag", true)
                 put("alipayGrowthFlag", false)
                 put("configId", taskConfigId)
+                put("continueComplete", continueComplete)
+                if (spaceCode.isNotBlank()) put("spaceCode", spaceCode)
                 put("sourcePassMap", buildMemberSourcePassMap())
                 put("taskProcessId", "")
             }
@@ -676,6 +689,8 @@ object AntMemberRpcCall {
         val args =
             JSONObject().apply {
                 put("canAddHome", true)
+                put("frontEndVersion", GAME_CENTER_P2E_FRONT_END_VERSION)
+                put("p2eVersion", "")
                 put("deviceLevel", "high")
                 put("screenType", 10)
                 put("source", source)
@@ -700,6 +715,8 @@ object AntMemberRpcCall {
         val args =
             JSONObject().apply {
                 put("deviceLevel", "high")
+                put("frontEndVersion", GAME_CENTER_P2E_FRONT_END_VERSION)
+                put("p2eVersion", "")
                 put("panelLaunchableCheckMap", JSONObject().put("SET_HEAD_TASK", true))
                 put("sessionId", sessionId)
                 put("setHeadPanelCheck", true)
@@ -841,6 +858,8 @@ object AntMemberRpcCall {
         val args =
             JSONObject().apply {
                 put("date", date)
+                put("appId", GAME_CENTER_P2E_APP_ID)
+                put("p2eVersion", "")
                 put("index", index)
                 put("signSequenceId", signSequenceId)
                 put("source", source)
@@ -864,6 +883,7 @@ object AntMemberRpcCall {
     @JvmStatic
     fun queryGameCenterP2eGoldExchangePrizePage(): String {
         val args = JSONObject().put("__git", GAME_CENTER_GIT)
+            .put("appId", GAME_CENTER_P2E_APP_ID).put("p2eVersion", "")
         return RequestManager.requestString(
             "com.alipay.gamecenteruprod.biz.rpc.p2e.queryGoldExgPrizePage",
             JSONArray().put(args).toString(),
@@ -1415,6 +1435,8 @@ object AntMemberRpcCall {
     @JvmStatic
     fun queryIndexNaviBenefitFlowV2(naviCode: String, pageNum: Int, pageSize: Int, uniqueId: String): String {
         val args = JSONObject().apply {
+            put("adCopyId", "")
+            put("fastTag", "")
             put("benefitFlowSource", "REC")
             put("cityCode", "")
             put("exposeChannel", "antmember")
@@ -1730,54 +1752,40 @@ object AntMemberRpcCall {
         }
 
     @JvmStatic
-    fun queryConsumeHome(): String? =
-        try {
-            val args =
-                JSONObject().apply {
-                    put("tabBubbleDeliverParam", JSONObject())
-                    put("tabTypeDeliverParam", JSONObject())
-                }
-            RequestManager.requestString(
-                "com.alipay.wealthgoldtwa.needle.consume.query",
-                JSONArray().put(args).toString(),
-            )
-        } catch (e: Exception) {
-            null
-        }
+    fun queryConsumeHome(): String? {
+        val args = JSONObject()
+            .put("tabBubbleDeliverParam", JSONObject())
+            .put("tabTypeDeliverParam", JSONObject())
+        return RequestManager.requestString(
+            "com.alipay.wealthgoldtwa.needle.consume.query",
+            JSONArray().put(args).toString(),
+        )
+    }
 
     @JvmStatic
     fun submitConsume(
         amount: Int,
         productId: String,
         bonusAmount: Int,
-    ): String? =
-        try {
-            val args =
-                JSONObject().apply {
-                    put("exchangeAmount", amount)
-                    put("exchangeMoney", String.format("%.2f", amount / 1000.0))
-                    put("prizeType", "GOLD")
-                    put("productId", productId)
-                    put("bonusAmount", bonusAmount)
-                }
-            RequestManager.requestString(
-                "com.alipay.wealthgoldtwa.needle.consume.submit",
-                JSONArray().put(args).toString(),
-            )
-        } catch (e: Exception) {
-            null
-        }
+    ): String? {
+        val args = JSONObject()
+            .put("exchangeAmount", amount)
+            .put("exchangeMoney", String.format("%.2f", amount / 1000.0))
+            .put("prizeType", "GOLD")
+            .put("productId", productId)
+            .put("bonusAmount", bonusAmount)
+        return RequestManager.requestString(
+            "com.alipay.wealthgoldtwa.needle.consume.submit",
+            JSONArray().put(args).toString(),
+        )
+    }
 
     @JvmStatic
     fun queryConsumeResult(writeOffNo: String): String? =
-        try {
-            RequestManager.requestString(
-                "com.alipay.wealthgoldtwa.goldbill.v4.consume.result",
-                JSONArray().put(JSONObject().put("writeOffNo", writeOffNo)).toString(),
-            )
-        } catch (e: Exception) {
-            null
-        }
+        RequestManager.requestString(
+            "com.alipay.wealthgoldtwa.goldbill.v4.consume.result",
+            JSONArray().put(JSONObject().put("writeOffNo", writeOffNo)).toString(),
+        )
 
     @JvmStatic
     fun taskQueryPush(taskId: String): String? =
@@ -1931,12 +1939,6 @@ object AntMemberRpcCall {
     fun queryBillCoinProducts(pageNo: Int): String = RequestManager.requestString(
         "alipay.memberasset.sticker.prize.query.product.list",
         JSONArray().put(JSONObject().put("pageNo", pageNo).put("pageSize", 20).put("queryType", "COIN")).toString(),
-    )
-
-    @JvmStatic
-    fun queryBillCoinProductDetail(prizeId: String): String = RequestManager.requestString(
-        "alipay.memberasset.sticker.prize.query.product.detail",
-        JSONArray().put(JSONObject().put("prizeId", prizeId).put("scene", "coin")).toString(),
     )
 
     @JvmStatic

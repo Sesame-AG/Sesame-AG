@@ -10,11 +10,6 @@ import io.github.aoguai.sesameag.entity.MapperEntity
 import io.github.aoguai.sesameag.entity.SesameGift
 import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
 import io.github.aoguai.sesameag.hook.AccountSessionCheck
-import io.github.aoguai.sesameag.hook.ApplicationHook
-import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleKind
-import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleState
-import io.github.aoguai.sesameag.hook.keepalive.UnifiedScheduler
-import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleRegistry
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.hook.ExchangeOptionsRefreshBridge
 import io.github.aoguai.sesameag.hook.HookReadyChecker
@@ -29,7 +24,6 @@ import io.github.aoguai.sesameag.model.modelFieldExt.SelectModelField
 import io.github.aoguai.sesameag.model.withDesc
 import io.github.aoguai.sesameag.model.withPortScope
 import io.github.aoguai.sesameag.task.ModelTask
-import io.github.aoguai.sesameag.task.TaskExecutionOutcome
 import io.github.aoguai.sesameag.task.TaskExecutionReport
 import kotlin.coroutines.EmptyCoroutineContext
 import io.github.aoguai.sesameag.task.antFarm.AntFarm
@@ -47,6 +41,7 @@ import io.github.aoguai.sesameag.task.common.TaskFlowExecutionState
 import io.github.aoguai.sesameag.task.common.TaskFlowSnapshot
 import io.github.aoguai.sesameag.task.common.TaskFlowItem
 import io.github.aoguai.sesameag.task.common.TaskFlowPhase
+import io.github.aoguai.sesameag.task.common.TaskFlowRunResult
 import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
 import io.github.aoguai.sesameag.task.exchange.ExchangeCost
 import io.github.aoguai.sesameag.task.exchange.ExchangeEffectCatalog
@@ -64,7 +59,6 @@ import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.ResChecker
 import io.github.aoguai.sesameag.util.RpcOfflineRisk
 import io.github.aoguai.sesameag.util.TaskBlacklist
-import io.github.aoguai.sesameag.util.TaskBlacklist.autoAddToBlacklist
 import io.github.aoguai.sesameag.util.UserDataStoreManager
 import io.github.aoguai.sesameag.util.maps.IdMapManager
 import io.github.aoguai.sesameag.util.maps.SesameGiftMap
@@ -406,109 +400,6 @@ class AntSesameCredit : ModelTask() {
             } finally {
                 Log.sesame("执行结束-${getName()}")
             }
-            }
-        }
-    }
-
-    private fun scheduleSesameConfirmation(payload: JSONObject) {
-        val context = ApplicationHook.appContext ?: return
-        val owner = AccountSessionCoordinator.currentUserId()?.takeIf { it.isNotBlank() } ?: return
-        val epoch = AccountSessionCoordinator.currentSessionEpoch()
-        val record = if (payload.optBoolean("pigeon")) {
-            val farm = Model.getModel(AntFarm::class.java) ?: return
-            if (!farm.hasPendingZhimaPigeonRewardReceipt()) return
-            val round = farm.pendingZhimaPigeonRewardRound()
-            if (payload.has("pigeon_round") && payload.optString("pigeon_round") != round) return
-            payload.put("pigeon_round", round)
-            "pigeon:$round"
-        } else payload.optString("recordId")
-        if (record.isBlank() || hasFlagToday("sesame_confirmation_checked:$record")) return
-        val dedupe = "$PERSISTENT_CONFIRMATION_KIND:$owner:$record"
-        if (PersistentScheduleRegistry.list().any {
-                it.dedupeKey == dedupe && it.sessionEpoch == epoch &&
-                    it.state in setOf(PersistentScheduleState.SCHEDULED, PersistentScheduleState.QUEUED, PersistentScheduleState.RUNNING)
-            }) return
-        val attempt = payload.optInt("attempt", 0)
-        if (attempt >= 3) {
-            setFlagToday("sesame_confirmation_checked:$record")
-            Log.sesame("芝麻任务[回查仍待确认，保留业务状态，结束本次自动回查] record=$record")
-            return
-        }
-        payload.put("child_kind", PERSISTENT_CONFIRMATION_KIND)
-            .put("owner_user_id", owner).put("session_epoch", epoch).put("attempt", attempt + 1)
-        val schedule = UnifiedScheduler.schedulePersistentTrigger(
-            context = context, name = "芝麻任务与奖励回查", kind = PersistentScheduleKind.MODULE_CHILD,
-            triggerAtMs = System.currentTimeMillis(),
-            dedupeKey = dedupe, payloadJson = payload.toString(), ownerUserId = owner, sessionEpoch = epoch,
-        )
-        if (schedule.state == PersistentScheduleState.FAILED) {
-            Log.error(TAG, "芝麻任务回查调度注册失败:${schedule.lastError}")
-        }
-    }
-
-    internal fun triggerPersistentConfirmation(payloadJson: String, scheduleId: String, source: String): Boolean {
-        val payload = JSONObject(payloadJson)
-        var needsConfirmation = false
-        return executePersistentChild(
-            scheduleId = scheduleId,
-            ownerUserId = payload.optString("owner_user_id"),
-            sessionEpoch = payload.optLong("session_epoch"),
-            source = "$PERSISTENT_CONFIRMATION_KIND:$source",
-            workflowQueue = sesameWorkflowQueue,
-            afterExecution = { if (needsConfirmation) scheduleSesameConfirmation(payload) },
-        ) {
-            val eligible = isEnable() &&
-                if (payload.optBoolean("pigeon")) sesameAlchemy?.value == true || collectSesame?.value == true
-                else if (payload.optString("version") == "alchemy") sesameAlchemy?.value == true else sesameTask?.value == true
-            if (!eligible) return@executePersistentChild TaskExecutionOutcome.SKIPPED
-            var confirmed = false
-            var queryFailed = false
-            if (payload.optBoolean("pigeon")) {
-                Model.getModel(AntFarm::class.java)?.let { farm ->
-                    if (payload.optString("pigeon_round") != farm.pendingZhimaPigeonRewardRound()) {
-                        return@executePersistentChild TaskExecutionOutcome.SKIPPED
-                    }
-                    confirmed = !farm.hasPendingZhimaPigeonRewardReceipt() || collectPendingZhimaPigeonReward(farm)
-                }
-            } else {
-                val result = confirmSesameLifeRecord(
-                    version = payload.optString("version"),
-                    templateId = payload.optString("templateId"),
-                    recordId = payload.optString("recordId"),
-                )
-                confirmed = result.success
-                queryFailed = result.failureType != null
-                if (queryFailed) {
-                    Log.error(TAG, "芝麻生活记录回查失败 record=${payload.optString("recordId")} rpc=${result.rpc} code=${result.code} message=${result.message} raw=${result.raw}")
-                }
-            }
-            if (!queryFailed && (collectSesame?.value == true || sesameAlchemy?.value == true)) {
-                collectSesame(collectSesameWithOneClick?.value == true || sesameAlchemy?.value == true)
-                if (confirmed && !payload.optBoolean("pigeon")) {
-                    val rewards = queryExplicitUnclaimedSesameFeedbackItems("芝麻生活记录[奖励回查]")
-                    queryFailed = rewards == null
-                    confirmed = rewards?.isEmpty() == true
-                    if (rewards?.isNotEmpty() == true) {
-                        Log.sesame("芝麻生活记录[任务已完成，奖励仍待确认] record=${payload.optString("recordId")}")
-                    }
-                }
-            }
-            if (confirmed && !payload.optBoolean("pigeon")) {
-                UserDataStoreManager.getInstance(payload.optString("owner_user_id"))
-                    ?.remove("sesame_user_growth_pending:${payload.optString("recordId")}")
-                Log.sesame("芝麻生活记录[已回查确认完成] record=${payload.optString("recordId")}")
-            }
-            if (confirmed && !queryFailed && sesameAlchemy?.value == true) {
-                val executionState = TaskFlowExecutionState()
-                resetSesamePushModelTaskSnapshots()
-                finishSesameAlchemy(executionState)
-                collectSesame(collectSesameWithOneClick?.value == true || sesameAlchemy?.value == true)
-            }
-            needsConfirmation = !confirmed
-            when {
-                queryFailed -> TaskExecutionOutcome.FAILED
-                confirmed -> TaskExecutionOutcome.SUCCESS
-                else -> TaskExecutionOutcome.DEFERRED
             }
         }
     }
@@ -1088,7 +979,7 @@ class AntSesameCredit : ModelTask() {
             val adapter = SesameCreditTaskFlowAdapter()
             try {
                 val result = TaskFlowEngine(adapter, roundSleepMs = 850L).run()
-                val finishedAllRounds = result.completed && adapter.canMarkTodayDone()
+                val finishedAllRounds = result.completed && hasFlagToday(StatusFlags.FLAG_SESAME_DO_ALL_AVAILABLE_TASK)
                 Log.sesame("芝麻信用💳[任务总计]#轮次:${result.rounds}, 报名:${adapter.joinedActionCount}个, 完成动作已提交:${adapter.completedActionCount}个, 跳过:${adapter.skippedTaskCount}个")
 
                 if (adapter.interrupted || result.stopped || ApplicationHookConstants.isOffline()) {
@@ -1100,7 +991,6 @@ class AntSesameCredit : ModelTask() {
                 }
 
                 if (finishedAllRounds) {
-                    setFlagToday(StatusFlags.FLAG_SESAME_DO_ALL_AVAILABLE_TASK)
                     Log.sesame(
                         if (adapter.completedActionCount > 0) {
                             "芝麻信用💳[当前可执行任务已处理完成，今日跳过]"
@@ -1108,8 +998,10 @@ class AntSesameCredit : ModelTask() {
                             "芝麻信用💳[无新增可执行任务，今日跳过]"
                         },
                     )
+                } else if (result.failureCount > 0) {
+                    Log.error(TAG, "芝麻信用💳[本轮任务失败]#失败:${result.failureCount}项，未标记今日完成")
                 } else {
-                    Log.sesame("芝麻信用💳[任务流未确认终态]#保留后续重试机会")
+                    Log.sesame("芝麻信用💳[本轮处理结束，尚未满足今日完成条件]")
                 }
                 return@run SesameTaskRunSummary(
                     finishedAllRounds = finishedAllRounds,
@@ -1129,8 +1021,11 @@ class AntSesameCredit : ModelTask() {
     private inner class SesameCreditTaskFlowAdapter : TaskFlowAdapter {
         override val moduleName: String = sesameCreditTaskBlacklistModule
         override val flowName: String = "芝麻信用任务"
-        override val nonRetryableActionFlagPrefix: String = StatusFlags.FLAG_SESAME_TASK_ACTION_STOP_PREFIX
         override val continueCurrentRoundOnRetryableFailure: Boolean = true
+
+        override fun onAllTasksDone(snapshot: TaskFlowSnapshot) {
+            setFlagToday(StatusFlags.FLAG_SESAME_DO_ALL_AVAILABLE_TASK)
+        }
 
         override fun isSameTask(previous: TaskFlowItem, current: TaskFlowItem): Boolean {
             if (!super<TaskFlowAdapter>.isSameTask(previous, current)) return false
@@ -1140,28 +1035,8 @@ class AntSesameCredit : ModelTask() {
 
         override fun isPendingActionResolved(
             item: TaskFlowItem, action: TaskFlowAction, response: JSONObject, items: List<TaskFlowItem>,
-        ): Boolean {
-            if (item.type == "AD_TASK") return false
-            val recordId = item.raw?.optString("recordId").orEmpty()
-            if (recordId.isBlank()) return false
-            val matching = items.filter {
-                it.id == item.id && it.type == item.type && it.raw?.optString("recordId") == recordId
-            }
-            if (matching.isNotEmpty()) {
-                val confirmed = matching.any { it.raw?.optBoolean("finishFlag", false) == true }
-                if (confirmed) {
-                    UserDataStoreManager.getInstance(UserMap.currentUid)?.remove("sesame_user_growth_pending:$recordId")
-                }
-                return confirmed
-            }
-            // 列表不再呈现旧记录时，沿现有最近操作记录接口确认真实完成。
-            if (action != TaskFlowAction.COMPLETE) return false
-            val confirmation = confirmSesameLifeRecord("new", item.id, recordId)
-            if (confirmation.failureType != null) {
-                logError("生活记录回查失败 recordId=$recordId code=${confirmation.code} raw=${confirmation.raw}")
-            }
-            return confirmation.success
-        }
+            submitted: JSONObject?,
+        ): Boolean? = resolveSesameRecordConfirmation("new", item, action, items, submitted)
 
         var completedActionCount: Int = 0
             private set
@@ -1172,9 +1047,6 @@ class AntSesameCredit : ModelTask() {
         var interrupted: Boolean = false
             private set
 
-        private var lastQuerySucceeded = false
-        private var lastActionableCount = 0
-        private var lastUnknownCount = 0
         private var joinLimitReached = hasFlagToday(StatusFlags.FLAG_SESAME_JOIN_LIMIT_REACHED)
         private var joinLimitLogged = false
         private val joinedRecordIds = mutableMapOf<String, String>()
@@ -1200,11 +1072,9 @@ class AntSesameCredit : ModelTask() {
         }
 
         override fun extractItems(response: JSONObject): List<TaskFlowItem> {
-            lastQuerySucceeded = true
             val taskObj = response.optJSONObject("data")
             if (taskObj == null) {
                 replaceSesamePushModelTaskSnapshots(emptyList())
-                refreshSesameCreditSnapshot(emptyList())
                 return emptyList()
             }
 
@@ -1228,7 +1098,6 @@ class AntSesameCredit : ModelTask() {
                 dailyTaskListVO?.optJSONArray("todayCompleteTaskVOS"),
                 "daily.todayCompleteTaskVOS",
             )
-            refreshSesameCreditSnapshot(items)
             return items
         }
 
@@ -1470,7 +1339,6 @@ class AntSesameCredit : ModelTask() {
             item: TaskFlowItem,
             phase: TaskFlowPhase,
         ) {
-            lastUnknownCount++
             Log.error(
                 TAG,
                 "芝麻信用💳[未知任务状态] module=$moduleName taskId=${item.id} taskName=${item.title} " +
@@ -1485,8 +1353,6 @@ class AntSesameCredit : ModelTask() {
         override fun logError(message: String) {
             Log.error(TAG, message)
         }
-
-        fun canMarkTodayDone(): Boolean = lastQuerySucceeded && lastUnknownCount == 0 && lastActionableCount == 0
 
         private fun appendSesameCreditTaskItems(
             target: MutableList<TaskFlowItem>,
@@ -1549,23 +1415,6 @@ class AntSesameCredit : ModelTask() {
                 current = completedNum,
                 limit = needCompleteNum,
             )
-        }
-
-        private fun refreshSesameCreditSnapshot(items: List<TaskFlowItem>) {
-            lastUnknownCount = 0
-            lastActionableCount = 0
-            for (item in items) {
-                val phase = mapPhase(item)
-                if (phase == TaskFlowPhase.UNKNOWN) {
-                    lastUnknownCount++
-                    continue
-                }
-                if (phase != TaskFlowPhase.TERMINAL && phase != TaskFlowPhase.BUSINESS_ACTION && !shouldSkip(item) &&
-                    !(phase != TaskFlowPhase.REWARD_READY && isBlacklisted(item))
-                ) {
-                    lastActionableCount++
-                }
-            }
         }
 
         private fun logSkipOnce(
@@ -1915,41 +1764,57 @@ class AntSesameCredit : ModelTask() {
         return buildUnclaimedSesameFeedbackItems(jo)
     }
 
-    private suspend fun queryExplicitUnclaimedSesameFeedbackItems(logPrefix: String): List<SesameFeedbackItem>? {
-        val resp = AntSesameCreditRpcCall.queryCreditFeedback()
-        val jo = JSONObject(resp)
-        if (!ResChecker.checkRes(TAG, jo)) {
-            Log.error(
-                "$TAG.queryExplicitUnclaimedSesameFeedbackItems",
-                "$logPrefix[查询未领取芝麻粒响应失败]#$jo",
-            )
-            return null
-        }
-        val feedbackArray = extractSesameFeedbackArray(jo)
-        if (feedbackArray == null) {
-            Log.error(
-                "$TAG.queryExplicitUnclaimedSesameFeedbackItems",
-                "$logPrefix[回查未返回creditFeedbackVOS] 保留后续重试机会 raw=$jo",
-            )
-            return null
-        }
-        for (index in 0 until feedbackArray.length()) {
-            if (feedbackArray.optJSONObject(index) == null) {
-                Log.error(
-                    "$TAG.queryExplicitUnclaimedSesameFeedbackItems",
-                    "$logPrefix[回查包含无法识别的反馈项] 保留后续重试机会 raw=$jo",
-                )
+    private suspend fun queryExplicitUnclaimedSesameFeedback(logPrefix: String): JSONObject? {
+        if (ApplicationHookConstants.isOffline() || Thread.currentThread().isInterrupted) return null
+        var failed = true
+        var raw = ""
+        try {
+            raw = AntSesameCreditRpcCall.queryCreditFeedback()
+            val response = JSONObject(raw)
+            if (!ResChecker.checkRes(TAG, response)) {
+                Log.error(TAG, "$logPrefix[查询未领取芝麻粒失败] raw=$raw")
                 return null
             }
+            val feedbackArray = extractSesameFeedbackArray(response)
+            if (feedbackArray == null) {
+                Log.error(TAG, "$logPrefix[查询缺少creditFeedbackVOS，停止本次收取] raw=$raw")
+                return null
+            }
+            for (index in 0 until feedbackArray.length()) {
+                val item = feedbackArray.optJSONObject(index)
+                if (item == null || item.optString("status").isBlank() ||
+                    (item.optString("status") == "UNCLAIMED" && item.optString("creditFeedbackId").isBlank())
+                ) {
+                    Log.error(TAG, "$logPrefix[反馈项结构无效，停止本次收取] raw=$raw")
+                    return null
+                }
+            }
+            failed = false
+            return response
+        } catch (t: Exception) {
+            if (t is CancellationException || t is InterruptedException) {
+                failed = false
+                throw t
+            }
+            Log.printStackTrace(TAG, "$logPrefix[查询未领取芝麻粒异常] raw=$raw", t)
+            return null
+        } finally {
+            if (failed && !ApplicationHookConstants.isOffline() && !Thread.currentThread().isInterrupted) {
+                TaskExecutionReport.current()?.recordFlow(
+                    TaskFlowExecutionState(), getName(), "芝麻粒查询",
+                    TaskFlowRunResult(false, false, false, 1, actionAttempted = true, failureCount = 1),
+                )
+            }
         }
-        return buildUnclaimedSesameFeedbackItems(jo)
     }
 
     private suspend fun collectSesameFeedbackItems(
-        items: List<SesameFeedbackItem>,
+        feedbackItems: List<SesameFeedbackItem>,
         preferOneClick: Boolean,
         logPrefix: String,
-    ): Int {
+    ): Int? {
+        val blacklist = TaskBlacklist.getBlacklist(getName())
+        val items = feedbackItems.filterNot { "feedback:${it.creditFeedbackId}" in blacklist }
         if (items.isEmpty()) {
             return 0
         }
@@ -1966,76 +1831,94 @@ class AntSesameCredit : ModelTask() {
             }
         }
         var collectedCount = 0
+        val identity = io.github.aoguai.sesameag.hook.rpc.RpcDailyCircuit.captureIdentity()
 
-        if (preferOneClick) {
-            val collectAllResp = AntSesameCreditRpcCall.collectAllCreditFeedback()
-            val collectAllJo = JSONObject(collectAllResp)
-            if (AntSesameCreditRpcCall.isRpcSuccess(collectAllResp)) {
-                items.forEach { item ->
-                    Log.sesame("$logPrefix[" + item.title + "]#" + item.potentialSize + "粒(一键收取)")
+        if (preferOneClick && items.size == feedbackItems.size &&
+            "collectAllCreditFeedback" !in blacklist && blacklist.none { it.startsWith("feedback:") }
+        ) {
+            val raw = try {
+                AntSesameCreditRpcCall.collectAllCreditFeedback()
+            } catch (t: Exception) {
+                if (t is CancellationException || t is InterruptedException) throw t
+                Log.printStackTrace(TAG, "$logPrefix[一键收取调用异常]", t)
+                ""
+            }
+            if (ApplicationHookConstants.isOffline() || Thread.currentThread().isInterrupted) return 0
+            val received = AntSesameCreditRpcCall.isRpcSuccess(raw)
+            val remaining = queryExplicitUnclaimedSesameFeedback("$logPrefix[一键领取后回查]")
+                ?.let(::buildUnclaimedSesameFeedbackItems)
+            if (ApplicationHookConstants.isOffline() || Thread.currentThread().isInterrupted) return 0
+            val confirmed = if (remaining == null) emptyList() else items.filter { item ->
+                remaining.none { it.creditFeedbackId == item.creditFeedbackId }
+            }
+            if (!received || remaining == null || confirmed.size != items.size) {
+                Log.error(
+                    TAG,
+                    "$logPrefix[一键收取失败] taskId=collectAllCreditFeedback received=$received " +
+                        "confirmed=${confirmed.size}/${items.size} querySucceeded=${remaining != null} raw=$raw",
+                )
+                AccountSessionCoordinator.withCurrentSession(identity) {
+                    TaskBlacklist.addToBlacklist(getName(), "collectAllCreditFeedback", "一键收取芝麻粒")
+                }
+                TaskExecutionReport.current()?.recordFlow(
+                    TaskFlowExecutionState(), getName(), "芝麻粒一键收取",
+                    TaskFlowRunResult(false, confirmed.isNotEmpty(), false, 1, actionAttempted = true, failureCount = 1),
+                )
+            }
+            if (remaining == null) return null
+            if (received) {
+                confirmed.forEach { item ->
+                    Log.sesame("$logPrefix[${item.title}]#${item.potentialSize}粒(一键收取后已回查)")
                     collectedCount++
                 }
-                return collectedCount
-            } else {
-                val errorCode =
-                    collectAllJo.optString(
-                        "errorCode",
-                        collectAllJo.optString("resultCode", ""),
-                    )
-                val msg = buildSesameRpcMessage(collectAllJo, collectAllResp)
-                if (isTransientSesameTaskError(errorCode)) {
-                    Log.error(
-                        TAG,
-                        "$logPrefix[一键收取失败，回查后收取剩余反馈] classification=RETRYABLE_RPC decision=RETRY_LATER " +
-                            "module=$logPrefix taskId=collectAllCreditFeedback taskName=一键收取芝麻粒 " +
-                            "action=collectAllCreditFeedback rpc=AntSesameCreditRpcCall.collectAllCreditFeedback " +
-                            "code=${errorCode.ifEmpty { "UNKNOWN" }} msg=$msg raw=$collectAllJo",
-                    )
-                } else {
-                    Log.error(
-                        "$TAG.collectSesameFeedbackItems",
-                        "$logPrefix[一键收取响应失败，回查后收取剩余反馈] classification=UNKNOWN_NEEDS_REVIEW decision=LOG_ONLY " +
-                            "module=$logPrefix taskId=collectAllCreditFeedback taskName=一键收取芝麻粒 " +
-                            "action=collectAllCreditFeedback rpc=AntSesameCreditRpcCall.collectAllCreditFeedback " +
-                            "code=${errorCode.ifEmpty { "UNKNOWN" }} msg=$msg raw=$collectAllJo",
-                    )
-                }
             }
-            val remaining = queryExplicitUnclaimedSesameFeedbackItems("$logPrefix[一键领取后回查]") ?: return 0
-            return collectSesameFeedbackItems(
+            // 批量失败不重放整批；仅对当前仍待领取的反馈执行原单项领取。
+            val remainingCollected = collectSesameFeedbackItems(
                 remaining.filter { remainingItem -> items.any { it.creditFeedbackId == remainingItem.creditFeedbackId } },
                 preferOneClick = false,
                 logPrefix = logPrefix,
-            )
+            ) ?: return null
+            return collectedCount + remainingCollected
         }
 
+        var currentItems = items
         for (item in items) {
+            if (ApplicationHookConstants.isOffline() || Thread.currentThread().isInterrupted) return collectedCount
+            if (currentItems.none { it.creditFeedbackId == item.creditFeedbackId }) continue
             if (item.creditFeedbackId.isEmpty()) {
                 continue
             }
-            val collectResp = AntSesameCreditRpcCall.collectCreditFeedback(item.creditFeedbackId)
-            val collectJo = JSONObject(collectResp)
-            if (!ResChecker.checkRes(TAG, collectJo)) {
-                val itemErrorCode = collectJo.optString("errorCode", collectJo.optString("resultCode", ""))
-                val itemMsg = buildSesameRpcMessage(collectJo, collectResp)
-                val itemClassification =
-                    if (isTransientSesameTaskError(itemErrorCode)) {
-                        "RETRYABLE_RPC"
-                    } else {
-                        "UNKNOWN_NEEDS_REVIEW"
-                    }
-                val itemDecision = if (itemClassification == "RETRYABLE_RPC") "RETRY_LATER" else "LOG_ONLY"
-                Log.error(
-                    "$TAG.collectSesameFeedbackItems",
-                    "$logPrefix[${item.title}] classification=$itemClassification decision=$itemDecision " +
-                        "module=$logPrefix taskId=${item.creditFeedbackId} taskName=${item.title} " +
-                        "action=collectCreditFeedback rpc=AntSesameCreditRpcCall.collectCreditFeedback " +
-                        "code=${itemErrorCode.ifEmpty { "UNKNOWN" }} msg=$itemMsg raw=$collectJo",
-                )
-                continue
+            val raw = try {
+                AntSesameCreditRpcCall.collectCreditFeedback(item.creditFeedbackId)
+            } catch (t: Exception) {
+                if (t is CancellationException || t is InterruptedException) throw t
+                Log.printStackTrace(TAG, "$logPrefix[${item.title}]领取调用异常 taskId=${item.creditFeedbackId}", t)
+                ""
             }
-            Log.sesame("$logPrefix[" + item.title + "]#" + item.potentialSize + "粒")
-            collectedCount++
+            if (ApplicationHookConstants.isOffline() || Thread.currentThread().isInterrupted) return collectedCount
+            val received = AntSesameCreditRpcCall.isRpcSuccess(raw)
+            val remaining = queryExplicitUnclaimedSesameFeedback("$logPrefix[单项领取后回查]")
+                ?.let(::buildUnclaimedSesameFeedbackItems)
+            if (ApplicationHookConstants.isOffline() || Thread.currentThread().isInterrupted) return collectedCount
+            val confirmed = remaining?.none { it.creditFeedbackId == item.creditFeedbackId } == true
+            if (!received || !confirmed) {
+                Log.error(
+                    TAG,
+                    "$logPrefix[${item.title}]领取失败 taskId=${item.creditFeedbackId} " +
+                        "received=$received confirmed=$confirmed raw=$raw",
+                )
+                AccountSessionCoordinator.withCurrentSession(identity) {
+                    TaskBlacklist.addToBlacklist(getName(), "feedback:${item.creditFeedbackId}", item.title)
+                }
+                TaskExecutionReport.current()?.recordFlow(
+                    TaskFlowExecutionState(), getName(), "芝麻粒单项收取",
+                    TaskFlowRunResult(false, confirmed, false, 1, actionAttempted = true, failureCount = 1),
+                )
+            } else {
+                Log.sesame("$logPrefix[${item.title}]#${item.potentialSize}粒")
+                collectedCount++
+            }
+            currentItems = remaining ?: return null
         }
         return collectedCount
     }
@@ -2052,12 +1935,14 @@ class AntSesameCredit : ModelTask() {
         try {
             if (!antFarm.confirmZhimaPigeonDeparture()) return false
             val pendingFeedbackId = antFarm.pendingZhimaPigeonRewardFeedbackId() ?: return false
-            val unclaimedItems = queryExplicitUnclaimedSesameFeedbackItems("芝麻大表鸽🤖") ?: return false
+            val blacklist = TaskBlacklist.getBlacklist(getName())
+            if ("feedback:$pendingFeedbackId" in blacklist) return false
+            val unclaimedItems = queryExplicitUnclaimedSesameFeedback("芝麻大表鸽🤖")
+                ?.let(::buildUnclaimedSesameFeedbackItems) ?: return false
             val target = if (pendingFeedbackId.isBlank()) {
                 unclaimedItems.firstOrNull { it.cateId == zhimaPigeonFeedbackCategory }
                     ?: run {
-                        scheduleSesameConfirmation(JSONObject().put("pigeon", true))
-                        Log.sesame("芝麻大表鸽🤖[奖励反馈尚未生成，保留待收状态并等待持久回查]")
+                        Log.sesame("芝麻大表鸽🤖[奖励反馈尚未生成，保留待收记录]")
                         return false
                     }
             } else {
@@ -2081,39 +1966,41 @@ class AntSesameCredit : ModelTask() {
                 return false
             }
 
-            val collectResponse = AntSesameCreditRpcCall.collectCreditFeedback(creditFeedbackId)
-            val collectJo = JSONObject(collectResponse)
-            val collectSucceeded = AntSesameCreditRpcCall.isRpcSuccess(collectResponse)
-            if (!collectSucceeded) {
-                val errorCode = collectJo.optString("errorCode", collectJo.optString("resultCode", ""))
-                val message = buildSesameRpcMessage(collectJo, collectResponse)
-                val classification = if (isTransientSesameTaskError(errorCode)) {
-                    "RETRYABLE_RPC"
-                } else {
-                    "UNKNOWN_NEEDS_REVIEW"
+            val key = "feedback:$creditFeedbackId"
+            if (key in blacklist) return false
+            val identity = io.github.aoguai.sesameag.hook.rpc.RpcDailyCircuit.captureIdentity()
+            val raw = try {
+                AntSesameCreditRpcCall.collectCreditFeedback(creditFeedbackId)
+            } catch (t: Exception) {
+                if (t is CancellationException || t is InterruptedException) throw t
+                Log.printStackTrace(TAG, "芝麻大表鸽🤖[领取反馈调用失败] taskId=$creditFeedbackId", t)
+                ""
+            }
+            if (ApplicationHookConstants.isOffline()) return false
+            val received = raw.isNotBlank() && AntSesameCreditRpcCall.isRpcSuccess(raw)
+            val remainingItems = queryExplicitUnclaimedSesameFeedback("芝麻大表鸽🤖[复核]")
+                ?.let(::buildUnclaimedSesameFeedbackItems)
+            val confirmed = remainingItems?.none { it.creditFeedbackId == creditFeedbackId } == true
+            if (!received || !confirmed) {
+                Log.error(TAG, "芝麻大表鸽🤖[领取失败或本轮回查未确认] taskId=$creditFeedbackId raw=$raw")
+                AccountSessionCoordinator.withCurrentSession(identity) {
+                    TaskBlacklist.addToBlacklist(getName(), key, target.title)
                 }
-                val decision = if (classification == "RETRYABLE_RPC") "RETRY_LATER" else "LOG_ONLY"
-                Log.error(
-                    TAG,
-                    "芝麻大表鸽🤖[领取反馈失败] classification=$classification decision=$decision " +
-                        "taskId=$creditFeedbackId action=collectCreditFeedback " +
-                        "rpc=AntSesameCreditRpcCall.collectCreditFeedback " +
-                        "code=${errorCode.ifEmpty { "UNKNOWN" }} msg=$message raw=$collectJo",
+                TaskExecutionReport.current()?.recordFlow(
+                    TaskFlowExecutionState(), getName(), "芝麻大表鸽领取",
+                    io.github.aoguai.sesameag.task.common.TaskFlowRunResult(false, confirmed, false, 1, failureCount = 1),
                 )
             }
-
-            val remainingItems = queryExplicitUnclaimedSesameFeedbackItems("芝麻大表鸽🤖[复核]") ?: return false
-            if (remainingItems.none { it.creditFeedbackId == creditFeedbackId }) {
+            if (confirmed) {
                 if (antFarm.confirmZhimaPigeonRewardReceipt()) {
                     Log.sesame("芝麻大表鸽🤖[${target.potentialSize}粒芝麻粒已收取]")
                     return true
                 } else {
                     Log.error(TAG, "芝麻大表鸽🤖[反馈已收取但完成态写入失败，保留后续复核]")
                 }
-            } else {
-                Log.error(TAG, "芝麻大表鸽🤖[领取后反馈仍未消失，保留后续自然重试]")
             }
         } catch (t: Throwable) {
+            if (t is CancellationException || t is InterruptedException) throw t
             Log.printStackTrace("$TAG.collectPendingZhimaPigeonReward", t)
         }
         return false
@@ -2130,60 +2017,46 @@ class AntSesameCredit : ModelTask() {
                 return@run
             }
             var flagState = Status.TodayFlagState.RETRY_LATER
-            if (ApplicationHookConstants.isOffline()) {
-                return@run
-            }
+            if (ApplicationHookConstants.isOffline() || Thread.currentThread().isInterrupted) return@run
             try {
-                var items = queryExplicitUnclaimedSesameFeedbackItems("芝麻信用💳") ?: return@run
                 val attemptedIds = mutableSetOf<String>()
                 var preferOneClick = withOneClick
-                var treasureBoxConfirmed = true
+                val box = handlePointTreasureBox("芝麻信用💳")
+                if (ApplicationHookConstants.isOffline() || Thread.currentThread().isInterrupted) return@run
+                var response = queryExplicitUnclaimedSesameFeedback("芝麻信用💳") ?: return@run
+                var items = buildUnclaimedSesameFeedbackItems(response)
                 while (!ApplicationHookConstants.isOffline() && !Thread.currentThread().isInterrupted) {
-                    val actionable = items.filter {
-                        it.creditFeedbackId.isNotBlank() && it.creditFeedbackId !in attemptedIds
-                    }
-                    if (items.isNotEmpty() && actionable.isEmpty()) {
-                        Log.sesame("芝麻信用💳[仍有${items.size}项未收取，暂无新进度] 保留待确认，不重复提交")
-                        return@run
-                    }
-                    if (actionable.isNotEmpty()) {
-                        attemptedIds.addAll(actionable.map { it.creditFeedbackId })
-                        collectSesameFeedbackItems(actionable, preferOneClick, "芝麻信用💳")
-                        preferOneClick = false
-                    }
-                    if (ApplicationHookConstants.isOffline()) return@run
-                    // 宝箱可生成新反馈；未确认的开启请求本次不重复提交，但仍收取新出现的反馈。
-                    if (treasureBoxConfirmed) {
-                        val box = handlePointTreasureBox("芝麻信用💳")
-                        treasureBoxConfirmed = box != null
-                        if (box?.opt("hasBox") == false) {
-                            flagState = Status.TodayFlagState.NO_MORE_ACTION_TODAY
-                        } else {
-                            // HANGING 是冷却中的下一次奖励，不能据此结束全天领取。
-                            flagState = Status.TodayFlagState.RETRY_LATER
-                        }
-                    }
-                    if (ApplicationHookConstants.isOffline()) return@run
-                    val refreshedItems = queryExplicitUnclaimedSesameFeedbackItems("芝麻信用💳[复核]")
-                    if (refreshedItems == null) {
-                        flagState = Status.TodayFlagState.RETRY_LATER
-                        return@run
-                    }
-                    items = refreshedItems
                     if (items.isEmpty()) {
-                        if (treasureBoxConfirmed) {
-                            if (flagState != Status.TodayFlagState.RETRY_LATER && attemptedIds.isNotEmpty()) {
-                                flagState = Status.TodayFlagState.DONE
-                            }
-                        } else {
+                        if (box?.opt("hasBox") == false) {
+                            flagState = if (attemptedIds.isEmpty()) Status.TodayFlagState.NO_MORE_ACTION_TODAY
+                                else Status.TodayFlagState.DONE
+                        } else if (box == null) {
                             Log.sesame("芝麻信用💳[积分宝箱状态未确认] 保留后续重试机会")
                         }
                         return@run
                     }
-                    flagState = Status.TodayFlagState.RETRY_LATER
+                    val blacklist = TaskBlacklist.getBlacklist(getName())
+                    val actionable = items.filter {
+                        it.creditFeedbackId.isNotBlank() && it.creditFeedbackId !in attemptedIds &&
+                            "feedback:${it.creditFeedbackId}" !in blacklist
+                    }
+                    if (actionable.isEmpty()) {
+                        Log.sesame("芝麻信用💳[仍有${items.size}项未收取，当前无可执行项，结束本轮]")
+                        return@run
+                    }
+                    attemptedIds.addAll(actionable.map { it.creditFeedbackId })
+                    collectSesameFeedbackItems(
+                        actionable, preferOneClick && response.opt("showCollectAll") == true, "芝麻信用💳",
+                    ) ?: return@run
+                    preferOneClick = false
+                    if (ApplicationHookConstants.isOffline() || Thread.currentThread().isInterrupted) return@run
+                    response = queryExplicitUnclaimedSesameFeedback("芝麻信用💳[复核]") ?: return@run
+                    items = buildUnclaimedSesameFeedbackItems(response)
                 }
             } catch (t: Throwable) {
+                if (t is CancellationException || t is InterruptedException) throw t
                 flagState = Status.TodayFlagState.RETRY_LATER
+                TaskExecutionReport.current()?.recordException()
                 Log.printStackTrace("$TAG.collectSesame", t)
             } finally {
                 // 连续产出和后续时段尚未结束时，当前反馈收空不代表全天领取完成。
@@ -2195,7 +2068,7 @@ class AntSesameCredit : ModelTask() {
                     (sesameAlchemy?.value == true &&
                         (!hasFlagToday(StatusFlags.FLAG_SESAME_ALCHEMY_TASKS_DONE) ||
                             !hasFlagToday(StatusFlags.FLAG_SESAME_ALCHEMY_NEXT_DAY_AWARD))) ||
-                    farm?.hasPendingZhimaPigeonRewardReceipt() == true || farm?.isZhimaPigeonConfigured() == true
+                    farm?.hasPendingZhimaPigeonRewardReceipt() == true
                 ) {
                     flagState = Status.TodayFlagState.RETRY_LATER
                 }
@@ -2364,10 +2237,12 @@ class AntSesameCredit : ModelTask() {
 
     internal suspend fun finishSesameAlchemy(executionState: TaskFlowExecutionState) {
         if (ApplicationHookConstants.isOffline()) return
-        var pending = queryExplicitUnclaimedSesameFeedbackItems("芝麻炼金[消费前反馈回查]") ?: return
+        var pending = queryExplicitUnclaimedSesameFeedback("芝麻炼金[消费前反馈回查]")
+            ?.let(::buildUnclaimedSesameFeedbackItems) ?: return
         if (pending.isNotEmpty()) {
             collectSesame(collectSesameWithOneClick?.value == true || sesameAlchemy?.value == true)
-            pending = queryExplicitUnclaimedSesameFeedbackItems("芝麻炼金[消费前领取确认]") ?: return
+            pending = queryExplicitUnclaimedSesameFeedback("芝麻炼金[消费前领取确认]")
+                ?.let(::buildUnclaimedSesameFeedbackItems) ?: return
         }
         // 大表鸽反馈由独立待收链确认，不阻塞使用首页已确认的余额和次数。
         if (pending.any { it.cateId != zhimaPigeonFeedbackCategory }) {
@@ -2378,12 +2253,15 @@ class AntSesameCredit : ModelTask() {
         while (!ApplicationHookConstants.isOffline() && !Thread.currentThread().isInterrupted) {
             restoreSesameAlchemyStaminaIfNeeded(executionState)
             processAlchemyTaskListsUntilStable(executionState)
-            runSesameAlchemyCycles(withdrawState, allowPaidAlchemy = sesameAlchemyConsume?.value == true)
-            if (withdrawState.confirmationPending || ApplicationHookConstants.isOffline() ||
+            runSesameAlchemyCycles(withdrawState, executionState, allowPaidAlchemy = sesameAlchemyConsume?.value == true)
+            if (ApplicationHookConstants.isOffline() || Thread.currentThread().isInterrupted) return
+            val tasksComplete = processAlchemyTaskListsUntilStable(executionState)
+            if (withdrawState.confirmationPending ||
                 UserDataStoreManager.getCurrentInstance()?.get("sesame_alchemy_consumption_pending", String::class.java) != null
             ) return
-            val tasksComplete = processAlchemyTaskListsUntilStable(executionState)
-            if (restoreSesameAlchemyStaminaIfNeeded(executionState)) continue
+            if ("alchemyExecute" !in TaskBlacklist.getBlacklist(getName()) &&
+                restoreSesameAlchemyStaminaIfNeeded(executionState)
+            ) continue
             if (tasksComplete) setFlagToday(StatusFlags.FLAG_SESAME_ALCHEMY_TASKS_DONE)
             break
         }
@@ -2391,12 +2269,23 @@ class AntSesameCredit : ModelTask() {
 
     private suspend fun runSesameAlchemyCycles(
         withdrawState: SesameAlchemyWithdrawState,
+        executionState: TaskFlowExecutionState,
         allowPaidAlchemy: Boolean,
     ) {
+        if ("alchemyExecute" in TaskBlacklist.getBlacklist(getName())) return
         val store = UserDataStoreManager.getCurrentInstance() ?: return
         val epoch = AccountSessionCoordinator.currentSessionEpoch()
+        val identity = io.github.aoguai.sesameag.hook.rpc.RpcDailyCircuit.captureIdentity()
         val pendingKey = "sesame_alchemy_consumption_pending"
-        var data = querySesameAlchemyHomeData("炼金首页查询") ?: return
+        var data = querySesameAlchemyHomeData("炼金首页查询") ?: run {
+            if (!ApplicationHookConstants.isOffline() && !Thread.currentThread().isInterrupted) {
+                TaskExecutionReport.current()?.recordFlow(
+                    executionState, getName(), "炼金首页查询",
+                    TaskFlowRunResult(false, false, false, 1, actionAttempted = true, failureCount = 1),
+                )
+            }
+            return
+        }
         if (AccountSessionCoordinator.checkCurrentSession(store.uid, epoch) !is AccountSessionCheck.Current) return
         val previous = store.get(pendingKey, String::class.java)?.let(::JSONObject)
         if (previous != null) {
@@ -2433,61 +2322,87 @@ class AntSesameCredit : ModelTask() {
             val cost = data.optInt("alchemyCostZml", -1)
             val zmlBalance = data.optLong("zmlBalance", -1L)
             val capReached = data.optBoolean("capReached", false)
-            if ((sesameAlchemyIgnoreStamina?.value != true &&
+            if ((data.optString("staminaVersion") != "V2" && sesameAlchemyIgnoreStamina?.value != true &&
                     (data.optBoolean("staminaExhausted", false) || data.optInt("staminaCurrent", -1) == 0)) ||
                 (freeAlchemyNum <= 0 && (!allowPaidAlchemy || capReached ||
                     data.optInt("alchemyNum", 0) <= 0 || cost <= 0 || zmlBalance < cost))
             ) break
             if (AccountSessionCoordinator.checkCurrentSession(store.uid, epoch) !is AccountSessionCheck.Current) return
             store.put(pendingKey, data.toString(), requirePersistence = true)
-            val alchemyRes = AntSesameCreditRpcCall.Zmxy.Alchemy.alchemyExecute()
-            val alchemyJo = parseSesameAlchemyRpcResponse(alchemyRes, "炼金") ?: run {
-                withdrawState.confirmationPending = true
-                return
-            }
-            if (AccountSessionCoordinator.checkCurrentSession(store.uid, epoch) !is AccountSessionCheck.Current) return
-            if (isSesameAlchemyCapReached(alchemyJo) && freeAlchemyNum <= 0) {
+            var failed = true
+            try {
+                val alchemyRes = AntSesameCreditRpcCall.Zmxy.Alchemy.alchemyExecute()
+                val alchemyJo = parseSesameAlchemyRpcResponse(alchemyRes, "炼金") ?: run {
+                    withdrawState.confirmationPending = true
+                    return
+                }
+                if (AccountSessionCoordinator.checkCurrentSession(store.uid, epoch) !is AccountSessionCheck.Current) return
+                if (isSesameAlchemyCapReached(alchemyJo) && freeAlchemyNum <= 0) {
+                    store.remove(pendingKey)
+                    failed = false
+                    break
+                }
+                val alData = alchemyJo.optJSONObject("data")
+                if (!ResChecker.checkRes(TAG, alchemyJo) || alData?.opt("success") == false) {
+                    val rejected = !alchemyJo.has("rpcMethod") &&
+                        (alchemyJo.opt("success") == false || alData?.opt("success") == false)
+                    if (rejected) store.remove(pendingKey)
+                    else withdrawState.confirmationPending = true
+                    Log.error(TAG, "芝麻炼金失败 failErrorCode=${alData?.optString("failErrorCode").orEmpty()} raw=$alchemyRes")
+                    return
+                }
+                if (alData == null) {
+                    withdrawState.confirmationPending = true
+                    Log.error(TAG, "芝麻炼金失败，响应缺少data raw=$alchemyRes")
+                    return
+                }
+                val refreshed = querySesameAlchemyHomeData("炼金后首页回查") ?: run {
+                    withdrawState.confirmationPending = true
+                    return
+                }
+                if (AccountSessionCoordinator.checkCurrentSession(store.uid, epoch) !is AccountSessionCheck.Current) return
+                val progressed = listOf("freeAlchemyNum", "alchemyNum", "finishAlchemyCount", "goldBalance")
+                    .any { data.has(it) && refreshed.has(it) && data.optLong(it) != refreshed.optLong(it) }
+                if (!progressed) {
+                    withdrawState.confirmationPending = true
+                    val stateFields = listOf(
+                        "freeAlchemyNum", "alchemyNum", "finishAlchemyCount", "goldBalance", "zmlBalance",
+                        "staminaCurrent", "staminaStatus", "staminaExhausted",
+                    )
+                    Log.error(
+                        TAG,
+                        "芝麻炼金失败，请求已接受但首页未确认推进 raw=$alchemyRes " +
+                            "before=${stateFields.associateWith { data.opt(it) }} " +
+                            "after=${stateFields.associateWith { refreshed.opt(it) }}",
+                    )
+                    return
+                }
                 store.remove(pendingKey)
-                break
-            }
-            val alData = alchemyJo.optJSONObject("data")
-            if (!ResChecker.checkRes(TAG, alchemyJo) || alData?.opt("success") == false) {
-                val rejected = !alchemyJo.has("rpcMethod") &&
-                    (alchemyJo.opt("success") == false || alData?.opt("success") == false)
-                if (rejected) store.remove(pendingKey)
-                else withdrawState.confirmationPending = true
-                Log.error(TAG, "芝麻炼金失败 failErrorCode=${alData?.optString("failErrorCode").orEmpty()} raw=$alchemyRes")
-                return
-            }
-            if (alData == null) {
+                failed = false
+                Log.sesame("芝麻炼金[炼金已确认]#获得${alData.optInt("goldNum")}金 | 芝麻粒余额${refreshed.optLong("zmlBalance", -1L)}")
+                data = refreshed
+                levelFull = alData.optBoolean("levelFull", false) || data.optBoolean("levelFull", false)
+            } catch (t: Exception) {
+                if (t is CancellationException || t is InterruptedException) {
+                    failed = false
+                    throw t
+                }
                 withdrawState.confirmationPending = true
+                Log.printStackTrace(TAG, "芝麻炼金调用或回查异常，停止本次消费", t)
                 return
+            } finally {
+                if (failed && !ApplicationHookConstants.isOffline() && !Thread.currentThread().isInterrupted &&
+                    AccountSessionCoordinator.checkCurrentSession(store.uid, epoch) is AccountSessionCheck.Current
+                ) {
+                    AccountSessionCoordinator.withCurrentSession(identity) {
+                        TaskBlacklist.addToBlacklist(getName(), "alchemyExecute", "芝麻炼金")
+                    }
+                    TaskExecutionReport.current()?.recordFlow(
+                        executionState, getName(), "芝麻炼金",
+                        TaskFlowRunResult(false, false, false, 1, actionAttempted = true, failureCount = 1),
+                    )
+                }
             }
-            val refreshed = querySesameAlchemyHomeData("炼金后首页回查") ?: run {
-                withdrawState.confirmationPending = true
-                return
-            }
-            if (AccountSessionCoordinator.checkCurrentSession(store.uid, epoch) !is AccountSessionCheck.Current) return
-            val progressed = listOf("freeAlchemyNum", "alchemyNum", "finishAlchemyCount", "goldBalance")
-                .any { data.has(it) && refreshed.has(it) && data.optLong(it) != refreshed.optLong(it) }
-            if (!progressed) {
-                withdrawState.confirmationPending = true
-                val stateFields = listOf(
-                    "freeAlchemyNum", "alchemyNum", "finishAlchemyCount", "goldBalance", "zmlBalance",
-                    "staminaCurrent", "staminaStatus", "staminaExhausted",
-                )
-                Log.error(
-                    TAG,
-                    "芝麻炼金请求已接受，但首页未确认推进 raw=$alchemyRes " +
-                        "before=${stateFields.associateWith { data.opt(it) }} " +
-                        "after=${stateFields.associateWith { refreshed.opt(it) }}",
-                )
-                return
-            }
-            store.remove(pendingKey)
-            Log.sesame("芝麻炼金[炼金已确认]#获得${alData.optInt("goldNum")}金 | 芝麻粒余额${refreshed.optLong("zmlBalance", -1L)}")
-            data = refreshed
-            levelFull = alData.optBoolean("levelFull", false) || data.optBoolean("levelFull", false)
         }
     }
 
@@ -2608,11 +2523,14 @@ class AntSesameCredit : ModelTask() {
         if ((!freeAlchemyAvailable && !paidAlchemyAvailable) || homeData.optBoolean("levelFull", false) ||
             homeData.optString("roundStatus") == "WAIT_WITHDRAW"
         ) return false
-        val staminaDepleted = homeData.optBoolean("staminaExhausted", false) ||
-            homeData.optInt("staminaCurrent", -1) == 0
+        val staminaDepleted = if (homeData.optString("staminaVersion") == "V2") {
+            homeData.optString("staminaStatus") == "EXHAUSTED" || homeData.optBoolean("staminaExhausted", false)
+        } else {
+            homeData.optBoolean("staminaExhausted", false) || homeData.optInt("staminaCurrent", -1) == 0
+        }
         if (!staminaDepleted) return false
 
-        Log.sesame("芝麻炼金⚗️[精力已耗尽，检查精力瓶]")
+        Log.sesame("芝麻炼金⚗️[进入精力恢复流程，检查精力瓶]")
         when (useAvailableSesameAlchemyBottle()) {
             SesameAlchemyBottleUseResult.USED -> return true
             SesameAlchemyBottleUseResult.FAILED -> return false
@@ -2726,13 +2644,12 @@ class AntSesameCredit : ModelTask() {
             Log.sesame("芝麻炼金⚗️[任务动作已提交]#本次${adapter.submittedActionCount}项，完成状态以列表回查为准")
         }
         return result.completed && !result.stopped && !result.interrupted && !adapter.interrupted &&
-            adapter.confirmedTaskCount > 0
+            (adapter.isFlowHandledToday() || adapter.confirmedTaskCount != null)
     }
 
     private inner class SesameAlchemyTaskFlowAdapter(private val changeRewardType: String = "") : TaskFlowAdapter {
         override val moduleName: String = sesameAlchemyTaskBlacklistModule
         override val flowName: String = "芝麻炼金任务"
-        override val nonRetryableActionFlagPrefix: String = StatusFlags.FLAG_SESAME_ALCHEMY_ACTION_STOP_PREFIX
         override val continueCurrentRoundOnRetryableFailure: Boolean = true
 
         override fun isSameTask(previous: TaskFlowItem, current: TaskFlowItem): Boolean {
@@ -2743,29 +2660,13 @@ class AntSesameCredit : ModelTask() {
 
         override fun isPendingActionResolved(
             item: TaskFlowItem, action: TaskFlowAction, response: JSONObject, items: List<TaskFlowItem>,
-        ): Boolean {
-            if (item.type == "AD_TASK") return false
-            val recordId = item.raw?.optString("recordId").orEmpty()
-            if (recordId.isBlank()) return false
-            val matching = items.filter { it.id == item.id && it.type == item.type }
-            if (matching.any { it.raw?.optString("recordId") == recordId && mapPhase(it) == TaskFlowPhase.TERMINAL }) {
-                UserDataStoreManager.getInstance(UserMap.currentUid)?.remove("sesame_user_growth_pending:$recordId")
-                return true
-            }
-            if (matching.any { it.raw?.optString("recordId") == recordId }) return false
-            // 列表不再呈现旧记录时，沿现有最近操作记录接口确认真实完成。
-            if (action != TaskFlowAction.COMPLETE) return false
-            val confirmation = confirmSesameLifeRecord("alchemy", item.id, recordId)
-            if (confirmation.failureType != null) {
-                logError("生活记录回查失败 recordId=$recordId code=${confirmation.code} raw=${confirmation.raw}")
-            }
-            return confirmation.success
-        }
+            submitted: JSONObject?,
+        ): Boolean? = resolveSesameRecordConfirmation("alchemy", item, action, items, submitted)
 
         override fun isFlowHandledToday(): Boolean =
             changeRewardType.isBlank() && Status.hasFlagToday(StatusFlags.FLAG_SESAME_ALCHEMY_TASKS_DONE)
 
-        var confirmedTaskCount: Int = 0
+        var confirmedTaskCount: Int? = null
             private set
 
         override fun onAllTasksDone(snapshot: TaskFlowSnapshot) {
@@ -3013,7 +2914,7 @@ class AntSesameCredit : ModelTask() {
             decision: TaskFlowDecision,
         ) {
             if (result.stopCurrentRound ||
-                (decision == TaskFlowDecision.RETRY_LATER && !result.continueCurrentRoundOnFailure)
+                (result.failureType == TaskRpcFailureType.RETRYABLE_RPC && !result.continueCurrentRoundOnFailure)
             ) {
                 interrupted = true
             }
@@ -3138,10 +3039,9 @@ class AntSesameCredit : ModelTask() {
             }
             if (antFarm.hasPendingZhimaPigeonRewardReceipt()) {
                 antFarm.runNpcTaskFlow()
-                scheduleSesameConfirmation(JSONObject().put("pigeon", true))
                 return TaskFlowActionResult.defer(
-                    DeferredReason.STATE_CONFIRMATION,
-                    message = "当前大表鸽奖励仍待收取，暂缓新的反馈与雇佣",
+                    DeferredReason.CHILD_TASK_PENDING,
+                    message = "当前大表鸽奖励仍待收取，本轮跳过新的反馈与雇佣",
                     rpc = "AntFarm.activateZhimaPigeonFromAlchemyTask",
                     detail = alchemyActionDetail(item, "delegatePigeon"),
                 )
@@ -3445,7 +3345,6 @@ class AntSesameCredit : ModelTask() {
     private inner class ZhimaTreeTaskFlowAdapter : TaskFlowAdapter {
         override val moduleName: String = sesameCreditTaskBlacklistModule
         override val flowName: String = "芝麻树任务"
-        override val nonRetryableActionFlagPrefix: String = StatusFlags.FLAG_SESAME_ZHIMA_TREE_ACTION_STOP_PREFIX
 
         private val sourceResults = JSONObject()
         private val handledAdBizIds = mutableSetOf<String>()
@@ -5002,7 +4901,6 @@ class AntSesameCredit : ModelTask() {
     }
 
     companion object {
-        const val PERSISTENT_CONFIRMATION_KIND = "sesame_confirmation"
         private val TAG: String = AntSesameCredit::class.java.simpleName
         private val RENT_PUSH_MODEL_SNAPSHOT_SOURCES =
             setOf(
@@ -5017,13 +4915,11 @@ class AntSesameCredit : ModelTask() {
         @SuppressLint("DefaultLocale")
         fun queryAndCollect() {
             try {
-                var collectedRounds = 0
-                var emptyRetryBeforeCollect = 0
+                val attemptedIds = mutableSetOf<String>()
                 for (attempt in 0..2) {
+                    if (ApplicationHookConstants.isOffline() || Thread.currentThread().isInterrupted) return
                     val queryResp = AntSesameCreditRpcCall.Zmxy.queryScoreProgress()
-                    if (queryResp.isEmpty()) {
-                        return
-                    }
+                    if (queryResp.isEmpty()) return
 
                     val json = JSONObject(queryResp)
                     if (!ResChecker.checkRes(TAG, json)) {
@@ -5034,13 +4930,14 @@ class AntSesameCredit : ModelTask() {
                         return
                     }
 
-                    val newProgressBallIds = copyNewProgressBallIds(json)
+                    val source = json.optJSONArray("newProgressBallIds")
+                    val newProgressBallIds = JSONArray()
+                    for (index in 0 until (source?.length() ?: 0)) {
+                        val id = source?.optString(index).orEmpty()
+                        if (id.isNotBlank() && attemptedIds.add(id)) newProgressBallIds.put(id)
+                    }
                     if (newProgressBallIds.length() == 0) {
-                        if (collectedRounds == 0 && emptyRetryBeforeCollect == 0) {
-                            emptyRetryBeforeCollect++
-                            continue
-                        }
-                        if (collectedRounds == 0) {
+                        if (attemptedIds.isEmpty()) {
                             Log.sesame("攒芝麻分🎁[进度锦囊暂无可领取进度球]")
                         }
                         return
@@ -5053,12 +4950,8 @@ class AntSesameCredit : ModelTask() {
                         return
                     }
                     if (!ResChecker.checkRes(TAG, collectJson)) {
-                        if (attempt == 0) {
-                            Log.sesame("攒芝麻分🎁[领取进度球失败，准备重试]")
-                            continue
-                        }
                         Log.error(TAG, "攒芝麻分🎁[领取失败]#$collectResp")
-                        return
+                        continue
                     }
 
                     Log.sesame(
@@ -5068,23 +4961,10 @@ class AntSesameCredit : ModelTask() {
                             collectJson.optDouble("currentAccelerateValue", -1.0),
                         ),
                     )
-                    collectedRounds++
                 }
             } catch (e: Exception) {
                 Log.printStackTrace(TAG, "queryAndCollect err", e)
             }
-        }
-
-        private fun copyNewProgressBallIds(json: JSONObject): JSONArray {
-            val ids = JSONArray()
-            val source = json.optJSONArray("newProgressBallIds") ?: return ids
-            for (index in 0 until source.length()) {
-                val id = source.optString(index)
-                if (id.isNotBlank()) {
-                    ids.put(id)
-                }
-            }
-            return ids
         }
 
         /**
@@ -5406,84 +5286,6 @@ class AntSesameCredit : ModelTask() {
                 )
         }
 
-        private fun autoBlacklistSesameTaskIfNeeded(
-            moduleName: String,
-            taskId: String,
-            taskTitle: String,
-            errorCode: String,
-            resultView: String = "",
-            rawResponse: String = "",
-            action: String = "task",
-        ) {
-            val normalizedTaskId = taskId.trim()
-            if (normalizedTaskId.isBlank() ||
-                (errorCode.isBlank() && resultView.isBlank() && rawResponse.isBlank())
-            ) {
-                if (normalizedTaskId.isBlank()) {
-                    Log.error(TAG, "$moduleName[$taskTitle] 缺少稳定 taskId，保留 UNKNOWN_NEEDS_REVIEW，不写自动跳过列表")
-                }
-                return
-            }
-            val code = errorCode.ifBlank { "UNKNOWN" }
-            val message = resultView.ifBlank { "<empty>" }
-            val raw = rawResponse.ifBlank { resultView }
-            val rpc =
-                when (action) {
-                    "join" -> "AntSesameCreditRpcCall.joinSesameTask"
-                    "feedback" -> "AntSesameCreditRpcCall.feedBackSesameTask"
-                    "finish" -> "AntSesameCreditRpcCall.finishSesameTask"
-                    "adFinish" -> "AntSesameCreditRpcCall.taskFinish"
-                    else -> "AntSesameCreditRpcCall.$action"
-                }
-            val detail =
-                "module=$moduleName taskId=$normalizedTaskId taskName=$taskTitle action=$action rpc=$rpc " +
-                    "code=$code msg=$message raw=$raw"
-            when (classifySesameTaskFailure(errorCode, parseJSONObjectOrNull(raw))) {
-                TaskRpcFailureType.TERMINAL_DONE -> {
-                    Log.sesame("$moduleName[$taskTitle] classification=TERMINAL_DONE decision=MARK_HANDLED $detail")
-                }
-
-                TaskRpcFailureType.BUSINESS_LIMIT -> {
-                    Log.sesame("$moduleName[$taskTitle] classification=BUSINESS_LIMIT decision=STOP_TODAY_OR_CURRENT_CHAIN $detail")
-                }
-
-                TaskRpcFailureType.UNSUPPORTED_NO_CLOSURE -> {
-                    blacklistClassifiedSesameTask(moduleName, normalizedTaskId, errorCode)
-                    Log.error(
-                        TAG,
-                        "$moduleName[$taskTitle] classification=UNSUPPORTED_NO_CLOSURE decision=BLACKLIST reason=未抓到稳定完成RPC $detail",
-                    )
-                }
-
-                TaskRpcFailureType.NON_RETRYABLE_INVALID -> {
-                    blacklistClassifiedSesameTask(moduleName, normalizedTaskId, errorCode)
-                    Log.error(TAG, "$moduleName[$taskTitle] classification=NON_RETRYABLE_INVALID decision=BLACKLIST $detail")
-                }
-
-                TaskRpcFailureType.RETRYABLE_RPC -> {
-                    Log.error(TAG, "$moduleName[$taskTitle] classification=RETRYABLE_RPC decision=RETRY_LATER $detail")
-                }
-
-                TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW -> {
-                    Log.error(TAG, "$moduleName[$taskTitle] classification=UNKNOWN_NEEDS_REVIEW decision=LOG_ONLY $detail")
-                }
-            }
-        }
-
-        private fun blacklistClassifiedSesameTask(
-            moduleName: String,
-            taskId: String,
-            errorCode: String,
-        ) {
-            if (taskId.isBlank()) {
-                return
-            }
-            if (errorCode.isNotBlank()) {
-                autoAddToBlacklist(moduleName, taskId, errorCode = errorCode)
-            }
-            TaskBlacklist.addToBlacklist(moduleName, taskId)
-        }
-
         private fun classifySesameTaskFailure(
             errorCode: String,
             response: JSONObject? = null,
@@ -5642,29 +5444,6 @@ class AntSesameCredit : ModelTask() {
                 continueCurrentRoundOnFailure = failureType == TaskRpcFailureType.RETRYABLE_RPC ||
                     failureType == TaskRpcFailureType.BUSINESS_LIMIT,
             )
-        }
-
-        private fun handleSesameAdTask(
-            task: JSONObject,
-            taskTitle: String,
-            logPrefix: String,
-            moduleName: String,
-        ): Boolean {
-            val result = handleSesameAdTaskResult(task, taskTitle, logPrefix, moduleName)
-            if (!result.success && result.failureType != TaskRpcFailureType.TERMINAL_DONE) {
-                autoBlacklistSesameTaskIfNeeded(
-                    moduleName = moduleName,
-                    taskId = task.optJSONObject("logExtMap")?.optString("bizId")
-                        .orEmpty()
-                        .ifBlank { task.optString("adTaskBizId") },
-                    taskTitle = taskTitle,
-                    errorCode = result.code,
-                    resultView = result.message,
-                    rawResponse = result.raw,
-                    action = "adFinish",
-                )
-            }
-            return result.success || result.failureType == TaskRpcFailureType.TERMINAL_DONE
         }
 
         private fun handleSesameAdTaskResult(
@@ -5995,13 +5774,54 @@ class AntSesameCredit : ModelTask() {
         return !explicitCompletion && !terminalStatus
     }
 
+    private fun resolveSesameRecordConfirmation(
+        version: String,
+        item: TaskFlowItem,
+        action: TaskFlowAction,
+        items: List<TaskFlowItem>,
+        submitted: JSONObject?,
+    ): Boolean? {
+        if (item.type == "AD_TASK") return null
+        val recordId = item.raw?.optString("recordId").orEmpty()
+        if (recordId.isBlank()) {
+            if (action != TaskFlowAction.SIGNUP) return null
+            return true.takeIf {
+                items.any { current ->
+                    current.id == item.id && current.type == item.type && current.sceneCode == item.sceneCode &&
+                        !current.raw?.optString("recordId").isNullOrBlank()
+                }
+            }
+        }
+        val acceptedPush = action == TaskFlowAction.COMPLETE &&
+            submitted?.optString("rpc") == "AntSesameCreditRpcCall.finishSesameTask"
+        val matching = items.filter {
+            it.id == item.id && it.type == item.type && it.raw?.optString("recordId") == recordId
+        }
+        if (matching.any {
+            it.raw?.optBoolean("finishFlag", false) == true ||
+                (version == "alchemy" && !acceptedPush && it.status == "COMPLETED")
+        }) {
+            UserDataStoreManager.getInstance(UserMap.currentUid)?.remove("sesame_user_growth_pending:$recordId")
+            return true
+        }
+        if (matching.isNotEmpty()) return if (acceptedPush) false else null
+        if (action != TaskFlowAction.COMPLETE) return null
+
+        val confirmation = confirmSesameLifeRecord(version, item.id, recordId, queryTaskList = false)
+        if (confirmation.failureType != null) {
+            Log.error(TAG, "生活记录回查失败 recordId=$recordId code=${confirmation.code} raw=${confirmation.raw}")
+        }
+        return confirmation.success.takeIf { it || acceptedPush }
+    }
+
     private fun confirmSesameLifeRecord(
         version: String,
         templateId: String,
         recordId: String,
+        queryTaskList: Boolean = true,
     ): TaskFlowActionResult {
         val detail = "templateId=$templateId recordId=$recordId version=$version"
-        for (queryLast in listOf(true, false)) {
+        for (queryLast in if (queryTaskList) listOf(true, false) else listOf(true)) {
             val rpc = when {
                 queryLast -> "AntSesameCreditRpcCall.queryLastOperateTask"
                 version == "alchemy" -> "AntSesameCreditRpcCall.Zmxy.Alchemy.alchemyQueryListV3"
@@ -6147,50 +5967,34 @@ class AntSesameCredit : ModelTask() {
             )
         }
 
-        val pendingStore = AccountSessionCoordinator.currentUserId()?.let { UserDataStoreManager.getInstance(it) }
-        val pendingKey = "sesame_user_growth_pending:$recordId"
-        val userGrowth = extractQueryParam(task.optString("actionUrl"), "jumpAction") == "userGrowth"
-        val feedbackResult =
-            if (pendingStore?.get(pendingKey, Boolean::class.java) == true) TaskFlowActionResult.success()
-            else reportSesameTaskFeedbackResult(
-                task = task,
-                taskTitle = taskTitle,
-                logPrefix = spec.logPrefix,
-                moduleName = spec.moduleName,
-                version = spec.version,
-                sceneCode = spec.sceneCode,
-                changeRewardType = spec.changeRewardType,
-            )
+        if (extractQueryParam(task.optString("actionUrl"), "jumpAction") == "userGrowth") {
+            UserDataStoreManager.getInstance(UserMap.currentUid)?.remove("sesame_user_growth_pending:$recordId")
+            return TaskFlowActionResult.defer(
+                DeferredReason.PREREQUISITE_PENDING,
+                message = "外跳业务自动执行尚未接通，本轮跳过",
+                detail = "$actionDetail templateId=$templateId recordId=$recordId jumpAction=userGrowth",
+            ).copy(submissionStarted = false)
+        }
+        val feedbackResult = reportSesameTaskFeedbackResult(
+            task = task,
+            taskTitle = taskTitle,
+            logPrefix = spec.logPrefix,
+            moduleName = spec.moduleName,
+            version = spec.version,
+            sceneCode = spec.sceneCode,
+            changeRewardType = spec.changeRewardType,
+        )
         if (!feedbackResult.success && feedbackResult.failureType != TaskRpcFailureType.TERMINAL_DONE) {
             return feedbackResult
         }
-        if (userGrowth) {
-            pendingStore?.put(pendingKey, true)
-            scheduleSesameConfirmation(
-                JSONObject().put("templateId", templateId).put("recordId", recordId).put("version", spec.version),
-            )
-        }
-
         val confirmation = confirmSesameLifeRecord(spec.version, templateId, recordId)
         if (confirmation.failureType != null) {
             return confirmation.copy(detail = "$actionDetail ${confirmation.detail}")
         }
         if (confirmation.success) {
-            if (!userGrowth) {
-                pendingStore?.remove(pendingKey)
-            }
             spec.joinedRecordIds?.remove(templateId)
             Log.sesame("${spec.logPrefix}[生活记录回查确认完成]#$taskTitle templateId=$templateId recordId=$recordId")
             return confirmation
-        }
-        // userGrowth 的业务完成由外部应用确认，普通生活记录推送不能替代。
-        if (userGrowth) {
-            Log.sesame("${spec.logPrefix}[外跳业务尚未确认完成，保留记录回查]#$taskTitle templateId=$templateId recordId=$recordId")
-            return confirmation.copy(
-                message = "外跳业务自动执行尚未接通，保留记录回查",
-                detail = "$actionDetail ${confirmation.detail} jumpAction=userGrowth confirmationState=PENDING",
-                refreshAfterAction = true,
-            )
         }
         if (feedbackResult.failureType == TaskRpcFailureType.TERMINAL_DONE) {
             return feedbackResult.copy(
@@ -6262,7 +6066,7 @@ class AntSesameCredit : ModelTask() {
                 raw = finishRes,
                 detail = "$actionDetail templateId=$templateId recordId=$recordId completionMode=PUSH_ACTIVITY feedbackCode=$feedbackCode finishCode=$finishCode confirmationState=PENDING",
                 refreshAfterAction = true,
-            )
+            ).copy(submissionStarted = true)
         }
         val errorCode = finishJo.optString("errorCode", finishJo.optString("resultCode", ""))
         val resultView = buildSesameRpcMessage(finishJo, finishRes)
