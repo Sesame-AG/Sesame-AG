@@ -32,11 +32,6 @@ internal suspend fun AntFarm.runFarmLifecycleWorkflow(tc: TimeCounter): Boolean 
         tc.countDebug("NPC小鸡任务")
     }
 
-    if (shouldHireAnimalNow()) {
-        runHireAnimalFeedTaskFlow()
-        tc.countDebug("雇佣小鸡饲料任务")
-        hireAnimal()
-    }
     return true
 }
 
@@ -46,7 +41,7 @@ internal suspend fun AntFarm.runFarmTaskWorkflow(
 ): TaskFlowRunResult {
     val result = triggerFarmTaskIfNeeded(tc)
     if (ApplicationHookConstants.isOffline()) return result.copy(interrupted = true)
-    val resourceProgress = runFarmResourceWork()
+    runFarmResourceWork()
     tc.countDebug("照料、厨房与独立小游戏")
 
     if (rewardFriend?.value == true) {
@@ -79,12 +74,12 @@ internal suspend fun AntFarm.runFarmTaskWorkflow(
         tc.countDebug("收鸡蛋")
     }
     runFarmPriorityDonations(userId)
-    tc.countDebug("每日捐蛋与排位赛")
+    tc.countDebug("每日捐蛋")
     if (loveChickenGathering?.value == true && !ApplicationHookConstants.isOffline()) {
         runLoveChickenGatheringWorkflow()
         tc.countDebug("爱心鸡结号")
     } else if (loveChickenGathering?.value != true) cancelLoveChickenSchedule()
-    return result.copy(progressChanged = result.progressChanged || resourceProgress)
+    return result
 }
 
 internal suspend fun AntFarm.runFarmPriorityDonations(userId: String? = UserMap.currentUid) {
@@ -126,7 +121,6 @@ internal suspend fun AntFarm.runFarmPriorityDonations(userId: String? = UserMap.
         }
     }
 
-    if (!ApplicationHookConstants.isOffline()) handleDonationCompetition()
     if (!ApplicationHookConstants.isOffline()) runOrdinaryOrnamentTasks()
 }
 
@@ -135,7 +129,6 @@ internal suspend fun AntFarm.runFarmSocialWorkflow(
     pendingFarmTaskFinalization: TaskFlowRunResult,
 ): TaskFlowRunResult {
     if (ApplicationHookConstants.isOffline()) return pendingFarmTaskFinalization.copy(interrupted = true)
-    val stockBefore = AntFarm.foodStock
 
     if (visitAnimal?.value == true) {
         visitAnimal()
@@ -174,9 +167,8 @@ internal suspend fun AntFarm.runFarmSocialWorkflow(
         tc.countDebug("一起拿饲料")
     }
     if (enableDdrawGameCenterAward?.value == true) {
-        FarmGame.drawGameCenterAward { triggerAt ->
-            registerPersistentChildTask("game_center", "GAME", triggerAt)
-        }
+        cancelPersistentChildTask("game_center")
+        FarmGame.drawGameCenterAward()
         tc.countDebug("开宝箱")
     }
     if (paradiseCoinExchangeBenefit?.value == true) {
@@ -189,10 +181,7 @@ internal suspend fun AntFarm.runFarmSocialWorkflow(
         tc.countDebug("装扮商城")
     }
 
-    return pendingFarmTaskFinalization.copy(
-        progressChanged = pendingFarmTaskFinalization.progressChanged || AntFarm.foodStock != stockBefore,
-        interrupted = ApplicationHookConstants.isOffline(),
-    )
+    return pendingFarmTaskFinalization.copy(interrupted = ApplicationHookConstants.isOffline())
 }
 
 internal suspend fun AntFarm.runFarmFinalizeWorkflow(
@@ -203,7 +192,6 @@ internal suspend fun AntFarm.runFarmFinalizeWorkflow(
         tc.stop()
         return
     }
-    val wasSleeping = isOwnerAnimalSleeping()
     runDueFarmWork()
     runFarmResourceWork(includeGames = false)
     if (!ApplicationHookConstants.isOffline()) {
@@ -217,12 +205,6 @@ internal suspend fun AntFarm.runFarmFinalizeWorkflow(
     }
     animalSleepAndWake()
     tc.countDebug("小鸡睡觉&起床")
-
-    if (!pendingFarmTaskFinalization.completed &&
-        (pendingFarmTaskFinalization.progressChanged || wasSleeping != isOwnerAnimalSleeping())
-    ) {
-        finalizeFarmTaskAfterMultiStage("抽抽乐/开宝箱/睡觉流程尾刷")
-    }
 
     // 厨房与乐园动作可能刚推进大表鸽任务，收尾统一补收并回查 NPC 产出。
     runNpcTaskFlow()
@@ -245,7 +227,9 @@ internal suspend fun AntFarm.runFarmResourceWork(
     val stockBefore = AntFarm.foodStock
     var progressed = false
     var aiKitchenShareFailure: TaskFlowActionResult? = null
-    var oldKitchenFailure: TaskFlowActionResult? = null
+    var hireResult: TaskFlowActionResult? = null
+    val hireCandidates = mutableListOf<org.json.JSONObject>()
+    val visitedHireFriends = mutableSetOf<String>()
     preloadFarmTools()
     if (includeGames && recordFarmGame?.value == true) FarmGame.run(this)
     if (ApplicationHookConstants.isOffline()) return false
@@ -266,10 +250,13 @@ internal suspend fun AntFarm.runFarmResourceWork(
         if (feedAfterAwards && !isOwnerAnimalSleeping()) {
             if (feedAnimal?.value == true) handleAutoFeedAnimal()
             if (ApplicationHookConstants.isOffline()) break
-            if (shouldHireAnimalNow()) {
+            if (shouldHireAnimalNow() && hireResult?.stopCurrentRound != true) {
                 runHireAnimalFeedTaskFlow()
                 if (ApplicationHookConstants.isOffline()) break
-                hireAnimal()
+                val result = hireAnimal(hireCandidates, visitedHireFriends)
+                hireResult = result
+                progressed = progressed || result.progressChanged
+                if (!result.success && result.deferredReason == null) Log.error("AntFarm", "资源流程雇佣失败:$result")
             }
         }
         if (ApplicationHookConstants.isOffline()) break
@@ -277,14 +264,14 @@ internal suspend fun AntFarm.runFarmResourceWork(
         aiKitchenShareFailure = aiKitchenShareFailure ?: aiKitchenShare.failure
         progressed = progressed || aiKitchenShare.progressed
         if (ApplicationHookConstants.isOffline()) break
-        val oldKitchen = if (oldKitchenFailure == null) runFarmKitchen() else AntFarm.FarmResourceResult(0)
-        oldKitchenFailure = oldKitchenFailure ?: oldKitchen.failure
+        val oldKitchen = runFarmKitchen()
         if (ApplicationHookConstants.isOffline()) break
         // 睡前资源准备由原睡前预算安排照料，厨神制作留到正常资源流程。
         val aiKitchen = if (feedAfterAwards) runFarmAiKitchen() else AntFarm.FarmResourceResult(0)
         val cooked = oldKitchen.progressed || aiKitchen.progressed
         progressed = progressed || cooked || AntFarm.foodStock != roundStock
-        if (ApplicationHookConstants.isOffline() || aiKitchen.failure != null) break
+        if (ApplicationHookConstants.isOffline()) break
+        aiKitchen.failure?.let { Log.error("AntFarm", "小鸡大厨动作失败:$it") }
         if (cooked) useDailySpecialFoodIfNeeded()
         if (!aiKitchenShare.progressed && !cooked && AntFarm.foodStock == roundStock) break
     } while (!ApplicationHookConstants.isOffline())

@@ -212,7 +212,7 @@ object AntFarmRpcCall {
     fun harvestProduce(farmId: String?): String {
         val args1 = (
             "[{\"canMock\":true,\"farmId\":\"" + farmId +
-                "\",\"giftType\":\"\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\",\"version\":\"" +
+                "\",\"harvestType\":\"NORMALEGG\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\",\"version\":\"" +
                 VERSION + "\"}]"
         )
         return requestString("com.alipay.antfarm.harvestProduce", args1)
@@ -437,16 +437,21 @@ object AntFarmRpcCall {
         return requestString("com.alipay.antfarm.useFarmTool", args1)
     }
 
-    /** 查询指定数字公仔的获得状态，响应含 dollInfoVO(acquired/achievementId) 与 dollTool 补签卡库存 */
     @JvmStatic
-    fun queryAntfarmDoll(dollId: String?): String {
-        val args1 =
-            (
-                "[{\"dollId\":\"" + dollId + "\",\"requestType\":\"NORMAL\",\"sceneCode\":\"ANTFARM\",\"source\":\"H5\",\"version\":\"" +
-                    VERSION + "\"}]"
-            )
-        return requestString("com.alipay.antfarm.queryAntfarmDoll", args1)
-    }
+    fun queryExpiredAchievementsInfoV2(): String = requestString(
+        "com.alipay.antfarm.queryExpiredAchievementsInfoV2",
+        JSONArray().put(JSONObject().put("requestType", "NORMAL").put("sceneCode", "ANTFARM")
+            .put("source", "H5").put("version", VERSION)).toString(),
+    )
+
+    /** 查询指定数字公仔的获得状态与当前账号补签卡库存。 */
+    @JvmStatic
+    fun queryAntfarmDoll(dollId: String?): String = requestString(
+        "com.alipay.antfarm.queryAntfarmDoll",
+        JSONArray().put(JSONObject().put("dollId", dollId).put("userId", UserMap.currentUid)
+            .put("requestType", "NORMAL").put("sceneCode", "ANTFARM").put("source", "H5")
+            .put("version", VERSION)).toString(),
+    )
 
     @JvmStatic
     fun rankingList(pageStartSum: Int): String {
@@ -2028,18 +2033,6 @@ object AntFarmRpcCall {
     }
 
     @JvmStatic
-    fun queryCompetitionEntranceInfo(): String {
-        val args =
-            JSONObject().apply {
-                put("requestType", "NORMAL")
-                put("sceneCode", "ANTFARM")
-                put("source", "H5")
-                put("version", VERSION)
-            }
-        return RequestManager.requestString("com.alipay.antfarm.queryCompetitionEntranceInfo", "[$args]")
-    }
-
-    @JvmStatic
     fun enterDonationCompetitionRank(): String {
         val args =
             JSONObject().apply {
@@ -2141,18 +2134,4 @@ object AntFarmRpcCall {
         return RequestManager.requestString("com.alipay.antfarm.receiveDonationLevelReward", "[$args]")
     }
 
-    @JvmStatic
-    fun receiveDonationCompetitionProgressAward(): String {
-        val args =
-            JSONObject().apply {
-                put("requestType", "NORMAL")
-                put("sceneCode", "ANTFARM")
-                put("source", "H5")
-                put("version", VERSION)
-            }
-        return RequestManager.requestString(
-            "com.alipay.antfarm.receiveDonationCompetitionProgressAward",
-            "[$args]",
-        )
-    }
 }

@@ -10,6 +10,9 @@ import io.github.aoguai.sesameag.task.common.TaskFlowActionResult
 import io.github.aoguai.sesameag.task.common.TaskFlowAdapter
 import io.github.aoguai.sesameag.task.common.TaskFlowEngine
 import io.github.aoguai.sesameag.task.common.TaskFlowExecutionState
+import io.github.aoguai.sesameag.task.common.TaskFlowRunResult
+import io.github.aoguai.sesameag.task.TaskExecutionReport
+import io.github.aoguai.sesameag.util.TaskBlacklist
 import io.github.aoguai.sesameag.task.common.TaskFlowAction
 import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
 import io.github.aoguai.sesameag.hook.AccountSessionIdentity
@@ -368,25 +371,21 @@ object FarmGame {
         }
     }
 
-    internal suspend fun drawGameCenterAward(resumeOnly: Boolean = false, scheduleContinuation: (Long) -> Unit) {
+    internal suspend fun drawGameCenterAward() {
         val session = AccountSessionCoordinator.currentSession() ?: return
-        val store = UserDataStoreManager.getCurrentInstance()?.takeIf { it.uid == session.userId } ?: return
-        val day = System.currentTimeMillis()
-        val saved = store.get("farmGameCenterAttempts", String::class.java)?.let(::JSONObject)
-            ?.takeIf { TimeUtil.isSameDay(it.optLong("day"), day) }
-        val state = TaskFlowExecutionState(saved?.optJSONObject("state"))
-        val resumeKeys = (state.pendingActionConfirmations.values.map { it.first.id } +
-            state.deferredActionKeys.keys.map { it.substringBefore('|') }).toSet()
-        val newlyPending = mutableSetOf<String>()
-        val persist: () -> Unit = {
-            AccountSessionCoordinator.withCurrentSession(AccountSessionIdentity(session.userId, session.sessionEpoch)) {
-                store.put("farmGameCenterAttempts", JSONObject().put("day", day)
-                    .put("state", state.toJson()).toString(), requirePersistence = true)
-            }
+        val identity = AccountSessionIdentity(session.userId, session.sessionEpoch)
+        AccountSessionCoordinator.withCurrentSession(identity) {
+            UserDataStoreManager.getInstance(session.userId)?.remove("farmGameCenterAttempts")
         }
+        val day = System.currentTimeMillis()
+        val module = "蚂蚁庄园"
+        val drawKey = "gameCenter:draw"
+        val failures = mutableSetOf<String>()
+        var pending: Pair<GameCenterPlayRpcCall.DeliveryBenefitCandidate, TaskFlowActionResult>? = null
+        var beforeGameQuota = -1
         var totalParadiseCoins = 0 // 🚀 统计总共获得的乐园币
         val attemptedCandidates = mutableSetOf<String>()
-        var drawBlocked = false
+        var drawBlocked = drawKey in TaskBlacklist.getBlacklist(module)
         var previousDrawRights: Int? = null
         try {
             runCatching {
@@ -404,7 +403,8 @@ object FarmGame {
                 val jo = responseJo.optJSONObject("resData") ?: responseJo
 
                 if (!jo.optBoolean("success", responseJo.optBoolean("success"))) {
-                    Log.farm("queryGameList 失败: $responseJo")
+                    Log.error(TAG, "庄园乐园列表查询失败: $responseJo")
+                    failures += "query"
                     break
                 }
 
@@ -424,19 +424,46 @@ object FarmGame {
                     ) ?: -1
                 if (previousDrawRights != null && (quotaCanUse < 0 || quotaCanUse >= previousDrawRights)) {
                     drawBlocked = true
-                    Log.farm("宝箱提交后权益未确认减少，停止本轮开箱，继续独立游戏")
+                    failures += drawKey
+                    Log.error(TAG, "宝箱提交后权益未确认减少，今日停止开箱")
+                    AccountSessionCoordinator.withCurrentSession(identity) {
+                        TaskBlacklist.addToBlacklist(module, drawKey, "庄园乐园开宝箱")
+                    }
                 }
                 previousDrawRights = null
-                if (quotaCanUse > 0 && !drawBlocked && !resumeOnly) {
-                    previousDrawRights = quotaCanUse
+                pending?.let { (candidate, result) ->
+                    val current = GameCenterPlayRpcCall.collectDeliveryBenefitCandidates(jo).firstOrNull { it.key == candidate.key }
+                    val confirmed = result.progressChanged || beforeGameQuota >= 0 && quotaCanUse > beforeGameQuota ||
+                        current != null && (current.rightTimes > candidate.rightTimes ||
+                            current.taskStatus != candidate.taskStatus && current.taskStatus in setOf("FINISHED", "RECEIVED"))
+                    if (!confirmed) {
+                        val key = "gameCenter:${candidate.key}"
+                        failures += key
+                        Log.error(TAG, "庄园乐园动作回查未确认[taskId=${candidate.taskId}] raw=${result.raw}")
+                        AccountSessionCoordinator.withCurrentSession(identity) {
+                            TaskBlacklist.addToBlacklist(module, key, candidate.title)
+                        }
+                    }
+                    pending = null
+                }
+                if (quotaCanUse > 0 && !drawBlocked) {
                     val batchDrawCount = quotaCanUse.coerceAtMost(10)
                     Log.farm("当前有 $quotaCanUse 个宝箱待开启，本次提交 $batchDrawCount 个")
-                    val drawResponse = JSONObject(AntFarmRpcCall.drawGameCenterAward(batchDrawCount))
-                    val drawRes = drawResponse.optJSONObject("resData") ?: drawResponse
-                    if (drawRes.optBoolean("success", drawResponse.optBoolean("success"))) {
+                    val raw = try {
+                        AntFarmRpcCall.drawGameCenterAward(batchDrawCount)
+                    } catch (e: Exception) {
+                        if (e is CancellationException || e is InterruptedException) throw e
+                        Log.printStackTrace(TAG, "庄园乐园开宝箱调用失败", e)
+                        ""
+                    }
+                    val drawResponse = runCatching { JSONObject(raw) }.getOrNull()
+                    val drawRes = drawResponse?.optJSONObject("resData") ?: drawResponse
+                    if (drawResponse != null && drawRes?.optBoolean("success", drawResponse.optBoolean("success")) == true) {
+                        previousDrawRights = quotaCanUse
+                        val accepted = requireNotNull(drawRes)
                         val awardList =
-                            findFirstArrayByKey(drawRes, "gameCenterDrawAwardList")
-                                ?: findFirstArrayByKey(drawRes, "drawAwardList")
+                            findFirstArrayByKey(accepted, "gameCenterDrawAwardList")
+                                ?: findFirstArrayByKey(accepted, "drawAwardList")
                         val awardStrings = mutableListOf<String>()
                         if (awardList != null) {
                             for (i in 0 until awardList.length()) {
@@ -452,15 +479,17 @@ object FarmGame {
                         Log.farm("庄园小鸡🎁[获得奖品: ${awardStrings.joinToString(",")}]")
                         continue
                     }
-                    val desc =
-                        drawRes
-                            .optString("desc")
-                            .ifBlank { drawRes.optString("resultDesc") }
-                            .ifBlank { drawResponse.optString("desc") }
+                    val desc = drawRes?.optString("desc").orEmpty()
+                        .ifBlank { drawRes?.optString("resultDesc").orEmpty() }
+                        .ifBlank { drawResponse?.optString("desc").orEmpty() }
                     if (isDrawQuotaExhausted(desc)) {
-                        Log.farm("开宝箱权益已用完，停止本轮开箱: $desc")
-                    } else {
-                        Log.farm("开启宝箱失败: $desc")
+                        Log.farm("开宝箱权益已用完: $desc")
+                    } else if (!ApplicationHookConstants.isOffline()) {
+                        failures += drawKey
+                        Log.error(TAG, "庄园乐园开宝箱失败 raw=$raw")
+                        AccountSessionCoordinator.withCurrentSession(identity) {
+                            TaskBlacklist.addToBlacklist(module, drawKey, "庄园乐园开宝箱")
+                        }
                     }
                     drawBlocked = true
                 }
@@ -469,51 +498,60 @@ object FarmGame {
                 val limit = currentRights?.optInt("quotaLimit", currentRights.optInt("limit")) ?: 0
                 val used = currentRights?.optInt("usedQuota", currentRights.optInt("usedTimes")) ?: 0
                 val remainingDraws = if (drawBlocked || quotaCanUse < 0) 0 else (limit - used - quotaCanUse).coerceAtLeast(0)
+                val blacklist = TaskBlacklist.getBlacklist(module)
                 val candidates = buildFarmGameCenterCandidates(jo, remainingDraws)
-                    .filter { !resumeOnly || it.key in resumeKeys }
-                for (candidate in candidates) {
-                    val key = "${candidate.key}|${candidate.snapshotKey}"
-                    val oldKeys = state.pendingActionConfirmations.keys.filter { it.substringBefore('|') == candidate.key && it != key }
-                    oldKeys.forEach { state.pendingActionConfirmations.remove(it) }
-                    state.deferredActionKeys.keys.filter { it.substringBefore('|') == candidate.key && it != key }
-                        .forEach { state.deferredActionKeys.remove(it); state.deferredActionReasons.remove(it) }
+                    .filterNot { "gameCenter:${it.key}" in blacklist || "gameCenter:${it.key}" in failures }
+                val action = advanceFarmGameCenterCandidate(candidates, attemptedCandidates, quotaCanUse) ?: break
+                val (candidate, result) = action
+                if (ApplicationHookConstants.isOffline()) break
+                val key = "gameCenter:${candidate.key}"
+                when {
+                    result.failureType != null -> {
+                        failures += key
+                        Log.error(TAG, "庄园游戏执行失败[taskId=${candidate.taskId}] code=${result.code} ${result.message} raw=${result.raw}")
+                        AccountSessionCoordinator.withCurrentSession(identity) {
+                            TaskBlacklist.addToBlacklist(module, key, candidate.title)
+                        }
+                    }
+                    result.deferredReason == DeferredReason.STATE_CONFIRMATION && result.submissionStarted != false -> {
+                        pending = action
+                        beforeGameQuota = quotaCanUse
+                    }
                 }
-                persist()
-                var actionSubmitted = false
-                while (!ApplicationHookConstants.isOffline()) {
-                    val action = advanceFarmGameCenterCandidate(candidates, attemptedCandidates, quotaCanUse,
-                        state, newlyPending, persist) ?: break
-                    if (action.stopCurrentRound) return
-                    actionSubmitted = actionSubmitted || action.refreshAfterAction || action.success
-                    if (action.refreshAfterAction || action.success) break
-                }
-                if (actionSubmitted) {
-                    continue
-                }
-
-                if (limit > 0 && used >= limit) {
-                    Log.farm("庄园乐园今日 $limit 个宝箱已满额，独立游戏无可验证动作")
-                } else {
-                    Log.farm("庄园乐园当前无可验证的补任务动作，保留后续快照重试")
-                }
-                break
+                if (result.stopCurrentRound && pending == null) break
             }
-            receiveLeyuanLimitedBenefitAwards()
-            val waiting = state.pendingActionConfirmations.keys + state.deferredActionKeys.keys
-            val now = System.currentTimeMillis()
-            val nextAt = waiting.mapNotNull { key ->
-                if (key in newlyPending && key in state.pendingActionConfirmations) now
-                else state.deferredActionKeys[key]?.takeIf { it > 0L }
-            }.minOrNull()
-            nextAt?.let { scheduleContinuation(maxOf(now, it)) }
+            if (!ApplicationHookConstants.isOffline()) receiveLeyuanLimitedBenefitAwards()
         } catch (e: CancellationException) {
             throw e
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw e
         } catch (t: Throwable) {
+            failures += "query"
             Log.printStackTrace(AntFarm.TAG, "drawGameCenterAward 流程异常", t)
-        } finally {
-            if (totalParadiseCoins > 0) {
-                Log.farm("庄园小鸡🎁[本次任务总计获得乐园币: $totalParadiseCoins]")
+        }
+        if (!ApplicationHookConstants.isOffline() &&
+            AccountSessionCoordinator.isCurrentSession(session.userId, session.sessionEpoch) &&
+            TimeUtil.isSameDay(day, System.currentTimeMillis())
+        ) {
+            AccountSessionCoordinator.withCurrentSession(identity) {
+                if (previousDrawRights != null) {
+                    failures += drawKey
+                    TaskBlacklist.addToBlacklist(module, drawKey, "庄园乐园开宝箱")
+                }
+                pending?.let { (candidate, _) ->
+                    val key = "gameCenter:${candidate.key}"
+                    failures += key
+                    TaskBlacklist.addToBlacklist(module, key, candidate.title)
+                }
             }
+            if (failures.isNotEmpty()) {
+                TaskExecutionReport.current()?.recordFlow(TaskFlowExecutionState(), module, "庄园乐园",
+                    TaskFlowRunResult(false, false, false, 1, failureCount = failures.size))
+            }
+        }
+        if (totalParadiseCoins > 0) {
+            Log.farm("庄园小鸡🎁[本次任务总计获得乐园币: $totalParadiseCoins]")
         }
     }
 
@@ -539,21 +577,12 @@ object FarmGame {
         candidates: List<GameCenterPlayRpcCall.DeliveryBenefitCandidate>,
         attemptedCandidates: MutableSet<String>,
         beforeQuota: Int,
-        state: TaskFlowExecutionState,
-        newlyPending: MutableSet<String>,
-        persist: () -> Unit,
-    ): TaskFlowActionResult? {
+    ): Pair<GameCenterPlayRpcCall.DeliveryBenefitCandidate, TaskFlowActionResult>? {
         val candidate = candidates.firstOrNull { item ->
-            val key = "${item.key}|${item.snapshotKey}"
-            val until = state.deferredActionKeys[key]
-            key !in attemptedCandidates &&
-                !Status.hasFlagToday(StatusFlags.FLAG_FARM_GAME_CENTER_ACTION_STOP_PREFIX + key) &&
-                key !in state.pendingActionConfirmations &&
-                (until == null || until > 0L && until <= System.currentTimeMillis()) &&
+            "${item.key}|${item.snapshotKey}" !in attemptedCandidates &&
                 farmGameCenterDecision(item).action != GameCenterPlayRpcCall.TaskAction.DEFERRED
         } ?: return null
-        val key = "${candidate.key}|${candidate.snapshotKey}"
-        attemptedCandidates += key
+        attemptedCandidates += "${candidate.key}|${candidate.snapshotKey}"
         val decision = farmGameCenterDecision(candidate)
         Log.farm(
             "庄园乐园候选[${candidate.title}] " +
@@ -566,83 +595,66 @@ object FarmGame {
                     candidate.rightTimesLimit,
                 ),
         )
-        val result = when (decision.action) {
-            GameCenterPlayRpcCall.TaskAction.LEGACY_EXTERNAL_REPORT -> {
-                NonDurationGameTask.advance(
-                    requireNotNull(decision.mappedTask), candidate.rawBenefit, candidate.rawGame,
-                    channel = GameTask.Farm_ddply.channel,
-                    detail = "taskId=${candidate.taskId} sceneCode=ANTFARM", logger = Log::farm,
-                    confirmProgress = {
-                        val response = JSONObject(AntFarmRpcCall.queryGameList())
-                        val data = response.optJSONObject("resData") ?: response
-                        if (!data.optBoolean("success", response.optBoolean("success"))) {
-                            Log.error(TAG, "庄园游戏上报后列表查询失败:$response")
-                            null
-                        } else {
-                            val current = GameCenterPlayRpcCall.collectDeliveryBenefitCandidates(data)
-                                .firstOrNull { it.key == candidate.key }
-                            val rights = findFirstObjectByKey(data, "gameCenterDrawRights")
-                                ?: findFirstObjectByKey(data, "gameDrawAwardActivity")
-                                ?: findFirstObjectByKey(data, "gameEntryInfo")
-                            val quota = rights?.optInt("quotaCanUse",
-                                rights.optInt("canUseTimes", rights.optInt("drawRightsTimes", -1))) ?: -1
-                            when {
-                                beforeQuota >= 0 && quota > beforeQuota -> true
-                                current == null -> {
-                                    Log.error(TAG, "庄园游戏候选消失且权益未确认增加[${candidate.key}]")
-                                    null
+        val result = try {
+            when (decision.action) {
+                GameCenterPlayRpcCall.TaskAction.LEGACY_EXTERNAL_REPORT -> {
+                    NonDurationGameTask.advance(
+                        requireNotNull(decision.mappedTask), candidate.rawBenefit, candidate.rawGame,
+                        channel = GameTask.Farm_ddply.channel,
+                        detail = "taskId=${candidate.taskId} sceneCode=ANTFARM", logger = Log::farm,
+                        confirmProgress = {
+                            val response = JSONObject(AntFarmRpcCall.queryGameList())
+                            val data = response.optJSONObject("resData") ?: response
+                            if (!data.optBoolean("success", response.optBoolean("success"))) {
+                                Log.error(TAG, "庄园游戏上报后列表查询失败:$response")
+                                null
+                            } else {
+                                val current = GameCenterPlayRpcCall.collectDeliveryBenefitCandidates(data)
+                                    .firstOrNull { it.key == candidate.key }
+                                val rights = findFirstObjectByKey(data, "gameCenterDrawRights")
+                                    ?: findFirstObjectByKey(data, "gameDrawAwardActivity")
+                                    ?: findFirstObjectByKey(data, "gameEntryInfo")
+                                val quota = rights?.optInt("quotaCanUse",
+                                    rights.optInt("canUseTimes", rights.optInt("drawRightsTimes", -1))) ?: -1
+                                when {
+                                    beforeQuota >= 0 && quota > beforeQuota -> true
+                                    current == null -> {
+                                        Log.error(TAG, "庄园游戏候选消失且权益未确认增加[${candidate.key}]")
+                                        null
+                                    }
+                                    current.rightTimes > candidate.rightTimes ||
+                                        current.taskStatus != candidate.taskStatus &&
+                                        current.taskStatus in setOf("FINISHED", "RECEIVED") -> true
+                                    else -> false
                                 }
-                                current.rightTimes > candidate.rightTimes ||
-                                    current.taskStatus != candidate.taskStatus &&
-                                    current.taskStatus in setOf("FINISHED", "RECEIVED") -> true
-                                else -> false
                             }
-                        }
-                    },
-                )
-            }
-
-            GameCenterPlayRpcCall.TaskAction.DURATION_ONLY -> {
-                val acknowledgement = GameCenterPlayRpcCall.submitForAck(requireNotNull(decision.contract))
-                if (!acknowledgement.accepted) {
-                    Log.error(TAG, "庄园乐园时长上报失败 raw=${acknowledgement.raw}")
-                    TaskFlowActionResult.failure(
-                        acknowledgement.failureType, message = "庄园乐园时长上报失败",
-                        raw = acknowledgement.raw, stopCurrentRound = ApplicationHookConstants.isOffline(),
-                        continueCurrentRoundOnFailure = true,
+                        },
                     )
-                } else TaskFlowActionResult.defer(DeferredReason.STATE_CONFIRMATION, refreshAfterAction = true)
-            }
-
-            GameCenterPlayRpcCall.TaskAction.DIRECT_FINISH,
-            GameCenterPlayRpcCall.TaskAction.CLICK_THEN_DURATION,
-            GameCenterPlayRpcCall.TaskAction.OWNER_BUSINESS,
-            GameCenterPlayRpcCall.TaskAction.DEFERRED -> TaskFlowActionResult.defer(DeferredReason.PREREQUISITE_PENDING, decision.reason)
-        }
-        state.deferredActionKeys.remove(key)
-        state.deferredActionReasons.remove(key)
-        when {
-            result.deferredReason == DeferredReason.STATE_CONFIRMATION && !result.progressChanged -> {
-                state.pendingActionConfirmations[key] = TaskFlowItem(candidate.key, candidate.title,
-                    candidate.taskStatus, current = candidate.rightTimes, limit = candidate.rightTimesLimit) to TaskFlowAction.COMPLETE
-                newlyPending.add(key)
-            }
-            result.deferredReason != null && !result.progressChanged -> {
-                state.deferredActionKeys[key] = result.deferredUntil ?: 0L
-                state.deferredActionReasons[key] = result.deferredReason
-                newlyPending.add(key)
-            }
-            !result.success && result.deferredReason == null -> {
-                if (result.failureType == TaskRpcFailureType.NON_RETRYABLE_INVALID) {
-                    Status.setFlagToday(StatusFlags.FLAG_FARM_GAME_CENTER_ACTION_STOP_PREFIX + key)
                 }
-                state.actionFailures[key] = JSONObject().put("type", result.failureType?.name).put("code", result.code)
-                    .put("message", result.message).put("raw", result.raw).put("detail", result.detail)
-                Log.error(TAG, "庄园游戏执行失败[taskId=${candidate.taskId}] code=${result.code} ${result.message}")
+
+                GameCenterPlayRpcCall.TaskAction.DURATION_ONLY -> {
+                    val acknowledgement = GameCenterPlayRpcCall.submitForAck(requireNotNull(decision.contract))
+                    if (!acknowledgement.accepted) {
+                        Log.error(TAG, "庄园乐园时长上报失败 raw=${acknowledgement.raw}")
+                        TaskFlowActionResult.failure(
+                            acknowledgement.failureType, message = "庄园乐园时长上报失败",
+                            raw = acknowledgement.raw, stopCurrentRound = ApplicationHookConstants.isOffline(),
+                            continueCurrentRoundOnFailure = true,
+                        )
+                    } else TaskFlowActionResult.defer(DeferredReason.STATE_CONFIRMATION, refreshAfterAction = true)
+                }
+
+                GameCenterPlayRpcCall.TaskAction.DIRECT_FINISH,
+                GameCenterPlayRpcCall.TaskAction.CLICK_THEN_DURATION,
+                GameCenterPlayRpcCall.TaskAction.OWNER_BUSINESS,
+                GameCenterPlayRpcCall.TaskAction.DEFERRED -> TaskFlowActionResult.defer(DeferredReason.PREREQUISITE_PENDING, decision.reason)
             }
+        } catch (e: Exception) {
+            if (e is CancellationException || e is InterruptedException) throw e
+            Log.printStackTrace(TAG, "庄园乐园任务调用失败 taskId=${candidate.taskId}", e)
+            TaskFlowActionResult.failure(TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW, message = e.message.orEmpty())
         }
-        persist()
-        return result
+        return candidate to result
     }
 
     private fun receiveLeyuanLimitedBenefitAwards() {

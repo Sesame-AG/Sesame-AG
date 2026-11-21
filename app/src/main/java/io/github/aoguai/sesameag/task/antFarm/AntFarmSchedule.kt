@@ -91,7 +91,6 @@ internal fun AntFarm.scheduleFarmPendingWork() {
             "meal" -> family?.value != true || familyOptions?.value?.contains("eatTogetherConfig") != true
             "draw" -> enableChouchoule?.value != true
             "exchange" -> enableChouchoule?.value != true || autoExchange?.value != true
-            "rankAwards" -> donationCompetition?.value != true
             "loveChicken" -> loveChickenGathering?.value != true
             "zhimaPigeon", "awards" -> false
             else -> true
@@ -115,7 +114,6 @@ internal suspend fun AntFarm.runDueFarmWork() {
     for (reason in due) {
         if (ApplicationHookConstants.isOffline()) break
         when (reason) {
-            "rankAwards" -> if (donationCompetition?.value == true) handleDonationCompetition()
             "loveChicken" -> if (loveChickenGathering?.value == true) {
                 runFarmPriorityDonations()
                 runLoveChickenGatheringWorkflow()
@@ -136,7 +134,7 @@ internal suspend fun AntFarm.runDueFarmWork() {
             }
         }
         // 到期待办只负责一次收尾；未确认的业务状态仍由下一轮自然调度读取。
-        if (reason == "awards" || reason == "draw" || reason == "exchange" || reason == "loveChicken" || reason == "zhimaPigeon") {
+        if (reason in setOf("awards", "dolls", "draw", "exchange", "loveChicken", "zhimaPigeon")) {
             val pending = store.getOrCreate<MutableMap<String, Long>>(FARM_PENDING_WORK)
             if ((pending[reason] ?: Long.MAX_VALUE) <= now) {
                 pending.remove(reason)
