@@ -4,6 +4,7 @@ import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.util.GameTask
 import io.github.aoguai.sesameag.util.Log
+import io.github.aoguai.sesameag.util.MiniGameVendorReporter
 import io.github.aoguai.sesameag.util.RpcOfflineRisk
 import org.json.JSONObject
 
@@ -21,83 +22,83 @@ object NonDurationGameTask {
 
     /** 执行和所属模块回查使用同一份动作合同。 */
     fun resolve(game: GameTask, vararg roots: JSONObject?, channel: String = "", detail: String = ""): Contract {
-        val descriptor = GameCenterPlayRpcCall.describeTask(*roots)
+        val descriptor = GameCenterPlayRpcCall.describeTask(*roots).copy(gameAppId = game.appId)
         val actionChannel = descriptor.urlParameters["channel"].orEmpty()
             .ifBlank { channel.ifBlank { game.channel } }
         val objects = descriptor.objects.toMutableList()
-        val legacyGame = game in listOf(
-            GameTask.Orchard_ncscc, GameTask.Farm_ddply, GameTask.Forest_slxcc, GameTask.Forest_sljyd,
-        )
         val originalMap = descriptor.urlParameters["originalMap"]?.let {
             runCatching { JSONObject(it) }.getOrNull()
         }
-        val componentScene = descriptor.componentScene
-        val componentContract = componentScene in setOf("ladder_task", "EXTERNAL_GAME_CENTER_TASK")
-        val queryComponent = !legacyGame || componentContract
         originalMap?.let { objects += it }
         objects += JSONObject(descriptor.urlParameters)
+        val componentScene = descriptor.componentScene
+        val supplied = objects.firstOrNull {
+            it.optJSONObject("externalGameCenterTaskComponentVO") != null ||
+                it.optJSONObject("ladderTaskComponentVO") != null
+        }
+        val componentContract = supplied != null || componentScene in setOf("ladder_task", "EXTERNAL_GAME_CENTER_TASK")
         val actions = linkedMapOf<String, Int>()
         for (task in objects) {
             val (action, count) = GameCenterPlayRpcCall.nonDurationAction(task, game.appId) ?: continue
-            actions[action] = maxOf(actions[action] ?: 0, count)
+            actions[action] = maxOf(actions[action] ?: -1, count)
         }
         val countedActions = objects.filter { it.optString("taskId").contains("__") }
-            .mapNotNull { GameCenterPlayRpcCall.nonDurationAction(it, game.appId)?.first }.toSet()
+            .mapNotNull { GameCenterPlayRpcCall.nonDurationAction(it, game.appId)?.takeIf { action -> action.second >= 0 }?.first }
+            .toSet()
         if (actions.isEmpty() && game.appId == "2060170000365923" && objects.any { task ->
                 listOf(task.optString("taskId"), task.optString("taskType"), task.optString("iepTaskId"))
                     .contains("LMCT_QDRW_LEYUAN")
             }) {
-            actions["lmct_game_order_every_1"] = 3
+            actions["lmct_game_order_every_1"] = -1
         }
-        if (actions.isEmpty() && !componentContract) game.actions.forEach { actions[it] = -1 }
         val componentTasks = linkedMapOf<String, Set<String>>()
-        var componentKey = ""
         var componentRaw = ""
-        if (queryComponent) {
-            val supplied = objects.firstOrNull {
-                it.optJSONObject("externalGameCenterTaskComponentVO") != null ||
-                    it.optJSONObject("ladderTaskComponentVO") != null
+        val data = if (supplied != null) {
+            componentRaw = JSONObject().put("data", supplied).toString()
+            supplied
+        } else {
+            val ack = GameCenterPlayRpcCall.queryNonDurationTasks(descriptor, actionChannel)
+            if (!ack.accepted) {
+                Log.error("NonDurationGameTask", "游戏组件查询失败：${ack.raw} $detail")
+                return Contract(descriptor, actionChannel, actions, componentTasks, "", ack.raw,
+                    TaskFlowActionResult.failure(ack.failureType, raw = ack.raw,
+                        message = "游戏组件查询失败", rpc = "queryGameComponent", detail = detail))
             }
-            val data = if (supplied != null) {
-                componentRaw = JSONObject().put("data", supplied).toString()
-                supplied
-            } else {
-                val ack = GameCenterPlayRpcCall.queryNonDurationTasks(descriptor, actionChannel)
-                if (!ack.accepted) {
-                    Log.error("NonDurationGameTask", "游戏组件查询失败：${ack.raw} $detail")
-                    return Contract(descriptor, actionChannel, actions, componentTasks, componentKey, ack.raw,
-                        TaskFlowActionResult.failure(ack.failureType, raw = ack.raw,
-                            message = "游戏组件查询失败", rpc = "queryGameComponent", detail = detail))
-                }
-                componentRaw = ack.raw
-                ack.response?.optJSONObject("data")
-            }
-            componentKey = when (componentScene) {
-                "EXTERNAL_GAME_CENTER_TASK" -> "externalGameCenterTaskComponentVO"
-                "ladder_task" -> "ladderTaskComponentVO"
-                else -> if (data?.has("externalGameCenterTaskComponentVO") == true)
-                    "externalGameCenterTaskComponentVO" else "ladderTaskComponentVO"
-            }
-            val tasks = data?.optJSONObject(componentKey)?.optJSONArray("mainTaskList")
-            val requestedTaskIds = objects.map { it.optString("taskId") }.filter(String::isNotBlank).toSet()
-            val matching = (0 until (tasks?.length() ?: 0)).mapNotNull { tasks?.optJSONObject(it) }
-                .filter { it.optString("appId") == game.appId }
-                .mapNotNull { task -> GameCenterPlayRpcCall.nonDurationAction(task, game.appId)?.let { task to it } }
-                .filter { (_, action) -> actions.isEmpty() ||
-                    componentContract && action.first in actions && action.first !in countedActions }
-            val grouped = matching.groupBy { it.second.first }
-            for ((action, entries) in grouped) {
-                val selected = entries.filter { it.first.optString("taskId") in requestedTaskIds }
-                    .ifEmpty { entries }
-                val remaining = selected.maxOf { it.second.second }
-                // 普通组件中的已完成阶梯不能耗尽原场景的独立权益。
-                if (!componentContract && remaining == 0) continue
-                actions[action] = remaining
+            componentRaw = ack.raw
+            ack.response?.optJSONObject("data")
+        }
+        val componentKey = when (componentScene) {
+            "EXTERNAL_GAME_CENTER_TASK" -> "externalGameCenterTaskComponentVO"
+            "ladder_task" -> "ladderTaskComponentVO"
+            else -> if (data?.has("externalGameCenterTaskComponentVO") == true)
+                "externalGameCenterTaskComponentVO" else "ladderTaskComponentVO"
+        }
+        val tasks = data?.optJSONObject(componentKey)?.optJSONArray("mainTaskList")
+        val requestedTaskIds = objects.map { it.optString("taskId") }.filter(String::isNotBlank).toSet()
+        val matching = (0 until (tasks?.length() ?: 0)).mapNotNull { tasks?.optJSONObject(it) }
+            .filter { it.optString("appId") == game.appId }
+            .mapNotNull { task -> GameCenterPlayRpcCall.nonDurationAction(task, game.appId)?.let { task to it } }
+            .filter { (task, action) -> actions.isEmpty() || action.first in actions &&
+                (task.optString("taskId") in requestedTaskIds || componentContract && action.first !in countedActions) }
+        val grouped = matching.groupBy { it.second.first }
+        for ((action, entries) in grouped) {
+            val selected = entries.filter { it.first.optString("taskId") in requestedTaskIds }
+                .ifEmpty { entries }
+            if (componentContract || selected.any { it.first.optString("taskId") in requestedTaskIds }) {
+                actions[action] = if (selected.any { it.second.second < 0 }) -1 else selected.maxOf { it.second.second }
                 componentTasks[action] = selected.map { it.first.optString("taskId") }.toSet()
+            } else if (action !in actions) {
+                // 其他场景的组件只能补充动作码，不能借用其进度或已完成状态。
+                actions[action] = -1
             }
         }
         if (actions.isEmpty()) {
-            game.actions.forEach { actions[it] = -1 }
+            val channelAction = game.protocolParameters["action.$actionChannel"].orEmpty()
+            if (channelAction.isNotBlank()) {
+                actions[channelAction] = -1
+            } else {
+                game.actions.forEach { actions[it] = -1 }
+            }
         }
         if (actions.isEmpty()) {
             val missingDetail = "$detail appId=${game.appId} channel=$actionChannel taskIds=" +
@@ -135,6 +136,9 @@ object NonDurationGameTask {
         val actions = contract.actions
         val componentTasks = contract.componentTasks
         val componentKey = contract.componentKey
+        val initialTasks = runCatching {
+            JSONObject(contract.raw).optJSONObject("data")?.optJSONObject(componentKey)?.optJSONArray("mainTaskList")
+        }.getOrNull()
         if (!AccountSessionCoordinator.isCurrentSession(session.userId, session.sessionEpoch) || ApplicationHookConstants.isOffline()) {
             return TaskFlowActionResult.failure(TaskRpcFailureType.BUSINESS_LIMIT,
                 message = "账号会话已变化或已离线", detail = detail, stopCurrentRound = true)
@@ -154,7 +158,7 @@ object NonDurationGameTask {
             if (count == 0) continue
             var actionRemaining = count
             val report = game.reportDetailed(
-                1, actionFinishChannel = actionChannel, logger = logger,
+                actionFinishChannel = actionChannel, logger = logger,
                 actionCode = action, reportCount = count.takeIf { it >= 0 },
                 confirmProgress = {
                     if (ApplicationHookConstants.isOffline() ||
@@ -171,13 +175,22 @@ object NonDurationGameTask {
                                 val matching = (0 until tasks.length()).mapNotNull { tasks.optJSONObject(it) }
                                     .filter { it.optString("appId") == game.appId &&
                                         it.optString("taskId") in componentTasks.getValue(action) }
-                                    .mapNotNull { GameCenterPlayRpcCall.nonDurationAction(it, game.appId) }
-                                    .filter { it.first == action }
+                                    .mapNotNull { task -> GameCenterPlayRpcCall.nonDurationAction(task, game.appId)?.let { task to it } }
+                                    .filter { it.second.first == action }
                                 if (matching.isEmpty()) null else {
-                                    val remaining = matching.maxOf { it.second }
-                                    contractProgressed = contractProgressed || remaining < count
+                                    val remaining = if (matching.any { it.second.second < 0 }) -1 else matching.maxOf { it.second.second }
+                                    val currentProgressIncreased = matching.any { (task, _) ->
+                                        val previous = (0 until (initialTasks?.length() ?: 0)).mapNotNull { initialTasks?.optJSONObject(it) }
+                                            .firstOrNull { it.optString("appId") == game.appId &&
+                                                it.optString("taskId") == task.optString("taskId") }
+                                        val before = previous?.optJSONObject("taskProgressVO")?.optInt("currentProgress", -1) ?: -1
+                                        val after = task.optJSONObject("taskProgressVO")?.optInt("currentProgress", -1) ?: -1
+                                        before >= 0 && after > before
+                                    }
+                                    contractProgressed = contractProgressed || currentProgressIncreased ||
+                                        remaining == 0 || count >= 0 && remaining >= 0 && remaining < count
                                     actionRemaining = remaining
-                                    remaining == 0
+                                    if (count >= 0 && remaining < 0) null else remaining == 0
                                 }
                             }
                         } else false
@@ -191,17 +204,13 @@ object NonDurationGameTask {
             )
             reportsAccepted += report.successfulReports
             reportsAttempted += report.attemptedReports
-            val actionDetail = "$detail appId=${game.appId} channel=$actionChannel action=$action reports=${report.successfulReports}/${report.requiredSuccesses}"
+            val actionDetail = "$detail appId=${game.appId} channel=$actionChannel action=$action remaining=${count.takeIf { it >= 0 }?.toString() ?: "unknown"} reports=${report.successfulReports}/${report.reportLimit}"
             if (!report.accepted) {
-                Log.error("NonDurationGameTask", "${report.failureMessage} code=${report.failureCode} raw=${report.failureRaw} $actionDetail")
-                if (report.resultUnknown) {
-                    return TaskFlowActionResult.defer(
-                        DeferredReason.STATE_CONFIRMATION, message = report.failureMessage,
-                        rpc = "GameTask.reportDetailed", detail = actionDetail,
-                        refreshAfterAction = true, stopCurrentRound = report.stopCurrentRound,
-                        raw = report.failureRaw,
-                    ).copy(submissionStarted = reportsAttempted > 0)
+                if (report.failureCode == MiniGameVendorReporter.ROLE_CONTEXT_MISSING && reportsAttempted == 0) {
+                    logger("游戏任务[本轮跳过] ${report.failureMessage} $actionDetail")
+                    return TaskFlowActionResult.success(progressChanged = false).copy(submissionStarted = false)
                 }
+                Log.error("NonDurationGameTask", "${report.failureMessage} code=${report.failureCode} raw=${report.failureRaw} $actionDetail")
                 val response = runCatching { JSONObject(report.failureRaw) }.getOrNull()
                 return TaskFlowActionResult.failure(
                     failureType = if (response?.let(RpcOfflineRisk::isOfflineRisk) == true ||
@@ -215,18 +224,20 @@ object NonDurationGameTask {
                 ).copy(refreshAfterAction = reportsAttempted > 0 || reportsAccepted > 0, progressChanged = false,
                     submissionStarted = reportsAttempted > 0)
             }
-            remainingContract = remainingContract || action in componentTasks && actionRemaining > 0
-            if (businessConfirmed) break
+            remainingContract = remainingContract || action in componentTasks && actionRemaining != 0
+            if (businessConfirmed || game.sdk == "tuyoo" || game.sdk == "yxmys") break
         }
         val needsAccumulation = !businessConfirmed && contractProgressed && remainingContract
+        if (businessConfirmed) return TaskFlowActionResult.success(refreshAfterAction = true)
+            .copy(submissionStarted = reportsAttempted > 0, rpc = "GameTask.reportDetailed",
+                detail = "$detail appId=${game.appId} reports=$reportsAccepted")
         return TaskFlowActionResult.defer(
-            if (needsAccumulation) DeferredReason.NO_PROGRESS_COOLDOWN else DeferredReason.STATE_CONFIRMATION,
-            message = if (businessConfirmed) "游戏业务状态已推进，继续回查并领奖"
-                else if (needsAccumulation) "阶梯进度已增加，续接合同内剩余动作"
-                else "本批合同动作已执行，等待原业务状态确认，不重复上报",
+            DeferredReason.STATE_CONFIRMATION,
+            message = if (needsAccumulation) "游戏进度已增加，刷新任务后继续"
+                else if (contractProgressed) "游戏组件动作已完成，回查所属任务及奖励"
+                else "本批动作已受理，本轮回查原业务状态",
             rpc = "GameTask.reportDetailed", detail = "$detail appId=${game.appId} reports=$reportsAccepted",
-            refreshAfterAction = true, progressChanged = businessConfirmed,
-            deferredUntil = if (needsAccumulation) System.currentTimeMillis() else null,
+            refreshAfterAction = true, progressChanged = contractProgressed,
         ).copy(submissionStarted = reportsAttempted > 0)
     }
 }

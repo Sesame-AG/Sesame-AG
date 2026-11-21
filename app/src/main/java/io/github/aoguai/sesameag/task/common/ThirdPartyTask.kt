@@ -33,7 +33,7 @@ object ThirdPartyTask {
                 it.isNotBlank() && it != "\${$key}" && it != "null" && it != "undefined"
             }
         }.firstOrNull().orEmpty()
-        val scene = value("sceneCode")
+        val scene = value("sceneCodeAlipay", "sceneCode")
         val taskType = value("iepTaskType", "taskType", "third_task_type")
         val token = value("userToken", "user_token", "third_token", "tToken", "token")
         val businessScene = value("iepTaskSceneCode", "third_scene_code")
@@ -88,7 +88,8 @@ object ThirdPartyTask {
                 }
                 val landedToken = links.asSequence().filter { it.isNotBlank() }.map { link ->
                     val parameters = GameCenterPlayRpcCall.describeTask(JSONObject().put("targetUrl", link)).urlParameters
-                    val scene = parameters["sceneCode"] ?: parameters["iepTaskSceneCode"] ?: parameters["third_scene_code"]
+                    val scene = parameters["sceneCodeAlipay"] ?: parameters["sceneCode"]
+                        ?: parameters["iepTaskSceneCode"] ?: parameters["third_scene_code"]
                     if (scene != contract.sceneCode) "" else {
                         listOf("userToken", "user_token", "third_token", "tToken", "token").firstNotNullOfOrNull { key ->
                             parameters[key]?.trim()?.trim('"', '\'')?.takeIf {
@@ -139,9 +140,14 @@ object ThirdPartyTask {
                     code = codes.firstOrNull { it != "SUCCESS" }.orEmpty(), message = "第三方完成回传失败",
                     rpc = api, raw = raw).copy(refreshAfterAction = true)
             }
-            if (codes.isEmpty()) Log.error("ThirdPartyTask", "MTOP 响应未确认受理，回查业务列表：$raw")
+            if ("SUCCESS" !in codes) {
+                return TaskFlowActionResult.failure(
+                    GameCenterPlayRpcCall.classify(raw), message = "第三方回传响应未确认受理",
+                    rpc = api, raw = raw,
+                ).copy(refreshAfterAction = writeStarted, submissionStarted = writeStarted)
+            }
             return TaskFlowActionResult.defer(DeferredReason.STATE_CONFIRMATION,
-                message = if (codes.isEmpty()) "第三方回传结果未知，回查原业务任务" else "第三方回传已受理，回查原业务任务及奖励",
+                message = "第三方回传已受理，本轮回查原业务任务及奖励",
                 rpc = api, raw = raw, refreshAfterAction = true).copy(submissionStarted = writeStarted)
         } catch (error: CancellationException) {
             throw error
@@ -151,19 +157,17 @@ object ThirdPartyTask {
         } catch (error: Throwable) {
             if (!AccountSessionCoordinator.isCurrentSession(session.userId, session.sessionEpoch) ||
                 ApplicationHookConstants.isOffline()) {
-                return if (writeStarted) TaskFlowActionResult.defer(DeferredReason.STATE_CONFIRMATION,
-                    message = "账号会话已变化或已离线，回传结果待回查", rpc = api, raw = error.toString(),
-                    refreshAfterAction = true, stopCurrentRound = true).copy(submissionStarted = true)
-                else TaskFlowActionResult.failure(TaskRpcFailureType.BUSINESS_LIMIT,
-                    message = "账号会话已变化或已离线，尚未发起回传",
-                    rpc = api, raw = error.toString(), stopCurrentRound = true)
+                return TaskFlowActionResult.failure(TaskRpcFailureType.BUSINESS_LIMIT,
+                    message = "账号会话已变化或已离线，第三方回传已中断",
+                    rpc = api, raw = error.toString(), stopCurrentRound = true,
+                ).copy(submissionStarted = writeStarted)
             }
             Log.error("ThirdPartyTask", "第三方回传异常：$error")
-            return if (writeStarted) TaskFlowActionResult.defer(DeferredReason.STATE_CONFIRMATION,
-                message = "第三方回传结果未知，回查原业务任务", rpc = api, raw = error.toString(), refreshAfterAction = true)
-                .copy(submissionStarted = true)
-            else TaskFlowActionResult.failure(TaskRpcFailureType.NON_RETRYABLE_INVALID,
-                message = "第三方回传调用前失败，尚未发起回传", rpc = api, raw = error.toString())
+            return TaskFlowActionResult.failure(
+                if (writeStarted) TaskRpcFailureType.RETRYABLE_RPC else TaskRpcFailureType.NON_RETRYABLE_INVALID,
+                message = if (writeStarted) "第三方回传调用异常" else "第三方回传调用前失败",
+                rpc = api, raw = error.toString(),
+            ).copy(refreshAfterAction = writeStarted, submissionStarted = writeStarted)
         }
     }
 }

@@ -122,6 +122,8 @@ private val farmDefaultBlacklist =
         "MYZY_pay_IPccl_jhwg", // 游戏充值得10次抽抽乐机会，需真实支付
         "MYZY_pay_rcccl_fkssj", // 游戏充值并消费，需真实支付
         "MYZY_pay_IPccl_fkssj", // 游戏充值并消费，需真实支付
+        "MYZY_pay_xjsl_yblb", // 游戏充值任务，需真实支付
+        "AI_KITCHEN_PAY_YBLB", // 游戏充值任务，需真实支付
         "antfarm_pay_task_wdhysj_ccl", // 游戏充值得10次抽抽乐机会，需真实支付
         "ipccl_pay_ah_wdhy_ahsj_1y_ah", // 游戏充值得10次抽抽乐机会，需真实支付
         "20251118_chouchoulechoukuan2|伸出援手，点亮希望", // 装扮抽抽乐公益捐赠任务
@@ -213,7 +215,7 @@ private val forestDefaultBlacklist =
         "FOREST_NORMAL_DRAW_YYDWLXQ_ZH", // finishTaskopengreen 返回 400000040
         "FOREST_ACTIVITY_DRAW_ZHXF_ZHWUFU", // finishTaskopengreen 返回 400000040
         "FOREST_ACTIVITY_DRAW_ZCYLT_ZHWUFU",
-        "FOREST_ACTIVITY_DRAW_LMCT_ZHWUFU", // finishTaskopengreen 返回 400000040
+        "ANTFOREST_2060170000359285_XR", // 一步两步动作任务：厂商登录返回10005（签名校验失败）
         "FOREST_NORMAL_DRAW_SHARE", // 森林抽抽乐分享任务
         "FOREST_ACTIVITY_DRAW_SHARE", // 森林抽抽乐活动分享任务
         "MHXCZ_RYCZ_HDCCL|玩梦幻消除战充值任意金额", // 森林抽抽乐充值任务，缺少稳定完成RPC闭环
@@ -298,12 +300,10 @@ private val memberDefaultBlacklist =
         "玩保卫向日葵通过1关",
         "玩无名之辈消耗20个包子",
         "逛淘宝特价版",
-        "玩毛线消不停通过2关",
         "玩会员爱解压通过2关",
         "逛一逛一淘APP",
         "玩造化仙府升级建筑3次",
         "玩龙迹之城升级10次英雄",
-        "玩螺丝消不停通2关",
         "玩斗罗大陆零击败40只怪物",
         "逛百度极速版领钱",
         "邀请好友签到领积分",
@@ -320,7 +320,6 @@ private val memberDefaultBlacklist =
         "SYH_RTB_SHOW_TASK_INDEX_2|去签名设计", // 304/TASK_NOT_FINISHED
         "SYH_RTB_SHOW_TASK_INDEX_3|玩游戏通过1次游戏", // 001，系统异常
         "AP15353904|玩猪了个猪",
-        "2021004163668677#wdhysj_game_zhuxian_every_1#12|玩我的世界",
         "2060170000365575#ddxbt_game_pass_every_1#5|玩点点消不停",
         "2021003184609526#pplwg_game_pass_level_every_1#5|玩泡泡龙王国",
         "JYMJFTE_TASK", // 商家真实业务/外跳任务
@@ -333,24 +332,14 @@ private val memberDefaultBlacklist =
         "zcylt|玩这城有良田|举办4次庙会",
         "hlxxx|玩欢乐消消消|完成6个夜市任务",
         "营业执照",
-        "2021005132680209#zgwhx_game_level_every_1#4",
-        "2021006105651938#zslxx_game_pass_every_1#1",
-        "2060170000399540#ylpt_game_pass_every_1#2",
-        "2060170000357475#fkljy_game_pass_every_1#3",
         "2021005176645204#jyelsfk_game_pass_every_1#5",
         "2021003194690149#hlxxx_game_yeshi_3#2",
-        "2021006148677438#klppd_game_pass_every_1#2",
         "2021003183618061#wpjz_game_pass_every_1#5",
-        "2021004128666655#wggs_game_pass_every_1#3",
         "2021004163612073#tssl_game_shenlong_every_1#1",
-        "2021000111632448#zbt_game_pass_every_1#5",
-        "2021004131628794#sdppx_game_pass_every_1#5",
-        "2021005172696439#zgm_game_pass_every_1#6",
         "2060170000365084#kxxxl_game_pass_every_1#25",
         "2060170000380982#mhxcz_game_zhuangxiu_every_1#8",
         "2021005124694002#xgtsjrwj_game_denghuo_task_1#1",
         "2021003193629997#cyddmx_game_pass_level_1#6",
-        "2021006109602033#tznzy_game_pass_every_1#3",
         "2060170000216502#gkyyn_game_pass_every_1#5", // 需要游戏内通关事件
         "2060170000363633#wbgwy_game_pass_every_1#2", // 需要游戏内通关事件
         "2021006135621066#qyxx_game_zhuxian_every_1#10", // 需要游戏内主线事件

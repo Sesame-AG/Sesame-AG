@@ -30,8 +30,6 @@ object GameCenterPlayRpcCall {
         "com.alipay.gamecenteruprod.biz.rpc.p2e.queryTaskList"
     private const val METHOD_P2E_QUERY_FEEDS_GAME_LIST =
         "com.alipay.gamecenteruprod.biz.rpc.p2e.queryFeedsGameList"
-    private const val METHOD_GAME_ENGINE_TYPE =
-        "com.alipay.gamecenteruprod.biz.rpc.queryGameEngineType"
     private const val METHOD_GAME_USER_ACTION =
         "com.alipay.gamecenteruprod.biz.rpc.v3.submitUserAction"
     private const val METHOD_GAME_ASSISTANT_CONSULT =
@@ -229,6 +227,14 @@ object GameCenterPlayRpcCall {
                 reason = "supported non-duration game action",
             )
         }
+        if (descriptor.gameTaskType.equals("zhuanhua", ignoreCase = true) ||
+            descriptor.componentScene == "outer_multi_type_task"
+        ) {
+            return TaskActionDecision(
+                action = TaskAction.DEFERRED,
+                reason = "structured game task requires its business event",
+            )
+        }
         return TaskActionDecision(
             action = TaskAction.DIRECT_FINISH.takeIf { directFinishSupported } ?: TaskAction.DEFERRED,
             reason = if (directFinishSupported) {
@@ -239,6 +245,7 @@ object GameCenterPlayRpcCall {
         )
     }
 
+    /** 次数为当前动作的剩余进度，-1 表示合同未给出次数，不代表只需一次上报。 */
     fun nonDurationAction(task: JSONObject, appId: String): Pair<String, Int>? {
         if (task.optString("appId").let { it.isNotBlank() && it != appId } ||
             task.optString("taskType") == "GAME_PAY") return null
@@ -254,12 +261,14 @@ object GameCenterPlayRpcCall {
         }
         if (action.isBlank()) return null
         val progress = task.optJSONObject("taskProgressVO")
-        val remaining = if (progress != null && progress.has("totalProgress")) {
-            if (task.optString("taskStatus") in setOf("FINISHED", "RECEIVED", "COMPLETED")) 0
-            else (progress.optInt("totalProgress") - progress.optInt("currentProgress")).coerceAtLeast(0)
-        } else if (countedId && parts.size == 3 && parts[0] == appId) {
-            parts[2].toIntOrNull()?.coerceAtLeast(0) ?: return null
-        } else 1
+        val total = progress?.optInt("totalProgress", -1) ?: -1
+        val current = progress?.optInt("currentProgress", -1) ?: -1
+        val remaining = when {
+            task.optString("taskStatus") in setOf("FINISHED", "RECEIVED", "COMPLETED") -> 0
+            total >= 0 && current >= 0 -> (total - current).coerceAtLeast(0)
+            countedId && parts.size == 3 && parts[0] == appId -> parts[2].toIntOrNull()?.takeIf { it >= 0 } ?: -1
+            else -> -1
+        }
         return action to remaining
     }
 
@@ -287,16 +296,8 @@ object GameCenterPlayRpcCall {
         )
     }
 
-    fun decideDurationAction(
-        clickBeforeDuration: Boolean = false,
-        vararg roots: JSONObject?,
-    ): TaskActionDecision = resolveTaskAction(*roots, clickBeforeDuration = clickBeforeDuration)
-
     fun directFinishDecision(reason: String): TaskActionDecision =
         TaskActionDecision(TaskAction.DIRECT_FINISH, reason = reason)
-
-    fun legacyExternalReportDecision(reason: String): TaskActionDecision =
-        TaskActionDecision(TaskAction.LEGACY_EXTERNAL_REPORT, reason = reason)
 
     fun ownerBusinessDecision(reason: String): TaskActionDecision =
         TaskActionDecision(TaskAction.OWNER_BUSINESS, reason = reason)
@@ -1010,68 +1011,6 @@ object GameCenterPlayRpcCall {
             if (contract.trafficDriverId.isBlank()) add("trafficDriverId")
             if (contract.floatingBallTypeList.none { it.isNotBlank() }) add("floatingBallTypeList")
         }
-
-    fun initializeFloatingBallGame(
-        sceneId: String,
-        source: String,
-        gameAppId: String,
-    ): FloatingBallAck {
-        var ack =
-            requestAck(
-                METHOD_GAME_ENGINE_TYPE,
-                JSONObject()
-                    .put("__git", GAME_CENTER_GIT)
-                    .put("appId", gameAppId)
-                    .put("sceneId", sceneId),
-            )
-        if (!ack.accepted) return ack
-        ack =
-            requestAck(
-                METHOD_GAME_USER_ACTION,
-                JSONObject()
-                    .put("actionCode", "enterGame")
-                    .put("gameId", gameAppId)
-                    .put("paladinxVersion", "2.2.5")
-                    .put("source", "gameFramework"),
-            )
-        if (!ack.accepted) return ack
-        ack =
-            requestAck(
-                METHOD_GAME_ASSISTANT_CONSULT,
-                JSONObject()
-                    .put("appId", gameAppId)
-                    .put("assistantVersion", "3.0.0")
-                    .put("deviceLevel", "high")
-                    .put("sceneCode", "GAME_MSG")
-                    .put("source", source),
-            )
-        if (!ack.accepted) return ack
-        ack =
-            requestAck(
-                METHOD_GAME_COMPONENT_CONSULT,
-                JSONObject()
-                    .put("appId", gameAppId)
-                    .put("channel", sceneId)
-                    .put("scene", sceneId)
-                    .put("source", source),
-            )
-        if (!ack.accepted) return ack
-        ack = queryGameComponent(
-            gameAppId,
-            source,
-            channel = sceneId,
-            scene = sceneId,
-            setHead = false,
-        )
-        if (!ack.accepted) return ack
-        return queryGameComponent(
-            gameAppId,
-            source,
-            channel = sceneId,
-            scene = sceneId,
-            setHead = true,
-        )
-    }
 
     private data class P2ePageGameCandidate(
         val gameAppId: String,
