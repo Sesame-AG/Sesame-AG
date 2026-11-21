@@ -14,12 +14,6 @@ import io.github.aoguai.sesameag.model.withDesc
 import io.github.aoguai.sesameag.model.withPortScope
 import io.github.aoguai.sesameag.model.modelFieldExt.BooleanModelField
 import io.github.aoguai.sesameag.model.modelFieldExt.IntegerModelField
-import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
-import io.github.aoguai.sesameag.hook.ApplicationHook
-import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleKind
-import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleState
-import io.github.aoguai.sesameag.hook.keepalive.ScheduledTaskRouter
-import io.github.aoguai.sesameag.hook.keepalive.UnifiedScheduler
 import io.github.aoguai.sesameag.task.ModelTask
 import io.github.aoguai.sesameag.util.SerialTaskQueue
 import org.json.JSONObject
@@ -134,61 +128,6 @@ class GoldenBeanTreasure : ModelTask() {
             Log.printStackTrace("GoldenBeanTreasure", "start.run err:", t)
         } finally {
             Log.goldenBean("执行结束-${getName()}")
-        }
-    }
-
-    internal fun scheduleGoldenBeanTasks(waitKey: String, triggerAt: Long) {
-        val context = ApplicationHook.appContext ?: return
-        val owner = AccountSessionCoordinator.currentUserId()?.takeIf { it.isNotBlank() } ?: return
-        val epoch = AccountSessionCoordinator.currentSessionEpoch()
-        val childId = "$PERSISTENT_CHILD_KIND:$owner:$waitKey:$triggerAt"
-        val payload = JSONObject().put("child_kind", PERSISTENT_CHILD_KIND)
-            .put("owner_user_id", owner).put("session_epoch", epoch).put("wait_key", waitKey)
-        val schedule = UnifiedScheduler.schedulePersistentTrigger(
-            context = context, name = "金豆任务计时与回查", kind = PersistentScheduleKind.MODULE_CHILD,
-            triggerAtMs = triggerAt, dedupeKey = childId, payloadJson = payload.toString(),
-            ownerUserId = owner, sessionEpoch = epoch,
-        )
-        if (schedule.state == PersistentScheduleState.FAILED) {
-            Log.error("GoldenBeanTreasure", "金豆任务持久调度注册失败:${schedule.lastError}")
-        }
-        if (!hasChildTask(childId)) {
-            addChildTask(ChildModelTask(
-                id = childId, group = PERSISTENT_CHILD_KIND, execTime = triggerAt,
-                suspendRunnable = {
-                    if (schedule.state == PersistentScheduleState.FAILED) {
-                        triggerPersistentGoldenBeanTasks(payload.toString(), schedule.id, "golden_bean_timer", persistent = false)
-                    } else ScheduledTaskRouter.fire(context, schedule, "golden_bean_timer")
-                },
-            ))
-        }
-    }
-
-    internal fun triggerPersistentGoldenBeanTasks(
-        payloadJson: String, scheduleId: String, source: String, persistent: Boolean = true,
-    ): Boolean {
-        val payload = JSONObject(payloadJson)
-        return executePersistentChild(
-            scheduleId = scheduleId, ownerUserId = payload.getString("owner_user_id"),
-            sessionEpoch = payload.getLong("session_epoch"), source = source,
-            workflowQueue = goldenBeanQueue, persistent = persistent,
-        ) {
-            if (!isEnable() || goldenBeanTreasure.value != true) {
-                io.github.aoguai.sesameag.task.TaskExecutionOutcome.SKIPPED
-            } else {
-                executeIntervalInt = max(executeInterval.value ?: 0, 500)
-                if (payload.optString("wait_key") == "game_center") {
-                    val result = GoldenBeanTreasureSupport.runGameCenterOpportunityFlow(
-                        mutableSetOf(), { triggerAt -> scheduleGoldenBeanTasks("game_center", triggerAt) },
-                        resumeOnly = true)
-                    if (result.progressed || result.taskRefreshRequested) resumeGoldenBeanTasks()
-                    when {
-                        result.blocked -> io.github.aoguai.sesameag.task.TaskExecutionOutcome.FAILED
-                        result.completed -> io.github.aoguai.sesameag.task.TaskExecutionOutcome.SUCCESS
-                        else -> io.github.aoguai.sesameag.task.TaskExecutionOutcome.DEFERRED
-                    }
-                } else resumeGoldenBeanTasks()
-            }
         }
     }
 

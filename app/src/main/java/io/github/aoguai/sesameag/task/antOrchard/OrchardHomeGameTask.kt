@@ -3,9 +3,7 @@ package io.github.aoguai.sesameag.task.antOrchard
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.hook.rpc.RpcDailyCircuit
-import io.github.aoguai.sesameag.task.common.DeferredReason
 import io.github.aoguai.sesameag.task.common.GameCenterPlayRpcCall
-import io.github.aoguai.sesameag.task.common.TaskFlowAction
 import io.github.aoguai.sesameag.task.common.TaskFlowActionResult
 import io.github.aoguai.sesameag.task.common.TaskFlowAdapter
 import io.github.aoguai.sesameag.task.common.TaskFlowItem
@@ -27,8 +25,6 @@ internal class OrchardHomeGameTaskFlowAdapter(private val orchard: AntOrchard) :
     private val state = store.get(stateKey, String::class.java)?.let(::JSONObject)?.takeIf {
         TimeUtil.isSameDay(it.optLong("date"), System.currentTimeMillis())
     } ?: JSONObject().put("date", System.currentTimeMillis())
-    var nextRunAt: Long? = null
-        private set
 
     override fun query(): JSONObject {
         val result = JSONObject()
@@ -176,12 +172,6 @@ internal class OrchardHomeGameTaskFlowAdapter(private val orchard: AntOrchard) :
         }
         logInfo("农场首页游戏[${item.title}] 获得${award}g肥料")
         return TaskFlowActionResult.success()
-    }
-
-    override fun afterDeferred(item: TaskFlowItem, action: TaskFlowAction, result: TaskFlowActionResult) {
-        if (result.deferredReason == DeferredReason.TIME_WINDOW) {
-            result.deferredUntil?.let { nextRunAt = minOf(nextRunAt ?: it, it) }
-        }
     }
 
     override fun logInfo(message: String) = Log.orchard(message)

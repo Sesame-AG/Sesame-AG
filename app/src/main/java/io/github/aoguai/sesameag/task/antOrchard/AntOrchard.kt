@@ -34,7 +34,6 @@ import io.github.aoguai.sesameag.task.common.TaskFlowAction
 import io.github.aoguai.sesameag.task.common.TaskFlowActionResult
 import io.github.aoguai.sesameag.task.common.TaskFlowAdapter
 import io.github.aoguai.sesameag.task.common.TaskFlowEngine
-import io.github.aoguai.sesameag.task.common.TaskFlowExecutionState
 import io.github.aoguai.sesameag.task.common.TaskFlowItem
 import io.github.aoguai.sesameag.task.common.TaskFlowPhase
 import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
@@ -194,30 +193,15 @@ class AntOrchard : ModelTask() {
 
     private val continuationQueue = SerialTaskQueue()
 
-    private fun orchardContinuationState(action: String, level: String = ""): TaskFlowExecutionState {
-        val owner = AccountSessionCoordinator.currentUserId().orEmpty()
-        val epoch = AccountSessionCoordinator.currentSessionEpoch()
-        val date = Calendar.getInstance()
-        val day = "${date[Calendar.YEAR]}-${date[Calendar.DAY_OF_YEAR]}"
-        val previous = PersistentScheduleRegistry.listFresh().firstOrNull {
-            it.dedupeKey == "orchard_${owner}::$action" && it.ownerUserId == owner && it.sessionEpoch == epoch
-        }?.let { JSONObject(it.payloadJson) }
-        return TaskFlowExecutionState(previous?.takeIf {
-            it.optString("day") == day && it.optString("level") == level
-        }?.optJSONObject("executionState"))
-    }
-
     internal fun resumeTasksAfterGoldenBeanProgress() {
         if (!isEnable() || receiveOrchardTaskAward.value != true) return
         if (!Status.hasFlagToday(StatusFlags.FLAG_ANTORCHARD_TASKS_DONE)) {
-            scheduleOrchardContinuation("daily", System.currentTimeMillis(), executionState = orchardContinuationState("daily"))
+            scheduleOrchardContinuation("daily", System.currentTimeMillis())
         }
-        scheduleOrchardContinuation("star", System.currentTimeMillis(), executionState = orchardContinuationState("star"))
+        scheduleOrchardContinuation("star", System.currentTimeMillis())
     }
 
-    private fun scheduleOrchardContinuation(
-        action: String, triggerAtMs: Long, level: String = "", executionState: TaskFlowExecutionState? = null,
-    ): Boolean {
+    private fun scheduleOrchardContinuation(action: String, triggerAtMs: Long): Boolean {
         val context = ApplicationHook.appContext
         val owner = AccountSessionCoordinator.currentUserId().orEmpty()
         val epoch = AccountSessionCoordinator.currentSessionEpoch()
@@ -235,18 +219,12 @@ class AntOrchard : ModelTask() {
         date.set(Calendar.MILLISECOND, 0)
         val payload = JSONObject().put("child_kind", PERSISTENT_CHILD_KIND)
             .put("owner_user_id", owner).put("session_epoch", epoch)
-            .put("action", action).put("day", day).put("level", level)
-            .put("executionState", executionState?.toJson())
-        val existing = PersistentScheduleRegistry.listFresh().firstOrNull {
-            it.dedupeKey == key && it.ownerUserId == owner && it.sessionEpoch == epoch &&
-                it.state in setOf(PersistentScheduleState.SCHEDULED, PersistentScheduleState.QUEUED, PersistentScheduleState.RUNNING)
-        }
-        if (existing != null) {
-            val previous = JSONObject(existing.payloadJson)
-            if (previous.optString("day") == day && previous.optString("level") == level) {
-                return PersistentScheduleRegistry.updatePayload(existing.id, owner, epoch, payload.toString())
-            }
-        }
+            .put("action", action).put("day", day)
+        if (PersistentScheduleRegistry.listFresh().any {
+                it.dedupeKey == key && it.ownerUserId == owner && it.sessionEpoch == epoch &&
+                    it.state in setOf(PersistentScheduleState.SCHEDULED, PersistentScheduleState.QUEUED, PersistentScheduleState.RUNNING) &&
+                    JSONObject(it.payloadJson).optString("day") == day
+            }) return true
         val schedule = UnifiedScheduler.schedulePersistentTrigger(
             context = context, name = "芭芭农场续接:$action", kind = PersistentScheduleKind.MODULE_CHILD,
             triggerAtMs = triggerAtMs, dedupeKey = key, payloadJson = payload.toString(),
@@ -265,20 +243,10 @@ class AntOrchard : ModelTask() {
     internal fun triggerPersistentContinuation(payloadJson: String, scheduleId: String, source: String): Boolean {
         val payload = JSONObject(payloadJson)
         var homeGameNextAt: Long? = null
-        var gameCenterNextAt: Long? = null
         return executePersistentChild(
             scheduleId = scheduleId, ownerUserId = payload.optString("owner_user_id"),
             sessionEpoch = payload.optLong("session_epoch"), source = source, workflowQueue = continuationQueue,
-            afterExecution = {
-                homeGameNextAt?.let { next ->
-                    scheduleOrchardContinuation("home_games", next,
-                        executionState = TaskFlowExecutionState(payload.optJSONObject("executionState")))
-                }
-                gameCenterNextAt?.let { next ->
-                    scheduleOrchardContinuation("game_center", maxOf(next, System.currentTimeMillis()),
-                        executionState = TaskFlowExecutionState(payload.optJSONObject("executionState")))
-                }
-            },
+            afterExecution = { homeGameNextAt?.let { scheduleOrchardContinuation("home_games", it) } },
         ) {
             val date = Calendar.getInstance()
             if (!isEnable() || payload.optString("day") != "${date[Calendar.YEAR]}-${date[Calendar.DAY_OF_YEAR]}") {
@@ -295,37 +263,19 @@ class AntOrchard : ModelTask() {
                 "daily" -> OrchardDailyTaskFlowAdapter()
                 "star" -> OrchardDailyTaskFlowAdapter(starTasks = true)
                 "home_games" -> OrchardHomeGameTaskFlowAdapter(this)
-                "game_center" -> OrchardGameCenterTaskFlowAdapter()
-                "camp" -> {
-                    val level = payload.optString("level")
-                    if (level.isBlank() || level == "0") return@executePersistentChild TaskExecutionOutcome.FAILED
-                    CampTakeoverTaskFlowAdapter(level)
-                }
                 else -> {
                     Log.error(TAG, "农场续接动作无效 action=$action")
                     return@executePersistentChild TaskExecutionOutcome.FAILED
                 }
             }
-            // 恢复原动作快照；同一动作只回查，有新进度时仍可领奖或推进下一步。
-            val executionState = TaskFlowExecutionState(payload.optJSONObject("executionState"))
-            val result = TaskFlowEngine(
-                adapter, roundSleepMs = executeIntervalInt.toLong(), executionState = executionState,
-                continuationOnly = action == "game_center",
-            ).run()
-            if (adapter is OrchardHomeGameTaskFlowAdapter) homeGameNextAt = adapter.nextRunAt
-            payload.put("executionState", executionState.toJson())
-            if (!PersistentScheduleRegistry.updatePayload(scheduleId, payload.getString("owner_user_id"),
-                    payload.getLong("session_epoch"), payload.toString())) {
-                Log.error(TAG, "农场续接状态保存失败 action=$action id=$scheduleId")
-                return@executePersistentChild TaskExecutionOutcome.FAILED
-            }
-            if (action == "game_center" && !result.interrupted) gameCenterNextAt = result.deferredUntil
+            val result = TaskFlowEngine(adapter, roundSleepMs = executeIntervalInt.toLong()).run()
+            if (action == "home_games" && !result.interrupted) homeGameNextAt = result.deferredUntil
             when {
-                result.completed -> TaskExecutionOutcome.SUCCESS
-                result.failureCount > 0 -> TaskExecutionOutcome.FAILED
                 result.interrupted -> TaskExecutionOutcome.CANCELLED
-                // 恢复的待确认动作不一定增加本轮 deferredCount，未完成仍交回后续调度。
-                else -> TaskExecutionOutcome.DEFERRED
+                result.failureCount > 0 -> TaskExecutionOutcome.FAILED
+                homeGameNextAt != null -> TaskExecutionOutcome.DEFERRED
+                result.completed -> TaskExecutionOutcome.SUCCESS
+                else -> TaskExecutionOutcome.SKIPPED
             }
         }
     }
@@ -537,7 +487,7 @@ class AntOrchard : ModelTask() {
         if (progressed && receiveOrchardTaskAward.value == true &&
             !Status.hasFlagToday(StatusFlags.FLAG_ANTORCHARD_TASKS_DONE)
         ) {
-            scheduleOrchardContinuation("daily", System.currentTimeMillis(), executionState = orchardContinuationState("daily"))
+            scheduleOrchardContinuation("daily", System.currentTimeMillis())
         }
         return progressed
     }
@@ -936,23 +886,13 @@ class AntOrchard : ModelTask() {
             if (userId.isNotBlank()) {
                 this.userId = userId
             }
-            val dailyState = orchardContinuationState("daily")
-            val daily = TaskFlowEngine(
-                OrchardDailyTaskFlowAdapter(),
-                roundSleepMs = executeIntervalInt.toLong(),
-                executionState = dailyState,
-            ).run()
-            if (daily.completed) {
+            val daily = TaskFlowEngine(OrchardDailyTaskFlowAdapter(), roundSleepMs = executeIntervalInt.toLong()).run()
+            if (!daily.interrupted) {
                 PersistentScheduleRegistry.removeByDedupeKey(ApplicationHook.appContext, "orchard_${this.userId}::daily")
-            } else if (dailyState.pendingActionConfirmations.isNotEmpty()) {
-                scheduleOrchardContinuation("daily", System.currentTimeMillis() + 5_000L, executionState = dailyState)
             }
-            val starState = orchardContinuationState("star")
-            val star = TaskFlowEngine(OrchardDailyTaskFlowAdapter(starTasks = true), roundSleepMs = 0L, executionState = starState).run()
-            if (star.completed) {
+            val star = TaskFlowEngine(OrchardDailyTaskFlowAdapter(starTasks = true), roundSleepMs = 0L).run()
+            if (!star.interrupted) {
                 PersistentScheduleRegistry.removeByDedupeKey(ApplicationHook.appContext, "orchard_${this.userId}::star")
-            } else if (starState.pendingActionConfirmations.isNotEmpty()) {
-                scheduleOrchardContinuation("star", System.currentTimeMillis() + 5_000L, executionState = starState)
             }
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "doOrchardDailyTask err:", t)
@@ -960,44 +900,25 @@ class AntOrchard : ModelTask() {
     }
 
     internal fun doOrchardHomeGameTasks() {
-        val executionState = orchardContinuationState("home_games")
-        val adapter = OrchardHomeGameTaskFlowAdapter(this)
-        val result = TaskFlowEngine(adapter, roundSleepMs = executeIntervalInt.toLong(), executionState = executionState).run()
-        if (result.completed) {
+        val result = TaskFlowEngine(OrchardHomeGameTaskFlowAdapter(this), roundSleepMs = executeIntervalInt.toLong()).run()
+        if (result.interrupted) return
+        val next = result.deferredUntil
+        if (next == null) {
             PersistentScheduleRegistry.removeByDedupeKey(ApplicationHook.appContext, "orchard_${userId}::home_games")
-        } else {
-            adapter.nextRunAt?.let { next ->
-                if (!scheduleOrchardContinuation("home_games", next, executionState = executionState)) {
-                    Log.error(TAG, "农场首页游戏计时未能登记续接")
-                }
-            }
+        } else if (!scheduleOrchardContinuation("home_games", next)) {
+            Log.error(TAG, "农场首页游戏计时未能登记续接")
         }
     }
 
     internal fun doOrchardGameCenterTasks() {
-        val executionState = orchardContinuationState("game_center")
-        val result = TaskFlowEngine(
-            OrchardGameCenterTaskFlowAdapter(), roundSleepMs = executeIntervalInt.toLong(),
-            executionState = executionState,
-        ).run()
-        if (result.completed) {
-            PersistentScheduleRegistry.removeByDedupeKey(ApplicationHook.appContext, "orchard_${userId}::game_center")
-        } else {
-            val now = System.currentTimeMillis()
-            val nextAt = result.deferredUntil?.coerceAtLeast(now)
-                ?: (now + 5_000L).takeIf { executionState.pendingActionConfirmations.isNotEmpty() }
-            if (nextAt != null && !result.interrupted &&
-                !scheduleOrchardContinuation("game_center", nextAt, executionState = executionState)) {
-                Log.error(TAG, "农场乐园任务未能登记续接")
-            }
-        }
+        PersistentScheduleRegistry.removeByDedupeKey(ApplicationHook.appContext, "orchard_${userId}::game_center")
+        TaskFlowEngine(OrchardGameCenterTaskFlowAdapter(), roundSleepMs = executeIntervalInt.toLong()).run()
     }
 
     private inner class OrchardGameCenterTaskFlowAdapter : TaskFlowAdapter {
         private val dailyTasks = OrchardDailyTaskFlowAdapter()
         override val moduleName: String = ORCHARD_TASK_BLACKLIST_MODULE
         override val flowName: String = "农场乐园独立游戏任务"
-        override val nonRetryableActionFlagPrefix: String = StatusFlags.FLAG_ANTORCHARD_GAME_ACTION_STOP_PREFIX
         override val continueCurrentRoundOnRetryableFailure: Boolean = true
 
         override fun query(): JSONObject = JSONObject(AntOrchardRpcCall.queryGameCenter())
@@ -1087,8 +1008,8 @@ class AntOrchard : ModelTask() {
         override fun receive(item: TaskFlowItem): TaskFlowActionResult =
             if (!item.raw?.optString("taskPlantType").isNullOrBlank()) dailyTasks.receive(item)
             else TaskFlowActionResult.defer(
-                io.github.aoguai.sesameag.task.common.DeferredReason.STATE_CONFIRMATION,
-                message = "游戏权益待服务端确认", refreshAfterAction = true,
+                io.github.aoguai.sesameag.task.common.DeferredReason.PREREQUISITE_PENDING,
+                message = "游戏权益由服务端下发，本轮跳过",
                 detail = orchardActionDetail(item, "gameCenterReceive"),
             )
 
@@ -2966,13 +2887,8 @@ class AntOrchard : ModelTask() {
     internal fun runCampTakeover() {
         val level = treeLevel?.takeIf { it.isNotBlank() && it != "0" } ?: return
         try {
-            val executionState = orchardContinuationState("camp", level)
-            val result = TaskFlowEngine(CampTakeoverTaskFlowAdapter(level), roundSleepMs = executeIntervalInt.toLong(), executionState = executionState).run()
-            if (result.completed) {
-                PersistentScheduleRegistry.removeByDedupeKey(ApplicationHook.appContext, "orchard_${userId}::camp")
-            } else if (executionState.pendingActionConfirmations.isNotEmpty()) {
-                scheduleOrchardContinuation("camp", System.currentTimeMillis() + 5_000L, level, executionState)
-            }
+            PersistentScheduleRegistry.removeByDedupeKey(ApplicationHook.appContext, "orchard_${userId}::camp")
+            TaskFlowEngine(CampTakeoverTaskFlowAdapter(level), roundSleepMs = executeIntervalInt.toLong()).run()
         } catch (t: Throwable) {
             if (t is kotlinx.coroutines.CancellationException || t is InterruptedException) throw t
             Log.printStackTrace(TAG, "农场营地接管失败", t)

@@ -2,6 +2,7 @@ package io.github.aoguai.sesameag.task.goldenBean
 
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
+import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
 import io.github.aoguai.sesameag.hook.ExchangeOptionsRefreshBridge
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.hook.rpc.RpcDailyCircuit
@@ -15,6 +16,7 @@ import io.github.aoguai.sesameag.task.exchange.ExchangeOptionsCache
 import io.github.aoguai.sesameag.task.exchange.ExchangeOptionsSnapshot
 import io.github.aoguai.sesameag.task.exchange.ExchangeSafety
 import io.github.aoguai.sesameag.util.maps.UserMap
+import io.github.aoguai.sesameag.task.common.DeferredReason
 import io.github.aoguai.sesameag.task.common.GameCenterPlayRpcCall
 import io.github.aoguai.sesameag.task.common.NonDurationGameTask
 import io.github.aoguai.sesameag.task.common.TaskFlowActionResult
@@ -24,7 +26,6 @@ import io.github.aoguai.sesameag.util.GameTask
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.TaskBlacklist
 import io.github.aoguai.sesameag.util.TimeUtil
-import io.github.aoguai.sesameag.util.UserDataStoreManager
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import org.json.JSONArray
@@ -41,7 +42,7 @@ internal data class GoldenBeanSesameExchangePlan(
     val exchangedToday: Int,
 )
 
-private data class GoldenBeanGameSnapshot(
+private data class GoldenBeanGameState(
     val drawRights: JSONObject?,
     val candidates: List<GameCenterPlayRpcCall.DeliveryBenefitCandidate>,
 )
@@ -49,7 +50,6 @@ private data class GoldenBeanGameSnapshot(
 internal data class GoldenBeanGameFlowResult(
     val completed: Boolean,
     val progressed: Boolean,
-    val taskRefreshRequested: Boolean = false,
     val blocked: Boolean = false,
 )
 
@@ -600,7 +600,7 @@ internal object GoldenBeanTreasureSupport {
         indexResponse: JSONObject,
         entry: GoldenBeanEntry = GoldenBeanRpcCall.MASTER_ENTRY,
     ): JSONObject? {
-        val signList = indexResponse.optJSONObject("signInfo")?.optJSONArray("signList") ?: return null
+        val signList = indexResponse.optJSONObject("signInfo")?.optJSONArray("signList") ?: return indexResponse
         for (index in 0 until signList.length()) {
             val sign = signList.optJSONObject(index) ?: continue
             if (!sign.optBoolean("today", false) || sign.optBoolean("signed", false)) {
@@ -615,7 +615,7 @@ internal object GoldenBeanTreasureSupport {
             val signResponse = parseResponse(GoldenBeanRpcCall.sign(signKey, entry))
             if (signResponse == null || !isSuccess(signResponse)) {
                 Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "金豆夺宝签到失败 raw=${signResponse ?: "EMPTY"}")
-                return null
+                return signResponse
             }
             val syncResponse = parseResponse(
                 GoldenBeanRpcCall.sync(
@@ -630,7 +630,7 @@ internal object GoldenBeanTreasureSupport {
             }
             return syncResponse
         }
-        return null
+        return indexResponse
     }
 
     internal fun handleMarketingPopup(
@@ -770,238 +770,146 @@ internal object GoldenBeanTreasureSupport {
     }
 
     internal suspend fun runGameCenterOpportunityFlow(
-        attemptedSnapshots: MutableSet<String>,
-        scheduleConfirmation: (Long) -> Unit,
-        resumeOnly: Boolean = false,
+        attemptedActions: MutableSet<String>,
     ): GoldenBeanGameFlowResult {
         val identity = RpcDailyCircuit.captureIdentity()
-        val store = requireNotNull(UserDataStoreManager.getCurrentInstance()?.takeIf { it.uid == identity.userId })
         val startedAt = System.currentTimeMillis()
-        val stateKey = "goldenBeanGameAttempts"
-        val saved = store.get(stateKey, String::class.java)?.let(::JSONObject)
-        val submittedSnapshots = mutableSetOf<String>()
-        if (saved != null && TimeUtil.isSameDay(saved.optLong("day"), startedAt)) {
-            val snapshots = saved.optJSONArray("snapshots") ?: JSONArray()
-            for (i in 0 until snapshots.length()) submittedSnapshots.add(snapshots.getString(i))
-        }
-        val currentSaved = saved?.takeIf { TimeUtil.isSameDay(it.optLong("day"), startedAt) }
-        val pendingTasks = currentSaved?.optJSONObject("pending") ?: JSONObject()
-        val failures = currentSaved?.optJSONObject("failures") ?: JSONObject()
-        val resumeKeys = pendingTasks.keys().asSequence().toSet()
-        attemptedSnapshots.addAll(submittedSnapshots)
-        val newlyPending = mutableSetOf<String>()
-        val persist = {
-            check(RpcDailyCircuit.isCurrent(identity)) { "金豆游戏账号会话已变化" }
-            store.put(stateKey, JSONObject().put("day", startedAt).put("pending", pendingTasks)
-                .put("failures", failures).put("snapshots", JSONArray(submittedSnapshots)).toString(), requirePersistence = true)
-        }
-        val rememberSubmission: (String) -> Unit = { key ->
-            submittedSnapshots.add(key)
-            newlyPending.add("draw")
-            pendingTasks.put("draw", JSONObject().put("snapshot", key)
-                .put("reason", io.github.aoguai.sesameag.task.common.DeferredReason.STATE_CONFIRMATION.name))
-            persist()
-        }
+        val drawKey = "gameCenter:draw"
         var progressed = false
-        var taskRefreshRequested = false
-        while (true) {
+        var failed = false
+        var drawBlocked = drawKey in TaskBlacklist.getBlacklist(GOLDEN_BEAN_BLACKLIST_MODULE)
+        var before = queryGameCenterState()
+        while (before != null) {
             currentCoroutineContext().ensureActive()
             if (ApplicationHookConstants.isOffline() || !RpcDailyCircuit.isCurrent(identity) ||
-                !TimeUtil.isSameDay(startedAt, System.currentTimeMillis())) {
-                return GoldenBeanGameFlowResult(false, progressed, taskRefreshRequested, blocked = true)
-            }
-            val before =
-                queryGameCenterSnapshot()
-                    ?: return GoldenBeanGameFlowResult(false, progressed, blocked = true)
-            val beforeRights = before.drawRights
-            val beforeQuota = beforeRights?.optInt("quotaCanUse", 0)?.coerceAtLeast(0) ?: 0
-            val beforeUsed = beforeRights?.optInt("usedQuota", 0)?.coerceAtLeast(0) ?: 0
-            val quotaLimit = beforeRights?.optInt("quotaLimit", 0)?.coerceAtLeast(0) ?: 0
+                !TimeUtil.isSameDay(startedAt, System.currentTimeMillis())
+            ) return GoldenBeanGameFlowResult(false, progressed, blocked = true)
 
-            // Draw rights and per-game rights are independent server state machines.
-            if (beforeQuota > 0 && (!resumeOnly || "draw" in resumeKeys)) {
-                val drawSnapshot = "draw:$beforeQuota:$beforeUsed:$quotaLimit"
-                if (!attemptedSnapshots.add(drawSnapshot)) {
-                    Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "金豆乐园抽奖配额未变化，保留待确认并停止重复提交")
-                    return GoldenBeanGameFlowResult(false, progressed, blocked = true)
+            val rights = before.drawRights
+            val quota = rights?.optInt("quotaCanUse", 0)?.coerceAtLeast(0) ?: 0
+            val used = rights?.optInt("usedQuota", 0)?.coerceAtLeast(0) ?: 0
+            val limit = rights?.optInt("quotaLimit", 0)?.coerceAtLeast(0) ?: 0
+            val blacklist = TaskBlacklist.getBlacklist(GOLDEN_BEAN_BLACKLIST_MODULE)
+            if (!drawBlocked && quota > 0 && (limit <= 0 || used < limit)) {
+                val raw = try {
+                    GoldenBeanRpcCall.drawGameCenterAward()
+                } catch (t: Exception) {
+                    if (t is kotlinx.coroutines.CancellationException || t is InterruptedException) throw t
+                    Log.printStackTrace(GOLDEN_BEAN_BLACKLIST_MODULE, "金豆乐园抽奖调用失败", t)
+                    ""
                 }
-                val drawResponse = parseResponse(GoldenBeanRpcCall.drawGameCenterAward())
-                if (drawResponse == null || !isSuccess(drawResponse)) {
-                    Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "金豆乐园抽奖失败 raw=${drawResponse ?: "EMPTY"}")
-                    return GoldenBeanGameFlowResult(false, progressed, blocked = true)
+                val response = parseResponse(raw)
+                val accepted = response?.let(::isSuccess) == true
+                val after = if (accepted) queryGameCenterState() else null
+                val updated = after?.drawRights
+                if (updated != null &&
+                    (rights?.has("quotaCanUse") == true && updated.has("quotaCanUse") && updated.optInt("quotaCanUse") < quota ||
+                        rights?.has("usedQuota") == true && updated.has("usedQuota") && updated.optInt("usedQuota") > used)
+                ) {
+                    progressed = true
+                    before = after
+                    continue
                 }
-                rememberSubmission(drawSnapshot)
-                val after = queryGameCenterSnapshot() ?: run {
-                    scheduleConfirmation(System.currentTimeMillis())
-                    return GoldenBeanGameFlowResult(false, progressed, blocked = true)
+                if (ApplicationHookConstants.isOffline() || !RpcDailyCircuit.isCurrent(identity) ||
+                    !TimeUtil.isSameDay(startedAt, System.currentTimeMillis())
+                ) return GoldenBeanGameFlowResult(false, progressed, blocked = true)
+                Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "金豆乐园抽奖失败或权益回查未推进 raw=$raw")
+                AccountSessionCoordinator.withCurrentSession(identity) {
+                    TaskBlacklist.addToBlacklist(GOLDEN_BEAN_BLACKLIST_MODULE, drawKey, "金豆乐园抽奖")
                 }
-                val afterQuota = after.drawRights?.optInt("quotaCanUse", beforeQuota)?.coerceAtLeast(0) ?: 0
-                val afterUsed = after.drawRights?.optInt("usedQuota", beforeUsed)?.coerceAtLeast(0) ?: beforeUsed
-                if (afterQuota >= beforeQuota && afterUsed <= beforeUsed) {
-                    Log.error(
-                        GOLDEN_BEAN_BLACKLIST_MODULE,
-                        "金豆乐园抽奖回查未确认配额推进 quotaCanUse=$beforeQuota->$afterQuota " +
-                            "usedQuota=$beforeUsed->$afterUsed",
-                    )
-                    scheduleConfirmation(System.currentTimeMillis())
-                    return GoldenBeanGameFlowResult(false, progressed, blocked = true)
+                failed = true
+                drawBlocked = true
+                if (accepted) {
+                    before = after
+                    continue
                 }
-                pendingTasks.remove("draw")
-                persist()
-                progressed = true
-                Log.goldenBean("金豆乐园抽奖回查 quotaCanUse=$beforeQuota->$afterQuota usedQuota=$beforeUsed->$afterUsed")
-                continue
             }
 
-            // New-user game rewards can be exhausted while daily draw rights still need replenishing.
-            val remainingDraws = (quotaLimit - beforeUsed - beforeQuota).coerceAtLeast(0)
-            for (game in before.candidates) {
-                for (states in listOf(pendingTasks, failures)) {
-                    val old = states.optJSONObject(game.key) ?: continue
-                    if (old.optString("snapshot") != game.snapshotKey) states.remove(game.key)
-                }
-            }
-            persist()
-            val candidates = before.candidates.filter { !resumeOnly || it.key in resumeKeys }
-            val candidate =
-                candidates.firstOrNull { game ->
-                    (game.hasPendingReward || remainingDraws > 0) &&
-                        resolveGoldenBeanGameTask(game) != null &&
-                        game.snapshotKey !in attemptedSnapshots &&
-                        !Status.hasFlagToday(StatusFlags.FLAG_GOLDEN_BEAN_GAME_ACTION_STOP_PREFIX + game.snapshotKey) &&
-                        (pendingTasks.optJSONObject(game.key)?.let {
-                            it.optString("reason") == io.github.aoguai.sesameag.task.common.DeferredReason.NO_PROGRESS_COOLDOWN.name &&
-                                it.optLong("until") <= System.currentTimeMillis()
-                        } ?: true)
-                }
-            if (candidate == null) {
-                val hasPendingSupportedGame =
-                    candidates.any { game ->
-                        (game.hasPendingReward || remainingDraws > 0) && resolveGoldenBeanGameTask(game) != null
-                    }
-                val drawComplete = beforeRights == null || quotaLimit <= 0 || beforeUsed >= quotaLimit
-                if (beforeRights != null && quotaLimit > 0 && beforeUsed >= quotaLimit) {
-                    Log.goldenBean("金豆乐园抽奖[服务端确认已达上限$beforeUsed/$quotaLimit]，继续以独立游戏权益状态收敛")
-                }
-                Log.goldenBean(
-                    "金豆乐园[无已验证自动动作] usedQuota=$beforeUsed/$quotaLimit " +
-                        "pendingSupportedGame=$hasPendingSupportedGame",
-                )
-                val waiting = candidates.filter { pendingTasks.has(it.key) }
-                val now = System.currentTimeMillis()
-                val nextAt = waiting.mapNotNull { game ->
-                    val pending = pendingTasks.getJSONObject(game.key)
-                    if (pending.optString("reason") ==
-                        io.github.aoguai.sesameag.task.common.DeferredReason.NO_PROGRESS_COOLDOWN.name) {
-                        pending.optLong("until").takeIf { it > 0L }
-                    } else now.takeIf { game.key in newlyPending }
-                }.minOrNull()
-                nextAt?.let { scheduleConfirmation(maxOf(now, it)) }
-                val hasUnconfirmedGameAction = waiting.isNotEmpty()
-                return GoldenBeanGameFlowResult(
-                    completed = drawComplete && !hasPendingSupportedGame && !hasUnconfirmedGameAction,
-                    progressed = progressed,
-                    taskRefreshRequested = taskRefreshRequested,
-                    blocked = candidates.any { failures.has(it.key) },
-                )
-            }
-
-            attemptedSnapshots += candidate.snapshotKey
-            val gameTask = resolveGoldenBeanGameTask(candidate) ?: continue
-            Log.goldenBean(
-                "金豆乐园候选[${gameTask.title}] appId=${candidate.appId} taskId=${candidate.taskId} " +
-                    "rightTimes=${candidate.rightTimes}/${candidate.rightTimesLimit} remainingDraws=$remainingDraws " +
-                    "action=LEGACY_EXTERNAL_REPORT",
+            val remainingDraws = if (drawBlocked) 0 else (limit - used - quota).coerceAtLeast(0)
+            val candidates = before.candidates
+            val candidate = candidates.firstOrNull {
+                "gameCenter:${it.key}" !in blacklist &&
+                    (it.hasPendingReward || remainingDraws > 0) &&
+                    resolveGoldenBeanGameTask(it) != null && "${it.key}:${it.snapshotKey}" !in attemptedActions
+            } ?: return GoldenBeanGameFlowResult(
+                completed = !failed && (rights == null || limit <= 0 || used >= limit || drawBlocked),
+                progressed = progressed,
+                blocked = failed,
             )
-            val reportResult = NonDurationGameTask.advance(
-                gameTask, candidate.rawBenefit, candidate.rawGame,
-                channel = GOLDEN_BEAN_GAME_CHANNEL, detail = "taskId=${candidate.taskId}",
-                logger = Log::goldenBean,
-                confirmProgress = {
-                    val snapshot = queryGameCenterSnapshot()
-                    if (snapshot == null) null
-                    else {
-                        val current = snapshot.candidates.firstOrNull { it.key == candidate.key }
-                        val quota = snapshot.drawRights?.optInt("quotaCanUse", -1) ?: -1
-                        val used = snapshot.drawRights?.optInt("usedQuota", -1) ?: -1
-                        when {
-                            beforeRights?.has("quotaCanUse") == true && quota > beforeQuota ||
-                                beforeRights?.has("usedQuota") == true && used > beforeUsed -> true
-                            current == null -> {
-                                Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "金豆游戏候选消失且权益未确认增加[${candidate.key}]")
-                                null
+
+            val attemptKey = "${candidate.key}:${candidate.snapshotKey}"
+            attemptedActions += attemptKey
+            val gameTask = requireNotNull(resolveGoldenBeanGameTask(candidate))
+            var refreshed: GoldenBeanGameState? = null
+            val result = try {
+                NonDurationGameTask.advance(
+                    gameTask, candidate.rawBenefit, candidate.rawGame,
+                    channel = GOLDEN_BEAN_GAME_CHANNEL, detail = "taskId=${candidate.taskId}",
+                    logger = Log::goldenBean,
+                    confirmProgress = {
+                        queryGameCenterState()?.also { refreshed = it }?.let { state ->
+                            val current = state.candidates.firstOrNull { it.key == candidate.key }
+                            val quotaNow = state.drawRights?.optInt("quotaCanUse", -1) ?: -1
+                            val usedNow = state.drawRights?.optInt("usedQuota", -1) ?: -1
+                            when {
+                                rights?.has("quotaCanUse") == true && quotaNow > quota ||
+                                    rights?.has("usedQuota") == true && usedNow > used -> true
+                                current == null -> null
+                                current.rightTimes > candidate.rightTimes ||
+                                    current.taskStatus != candidate.taskStatus &&
+                                    current.taskStatus in setOf("FINISHED", "RECEIVED") -> true
+                                else -> false
                             }
-                            current.rightTimes > candidate.rightTimes ||
-                                current.taskStatus != candidate.taskStatus &&
-                                current.taskStatus in setOf("FINISHED", "RECEIVED") -> true
-                            else -> false
                         }
-                    }
-                },
-            )
-            pendingTasks.remove(candidate.key)
-            if (reportResult.deferredReason != null && !reportResult.progressChanged) {
-                pendingTasks.put(candidate.key, JSONObject().put("snapshot", candidate.snapshotKey)
-                    .put("reason", reportResult.deferredReason.name).put("until", reportResult.deferredUntil ?: 0L))
-                newlyPending.add(candidate.key)
-            } else if (!reportResult.success && reportResult.deferredReason == null) {
-                failures.put(candidate.key, JSONObject().put("snapshot", candidate.snapshotKey)
-                    .put("type", reportResult.failureType?.name).put("code", reportResult.code)
-                    .put("message", reportResult.message).put("raw", reportResult.raw).put("detail", reportResult.detail))
-                if (reportResult.failureType == TaskRpcFailureType.NON_RETRYABLE_INVALID) {
-                    Status.setFlagToday(StatusFlags.FLAG_GOLDEN_BEAN_GAME_ACTION_STOP_PREFIX + candidate.snapshotKey)
-                }
+                    },
+                )
+            } catch (t: Exception) {
+                if (t is kotlinx.coroutines.CancellationException || t is InterruptedException) throw t
+                Log.printStackTrace(GOLDEN_BEAN_BLACKLIST_MODULE, "金豆乐园任务调用失败 taskId=${candidate.taskId}", t)
+                TaskFlowActionResult.failure(TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW, message = t.message.orEmpty())
             }
-            persist()
-            if (reportResult.stopCurrentRound) return GoldenBeanGameFlowResult(false, progressed, blocked = true)
-            val after = queryGameCenterSnapshot() ?: run {
-                if (newlyPending.isNotEmpty()) scheduleConfirmation(reportResult.deferredUntil ?: System.currentTimeMillis())
-                return GoldenBeanGameFlowResult(false, progressed, blocked = true)
-            }
-            val afterCandidate =
-                after.candidates.firstOrNull {
-                    it.appId == candidate.appId && it.taskId == candidate.taskId
-                }
-            val afterQuota = after.drawRights?.optInt("quotaCanUse", beforeQuota)?.coerceAtLeast(0) ?: 0
-            val afterUsed = after.drawRights?.optInt("usedQuota", beforeUsed)?.coerceAtLeast(0) ?: beforeUsed
-            val candidateProgressed = reportResult.progressChanged ||
-                afterCandidate?.rightTimes?.let { it > candidate.rightTimes } == true
-            val rightsProgressed = afterQuota > beforeQuota || afterUsed > beforeUsed
-            if (candidateProgressed || rightsProgressed) {
+            if (ApplicationHookConstants.isOffline() || !RpcDailyCircuit.isCurrent(identity) ||
+                !TimeUtil.isSameDay(startedAt, System.currentTimeMillis())
+            ) return GoldenBeanGameFlowResult(false, progressed, blocked = true)
+            if (result.failureType == TaskRpcFailureType.TERMINAL_DONE) {
                 progressed = true
-                Log.goldenBean(
-                    "金豆乐园游戏[appId=${candidate.appId} taskId=${candidate.taskId}] " +
-                        "rightTimes=${candidate.rightTimes}->${afterCandidate?.rightTimes ?: candidate.rightTimes} " +
-                        "quotaCanUse=$beforeQuota->$afterQuota",
-                )
-            } else {
-                taskRefreshRequested = taskRefreshRequested || reportResult.refreshAfterAction
-                Log.goldenBean(
-                    "金豆乐园动作回查尚未确认权益 appId=${candidate.appId} taskId=${candidate.taskId} " +
-                        "rightTimes=${candidate.rightTimes}/${candidate.rightTimesLimit} " +
-                        "${reportResult.detail} msg=${reportResult.message}",
-                )
+                Log.goldenBean("金豆乐园任务已处理 taskId=${candidate.taskId} code=${result.code} ${result.message}")
+            } else if (result.failureType == null && result.progressChanged &&
+                (result.success || result.deferredReason == DeferredReason.STATE_CONFIRMATION)
+            ) {
+                attemptedActions.remove(attemptKey)
+                progressed = true
+            } else if (result.failureType != null || result.deferredReason == DeferredReason.STATE_CONFIRMATION ||
+                result.submissionStarted == true
+            ) {
+                failed = true
+                Log.error(GOLDEN_BEAN_BLACKLIST_MODULE,
+                    "金豆乐园任务失败或回查未达到业务进度 taskId=${candidate.taskId} code=${result.code} " +
+                        "${result.message} ${result.detail} raw=${result.raw}")
+                AccountSessionCoordinator.withCurrentSession(identity) {
+                    TaskBlacklist.addToBlacklist(GOLDEN_BEAN_BLACKLIST_MODULE, "gameCenter:${candidate.key}", candidate.title)
+                }
             }
+            if (result.stopCurrentRound) return GoldenBeanGameFlowResult(false, progressed, blocked = true)
+            if (result.refreshAfterAction) before = refreshed ?: queryGameCenterState()
         }
+        return GoldenBeanGameFlowResult(false, progressed, blocked = true)
     }
 
-    private fun queryGameCenterSnapshot(): GoldenBeanGameSnapshot? {
-        val response = parseResponse(GoldenBeanRpcCall.queryGameList())
+    private fun queryGameCenterState(): GoldenBeanGameState? {
+        val response = try {
+            parseResponse(GoldenBeanRpcCall.queryGameList())
+        } catch (t: Exception) {
+            if (t is kotlinx.coroutines.CancellationException || t is InterruptedException) throw t
+            Log.printStackTrace(GOLDEN_BEAN_BLACKLIST_MODULE, "金豆乐园游戏列表调用失败", t)
+            return null
+        }
         if (response == null || !isSuccess(response)) {
             Log.error(GOLDEN_BEAN_BLACKLIST_MODULE, "金豆乐园游戏列表查询失败 raw=${response ?: "EMPTY"}")
             return null
         }
-        val drawRights = findObjectByKey(response, "gameCenterDrawRights")
-        if (drawRights == null) {
-            Log.goldenBean("金豆乐园快照未返回抽奖权益，继续处理独立游戏权益")
-        } else if (!drawRights.has("quotaCanUse") ||
-            !drawRights.has("usedQuota") ||
-            !drawRights.has("quotaLimit")
-        ) {
-            Log.goldenBean("金豆乐园抽奖权益字段不完整，抽奖分支待后续快照确认")
-        }
-        return GoldenBeanGameSnapshot(
-            drawRights = drawRights,
+        return GoldenBeanGameState(
+            drawRights = findObjectByKey(response, "gameCenterDrawRights"),
             candidates = GameCenterPlayRpcCall.collectDeliveryBenefitCandidates(response),
         )
     }
@@ -1253,7 +1161,7 @@ internal object GoldenBeanTreasureSupport {
             .ifBlank { response.optString("resultDesc") }
             .ifBlank { response.optString("memo") }
 
-    private fun isTodaySigned(response: JSONObject?): Boolean {
+    internal fun isTodaySigned(response: JSONObject?): Boolean {
         val signInfo = response?.optJSONObject("signInfo") ?: return false
         if (signInfo.optBoolean("todaySigned", false)) {
             return true

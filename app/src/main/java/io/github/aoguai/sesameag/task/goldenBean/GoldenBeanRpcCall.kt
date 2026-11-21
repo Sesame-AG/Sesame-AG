@@ -114,12 +114,12 @@ internal object GoldenBeanRpcCall {
             },
         )
 
-    fun fortuneDraw(): String = request(
+    fun fortuneDraw(taskId: String = "FORTUNE_DRAW", entry: GoldenBeanEntry = MASTER_ENTRY): String = request(
         "com.alipay.goldenbean.fortuneDraw",
         JSONObject().apply {
-            put("bizType", MASTER_ENTRY.bizType)
-            put("source", MASTER_ENTRY.source)
-            put("taskId", "FORTUNE_DRAW")
+            put("bizType", entry.bizType)
+            put("source", entry.source)
+            put("taskId", taskId)
             put("version", VERSION)
         },
     )
@@ -216,7 +216,7 @@ internal object GoldenBeanRpcCall {
             },
         )
 
-    fun queryGameList(): String =
+    fun queryGameList(recentAppRecordList: JSONArray = JSONArray()): String =
         request(
             "com.alipay.charitygamecenter.queryGameList",
             JSONObject().apply {
@@ -229,6 +229,7 @@ internal object GoldenBeanRpcCall {
                         put("unityDeviceLevel", "high")
                     },
                 )
+                put("recentAppRecordList", recentAppRecordList)
                 put("requestType", "RPC")
                 put("sceneCode", GAME_SCENE_CODE)
                 put("source", MASTER_ENTRY.source)
@@ -276,6 +277,7 @@ internal object GoldenBeanRpcCall {
                 put("sceneCode", "ANTORCHARD_JINDOU_MALL")
                 put("source", MASTER_ENTRY.bizType)
                 put("startIndex", startIndex)
+                put("subChannel", MASTER_ENTRY.source)
                 put("version", VERSION)
             },
         )

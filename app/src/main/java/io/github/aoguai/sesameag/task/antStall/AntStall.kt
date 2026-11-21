@@ -41,6 +41,8 @@ import io.github.aoguai.sesameag.task.common.TaskFlowItem
 import io.github.aoguai.sesameag.task.common.TaskFlowPhase
 import io.github.aoguai.sesameag.task.common.TaskFlowSnapshot
 import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
+import io.github.aoguai.sesameag.task.goldenBean.GoldenBeanRpcCall
+import io.github.aoguai.sesameag.task.goldenBean.GoldenBeanTreasureSupport
 import io.github.aoguai.sesameag.util.FriendGuard
 import io.github.aoguai.sesameag.util.JsonUtil
 import io.github.aoguai.sesameag.util.Log
@@ -1545,7 +1547,10 @@ class AntStall : ModelTask() {
                 isStallRewardReadyStatus(item.status) -> TaskFlowPhase.REWARD_READY
                 isStallTerminalStatus(item.status) -> TaskFlowPhase.TERMINAL
                 isStallTodoStatus(item.status) ->
-                    if (resolveStallTaskCompleteRoute(item) == StallTaskCompleteRoute.BUSINESS_ACTION) {
+                    if (resolveStallTaskCompleteRoute(item) == StallTaskCompleteRoute.BUSINESS_ACTION &&
+                        GameCenterPlayRpcCall.resolveTaskAction(item.raw).action !=
+                        GameCenterPlayRpcCall.TaskAction.LEGACY_EXTERNAL_REPORT
+                    ) {
                         TaskFlowPhase.BUSINESS_ACTION
                     } else {
                         TaskFlowPhase.READY_TO_COMPLETE
@@ -1607,7 +1612,12 @@ class AntStall : ModelTask() {
                                         detail = stallTaskActionDetail(item, "gameReport"), logger = Log::stall)
                                 }
                             } else {
-                                finishTask(item)
+                                TaskFlowActionResult.defer(
+                                    deferredReason = DeferredReason.PREREQUISITE_PENDING,
+                                    message = "等待所属业务进度达标",
+                                    raw = item.raw?.toString().orEmpty(),
+                                    detail = stallTaskActionDetail(item, "businessProgress"),
+                                )
                             }
                         }
                         StallTaskCompleteRoute.DAILY_QA -> {
@@ -2111,6 +2121,43 @@ class AntStall : ModelTask() {
      * @brief 完成任务
      */
     private fun finishTask(item: TaskFlowItem): TaskFlowActionResult {
+        val source = GameCenterPlayRpcCall.describeTask(item.raw).urlParameters["source"]
+        if (source == "goldenbean_farmbubble_xincun_qiandao") {
+            val entry = GoldenBeanRpcCall.MASTER_ENTRY.copy(source = source)
+            val raw = GoldenBeanRpcCall.index(entry)
+            val index = GoldenBeanTreasureSupport.parseResponse(raw)
+                ?: return GoldenBeanTreasureSupport.emptyResponseFailure(item, "index").copy(raw = raw)
+            if (!GoldenBeanTreasureSupport.isSuccess(index)) {
+                return GoldenBeanTreasureSupport.actionResult(item, index, "index")
+            }
+            val alreadySigned = GoldenBeanTreasureSupport.isTodaySigned(index)
+            val signed = if (alreadySigned) {
+                GoldenBeanTreasureSupport.parseResponse(GoldenBeanRpcCall.sync(
+                    listOf("JAR_INFO", "SIGN", "MARKETING_POPUP", "TASK_LIST"), entry,
+                ))
+            } else {
+                GoldenBeanTreasureSupport.handleDailySign(index, entry)
+            }
+            val rpc = if (alreadySigned) "GoldenBeanRpcCall.sync" else "GoldenBeanTreasureSupport.handleDailySign"
+            if (signed == null) {
+                return TaskFlowActionResult.failure(
+                    TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                    message = "金豆签到未取得有效响应或服务端signKey，详见金豆签到错误",
+                    rpc = rpc, detail = stallTaskActionDetail(item, "goldenBeanSign"),
+                    continueCurrentRoundOnFailure = true,
+                )
+            }
+            if (!GoldenBeanTreasureSupport.isSuccess(signed)) {
+                return GoldenBeanTreasureSupport.actionResult(item, signed, "sign").copy(rpc = rpc)
+            }
+            return TaskFlowActionResult.defer(
+                DeferredReason.STATE_CONFIRMATION,
+                message = if (GoldenBeanTreasureSupport.isTodaySigned(signed)) "金豆已签到，回查新村任务及奖励"
+                    else "金豆入口已查询，签到状态待确认，回查新村任务",
+                rpc = rpc, raw = signed.toString(), refreshAfterAction = true,
+                detail = stallTaskActionDetail(item, "goldenBeanSign"),
+            )
+        }
         val response =
             AntStallRpcCall.finishTask(
                 "${item.type}_${System.currentTimeMillis()}",
@@ -2519,6 +2566,8 @@ class AntStall : ModelTask() {
                     descriptor.contract != null -> StallTaskCompleteRoute.GAME_PLAY_DURATION
                     item.actionType == "VISIT_AUTO_FINISH" -> StallTaskCompleteRoute.FINISH
                     descriptor.isGameTask && (descriptor.mappedTask != null || (item.limit ?: 0) > 0) ->
+                        StallTaskCompleteRoute.BUSINESS_ACTION
+                    item.actionType == "VISIT" && item.current != null && (item.limit ?: 0) > 0 ->
                         StallTaskCompleteRoute.BUSINESS_ACTION
                     else -> StallTaskCompleteRoute.FINISH
                 }

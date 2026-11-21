@@ -4,6 +4,7 @@ import io.github.aoguai.sesameag.util.RandomUtil
 
 import io.github.aoguai.sesameag.model.Model
 import io.github.aoguai.sesameag.task.antOrchard.AntOrchard
+import io.github.aoguai.sesameag.task.antMember.AntMemberRpcCall
 import io.github.aoguai.sesameag.task.antStall.AntStall
 
 import io.github.aoguai.sesameag.data.Status
@@ -57,7 +58,7 @@ internal suspend fun GoldenBeanTreasure.runGoldenBeanTreasure() {
         }
         // 任务列表完成不代表当天后续到账的肥料、芝麻粒已兑换。
         val entryRuns = GoldenBeanRpcCall.ENTRIES.map { entry ->
-            GoldenBeanEntryRun(entry, GoldenBeanTaskFlowAdapter(this, entry))
+            GoldenBeanEntryRun(entry, GoldenBeanTaskFlowAdapter(entry))
         }
         val exchangedEntries = runGoldenBeanExchanges(entryRuns)
         if (exchangedEntries.isNotEmpty()) {
@@ -84,9 +85,9 @@ internal suspend fun GoldenBeanTreasure.runGoldenBeanTreasure() {
         }
         val signSyncResponse = GoldenBeanTreasureSupport.handleDailySign(indexResponse, entry)
         val marketingSource =
-            signSyncResponse?.takeIf { it.optJSONObject("marketingPopupTask") != null } ?: indexResponse
+            signSyncResponse?.takeIf { GoldenBeanTreasureSupport.isSuccess(it) && it.optJSONObject("marketingPopupTask") != null } ?: indexResponse
         GoldenBeanTreasureSupport.handleMarketingPopup(marketingSource, entry)
-        GoldenBeanEntryRun(entry, GoldenBeanTaskFlowAdapter(this, entry))
+        GoldenBeanEntryRun(entry, GoldenBeanTaskFlowAdapter(entry))
     }
     val masterRun = entryRuns.firstOrNull { it.entry == GoldenBeanRpcCall.MASTER_ENTRY }
     masterRun?.let {
@@ -97,36 +98,33 @@ internal suspend fun GoldenBeanTreasure.runGoldenBeanTreasure() {
             Log.printStackTrace(GOLDEN_BEAN_BLACKLIST_MODULE, "金豆商城目录暂未完成，保留已有目录与查询进度", t)
         }
     }
-    val attemptedGameSnapshots = mutableSetOf<String>()
+    val attemptedGameActions = mutableSetOf<String>()
     val identity = RpcDailyCircuit.captureIdentity()
     var taskResults = entryRuns.associateWith { it.runTaskFlow(executeIntervalInt) }
     var confirmedTaskProgress = taskResults.values.any { it.progressed }
-    val scheduleGameConfirmation: (Long) -> Unit = { triggerAt ->
-        val now = System.currentTimeMillis()
-        if (TimeUtil.isSameDay(now, triggerAt)) scheduleGoldenBeanTasks("game_center", triggerAt)
-    }
     var gameResult =
         if (masterRun == null) {
             GoldenBeanGameFlowResult(completed = false, progressed = false, blocked = true)
         } else {
-            GoldenBeanTreasureSupport.runGameCenterOpportunityFlow(attemptedGameSnapshots, scheduleGameConfirmation)
+            GoldenBeanTreasureSupport.runGameCenterOpportunityFlow(attemptedGameActions)
         }
-    var needsTaskRefresh =
-        taskResults.values.any { it.progressed } || gameResult.progressed || gameResult.taskRefreshRequested
+    var needsTaskRefresh = taskResults.values.any { it.progressed } || gameResult.progressed
     while (!gameResult.blocked && needsTaskRefresh) {
         if (Thread.currentThread().isInterrupted) throw InterruptedException("金豆任务流程已中断")
         if (ApplicationHookConstants.isOffline() || !RpcDailyCircuit.isCurrent(identity)) return
         taskResults = entryRuns.associateWith { it.runTaskFlow(executeIntervalInt) }
         confirmedTaskProgress = confirmedTaskProgress || taskResults.values.any { it.progressed }
         val shouldRunGameCenter = taskResults.values.any { it.progressed } || gameResult.progressed
-        gameResult =
-            if (masterRun != null && shouldRunGameCenter) {
-                GoldenBeanTreasureSupport.runGameCenterOpportunityFlow(attemptedGameSnapshots, scheduleGameConfirmation)
-            } else {
-                gameResult.copy(taskRefreshRequested = false)
-            }
-        needsTaskRefresh =
-            taskResults.values.any { it.progressed } || gameResult.progressed || gameResult.taskRefreshRequested
+        if (masterRun != null && shouldRunGameCenter) {
+            gameResult = GoldenBeanTreasureSupport.runGameCenterOpportunityFlow(attemptedGameActions)
+        }
+        needsTaskRefresh = taskResults.values.any { it.progressed } || gameResult.progressed
+    }
+    if (gameResult.blocked && masterRun != null && !ApplicationHookConstants.isOffline() && RpcDailyCircuit.isCurrent(identity)) {
+        io.github.aoguai.sesameag.task.TaskExecutionReport.current()?.recordFlow(
+            TaskFlowExecutionState(), GOLDEN_BEAN_BLACKLIST_MODULE, "金豆乐园",
+            io.github.aoguai.sesameag.task.common.TaskFlowRunResult(false, gameResult.progressed, false, 1, failureCount = 1),
+        )
     }
     val exchangedEntries = runGoldenBeanExchanges(entryRuns)
     if (exchangedEntries.isNotEmpty()) {
@@ -320,20 +318,7 @@ private fun GoldenBeanTreasure.runGoldenBeanExchanges(entryRuns: List<GoldenBean
         }
     }
 
-internal fun GoldenBeanTreasure.resumeGoldenBeanTasks(): io.github.aoguai.sesameag.task.TaskExecutionOutcome {
-    val results = GoldenBeanRpcCall.ENTRIES.map { entry ->
-        TaskFlowEngine(GoldenBeanTaskFlowAdapter(this, entry), roundSleepMs = executeIntervalInt.toLong()).run()
-    }
-    return when {
-        results.any { it.interrupted } -> io.github.aoguai.sesameag.task.TaskExecutionOutcome.CANCELLED
-        results.any { it.failureCount > 0 } -> io.github.aoguai.sesameag.task.TaskExecutionOutcome.FAILED
-        results.all { it.completed } -> io.github.aoguai.sesameag.task.TaskExecutionOutcome.SUCCESS
-        else -> io.github.aoguai.sesameag.task.TaskExecutionOutcome.DEFERRED
-    }
-}
-
 private class GoldenBeanTaskFlowAdapter(
-    private val owner: GoldenBeanTreasure,
     private val entry: GoldenBeanEntry,
 ) : TaskFlowAdapter {
     private val loggedDeferredTaskIds = mutableSetOf<String>()
@@ -342,7 +327,6 @@ private class GoldenBeanTaskFlowAdapter(
 
     override val moduleName: String = GOLDEN_BEAN_BLACKLIST_MODULE
     override val flowName: String = "金豆夺宝任务"
-    override val nonRetryableActionFlagPrefix: String = StatusFlags.FLAG_GOLDEN_BEAN_TASK_ACTION_STOP_PREFIX
     override val stateScope: String = "$flowName:${entry.taskSceneCode}"
     override val continueCurrentRoundOnRetryableFailure: Boolean = true
 
@@ -439,8 +423,13 @@ private class GoldenBeanTaskFlowAdapter(
         if (item.type.isBlank()) {
             return GoldenBeanTreasureSupport.missingTaskTypeFailure(item, "receive")
         }
-        val response = GoldenBeanTreasureSupport.parseResponse(GoldenBeanRpcCall.receiveTaskAward(item.type, entry))
-            ?: return GoldenBeanTreasureSupport.emptyResponseFailure(item, "receive")
+        val response = GoldenBeanTreasureSupport.parseResponse(
+            if (item.actionType == "FORTUNE_DRAW_BATCH") {
+                GoldenBeanRpcCall.fortuneDraw(item.type, entry)
+            } else {
+                GoldenBeanRpcCall.receiveTaskAward(item.type, entry)
+            },
+        ) ?: return GoldenBeanTreasureSupport.emptyResponseFailure(item, "receive")
         if (GoldenBeanTreasureSupport.isSuccess(response)) {
             nextQuerySyncTypes = RECEIVE_TASK_SYNC_TYPES
         }
@@ -460,6 +449,29 @@ private class GoldenBeanTaskFlowAdapter(
                 if (awardCount > 0) Log.goldenBean("金豆常用来访获得${awardCount}金豆")
             }
             return GoldenBeanTreasureSupport.actionResult(item, response, "indexFromHome")
+        }
+        val adInfo = item.raw?.optJSONObject("spmExtend")?.optJSONObject("xlightLogExtMap")
+        val adBizId = adInfo?.optString("bizId").orEmpty()
+        if (adBizId.isNotBlank()) {
+            val renderConfigKey = adInfo?.optString("renderConfigKey").orEmpty()
+            if (renderConfigKey.isNotBlank()) {
+                val spaceCode = java.net.URLDecoder.decode(
+                    java.net.URLDecoder.decode(renderConfigKey, "UTF-8"), "UTF-8",
+                )
+                val config = GoldenBeanTreasureSupport.parseResponse(AntMemberRpcCall.adTaskApplayerQuery(spaceCode))
+                    ?: return GoldenBeanTreasureSupport.emptyResponseFailure(item, "adTaskApplayerQuery")
+                if (!GoldenBeanTreasureSupport.isSuccess(config)) {
+                    return GoldenBeanTreasureSupport.actionResult(item, config, "adTaskApplayerQuery")
+                }
+                val duration = config.optJSONObject("resultData")?.optLong("duration", 0L) ?: 0L
+                if (duration > 0L) {
+                    runBlocking { CoroutineUtils.sleepCompat(duration * 1000L) }
+                }
+            }
+            val response = GoldenBeanTreasureSupport.parseResponse(AntMemberRpcCall.taskFinish(adBizId))
+                ?: return GoldenBeanTreasureSupport.emptyResponseFailure(item, "adTaskFinish")
+            nextQuerySyncTypes = TASK_STATUS_SYNC_TYPES
+            return GoldenBeanTreasureSupport.actionResult(item, response, "adTaskFinish")
         }
         if (item.actionType != GoldenBeanRpcCall.WAKUANG_ACTION_TYPE &&
             !(entry == GoldenBeanRpcCall.MASTER_ENTRY && item.type == GoldenBeanRpcCall.JINDOULEYUAN_TASK_TYPE &&
@@ -499,37 +511,10 @@ private class GoldenBeanTaskFlowAdapter(
         return GoldenBeanTreasureSupport.actionResult(item, response, "complete").copy(progressChanged = false)
     }
 
-    override fun afterDeferred(item: TaskFlowItem, action: TaskFlowAction, result: TaskFlowActionResult) {
-        result.deferredUntil?.let { owner.scheduleGoldenBeanTasks("${item.id}:${item.progress}", it) }
-    }
-
     override fun actionKey(
         item: TaskFlowItem,
         action: TaskFlowAction,
     ): String = "${action.logName}:${item.id}:${item.sceneCode}:${item.actionType}:${item.status}:${item.progress}"
-
-    override fun blacklist(
-        item: TaskFlowItem,
-        result: TaskFlowActionResult,
-    ) {
-        val taskId = item.type
-        if (taskId.isBlank()) {
-            return
-        }
-        val stableId = stableBlacklistKey(item.sceneCode, taskId)
-        if (result.failureType == TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW) {
-            Log.error(
-                GOLDEN_BEAN_BLACKLIST_MODULE,
-                "金豆夺宝任务保留UNKNOWN_NEEDS_REVIEW，不自动加入黑名单 taskId=$stableId " +
-                    "code=${result.code} raw=${result.raw ?: "EMPTY"}",
-            )
-            return
-        }
-        if (result.code.isNotBlank()) {
-            TaskBlacklist.autoAddToBlacklist(moduleName, stableId, errorCode = result.code)
-        }
-        TaskBlacklist.addToBlacklist(moduleName, stableId)
-    }
 
     override fun onUnknownPhase(
         item: TaskFlowItem,
@@ -594,6 +579,9 @@ private class GoldenBeanTaskFlowAdapter(
 
     private fun hasTaskAction(item: TaskFlowItem): Boolean {
         if (item.sceneCode != entry.taskSceneCode || item.type.isBlank()) return false
+        if (item.actionType == "FORTUNE_DRAW_BATCH" &&
+            !item.raw?.optJSONObject("spmExtend")?.optJSONObject("xlightLogExtMap")?.optString("bizId").isNullOrBlank()
+        ) return true
         if (item.actionType == GoldenBeanRpcCall.WAKUANG_ACTION_TYPE ||
             item.actionType == "COMMON_USED_VISIT" ||
             (entry == GoldenBeanRpcCall.MASTER_ENTRY && item.type == GoldenBeanRpcCall.JINDOULEYUAN_TASK_TYPE &&
