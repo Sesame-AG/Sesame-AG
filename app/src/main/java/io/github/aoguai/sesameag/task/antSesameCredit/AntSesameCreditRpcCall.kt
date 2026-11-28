@@ -142,6 +142,49 @@ object AntSesameCreditRpcCall {
      * 获取芝麻信用任务列表
      */
     @JvmStatic
+    fun queryPositionTasks(taskDisplayPositions: String, version: String): String {
+        val args = JSONObject().put("chInfo", "").put("deliveryTemplateId", "")
+            .put("taskDisplayPositions", taskDisplayPositions).put("version", version)
+        if (version == SESAME_TASK_VERSION) {
+            args.put("deliverStatus", "").put("sceneCode", SESAME_TASK_SCENE_CODE)
+                .put("searchAddToHomeTask", true).put("searchGuidePopFlag", true)
+                .put("searchShareAssistTask", true).put("searchSubscribeTask", true).put("supportJumpAuth", true)
+        }
+        return RequestManager.requestString(
+            "com.antgroup.zmxy.zmmemberop.biz.rpc.creditaccumulate.CreditAccumulateStrategyRpcManager.queryListV4",
+            JSONArray().put(args).toString(),
+        )
+    }
+
+    fun querySplitActivity(): String = RequestManager.requestString(
+        "com.antgroup.zmxy.zmmemberop.biz.rpc.activity.ZmlSplitActivityRpcManager.query",
+        "[{\"triggerSettle\":true}]",
+    )
+
+    fun signSplitActivity(): String = RequestManager.requestString(
+        "com.antgroup.zmxy.zmmemberop.biz.rpc.activity.ZmlSplitActivityRpcManager.sign", "[null]",
+    )
+
+    fun querySmallGoals(): String = RequestManager.requestString(
+        "com.antgroup.zmxy.zmmemberop.biz.rpc.smallgoal.SmallGoalRpcManager.queryGoalList", "[{}]",
+    )
+
+    fun joinSmallGoal(goalId: String): String = RequestManager.requestString(
+        "com.antgroup.zmxy.zmmemberop.biz.rpc.smallgoal.SmallGoalRpcManager.joinGoal",
+        JSONArray().put(JSONObject().put("goalId", goalId)).toString(),
+    )
+
+    fun querySmallGoal(goalId: String): String = RequestManager.requestString(
+        "com.antgroup.zmxy.zmmemberop.biz.rpc.smallgoal.SmallGoalRpcManager.queryGoalDetail",
+        JSONArray().put(JSONObject().put("goalId", goalId)).toString(),
+    )
+
+    fun checkinSmallGoal(goalId: String, expectedGoalInstanceId: String): String = RequestManager.requestString(
+        "com.antgroup.zmxy.zmmemberop.biz.rpc.smallgoal.SmallGoalRpcManager.checkinGoal",
+        JSONArray().put(JSONObject().put("goalId", goalId).put("expectedGoalInstanceId", expectedGoalInstanceId)).toString(),
+    )
+
+    @JvmStatic
     fun queryAvailableSesameTask(): String {
         return RequestManager.requestString(
             METHOD_CREDIT_ACCUMULATE_QUERY_LIST_V3,
@@ -311,13 +354,13 @@ object AntSesameCreditRpcCall {
     }
 
     /**
-     * 芝麻粒福利签到列表
+     * 芝麻粒福利签到列表，包含历史可补签日期。
      */
     @JvmStatic
     fun zmlCheckInQueryTaskLists(): String {
         return RequestManager.requestString(
             "com.antgroup.zmxy.zmmemberop.biz.rpc.pointtask.CheckInTaskRpcManager.queryTaskLists",
-            """[{"supportMakeUp":true,"version":"$SESAME_CHECK_IN_VERSION"}]"""
+            """[{"monthData":true,"supportMakeUp":true,"version":"$SESAME_CHECK_IN_VERSION"}]"""
         )
     }
 

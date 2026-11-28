@@ -27,6 +27,7 @@ internal suspend fun AntSesameCredit.prepareSesameWorkflows(
     val claimPendingZhimaPigeonReward = antFarm?.hasPendingZhimaPigeonRewardReceipt() == true
     val needSesameWorkflow =
         sesameGrainExchange?.value == true ||
+            sesameSplitActivity?.value == true ||
             sesameTask?.value == true ||
             sesameAchievements?.value == true ||
             collectSesame?.value == true ||
@@ -72,6 +73,7 @@ internal suspend fun AntSesameCredit.prepareSesameWorkflows(
                 claimProgress = true
                 handleGrowthGuideTasks()
                 handleNewTaskCenterTasks()
+                handleSmallGoals()
                 handleCreditPassages()
                 Log.sesame("芝麻信用任务已执行，稍后统一领取涨分进度球")
             }
@@ -87,18 +89,22 @@ internal suspend fun AntSesameCredit.prepareSesameWorkflows(
         }
     }
 
+    if (sesameSplitActivity?.value == true && !accountInterrupted) {
+        handleSplitActivity()
+    }
+
     if (sesameAchievements?.value == true && !accountInterrupted) {
         handleCreditAchievements()
     }
 
     if (sesameAlchemy?.value == true) {
         deferredTasks.add(scope.async(Dispatchers.IO) {
-            doSesameAlchemy(alchemyExecutionState)
             if (!hasFlagToday(StatusFlags.FLAG_SESAME_ALCHEMY_NEXT_DAY_AWARD)) {
                 doSesameAlchemyNextDayAward()
             } else {
                 Log.sesame("芝麻粒次日奖励今日已检查，跳过重复执行")
             }
+            if (!ApplicationHookConstants.isOffline()) doSesameAlchemy(alchemyExecutionState)
         })
     }
 
@@ -133,9 +139,6 @@ internal suspend fun AntSesameCredit.finishSesameWorkflows(plan: AntSesameCredit
 
     if (plan.allowed && sesameAlchemy?.value == true && !ApplicationHookConstants.isOffline()) {
         finishSesameAlchemy(plan.alchemyExecutionState)
-        if (!hasFlagToday(StatusFlags.FLAG_SESAME_ALCHEMY_NEXT_DAY_AWARD)) {
-            doSesameAlchemyNextDayAward()
-        }
     }
 
     // 消费、精力瓶任务及次日奖励均已处理后，再收取本轮新生成的反馈并判定领取完成。
