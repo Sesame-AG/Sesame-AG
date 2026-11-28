@@ -5,6 +5,7 @@ import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
 import io.github.aoguai.sesameag.hook.AccountSessionCheck
 import io.github.aoguai.sesameag.util.UserDataStoreManager
+import io.github.aoguai.sesameag.task.TaskExecutionReport
 import io.github.aoguai.sesameag.task.common.TaskFlowAction
 import io.github.aoguai.sesameag.task.common.TaskFlowActionResult
 import io.github.aoguai.sesameag.task.common.TaskFlowAdapter
@@ -12,10 +13,12 @@ import io.github.aoguai.sesameag.task.common.TaskFlowEngine
 import io.github.aoguai.sesameag.task.common.TaskFlowExecutionState
 import io.github.aoguai.sesameag.task.common.TaskFlowItem
 import io.github.aoguai.sesameag.task.common.TaskFlowPhase
+import io.github.aoguai.sesameag.task.common.TaskFlowRunResult
 import io.github.aoguai.sesameag.task.common.TaskRpcFailureType
 import io.github.aoguai.sesameag.task.reserve.Reserve
 import io.github.aoguai.sesameag.util.ResChecker
 import io.github.aoguai.sesameag.util.Log
+import io.github.aoguai.sesameag.util.TaskBlacklist
 import kotlinx.coroutines.CancellationException
 import org.json.JSONArray
 import org.json.JSONObject
@@ -49,6 +52,7 @@ internal object MonopolyPatrolWorkflow {
             }
         }
         val taskState = TaskFlowExecutionState()
+        val report = TaskExecutionReport.current()
         var guideRoll = state.optJSONObject("userInfo")?.optBoolean("firstEnterMonopoly", false) == true
         var pendingEvent = state.optJSONObject("eventInfo")
         if (tasksEnabled) runTasks(region.optString("regionCode"), taskState)
@@ -56,6 +60,16 @@ internal object MonopolyPatrolWorkflow {
         if (ApplicationHookConstants.isOffline() || Thread.currentThread().isInterrupted) return
         val props = parsePatrolResponse(AntForestPatrolRpcCall.triggerMonopolyHomeProps())
         if (!ResChecker.checkRes(TAG, "新巡护首页道具处理失败:", props)) return
+        val triggeredProps = props.optJSONArray("triggeredPropList")
+        if (triggeredProps != null) {
+            for (index in 0 until triggeredProps.length()) {
+                val prop = triggeredProps.optJSONObject(index) ?: continue
+                val energy = prop.optJSONObject("triggerData")?.optLong("energy", -1L) ?: -1L
+                if (prop.optString("propType") == "BOMB" && energy >= 0L) {
+                    Log.forestPatrol("新巡护陷阱已结算[${prop.optString("propId")}] 扣除${energy}g能量")
+                }
+            }
+        }
         state = parsePatrolResponse(AntForestPatrolRpcCall.queryMonopolyEntryInfo())
         if (!ResChecker.checkRes(TAG, "刷新新巡护状态失败:", state)) return
         if (state.has("eventInfo")) pendingEvent = state.optJSONObject("eventInfo")
@@ -66,28 +80,111 @@ internal object MonopolyPatrolWorkflow {
             val event = pendingEvent
             if (event?.optBoolean("needConfirm", false) == true) {
                 val eventId = event.optString("eventId")
-                val action = when (event.optString("eventType")) {
-                    "CHARITY" -> "confirm"
-                    "SPECIAL" -> "skip"
+                val eventType = event.optString("eventType")
+                val flowType = event.optJSONObject("displayInfo")?.optString("flowType")
+                val isPropEvent = eventType == "SOCIAL" && flowType == "PROP_USE"
+                val action = when {
+                    isPropEvent -> "confirm"
+                    eventType == "CHARITY" && flowType == "SINGLE_ACTION_CONFIRM" -> "confirm"
+                    eventType == "SPECIAL" && flowType == "SINGLE_ACTION_CONFIRM" -> "skip"
                     else -> null
                 }
-                if (eventId.isBlank() || action == null ||
-                    event.optJSONObject("displayInfo")?.optString("flowType") != "SINGLE_ACTION_CONFIRM") {
-                    Log.error(TAG, "新巡护事件缺少可执行决策，保留当前事件:$event")
+                if (eventId.isBlank() || action == null) {
+                    Log.forestPatrol("新巡护事件无可执行动作，停止移动[$eventId] 类型=$eventType 流程=$flowType")
                     break
                 }
-                if (eventId in confirmedEvents) {
-                    Log.forestPatrol("新巡护事件[$eventId]已提交确认，等待后续调度刷新")
+                report?.ensureCurrent()
+                val eventTaskId = "eventConfirm:$eventId"
+                if (TaskBlacklist.isTaskInBlacklist(TAG, eventTaskId)) {
+                    Log.forestPatrol("新巡护事件[$eventId]命中当日停止名单，停止移动")
                     break
                 }
-                val confirmation = parsePatrolResponse(AntForestPatrolRpcCall.confirmMonopolyEvent(eventId, action))
-                if (!ResChecker.checkRes(TAG, "新巡护事件确认失败:", confirmation)) return
-                confirmedEvents.add(eventId)
-                Log.forestPatrol("新巡护事件完成[$eventId] 奖励=${confirmation.optJSONArray("eventResult") ?: JSONArray()}")
-                state = parsePatrolResponse(AntForestPatrolRpcCall.queryMonopolyEntryInfo())
-                if (!ResChecker.checkRes(TAG, "刷新新巡护事件状态失败:", state)) return
-                pendingEvent = state.optJSONObject("eventInfo")
-                tasksMayHaveChanged = true
+                var rewardConfirmed = false
+                try {
+                    check(eventId !in confirmedEvents) { "新巡护事件[$eventId]已确认后再次出现，停止重复提交" }
+                    tasksMayHaveChanged = true
+                    val confirmation = parsePatrolResponse(AntForestPatrolRpcCall.confirmMonopolyEvent(
+                        eventId, action, sendMessage = if (isPropEvent) false else null,
+                    ))
+                    report?.ensureCurrent()
+                    if (ApplicationHookConstants.isOffline() || Thread.currentThread().isInterrupted) return
+                    check(ResChecker.checkRes(TAG, "新巡护事件确认失败:", confirmation)) {
+                        "新巡护事件确认失败[$eventId] code=${confirmation.optString("resultCode")} desc=${confirmation.optString("resultDesc")}"
+                    }
+                    confirmedEvents.add(eventId)
+                    val results = confirmation.getJSONArray("eventResult")
+                    if (isPropEvent) {
+                        val resultItems = (0 until results.length()).map { results.getJSONObject(it) }
+                        val prop = resultItems.single { it.optString("resultType") == "PROP" }
+                        val reward = resultItems.single {
+                            it.optString("resultType") == "REWARD" && it.optString("rewardCode") == "GREEN_ENERGY"
+                        }
+                        check(prop.getString("propId").isNotBlank() && prop.getString("propCode").isNotBlank()) {
+                            "新巡护道具结果缺少道具身份[$eventId]"
+                        }
+                        check(prop.optString("propType") == "ROB_ENERGY" &&
+                            prop.optString("triggerTiming") == "IMMEDIATE" &&
+                            prop.optString("targetMatchStatus") == "MATCHED") {
+                            "新巡护道具尚无已支持的生效结果[$eventId] 类型=${prop.optString("propType")} 时机=${prop.optString("triggerTiming")} 匹配=${prop.optString("targetMatchStatus")}"
+                        }
+                        val propData = prop.getJSONObject("triggerData")
+                        val rewardData = reward.getJSONObject("triggerData")
+                        val energy = rewardData.getLong("energy")
+                        check(energy >= 0L && propData.getLong("energy") == energy &&
+                            propData.getString("targetUserId").isNotBlank() &&
+                            propData.getString("targetUserId") == rewardData.getString("targetUserId")) {
+                            "新巡护道具与奖励结果未对应[$eventId]"
+                        }
+                        val confirmedUser = confirmation.getJSONObject("userInfo")
+                        val energyCount = confirmedUser.getLong("energyCount")
+                        check(energyCount >= 0L &&
+                            confirmedUser.getString("currentRegionCode") == state.getJSONObject("regionInfo").getString("regionCode") &&
+                            confirmedUser.getString("currentMapCode") == state.getJSONObject("mapInfo").getString("mapCode")) {
+                            "新巡护道具返回的用户状态未对应当前区域和地图[$eventId]"
+                        }
+                        // PROP 和 REWARD 描述同一笔收益，只按实际奖励记录一次。
+                        rewardConfirmed = true
+                        Log.forestPatrol("新巡护道具已生效[${prop.getString("propId")}] 获得${energy}g能量，巡护累计能量${energyCount}g")
+                    } else {
+                        rewardConfirmed = results.length() > 0
+                        Log.forestPatrol("新巡护事件结果[$eventId] 奖励=$results")
+                    }
+                    val refreshed = parsePatrolResponse(AntForestPatrolRpcCall.queryMonopolyEntryInfo())
+                    report?.ensureCurrent()
+                    if (ApplicationHookConstants.isOffline() || Thread.currentThread().isInterrupted) return
+                    check(ResChecker.checkRes(TAG, "刷新新巡护事件状态失败:", refreshed)) {
+                        "刷新新巡护事件状态失败[$eventId] code=${refreshed.optString("resultCode")} desc=${refreshed.optString("resultDesc")}"
+                    }
+                    check(refreshed.getJSONObject("regionInfo").getString("regionCode").isNotBlank() &&
+                        refreshed.getJSONObject("mapInfo").getString("mapCode").isNotBlank() &&
+                        refreshed.optJSONObject("userInfo") != null && refreshed.getInt("totalDiceCount") >= 0) {
+                        "新巡护事件回查缺少有效区域、地图、用户状态或骰子数量[$eventId]"
+                    }
+                    check(!refreshed.has("eventInfo") || refreshed.isNull("eventInfo") ||
+                        refreshed.optJSONObject("eventInfo") != null) { "新巡护事件回查的事件结构无效[$eventId]" }
+                    val refreshedEvent = refreshed.optJSONObject("eventInfo")
+                    check(refreshedEvent == null || refreshedEvent.optString("eventId") != eventId ||
+                        !refreshedEvent.optBoolean("needConfirm", false)) {
+                        "新巡护事件[$eventId]确认后仍待确认，停止移动"
+                    }
+                    state = refreshed
+                    pendingEvent = refreshedEvent
+                    Log.forestPatrol("新巡护事件完成[$eventId]")
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: InterruptedException) {
+                    throw e
+                } catch (e: Exception) {
+                    report?.ensureCurrent()
+                    if (ApplicationHookConstants.isOffline() || Thread.currentThread().isInterrupted) return
+                    TaskBlacklist.addToBlacklist(TAG, eventTaskId, "巡护事件确认")
+                    report?.recordFlow(taskState, TAG, "eventConfirm", TaskFlowRunResult(
+                        completed = false, progressed = rewardConfirmed, stopped = true, rounds = 1,
+                        actionAttempted = true, failureCount = 1,
+                    ))
+                    Log.printStackTrace(TAG, "新巡护事件[$eventId]失败，停止移动且当天不再自动确认", e)
+                    break
+                }
                 continue
             }
             val mapInfo = state.optJSONObject("mapInfo")
@@ -148,6 +245,7 @@ internal object MonopolyPatrolWorkflow {
         }
         if (tasksEnabled && tasksMayHaveChanged && !ApplicationHookConstants.isOffline() &&
             !Thread.currentThread().isInterrupted) {
+            report?.ensureCurrent()
             runTasks(state.optJSONObject("regionInfo")?.optString("regionCode").orEmpty(), taskState)
         }
     }

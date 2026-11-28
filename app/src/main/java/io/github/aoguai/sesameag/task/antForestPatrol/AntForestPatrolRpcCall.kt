@@ -84,14 +84,15 @@ internal object AntForestPatrolRpcCall {
             }).toString(),
     )
 
-    fun confirmMonopolyEvent(eventId: String, actionKey: String): String = RequestManager.requestString(
+    fun confirmMonopolyEvent(eventId: String, actionKey: String, sendMessage: Boolean? = null): String = RequestManager.requestString(
         "alipay.antisle.monopoly.h5.eventConfirm",
         JSONArray().put(JSONObject()
             .put("source", "monopoly_home_popup")
             .put("uniqueId", RandomUtil.getRandomTag())
             .put("eventId", eventId)
             .put("status", "CONFIRMED")
-            .put("decisionData", JSONObject().put("actionKey", actionKey).put("source", "ROLL_DICE_STEP"))).toString(),
+            .put("decisionData", JSONObject().put("actionKey", actionKey).put("source", "ROLL_DICE_STEP"))
+            .apply { if (sendMessage != null) put("sendMessage", sendMessage) }).toString(),
     )
 
     @JvmStatic
