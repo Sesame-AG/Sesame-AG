@@ -1076,7 +1076,7 @@ modelFields.addField(
         return userDataStore.get(ZHIMA_PIGEON_REWARD_RECEIPT_KEY, String::class.java) == creditFeedbackId
     }
 
-    internal fun confirmZhimaPigeonRewardReceipt(): Boolean {
+    internal fun confirmZhimaPigeonRewardReceipt(rewardReceived: Boolean = true): Boolean {
         val userDataStore = currentUserDataStore() ?: return false
         if (userDataStore.get(ZHIMA_PIGEON_REWARD_RECEIPT_KEY, String::class.java) == null) {
             return false
@@ -1090,9 +1090,11 @@ modelFields.addField(
         if (isZhimaPigeonConfigured()) {
             deferFarmWork("zhimaPigeon", System.currentTimeMillis() + 1000L)
             scheduleFarmPendingWork()
-            Log.farm("芝麻大表鸽🤖[88芝麻粒已领取并回查确认，已交由庄园调度续雇]")
+            Log.farm(if (rewardReceived) "芝麻大表鸽🤖[反馈收取已回查确认，已交由庄园调度续雇]"
+                else "芝麻大表鸽🤖[无对应业务对象的待收记录已清理，已交由庄园调度续雇]")
         } else {
-            Log.farm("芝麻大表鸽🤖[88芝麻粒已领取并回查确认]")
+            Log.farm(if (rewardReceived) "芝麻大表鸽🤖[反馈收取已回查确认]"
+                else "芝麻大表鸽🤖[无对应业务对象的待收记录已清理]")
         }
         return true
     }
@@ -2290,22 +2292,6 @@ modelFields.addField(
             syncAnimalStatus(ownerFarmId)
         }
 
-//        val sleepTimeStr = sleepTime!!.value
-//        if (sleepTimeStr != "-1") {
-//            val now = TimeUtil.getNow()
-//            val sleepCal = TimeUtil.getTodayCalendarByTimeStr(sleepTimeStr)
-//            // 如果当前时间在睡觉时间之前，且差距小于 30 分钟
-//            if (now.before(sleepCal) && (sleepCal.timeInMillis - now.timeInMillis) < 30 * 60 * 1000) {
-//                Log.farm("马上要睡觉了，暂不投喂，让它饿着吧")
-//                return
-//            }
-//            // 如果已经过了睡觉时间，理论上也不应该喂，但原逻辑会在后面 animalSleepAndWake 处理睡觉
-//            if (now.after(sleepCal)) {
-//                Log.farm("已过睡觉时间，暂不投喂")
-//                return
-//            }
-//        }
-
         if (!ensureOwnerAnimalAtHome("喂食")) {
             return
         }
@@ -2743,6 +2729,7 @@ modelFields.addField(
         try {
             return JSONObject(AntFarmRpcCall.syncAnimalStatus(farmId, operTag, operateType))
         } catch (e: Exception) {
+            if (e is CancellationException || e is InterruptedException) throw e
             Log.printStackTrace(TAG, e)
             return null
         }
@@ -4723,8 +4710,15 @@ modelFields.addField(
         if (ownerFarmId.isNullOrBlank()) {
             return false
         }
-        syncAnimalStatus(ownerFarmId)
-        if (foodStockLimit - foodStock >= requiredSpace) {
+        val status = syncAnimalStatus(ownerFarmId, "SYNC_RESUME", "QUERY_ALL") ?: return false
+        if (!ResChecker.checkRes(TAG, status)) return false
+        val stock = status.optJSONObject("subFarmVO")?.optInt("foodStock", -1) ?: -1
+        if (stock < 0) {
+            Log.farm("饲料库存回查未返回有效数量，本次不领取")
+            return false
+        }
+        parseSyncAnimalStatusResponse(status)
+        if (foodStockLimit - stock >= requiredSpace) {
             return true
         }
 
@@ -6582,25 +6576,27 @@ modelFields.addField(
             }
             selectIngredients(0)
             val unfinished = history.filterValues { dishes -> dishes.any { it.optInt("highestScore") < 100 } }
+            // 请求只能选择食材；同组任一已知烹饪方式未满分时，仍允许继续提分。
+            val eligible = candidates.filter { history[it].isNullOrEmpty() || it in unfinished }
+            val mastery = eligible.filter { it in unfinished }
+            val exploration = eligible.filter { history[it].isNullOrEmpty() }
             val reserved = mutableMapOf<String, Int>()
-            for (knownRecipe in unfinished.keys) {
+            for (knownRecipe in mastery) {
                 for ((id, count) in knownRecipe.groupingBy { it }.eachCount()) {
                     reserved[id] = maxOf(reserved[id] ?: 0, count)
                 }
             }
-            // 请求只能选择食材；同组任一已知烹饪方式未满分时，仍允许继续提分。
-            val eligible = candidates.filter { history[it].isNullOrEmpty() || it in unfinished }
-            val mastery = eligible.filter { it in unfinished }
-            val exploration = eligible.filter { candidate ->
-                history[candidate].isNullOrEmpty() && candidate.groupingBy { it }.eachCount().all { (id, count) ->
+            // 仅优先保留当前可做的提分配方；没有可做的提分配方时继续探索。
+            val preferredExploration = exploration.filter { candidate ->
+                candidate.groupingBy { it }.eachCount().all { (id, count) ->
                     stock.getValue(id) - count >= (reserved[id] ?: 0)
                 }
             }
             val strategy = aiKitchenStrategy?.value ?: 0
             val pool = when (strategy) {
                 1 -> mastery.ifEmpty { exploration }
-                2 -> mastery + exploration
-                else -> exploration.ifEmpty { mastery }
+                2 -> (mastery + preferredExploration).ifEmpty { exploration }
+                else -> preferredExploration.ifEmpty { mastery.ifEmpty { exploration } }
             }
             val priority = if (strategy == 1) {
                 compareByDescending<List<String>> { candidate ->

@@ -3,11 +3,13 @@ package io.github.aoguai.sesameag.task.antFarm
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.util.Log
+import io.github.aoguai.sesameag.util.TaskBlacklist
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.task.common.TaskFlowActionResult
 import io.github.aoguai.sesameag.task.common.TaskFlowRunResult
 import io.github.aoguai.sesameag.util.TimeCounter
 import io.github.aoguai.sesameag.util.maps.UserMap
+import org.json.JSONObject
 
 internal suspend fun AntFarm.runFarmLifecycleWorkflow(tc: TimeCounter): Boolean {
     if (enterFarm() == null) {
@@ -84,6 +86,8 @@ internal suspend fun AntFarm.runFarmTaskWorkflow(
 
 internal suspend fun AntFarm.runFarmPriorityDonations(userId: String? = UserMap.currentUid) {
     if (ApplicationHookConstants.isOffline()) return
+    if (donation?.value == true) donateSunflowerSeeds()
+    if (ApplicationHookConstants.isOffline()) return
     if (donation?.value == true && shouldDonateEggNow(userId)) {
         val publicDonationMade = handleDonation()
         val dailyDonationMarkedDone =
@@ -122,6 +126,100 @@ internal suspend fun AntFarm.runFarmPriorityDonations(userId: String? = UserMap.
     }
 
     if (!ApplicationHookConstants.isOffline()) runOrdinaryOrnamentTasks()
+}
+
+private fun AntFarm.donateSunflowerSeeds() {
+    var projectKey: String? = null
+    try {
+        val projects = JSONObject(AntFarmRpcCall.listActivityInfo())
+        if (projects.optString("resultCode") != "100") {
+            Log.error("AntFarm", "葵花籽捐赠项目查询失败 raw=$projects")
+            return
+        }
+        val activities = projects.optJSONArray("activityInfos") ?: return
+        for (i in 0 until activities.length()) {
+            if (ApplicationHookConstants.isOffline()) return
+            val entry = activities.optJSONObject(i) ?: continue
+            if (entry.optString("projectType") != "SOLDBY") continue
+            val projectId = entry.optString("projectId")
+            if (projectId.isBlank()) continue
+            val taskKey = "sunflowerDonation:$projectId"
+            if (TaskBlacklist.isTaskInBlacklist(getName(), taskKey)) continue
+            projectKey = taskKey
+            var response = JSONObject(AntFarmRpcCall.getSoldByProjectInfo(projectId))
+            while (!ApplicationHookConstants.isOffline()) {
+                if (response.optString("resultCode") != "100") {
+                    Log.error("AntFarm", "葵花籽资产查询失败 projectId=$projectId raw=$response")
+                    TaskBlacklist.addToBlacklist(getName(), taskKey, "葵花籽捐赠")
+                    io.github.aoguai.sesameag.task.TaskExecutionReport.current()?.recordException()
+                    return
+                }
+                val assets = response.optJSONArray("assetInfoList") ?: break
+                val asset = (0 until assets.length()).mapNotNull { assets.optJSONObject(it) }
+                    .firstOrNull { it.optString("assetType") == "KUIHUA_COIN" } ?: break
+                val balance = asset.optInt("assetAmount", -1)
+                if (balance == 0) return
+                val ratio = response.optInt("changeOneEggNeedBusinessCoinAmount", -1)
+                if (balance < 0 || ratio <= 0) {
+                    Log.error("AntFarm", "葵花籽捐赠缺少余额或兑换数量 raw=$response")
+                    return
+                }
+                val amount = balance / ratio * ratio
+                if (amount == 0) return
+                val activity = response.optJSONObject("activityInfo") ?: break
+                val activityId = activity.optString("activityId")
+                val batches = activity.optJSONArray("batchInfo") ?: break
+                var target: AntFarm.DonationTarget? = null
+                for (batchIndex in 0 until batches.length()) {
+                    val batch = batches.optJSONObject(batchIndex) ?: continue
+                    val targets = batch.optJSONArray("targetList") ?: continue
+                    for (targetIndex in 0 until targets.length()) {
+                        val candidate = targets.optJSONObject(targetIndex) ?: continue
+                        if (candidate.optBoolean("finished") || !candidate.optBoolean("acceptBusinessCoin")) continue
+                        val batchId = batch.optString("batchId")
+                        val targetId = candidate.optString("targetId")
+                        if (batchId.isBlank() || targetId.isBlank()) continue
+                        target = AntFarm.DonationTarget(projectId, batchId, targetId)
+                        break
+                    }
+                    if (target != null) break
+                }
+                val selected = target ?: break
+                if (activityId.isBlank()) break
+                val donation = JSONObject(AntFarmRpcCall.donation(
+                    activityId, amount, selected.projectId, selected.batchId, selected.targetId, "KUIHUA_COIN",
+                ))
+                if (donation.optString("resultCode") != "100") {
+                    Log.error("AntFarm", "葵花籽捐赠失败 raw=$donation")
+                    // 失败只停止原项目，当天不能换目标或借新一轮继续捐赠。
+                    TaskBlacklist.addToBlacklist(getName(), taskKey, "葵花籽捐赠")
+                    io.github.aoguai.sesameag.task.TaskExecutionReport.current()?.recordException()
+                    return
+                }
+                if (ApplicationHookConstants.isOffline()) return
+                response = JSONObject(AntFarmRpcCall.getSoldByProjectInfo(projectId))
+                val refreshedAssets = response.optJSONArray("assetInfoList")
+                val remaining = (0 until (refreshedAssets?.length() ?: 0))
+                    .mapNotNull { refreshedAssets?.optJSONObject(it) }
+                    .firstOrNull { it.optString("assetType") == "KUIHUA_COIN" }?.optInt("assetAmount", -1) ?: -1
+                if (response.optString("resultCode") != "100" || remaining < 0 || balance - remaining != amount) {
+                    Log.error("AntFarm", "葵花籽捐赠后余额未确认 before=$balance amount=$amount raw=$response")
+                    TaskBlacklist.addToBlacklist(getName(), taskKey, "葵花籽捐赠")
+                    io.github.aoguai.sesameag.task.TaskExecutionReport.current()?.recordException()
+                    return
+                }
+                Log.farm("加油小葵🌻[捐出${amount}粒葵花籽，剩余${remaining}粒]")
+            }
+        }
+    } catch (t: Throwable) {
+        if (t is kotlinx.coroutines.CancellationException || t is InterruptedException) throw t
+        if (!ApplicationHookConstants.isOffline()) {
+            io.github.aoguai.sesameag.task.TaskExecutionReport.current()?.ensureCurrent()
+            projectKey?.let { TaskBlacklist.addToBlacklist(getName(), it, "葵花籽捐赠") }
+            io.github.aoguai.sesameag.task.TaskExecutionReport.current()?.recordException()
+        }
+        Log.printStackTrace("AntFarm", "葵花籽捐赠异常:", t)
+    }
 }
 
 internal suspend fun AntFarm.runFarmSocialWorkflow(

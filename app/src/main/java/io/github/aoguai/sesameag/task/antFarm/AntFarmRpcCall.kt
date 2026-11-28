@@ -235,6 +235,7 @@ object AntFarmRpcCall {
         projectId: String? = null,
         batchId: String? = null,
         targetId: String? = null,
+        businessCoinType: String = "BENE_SCORE",
     ): String {
         val hasStructuredTarget =
             !projectId.isNullOrBlank() && !batchId.isNullOrBlank() && !targetId.isNullOrBlank()
@@ -247,7 +248,7 @@ object AntFarmRpcCall {
             put("version", if (hasStructuredTarget) GAME_CENTER_VERSION else VERSION)
             if (hasStructuredTarget) {
                 put("batchId", batchId)
-                put("businessCoinType", "BENE_SCORE")
+                put("businessCoinType", businessCoinType)
                 put("cele", 1)
                 put("projectId", projectId)
                 put("targetId", targetId)
@@ -255,6 +256,12 @@ object AntFarmRpcCall {
         }
         return requestString("com.alipay.antfarm.donation", JSONArray().put(args).toString())
     }
+
+    fun getSoldByProjectInfo(projectId: String): String = requestString(
+        "com.alipay.antfarm.getSoldByProjectInfo",
+        JSONArray().put(JSONObject().put("projectId", projectId).put("requestType", "NORMAL")
+            .put("sceneCode", "ANTFARM").put("source", "ANTFARM").put("version", GAME_CENTER_VERSION)).toString(),
+    )
 
     @JvmStatic
     fun donationToLoveChickenProject(
@@ -758,51 +765,7 @@ object AntFarmRpcCall {
             }).toString(),
         )
 
-    fun doSceneTask(
-        bizKey: String,
-        taskSceneCode: String,
-        originalFailure: TaskFlowActionResult,
-        sceneCode: String,
-        source: String,
-        onFailure: (JSONObject) -> TaskFlowActionResult,
-    ): TaskFlowActionResult {
-        val rpc = "AntFarmRpcCall.doFarmTask"
-        val originalDetail = "originalRpc=${originalFailure.rpc} originalCode=${originalFailure.code} originalRaw=${originalFailure.raw}"
-        val raw = doFarmTask(bizKey, taskSceneCode, "RPC", sceneCode, source)
-        val response = JsonUtil.parseJSONObjectOrNull(raw) ?: return TaskFlowActionResult.failure(
-            TaskRpcFailureType.RETRYABLE_RPC,
-            message = "场景任务请求返回空或无法解析",
-            rpc = rpc,
-            raw = raw,
-            detail = originalDetail,
-            continueCurrentRoundOnFailure = true,
-        ).copy(refreshAfterAction = true)
-        if (!ResChecker.checkRes(TAG, response)) {
-            val failure = onFailure(response).copy(
-                rpc = rpc, raw = raw, refreshAfterAction = true, detail = originalDetail,
-            )
-            if (failure.code == "1009" || failure.code == "331") {
-                return failure.copy(failureType = TaskRpcFailureType.BUSINESS_LIMIT)
-            }
-            if (failure.code == "400000040") {
-                return failure.copy(
-                    failureType = TaskRpcFailureType.NON_RETRYABLE_INVALID,
-                    continueCurrentRoundOnFailure = true,
-                    stopCurrentRound = false,
-                )
-            }
-            // 保留失败语义；后续列表确认进展时由统一任务执行流程消解失败。
-            return failure
-        }
-        return TaskFlowActionResult.defer(
-            DeferredReason.STATE_CONFIRMATION,
-            message = "场景任务已受理，等待所属任务列表确认",
-            rpc = rpc,
-            raw = raw,
-            detail = "$originalDetail sceneCode=$sceneCode source=$source taskSceneCode=$taskSceneCode bizKey=$bizKey",
-            refreshAfterAction = true,
-        )
-    }
+    // 警告：原任务 RPC 失败后禁止调用 doFarmTask 换接口补提；只保留正常业务直接调用。
 
     @JvmStatic
     fun queryTabVideoUrl(): String =
