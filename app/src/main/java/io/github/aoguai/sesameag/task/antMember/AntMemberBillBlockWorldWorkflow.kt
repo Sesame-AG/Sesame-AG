@@ -261,8 +261,18 @@ private class BillBlockWorldWorkflow {
             Log.error("AntMemberBillBlockWorld", "首页缺少pendingBlocks或placedBlocks，不将未知画布视为空画布")
             return null
         }
-        val pendingBlocks = parseBlocks(pendingBlockItems, includePosition = false)
-        val placedBlocks = parseBlocks(placedBlockItems, includePosition = true)
+        val blockDetails = data.optJSONObject("normalBlockRes")?.optJSONArray("blockDetailList")
+        val maxLevels = buildMap<String, Int> {
+            for (index in 0 until (blockDetails?.length() ?: 0)) {
+                val detail = blockDetails?.optJSONObject(index) ?: continue
+                if (!detail.optBoolean("maxLevel", false)) continue
+                val configId = detail.optString("blockConfigId")
+                val level = detail.optJSONObject("currentLevel")?.let { optionalInt(it, "level") }
+                if (configId.isNotBlank() && level != null && level > 0) put(configId, level)
+            }
+        }
+        val pendingBlocks = parseBlocks(pendingBlockItems, includePosition = false, maxLevels = maxLevels)
+        val placedBlocks = parseBlocks(placedBlockItems, includePosition = true, maxLevels = maxLevels)
         if (pendingBlocks.size != pendingBlockItems.length() || placedBlocks.size != placedBlockItems.length() ||
             placedBlocks.any {
                 !isValidBlock(it) || it.posX == null || it.posY == null ||
@@ -305,7 +315,7 @@ private class BillBlockWorldWorkflow {
                 }
             }
             if (completeWarehouse) {
-                parseBlocks(blocks, includePosition = false)
+                parseBlocks(blocks, includePosition = false, maxLevels = maxLevels)
             } else {
                 Log.error("AntMemberBillBlockWorld", "贴纸仓库分组或记录不完整，不确认仓库已处理完成 raw=$warehouse")
                 null
@@ -368,6 +378,7 @@ private class BillBlockWorldWorkflow {
     private fun parseBlocks(
         blocks: JSONArray?,
         includePosition: Boolean,
+        maxLevels: Map<String, Int>,
     ): List<BlockWorldBlock> {
         if (blocks == null) {
             return emptyList()
@@ -384,7 +395,8 @@ private class BillBlockWorldWorkflow {
                         recordId = recordId,
                         configId = block.optString("blockConfigId"),
                         level = block.optInt("level", 0),
-                        maxLevel = block.optBoolean("maxLevel", false),
+                        maxLevel = block.optBoolean("maxLevel", false) ||
+                            maxLevels[block.optString("blockConfigId")]?.let { block.optInt("level", 0) >= it } == true,
                         width = block.optInt("width", 0),
                         length = block.optInt("length", 0),
                         posX = if (includePosition) optionalInt(block, "posX") else null,

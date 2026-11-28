@@ -6,7 +6,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 object AntMemberYebExpGoldRpcCall {
-    private const val YEB_EXP_GOLD_SIGN_IN_PLAY_ID = "PLAY102253251"
     private const val YEB_EXP_GOLD_CH_INFO = "ch_url-https://render.alipay.com/p/yuyan/180020010001282160/index.html"
     internal const val YEB_EXP_GOLD_MAIN_QUERY_APPLET_ID = "AP12183159"
     private const val YEB_EXP_GOLD_MAIN_QUERY_TASK_VERSION = 2
@@ -26,10 +25,39 @@ object AntMemberYebExpGoldRpcCall {
         )
     }
 
-    fun signInYebExpGold(signInPlayId: String = YEB_EXP_GOLD_SIGN_IN_PLAY_ID): String {
+    fun signInYebExpGold(): String {
         return RequestManager.requestString(
-            "com.alipay.yebscenebff.needle.yebExpGold.signIn",
-            """[{"signInPlayId":"$signInPlayId"}]"""
+            "com.alipay.yebscenebff.needle.expGold.sign",
+            "[null]"
+        )
+    }
+
+    fun queryYebExpGoldIndex(modeFlag: Int): String = RequestManager.requestString(
+        "com.alipay.yebscenebff.needle.expGold.index",
+        JSONArray().put(JSONObject().put("modeFlag", modeFlag)).toString()
+    )
+
+    fun completeYebExpGoldIndexTask(taskId: String, config: JSONObject): String {
+        val args = JSONObject()
+            .put("context", JSONObject())
+            .put("outBizNo", "$taskId-${System.currentTimeMillis()}")
+            .put("playActionCode", config.getString("triggerCompleteTaskCode"))
+            .put("playEntrance", config.getString("playEntrance"))
+            .put("taskId", taskId)
+        return RequestManager.requestString(
+            "com.alipay.yebscenebff.promosdk2024.task.complete",
+            JSONArray().put(args).toString()
+        )
+    }
+
+    fun queryYebExpGoldIndexTask(taskId: String, config: JSONObject): String {
+        val args = JSONObject()
+            .put("playActionCode", config.getString("queryCompleteTaskCode"))
+            .put("playEntrance", config.getString("playEntrance"))
+            .put("taskId", taskId)
+        return RequestManager.requestString(
+            "com.alipay.yebscenebff.promosdk2024.task.queryCompleteTaskByTaskId",
+            JSONArray().put(args).toString()
         )
     }
 

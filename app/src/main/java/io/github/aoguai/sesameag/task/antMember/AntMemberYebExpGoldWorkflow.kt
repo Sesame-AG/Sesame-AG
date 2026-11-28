@@ -93,6 +93,8 @@ private data class YebExpGoldTaskGroup(
 
 internal fun AntMember.handleYebExpGoldTasks() {
     try {
+        val indexResult = TaskFlowEngine(YebExpGoldTaskFlowAdapter(this, useIndex = true), roundSleepMs = 425L).run()
+        if (indexResult.interrupted || ApplicationHookConstants.isOffline()) return
         var queryResponse = JSONObject(AntMemberYebExpGoldRpcCall.queryYebExpGoldMain())
         if (!isYebExpGoldSuccess(queryResponse)) {
             Log.error("AntMemberYebExpGold", "任务查询失败 rpc=com.alipay.yebscenebff.needle.yebExpGold.queryMain raw=$queryResponse")
@@ -103,7 +105,7 @@ internal fun AntMember.handleYebExpGoldTasks() {
         }
 
         val manualTaskTitles = LinkedHashSet<String>()
-        var handledTask = trySignInYebExpGold(queryResponse, manualTaskTitles)
+        var handledTask = trySignInYebExpGold(queryResponse, manualTaskTitles) || indexResult.progressChanged
         if (ApplicationHookConstants.isOffline()) return
         val adapter = YebExpGoldTaskFlowAdapter(this)
         val runResult = TaskFlowEngine(adapter, roundSleepMs = 425L).run()
@@ -137,16 +139,44 @@ internal fun AntMember.handleYebExpGoldTasks() {
     }
 }
 
-private class YebExpGoldTaskFlowAdapter(private val member: AntMember) : TaskFlowAdapter {
+private class YebExpGoldTaskFlowAdapter(
+    private val member: AntMember,
+    private val useIndex: Boolean = false,
+) : TaskFlowAdapter {
     override val moduleName = YEB_TASK_BLACKLIST_MODULE
     override val flowName = "余额宝体验金任务"
     override val continueCurrentRoundOnRetryableFailure = true
     private var registry = YebExpGoldTaskRegistry()
     private var querySucceeded = false
     private var queryRpc = ""
+    private var indexTaskConfig = JSONObject()
 
     override fun query(): JSONObject {
         querySucceeded = false
+        if (useIndex) {
+            queryRpc = "com.alipay.yebscenebff.needle.expGold.index"
+            val response = JSONObject(AntMemberYebExpGoldRpcCall.queryYebExpGoldIndex(4))
+            if (!isYebExpGoldSuccess(response) || RpcDailyCircuit.isStopResponse(response) ||
+                RpcOfflineRisk.isHardBlocked(response) || ApplicationHookConstants.isOffline()
+            ) return response
+            val result = response.optJSONObject("result")
+            val config = result?.optJSONObject("config")?.optJSONObject("taskConfig")
+            val taskList = result?.optJSONObject("taskList")
+            val tasks = taskList?.optJSONObject("data")?.optJSONArray("taskDetailList")
+            if (config == null || tasks == null || taskList.optBoolean("success") == false ||
+                config.optString("playEntrance").isBlank() ||
+                config.optString("triggerCompleteTaskCode").isBlank() ||
+                config.optString("queryCompleteTaskCode").isBlank()
+            ) {
+                logError("体验金任务入口缺少任务列表或动作参数 raw=$response")
+                return response
+            }
+            indexTaskConfig = config
+            registry = YebExpGoldTaskRegistry()
+            collectYebExpGoldTasks(tasks, registry, YebExpGoldTaskSource.PROMO_TASK_LIST)
+            querySucceeded = true
+            return response
+        }
         queryRpc = "com.alipay.yebscenebff.needle.yebExpGold.queryMain"
         val mainResponse = JSONObject(AntMemberYebExpGoldRpcCall.queryYebExpGoldMain())
         if (!isYebExpGoldSuccess(mainResponse) || RpcDailyCircuit.isStopResponse(mainResponse) ||
@@ -210,7 +240,7 @@ private class YebExpGoldTaskFlowAdapter(private val member: AntMember) : TaskFlo
         if (item.actionType == TaskFlowAction.RECEIVE.logName) return TaskFlowPhase.REWARD_READY
         return when (group.getRunStatus()) {
             "complete" -> TaskFlowPhase.TERMINAL
-            "not_sign", "sign" -> TaskFlowPhase.SIGNUP_REQUIRED
+            "not_sign", "sign" -> if (useIndex) TaskFlowPhase.UNKNOWN else TaskFlowPhase.SIGNUP_REQUIRED
             "not_done" -> TaskFlowPhase.READY_TO_COMPLETE
             else -> TaskFlowPhase.UNKNOWN
         }
@@ -222,8 +252,48 @@ private class YebExpGoldTaskFlowAdapter(private val member: AntMember) : TaskFlo
 
     override fun signup(item: TaskFlowItem): TaskFlowActionResult = complete(item)
 
-    override fun complete(item: TaskFlowItem): TaskFlowActionResult =
-        tryHandleYebExpGoldTaskGroup(member, registry.groups.getValue(item.id), registry)
+    override fun complete(item: TaskFlowItem): TaskFlowActionResult {
+        val group = registry.groups.getValue(item.id)
+        if (!useIndex) return tryHandleYebExpGoldTaskGroup(member, group, registry)
+        val taskId = group.getActionTaskId().orEmpty()
+        val response = JSONObject(AntMemberYebExpGoldRpcCall.completeYebExpGoldIndexTask(taskId, indexTaskConfig))
+        val stopped = RpcDailyCircuit.isStopResponse(response) || RpcOfflineRisk.isHardBlocked(response) ||
+            ApplicationHookConstants.isOffline()
+        if (stopped || !isYebExpGoldActionSuccess(response)) {
+            val code = response.optString("resultCode").ifBlank { response.optString("errorCode") }
+            val message = getYebExpGoldErrorDesc(response)
+            return TaskFlowActionResult.failure(
+                member.classifyMemberDomainTaskFailure(code, message, response),
+                code = code, message = message,
+                rpc = "com.alipay.yebscenebff.promosdk2024.task.complete", raw = response.toString(),
+                detail = "taskId=$taskId", stopCurrentRound = stopped,
+                continueCurrentRoundOnFailure = !stopped,
+            )
+        }
+        val verified = JSONObject(AntMemberYebExpGoldRpcCall.queryYebExpGoldIndexTask(taskId, indexTaskConfig))
+        val verifiedTask = findYebExpGoldTaskByIdInNode(verified, taskId, YebExpGoldTaskSource.PROMO_TASK_LIST)
+        val prizes = verifiedTask?.optJSONArray("prizeList")
+        val received = verifiedTask?.optString("taskProcessStatus") == "RECEIVE_SUCCESS" &&
+            prizes != null && (0 until prizes.length()).any { prizes.optJSONObject(it)?.optString("sendStatus") == "SUCCESS" }
+        if (isYebExpGoldSuccess(verified) && received) {
+            markYebExpGoldTaskGroupHandledToday(group)
+            for (index in 0 until prizes.length()) {
+                val prize = prizes.optJSONObject(index) ?: continue
+                if (prize.optString("sendStatus") == "SUCCESS") {
+                    Log.member("余额宝体验金💰[${item.title}]#${prize.optString("amountText")} ${prize.optString("suffix")}")
+                }
+            }
+            return TaskFlowActionResult.success(refreshAfterAction = true)
+        }
+        val queryStopped = RpcDailyCircuit.isStopResponse(verified) || RpcOfflineRisk.isHardBlocked(verified) ||
+            ApplicationHookConstants.isOffline()
+        return TaskFlowActionResult.failure(
+            TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW, message = "体验金任务回查未确认发奖",
+            rpc = "com.alipay.yebscenebff.promosdk2024.task.queryCompleteTaskByTaskId",
+            raw = verified.toString(), detail = "taskId=$taskId", stopCurrentRound = queryStopped,
+            continueCurrentRoundOnFailure = !queryStopped,
+        )
+    }
 
     override fun receive(item: TaskFlowItem): TaskFlowActionResult {
         val group = registry.groups.getValue(item.id)
@@ -391,61 +461,73 @@ private fun trySignInYebExpGold(
         ?.toString()
         .orEmpty()
     val title = if (amount.isBlank()) "余额宝体验金签到" else "余额宝体验金签到(${amount}元)"
-    if (TaskBlacklist.isTaskInBlacklist(YEB_TASK_BLACKLIST_MODULE, title)) {
+    val taskKey = "余额宝体验金签到"
+    if (TaskBlacklist.isTaskInBlacklist(YEB_TASK_BLACKLIST_MODULE, taskKey)) {
         Log.member("任务在自动跳过列表(黑名单)中，跳过[$title]")
         return false
     }
 
-    val signResponse = JSONObject(AntMemberYebExpGoldRpcCall.signInYebExpGold())
-    if (!isYebExpGoldSuccess(signResponse)) {
-        Log.error("AntMemberYebExpGold", "余额宝体验金签到失败 rpc=com.alipay.yebscenebff.needle.yebExpGold.signIn raw=$signResponse")
-    }
-    if (RpcDailyCircuit.isStopResponse(signResponse) || RpcOfflineRisk.isHardBlocked(signResponse) ||
-        ApplicationHookConstants.isOffline()
-    ) {
+    try {
+        val signResponse = JSONObject(AntMemberYebExpGoldRpcCall.signInYebExpGold())
+        if (RpcDailyCircuit.isStopResponse(signResponse) || RpcOfflineRisk.isHardBlocked(signResponse) ||
+            ApplicationHookConstants.isOffline()
+        ) {
+            manualTaskTitles.add(title)
+            return false
+        }
+        // 警告：签到失败立即记录当日停止，不能查询首页将失败改成成功或下轮再签。
+        if (!isYebExpGoldSuccess(signResponse)) {
+            Log.error("AntMemberYebExpGold", "余额宝体验金签到失败 rpc=com.alipay.yebscenebff.needle.expGold.sign raw=$signResponse")
+            TaskBlacklist.addToBlacklist(YEB_TASK_BLACKLIST_MODULE, taskKey, title)
+            io.github.aoguai.sesameag.task.TaskExecutionReport.current()?.recordException()
+            manualTaskTitles.add(title)
+            return false
+        }
+        var confirmedSign = getYebExpGoldTodaySignItem(signResponse)
+        if (confirmedSign?.optJSONObject("signInfo")?.optString("signStatus") != "SIGNED") {
+            val refreshed = JSONObject(AntMemberYebExpGoldRpcCall.queryYebExpGoldMain())
+            if (RpcDailyCircuit.isStopResponse(refreshed) || RpcOfflineRisk.isHardBlocked(refreshed) ||
+                ApplicationHookConstants.isOffline()
+            ) return false
+            confirmedSign = getYebExpGoldTodaySignItem(refreshed)
+            if (!isYebExpGoldSuccess(refreshed) ||
+                confirmedSign?.optJSONObject("signInfo")?.optString("signStatus") != "SIGNED"
+            ) {
+                Log.error("AntMemberYebExpGold", "签到后未确认成功 rpc=com.alipay.yebscenebff.needle.yebExpGold.queryMain raw=$refreshed")
+                TaskBlacklist.addToBlacklist(YEB_TASK_BLACKLIST_MODULE, taskKey, title)
+                io.github.aoguai.sesameag.task.TaskExecutionReport.current()?.recordException()
+                manualTaskTitles.add(title)
+                return false
+            }
+        }
+        logYebExpGoldSignInRewards(amount, confirmedSign)
+        Status.setFlagToday(StatusFlags.FLAG_ANTMEMBER_YEB_EXP_GOLD_SIGN_DONE)
+        return true
+    } catch (t: Throwable) {
+        if (t is CancellationException || t is InterruptedException) throw t
+        if (!ApplicationHookConstants.isOffline()) {
+            io.github.aoguai.sesameag.task.TaskExecutionReport.current()?.ensureCurrent()
+            TaskBlacklist.addToBlacklist(YEB_TASK_BLACKLIST_MODULE, taskKey, title)
+            io.github.aoguai.sesameag.task.TaskExecutionReport.current()?.recordException()
+        }
+        Log.printStackTrace("AntMemberYebExpGold", "余额宝体验金签到异常，不再回查或重签", t)
         manualTaskTitles.add(title)
         return false
     }
-    val prizeOrders = signResponse.optJSONObject("resultData")
-        ?.optJSONObject("resultData")?.optJSONArray("prizeOrderDTOList")
-    val rewardSent = prizeOrders != null && (0 until prizeOrders.length()).any { index ->
-        prizeOrders.optJSONObject(index)?.optString("sendStatus") == "SUCCESS"
-    }
-    if (!rewardSent) {
-        val refreshed = JSONObject(AntMemberYebExpGoldRpcCall.queryYebExpGoldMain())
-        if (!isYebExpGoldSuccess(refreshed)) {
-            Log.error("AntMemberYebExpGold", "签到后状态回查失败 rpc=com.alipay.yebscenebff.needle.yebExpGold.queryMain raw=$refreshed")
-            manualTaskTitles.add(title)
-            return false
-        }
-        val refreshedStatus = getYebExpGoldTodaySignItem(refreshed)
-            ?.optJSONObject("signInfo")?.optString("signStatus")
-        if (refreshedStatus != "SIGNED") {
-            manualTaskTitles.add(title)
-            return false
-        }
-    }
-    logYebExpGoldSignInRewards(amount, signResponse)
-    Status.setFlagToday(StatusFlags.FLAG_ANTMEMBER_YEB_EXP_GOLD_SIGN_DONE)
-    return true
 }
 
 private fun logYebExpGoldSignInRewards(
     fallbackAmount: String,
-    response: JSONObject
+    signItem: JSONObject?
 ) {
-    val prizeOrderList = response.optJSONObject("resultData")
-        ?.optJSONObject("resultData")
-        ?.optJSONArray("prizeOrderDTOList")
-    if (prizeOrderList != null && prizeOrderList.length() > 0) {
-        for (index in 0 until prizeOrderList.length()) {
-            val order = prizeOrderList.optJSONObject(index) ?: continue
-            val memo = order.optJSONObject("customMemo")
-            val amount = memo?.optString("PRIZE_AMOUNT").orEmpty()
-            val unit = memo?.optString("PRIZE_UNIT").orEmpty()
-            val prizeName = order.optString("prizeName")
+    val prizeInfoList = signItem?.optJSONArray("prizeInfoList")
+    if (prizeInfoList != null && prizeInfoList.length() > 0) {
+        for (index in 0 until prizeInfoList.length()) {
+            val prize = prizeInfoList.optJSONObject(index) ?: continue
+            val amount = prize.optString("prizeAmountFormat")
+            val prizeName = prize.optString("prizeTitle").ifBlank { prize.optString("prizeName") }
             val rewardText = when {
-                amount.isNotBlank() -> amount + unit.ifBlank { "元" }
+                amount.isNotBlank() -> "${amount}元"
                 prizeName.isNotBlank() -> prizeName
                 fallbackAmount.isNotBlank() -> fallbackAmount + "元"
                 else -> "成功"
@@ -470,9 +552,11 @@ private fun getYebExpGoldErrorDesc(response: JSONObject): String {
 }
 
 private fun getYebExpGoldTodaySignItem(queryResponse: JSONObject): JSONObject? {
-    val signList = queryResponse.optJSONObject("resultData")
-        ?.optJSONObject("signInData")
-        ?.optJSONArray("list")
+    val signList = queryResponse.optJSONObject("result")
+        ?.optJSONArray("signPrizeInfoList")
+        ?: queryResponse.optJSONObject("resultData")
+            ?.optJSONObject("signInData")
+            ?.optJSONArray("list")
         ?: return null
     for (index in 0 until signList.length()) {
         val signItem = signList.optJSONObject(index) ?: continue
