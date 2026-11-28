@@ -176,6 +176,7 @@ object RpcTrafficCapture {
     private val mtopRequestHookInstalled = AtomicBoolean(false)
     private val h5HookInstalled = AtomicBoolean(false)
     private val captureHooks = ConcurrentHashMap<Method, XposedInterface.HookHandle>()
+    private val installingCaptureHooks = ConcurrentHashMap.newKeySet<Method>()
     // false 仅表示类入口正在安装，不把安装占位当作成功。
     private val miniHttpClassInstallations = ConcurrentHashMap<Class<*>, Boolean>()
     private val webSocketFactoryInstallations = ConcurrentHashMap<Class<*>, Boolean>()
@@ -266,6 +267,7 @@ object RpcTrafficCapture {
     fun refreshCaptureState(): Boolean {
         captureEnabledCache = null
         captureUserId = null
+        clearPendingAriverRequests()
         authorizationJob?.cancel()
         captureConfigRefresh.run()
         return false
@@ -298,19 +300,21 @@ object RpcTrafficCapture {
         captureEnabledCache = CaptureEnabledCache(userId.orEmpty(), enabled, Long.MAX_VALUE)
         if (!enabled) {
             captureUserId = null
-            synchronized(installLock) {
-                captureHooks.entries.toList().forEach { (method, handle) ->
-                    runCatching { handle.unhook() }.onSuccess {
-                        captureHooks.remove(method, handle)
-                    }.onFailure {
-                        Log.error(TAG, "卸载抓包 Hook 失败: $method ${it.stackTraceToString()}")
-                    }
-                }
+            val hooks = synchronized(installLock) {
                 ariverRequestHookInstalled.set(false)
                 mtopRequestHookInstalled.set(false)
                 h5HookInstalled.set(false)
                 miniHttpClassInstallations.clear()
                 webSocketFactoryInstallations.clear()
+                captureHooks.entries.map { it.key to it.value }
+            }
+            // 警告：卸载也会进入 Hook 框架，不得持有安装锁等待宿主类加载。
+            hooks.forEach { (method, handle) ->
+                runCatching { handle.unhook() }.onSuccess {
+                    captureHooks.remove(method, handle)
+                }.onFailure {
+                    Log.error(TAG, "卸载抓包 Hook 失败: $method ${it.stackTraceToString()}")
+                }
             }
             if (RuntimeIdentityGuard.isMainProcess()) {
                 resetCaptureSession()
@@ -348,14 +352,36 @@ object RpcTrafficCapture {
         return installed
     }
 
-    private fun installCaptureHook(method: Method, hooker: XposedInterface.Hooker): Boolean =
+    private fun installCaptureHook(method: Method, hooker: XposedInterface.Hooker): Boolean {
         synchronized(installLock) {
-            if (!isCaptureEnabled()) return@synchronized false
-            if (!captureHooks.containsKey(method)) {
-                captureHooks[method] = ApplicationHook.requireXposedInterface().hook(method).intercept(hooker)
-            }
-            true
+            if (!isCaptureEnabled()) return false
+            if (captureHooks.containsKey(method)) return true
+            if (!installingCaptureHooks.add(method)) return false
         }
+        try {
+            // 警告：Hook 框架可能再次加载类。锁只保护登记，禁止持锁安装或等待其他安装线程，
+            // 否则会与宿主 loadClass 回调反向申请安装锁形成锁顺序反转，拖住主线程。
+            val handle = ApplicationHook.requireXposedInterface().hook(method).intercept(hooker)
+            val retained = synchronized(installLock) {
+                if (isCaptureEnabled()) {
+                    captureHooks[method] = handle
+                    true
+                } else false
+            }
+            if (!retained) {
+                try {
+                    handle.unhook()
+                } catch (error: Throwable) {
+                    // 保留未成功卸载的句柄，不能遗失仍在宿主中的 Hook。
+                    captureHooks[method] = handle
+                    throw error
+                }
+            }
+            return retained
+        } finally {
+            installingCaptureHooks.remove(method)
+        }
+    }
 
     /** Lite 仅获取已确认会话的许可和配置，不初始化业务任务。 */
     fun installForCaptureOnlyProcess(classLoader: ClassLoader, context: Context): Boolean =
@@ -611,12 +637,14 @@ object RpcTrafficCapture {
                     runCatching {
                         method.isAccessible = true
                         if (!installCaptureHook(method) intercept@ { chain ->
+                            val name = chain.args.firstOrNull()
+                            if (!isCaptureEnabled() ||
+                                (name != MINI_REQUEST_CLASS && name != MINI_RESPONSE_CLASS &&
+                                    name != H5_NETWORK_CLASS && name != XRIVER_REQUEST_CLASS &&
+                                    name != MTOP_REQUEST_CLASS && name != OKHTTP_CLIENT_CLASS)
+                            ) return@intercept chain.proceed()
                             val result = chain.proceed()
-                            if (result is Class<*> &&
-                                (result.name == MINI_REQUEST_CLASS || result.name == MINI_RESPONSE_CLASS ||
-                                    result.name == H5_NETWORK_CLASS || result.name == XRIVER_REQUEST_CLASS ||
-                                    result.name == MTOP_REQUEST_CLASS || result.name == OKHTTP_CLIENT_CLASS)
-                            ) {
+                            if (result is Class<*>) {
                                 runCatching {
                                     if (result.name == OKHTTP_CLIENT_CLASS) installWebSocketFactoryHook(result)
                                     else installMiniHttpClass(result)
@@ -866,7 +894,6 @@ object RpcTrafficCapture {
 
     private fun installMiniHttpClass(targetClass: Class<*>): Boolean {
         if (targetClass.name == MTOP_REQUEST_CLASS) return installMtopRequestHook(targetClass)
-        reportMiniHttpClass(targetClass)
         if (targetClass.name == H5_NETWORK_CLASS) return installH5NetworkHook(targetClass)
         if (targetClass.name == XRIVER_REQUEST_CLASS) return installXriverHttpHooks(targetClass)
         val isRequest = when (targetClass.name) {
@@ -883,6 +910,8 @@ object RpcTrafficCapture {
             "${it.javaClass.name}@${System.identityHashCode(it)}"
         } ?: "bootstrap"
         return try {
+            // 警告：成员反射会再次触发 loadClass，必须先登记类安装状态再读取声明。
+            reportMiniHttpClass(targetClass)
             val methods = linkedMapOf<List<Class<*>>, Method>()
             var current: Class<*>? = targetClass
             while (current != null && current != Any::class.java) {
@@ -1068,6 +1097,7 @@ object RpcTrafficCapture {
             miniHttpClassInstallations.putIfAbsent(targetClass, false)?.let { return it }
         }
         return try {
+            reportMiniHttpClass(targetClass)
             val loader = targetClass.classLoader
             val methods = listOf(
                 targetClass.getDeclaredMethod(
@@ -1269,6 +1299,7 @@ object RpcTrafficCapture {
             miniHttpClassInstallations.putIfAbsent(targetClass, false)?.let { return it }
         }
         return try {
+            reportMiniHttpClass(targetClass)
             val methods = linkedMapOf<List<Class<*>>, Method>()
             var owner: Class<*>? = targetClass
             while (owner != null && owner != Any::class.java) {
@@ -1615,7 +1646,7 @@ object RpcTrafficCapture {
             }
         }
         methods.forEach { method ->
-            val installation = synchronized(installLock) {
+            val installation = run {
                 if (captureHooks.containsKey(method)) return@forEach
                 runCatching {
                     method.isAccessible = true
@@ -2094,6 +2125,9 @@ object RpcTrafficCapture {
     }.getOrDefault(false)
 
     private fun installAriverResponseClass(callbackClass: Class<*>): Boolean = runCatching {
+        if (!isCaptureEnabled()) return@runCatching false
+        // 回调类安装成功后复用结果，不在每次 RPC 请求中重新解析全部方法和参数类型。
+        if (miniHttpClassInstallations[callbackClass] == true) return@runCatching true
         val methods = linkedMapOf<Pair<String, List<Class<*>>>, Method>()
         var owner: Class<*>? = callbackClass
         while (owner != null && owner != Any::class.java) {
@@ -2169,7 +2203,11 @@ object RpcTrafficCapture {
                 runCatching { Log.runtime(TAG, "安装 BridgeCallback 响应抓包失败: $method ${it.stackTraceToString()}") }
             }
         }
-        methods.isNotEmpty() && methods.values.all { captureHooks.containsKey(it) }
+        synchronized(installLock) {
+            val installed = isCaptureEnabled() && methods.isNotEmpty() && methods.values.all { captureHooks.containsKey(it) }
+            if (installed) miniHttpClassInstallations[callbackClass] = true
+            installed
+        }
     }.onFailure {
         runCatching { Log.runtime(TAG, "读取 BridgeCallback 接口失败: ${callbackClass.name} ${it.stackTraceToString()}") }
     }.getOrDefault(false)
@@ -2735,11 +2773,8 @@ object RpcTrafficCapture {
         }
     }
 
-    private fun isCaptureEnabled(): Boolean {
-        val enabled = captureUserId != null && captureEnabledCache?.enabled == true
-        if (!enabled) clearPendingAriverRequests()
-        return enabled
-    }
+    // 类加载和流读取热路径只读许可；清理在切换状态时执行，不能在查询开关时嵌套申请上下文锁。
+    private fun isCaptureEnabled(): Boolean = captureUserId != null && captureEnabledCache?.enabled == true
 
     private fun isCaptureEnabledInPersistentConfig(activeUserId: String): Boolean {
         return runCatching {

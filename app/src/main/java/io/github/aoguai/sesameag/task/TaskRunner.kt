@@ -33,19 +33,15 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -73,28 +69,10 @@ class CoroutineTaskRunner(allModels: List<Model>) {
     private val deferredCount = AtomicInteger(0)
     private val allTasksSucceeded = AtomicBoolean(true)
     private val taskExecutionTimes = ConcurrentHashMap<String, Long>()
-    private val longRunningJobs = ConcurrentLinkedQueue<LongRunningJob>()
     private var runSessionOwnerUserId: String? = null
     private var runSessionEpoch: Long = 0L
     private var maxConcurrency: Int = DEFAULT_MAX_CONCURRENCY
     private lateinit var taskConcurrencyLimiter: Semaphore
-    private lateinit var longRunningTaskLimiter: Semaphore
-
-    private data class LongRunningJob(
-        val taskId: String,
-        val startTime: Long,
-        val task: ModelTask,
-        val job: Deferred<TaskExecutionOutcome>,
-        val releaseResources: () -> Unit
-    ) {
-        private val released = AtomicBoolean(false)
-
-        fun releaseResourcesOnce() {
-            if (released.compareAndSet(false, true)) {
-                releaseResources()
-            }
-        }
-    }
 
     /**
      * 启动任务执行流程
@@ -128,7 +106,6 @@ class CoroutineTaskRunner(allModels: List<Model>) {
 
             maxConcurrency = BaseModel.taskMaxConcurrency.value ?: DEFAULT_MAX_CONCURRENCY
             taskConcurrencyLimiter = Semaphore(maxConcurrency)
-            longRunningTaskLimiter = Semaphore(1)
             Log.record(TAG, "🚀 开始执行任务流程 (并发数: $maxConcurrency)")
 
             CustomSettings.loadForTaskRunner()
@@ -157,9 +134,9 @@ class CoroutineTaskRunner(allModels: List<Model>) {
                 executeRound(round, rounds, status)
             }
 
-            val afterLongRunningSessionCheck = runSessionCheck()
-            if (afterLongRunningSessionCheck !is AccountSessionCheck.Current) {
-                logSessionInvalid("after_long_running_jobs", afterLongRunningSessionCheck)
+            val finalCheck = runSessionCheck()
+            if (finalCheck !is AccountSessionCheck.Current) {
+                logSessionInvalid("after_rounds", finalCheck)
             } else if (CustomSettings.onlyOnceDaily.value == true) {
                 // 确保时间状态是最新的
                 TaskCommon.update()
@@ -182,9 +159,6 @@ class CoroutineTaskRunner(allModels: List<Model>) {
             allTasksSucceeded.set(false)
             Log.printStackTrace(TAG, "任务流程异常", e)
         } finally {
-            withContext(NonCancellable) {
-                cancelLongRunningJobs()
-            }
             val finalSessionCheck = runSessionCheck()
             if (finalSessionCheck is AccountSessionCheck.Current) {
                 scheduleNext()
@@ -257,7 +231,7 @@ class CoroutineTaskRunner(allModels: List<Model>) {
                 if (availableSlots <= 0) break
                 val readyTasks = taskBatches[readyBatchIndex].filter { task ->
                     task in pendingTasks && (readyBatchIndex == batchIndex ||
-                        (task.javaClass in BaseModel.taskOrderModelClasses && !isLongRunningTask(task)))
+                        task.javaClass in BaseModel.taskOrderModelClasses)
                 }.take(availableSlots)
                 if (readyTasks.isEmpty()) continue
 
@@ -342,7 +316,6 @@ class CoroutineTaskRunner(allModels: List<Model>) {
         }
 
         // 默认依赖批次；手动模式据此重排并拆分，不扩大并发许可，也不清除每日标识或补跑模块。
-        // 运动、森林、庄园保留长任务超时策略，本轮主流程结束后才允许后续依赖批次执行。
         val batches = buildList<List<ModelTask>> {
             // 1) 固定：运动优先更新步数，并处理森林可用道具兑换；不能随机到消费者之后。
             takeBatch { it is AntSports }
@@ -471,25 +444,13 @@ class CoroutineTaskRunner(allModels: List<Model>) {
             return
         }
 
-        val isLongRunning = isLongRunningTask(task)
         val timeout = (BaseModel.taskTimeout.value ?: DEFAULT_TASK_TIMEOUT).toLong()
-        val acquiredConcurrencySlot = AtomicBoolean(false)
-        val acquiredLongRunningSlot = AtomicBoolean(false)
+        val limiter = taskConcurrencyLimiter
+        var releaseOnReturn = false
         var executionJob: Deferred<TaskExecutionOutcome>? = null
-        var trackedLongRunningJob: LongRunningJob? = null
-
-        fun releaseTaskSlots() {
-            if (acquiredConcurrencySlot.compareAndSet(true, false)) taskConcurrencyLimiter.release()
-            if (acquiredLongRunningSlot.compareAndSet(true, false)) longRunningTaskLimiter.release()
-        }
-
         try {
-            if (isLongRunning) {
-                longRunningTaskLimiter.acquire()
-                acquiredLongRunningSlot.set(true)
-            }
-            taskConcurrencyLimiter.acquire()
-            acquiredConcurrencySlot.set(true)
+            limiter.acquire()
+            releaseOnReturn = true
 
             val acquiredSlotSessionCheck = runSessionCheck()
             if (acquiredSlotSessionCheck !is AccountSessionCheck.Current) {
@@ -514,120 +475,72 @@ class CoroutineTaskRunner(allModels: List<Model>) {
 
             val job = task.startTask(force = false, rounds = 1)
             executionJob = job
-            job.invokeOnCompletion { releaseTaskSlots() }
-            val outcome = if (isLongRunning) {
-                val longRunningJob = LongRunningJob(taskId, startTime, task, job) { releaseTaskSlots() }
-                longRunningJobs.add(longRunningJob)
-                trackedLongRunningJob = longRunningJob
-                job.invokeOnCompletion {
-                    longRunningJob.releaseResourcesOnce()
-                }
-                if (job.isActive) {
-                    Log.record(TAG, "✨ $taskId 已启动，等待本轮执行结果")
-                }
-                val result = awaitLongRunningJob(longRunningJob, timeout)
-                longRunningJobs.remove(longRunningJob)
-                result
-            } else {
-                withTimeout(timeout) {
-                    awaitTaskOutcome(job, taskId)
+            // 启动后的槽位只随实际 Job 完成而释放，停止等待超时也不能提前释放。
+            job.invokeOnCompletion { limiter.release() }
+            releaseOnReturn = false
+            val outcome = try {
+                awaitTaskOutcome(task, job, taskId, timeout)
+            } finally {
+                if (!job.isCompleted) {
+                    withContext(NonCancellable) {
+                        job.cancel()
+                        check(task.stopTaskAndWait(TASK_STOP_TIMEOUT_MS) && job.isCompleted) {
+                            "任务取消后 ${TASK_STOP_TIMEOUT_MS}ms 内未退出，停止本轮调度并保留并发占用: $taskId"
+                        }
+                    }
                 }
             }
             recordTaskOutcome(taskId, startTime, outcome)
-
-        } catch (e: TimeoutCancellationException) {
-            val time = System.currentTimeMillis() - startTime
-
-            allTasksSucceeded.set(false)
-            failureCount.incrementAndGet()
-            val stage = executionJob?.let(task::executionStartupStage) ?: "未取得启动阶段"
-            Log.error(TAG, "⏰ 超时: $taskId (${time}ms > ${timeout}ms)，最后阶段：$stage")
-            // 尝试停止任务
-            task.stopTask()
-
         } catch (e: CancellationException) {
             allTasksSucceeded.set(false)
             cancelledCount.incrementAndGet()
             Log.record(TAG, "⏸ 任务取消: $taskId (${e.message})")
-            task.stopTask()
             throw e
         } catch (e: Exception) {
             val time = System.currentTimeMillis() - startTime
             allTasksSucceeded.set(false)
             failureCount.incrementAndGet()
             Log.error(TAG, "❌ 失败: $taskId (${e.message})")
-            if (trackedLongRunningJob != null) {
-                longRunningJobs.remove(trackedLongRunningJob)
-                throw e
-            }
+            if (executionJob != null) throw e
         } finally {
-            if (executionJob == null) releaseTaskSlots()
+            if (releaseOnReturn) limiter.release()
         }
     }
 
-    private suspend fun awaitLongRunningJob(
-        longRunningJob: LongRunningJob,
+    private suspend fun awaitTaskOutcome(
+        task: ModelTask,
+        job: Deferred<TaskExecutionOutcome>,
+        taskId: String,
         timeoutMs: Long,
     ): TaskExecutionOutcome {
         val startedAtElapsedMs = SystemClock.elapsedRealtime()
-        while (!longRunningJob.job.isCompleted) {
+        while (!job.isCompleted) {
             currentCoroutineContext().ensureActive()
             val sessionCheck = runSessionCheck()
             val offline = ApplicationHookConstants.isOffline()
-            val cancelled = longRunningJob.job.isCancelled
-            val activityUntil = longRunningJob.task.executionActivityUntilElapsedMs(longRunningJob.job)
+            val cancelled = job.isCancelled
+            val activityUntil = task.executionActivityUntilElapsedMs(job)
                 ?: startedAtElapsedMs
             val idleMs = (SystemClock.elapsedRealtime() - activityUntil).coerceAtLeast(0L)
             val interrupted = sessionCheck !is AccountSessionCheck.Current || offline || cancelled
             if (interrupted || idleMs >= timeoutMs) {
-                if (longRunningJob.job.isCompleted) break
+                if (job.isCompleted) break
                 val reason = when {
                     sessionCheck !is AccountSessionCheck.Current -> runSessionCheckDescription(sessionCheck)
                     offline -> "离线模式"
                     cancelled -> "任务已取消"
                     else -> "连续 ${idleMs}ms 无执行活动，超过 ${timeoutMs}ms"
                 }
-                Log.record(TAG, "⏸ 中断长任务: ${longRunningJob.taskId}，原因: $reason")
-                val stopped = withContext(NonCancellable) {
-                    longRunningJob.job.cancel()
-                    longRunningJob.task.stopTaskAndWait(TASK_STOP_TIMEOUT_MS)
-                }
-                check(stopped && longRunningJob.job.isCompleted) {
-                    "长任务取消后 ${TASK_STOP_TIMEOUT_MS}ms 内未退出，停止本轮调度并保留并发占用: ${longRunningJob.taskId}"
-                }
+                val stage = task.executionStartupStage(job) ?: "未取得启动阶段"
+                Log.record(TAG, "⏸ 中断任务: $taskId，原因: $reason，最后阶段：$stage")
                 return if (interrupted) TaskExecutionOutcome.CANCELLED else TaskExecutionOutcome.FAILED
             }
             // 只限制连续无活动的窗口；RPC 返回、任务流结束及显式等待会更新预算。
             withTimeoutOrNull(minOf(timeoutMs - idleMs, 1_000L)) {
-                longRunningJob.job.join()
+                job.join()
             }
         }
-        return awaitTaskOutcome(longRunningJob.job, longRunningJob.taskId)
-    }
-
-    private suspend fun cancelLongRunningJobs() {
-        val remaining = longRunningJobs.toList()
-        if (remaining.isEmpty()) return
-        allTasksSucceeded.set(false)
-        remaining.forEach {
-            it.task.stopTask()
-            it.job.cancel()
-        }
-        withTimeoutOrNull(TASK_STOP_TIMEOUT_MS) {
-            remaining.map { it.job }.joinAll()
-        }
-        remaining.forEach {
-            if (it.job.isCompleted) {
-                it.releaseResourcesOnce()
-            } else {
-                Log.error(TAG, "长任务尚未退出，保留并发占用并结束本轮收尾: ${it.taskId}")
-            }
-            longRunningJobs.remove(it)
-        }
-    }
-
-    private suspend fun awaitTaskOutcome(job: Deferred<TaskExecutionOutcome>, taskId: String): TaskExecutionOutcome =
-        try {
+        return try {
             // 等待前置任务的真实完成结果后再衔接依赖任务；没有人为固定睡眠时长。
             job.await()
         } catch (e: CancellationException) {
@@ -637,6 +550,7 @@ class CoroutineTaskRunner(allModels: List<Model>) {
             Log.printStackTrace(TAG, "任务执行异常: $taskId", e)
             TaskExecutionOutcome.FAILED
         }
+    }
 
     private fun recordTaskOutcome(taskId: String, startTime: Long, result: TaskExecutionOutcome) {
         val time = System.currentTimeMillis() - startTime
@@ -667,13 +581,6 @@ class CoroutineTaskRunner(allModels: List<Model>) {
                 Log.record(TAG, "⏳ 待续接: $taskId (耗时: ${time}ms)")
             }
         }
-    }
-
-    private fun isLongRunningTask(task: ModelTask): Boolean {
-        return task is AntForest ||
-            task is AntFarm ||
-            task is AntOrchard ||
-            task is AntSports
     }
 
     private fun scheduleNext() {

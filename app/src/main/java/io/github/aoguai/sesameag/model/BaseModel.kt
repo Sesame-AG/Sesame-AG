@@ -140,7 +140,7 @@ class BaseModel : Model() {
          */
         val taskMaxConcurrency: IntegerModelField =
             IntegerModelField("taskMaxConcurrency", "任务并发数", 2, 1, 3).withDesc(
-                "控制全局最多同时运行的模块数；空闲槽位可提前执行独立普通模块；默认 2，调高会增加请求频率和风控概率。",
+                "控制全局最多同时运行的模块数；空闲槽位可提前执行独立模块；默认 2，调高会增加请求频率和风控概率。",
             )
 
         // 仅这些独立模块允许默认同批随机和跨批补位；全模块手动排序不扩大此并发许可。
@@ -173,11 +173,11 @@ class BaseModel : Model() {
         ).withDesc("手动优先级模式生效：正整数越小越优先；未设置的模块随后入队，同值保持默认顺序。并发时独立模块可提前补位；需严格顺序请将任务并发数设为 1。")
 
         /**
-         * 单任务超时时间（分钟）
+         * 模块连续无执行活动的超时时间（分钟）
          */
         val taskTimeout: MultiplyIntegerModelField =
-            MultiplyIntegerModelField("taskTimeout", "单任务超时(分钟)", 10, 1, 24 * 60, 60000).withDesc(
-                "普通任务限制单轮总耗时；森林、庄园、运动限制连续无执行活动的时间，RPC 返回和任务流结束会重新计时，显式等待按原时长保留。",
+            MultiplyIntegerModelField("taskTimeout", "连续无活动超时(分钟)", 10, 1, 24 * 60, 60000).withDesc(
+                "所有模块均不限制单轮总时长。连续无执行活动达到设定时间时停止该模块；RPC 返回和任务流收尾会重新计时，已登记的等待时间不计入停滞。",
             )
 
         /**

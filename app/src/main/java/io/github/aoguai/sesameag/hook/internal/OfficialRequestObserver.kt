@@ -23,6 +23,7 @@ internal object OfficialRequestObserver {
     private const val H5 = "com.alipay.mobile.common.transport.h5.H5NetworkManager"
     private val installed = AtomicBoolean()
     private val hooked = ConcurrentHashMap.newKeySet<Method>()
+    private val classInstallations = ConcurrentHashMap<Class<*>, Boolean>()
 
     fun install(loader: ClassLoader, context: Context, onChanged: (() -> Unit)? = null) {
         if (!installed.compareAndSet(false, true)) return
@@ -57,8 +58,10 @@ internal object OfficialRequestObserver {
         }.forEach { method ->
             runCatching {
                 requireXposedInterface().hook(method).intercept { chain ->
+                    val name = chain.args.firstOrNull()
+                    if (name != XRIVER && name != H5) return@intercept chain.proceed()
                     val result = chain.proceed()
-                    if (result is Class<*> && (result.name == XRIVER || result.name == H5)) {
+                    if (result is Class<*>) {
                         runCatching { installRequests(result, loader) }
                             .onFailure { Log.printStackTrace("OfficialRequestObserver", "官方请求入口安装失败: ${result.name}", it) }
                     }
@@ -72,52 +75,60 @@ internal object OfficialRequestObserver {
     }
 
     private fun installRequests(type: Class<*>, loader: ClassLoader) {
-        type.declaredMethods.filter { method ->
-            (type.name == XRIVER && method.name == "handleRequest" && method.parameterTypes.size == 3 &&
-                method.parameterTypes[1].name == "com.alibaba.fastjson.JSONObject") ||
-                (type.name == H5 && method.name == "enqueue" && method.parameterTypes.size == 1 &&
-                    method.parameterTypes[0].name == "com.alipay.mobile.common.transport.h5.H5HttpUrlRequest")
-        }.forEach { method ->
-            if (!hooked.add(method)) return@forEach
-            runCatching {
-                val requestType = if (type.name == H5) Class.forName(
-                    "com.alipay.mobile.common.transport.http.HttpUrlRequest", false, type.classLoader) else null
-                val urlField = requestType?.getDeclaredField("mUrl")?.apply { isAccessible = true }
-                val headersField = requestType?.getDeclaredField("mHeaders")?.apply { isAccessible = true }
-                val bodyField = requestType?.declaredFields?.firstOrNull { it.name == "mReqData" }
-                    ?.apply { isAccessible = true }
-                requireXposedInterface().hook(method).intercept { chain ->
-                    runCatching observation@{
-                        if (type.name == XRIVER) {
-                            val request = JSONObject(chain.args[1].toString())
-                            observe(loader, request.optString("url"), request.opt("headers"), request.opt("data"), "XRiver")
-                        } else {
-                            val request = chain.args[0] ?: return@observation
-                            val url = urlField?.get(request) as? String ?: return@observation
-                            val headers = JSONObject()
-                            (headersField?.get(request) as? Iterable<*>)?.filterNotNull()?.forEach { header ->
-                                val name = runCatching {
-                                    header.javaClass.getMethod("getName").invoke(header) as? String
-                                }.getOrNull()?.takeIf { it.isNotBlank() } ?: return@forEach
-                                val value = runCatching {
-                                    header.javaClass.getMethod("getValue").invoke(header) as? String
-                                }.getOrNull() ?: return@forEach
-                                headers.put(name, value)
-                            }
-                            observe(loader, url, headers, bodyField?.get(request), "H5")
-                        }
-                    }.onFailure { error ->
-                        Log.error("OfficialRequestObserver", "官方请求解析失败: ${type.name}.${method.name}\n" +
-                            generateSequence(error) { it.cause?.takeUnless { cause -> cause === it } }.take(8)
-                                .joinToString("\nCaused by: ") { "${it.javaClass.name}\n${it.stackTrace.joinToString("\n")}" })
-                    }
-                    chain.proceed()
-                }
-                Log.runtime("OfficialRequestObserver", "官方请求观察入口已安装: ${type.name}.${method.name}")
-            }.onFailure {
-                hooked.remove(method)
-                Log.printStackTrace("OfficialRequestObserver", "官方请求入口安装失败: $method", it)
+        // 警告：反射成员会重新进入类加载回调，必须在解析方法之前登记，不能等到 hook(method) 才去重。
+        if (classInstallations.putIfAbsent(type, false) != null) return
+        try {
+            val methods = type.declaredMethods.filter { method ->
+                (type.name == XRIVER && method.name == "handleRequest" && method.parameterTypes.size == 3 &&
+                    method.parameterTypes[1].name == "com.alibaba.fastjson.JSONObject") ||
+                    (type.name == H5 && method.name == "enqueue" && method.parameterTypes.size == 1 &&
+                        method.parameterTypes[0].name == "com.alipay.mobile.common.transport.h5.H5HttpUrlRequest")
             }
+            methods.forEach { method ->
+                if (!hooked.add(method)) return@forEach
+                runCatching {
+                    val requestType = if (type.name == H5) Class.forName(
+                        "com.alipay.mobile.common.transport.http.HttpUrlRequest", false, type.classLoader) else null
+                    val urlField = requestType?.getDeclaredField("mUrl")?.apply { isAccessible = true }
+                    val headersField = requestType?.getDeclaredField("mHeaders")?.apply { isAccessible = true }
+                    val bodyField = requestType?.declaredFields?.firstOrNull { it.name == "mReqData" }
+                        ?.apply { isAccessible = true }
+                    requireXposedInterface().hook(method).intercept { chain ->
+                        runCatching observation@{
+                            if (type.name == XRIVER) {
+                                val request = JSONObject(chain.args[1].toString())
+                                observe(loader, request.optString("url"), request.opt("headers"), request.opt("data"), "XRiver")
+                            } else {
+                                val request = chain.args[0] ?: return@observation
+                                val url = urlField?.get(request) as? String ?: return@observation
+                                val headers = JSONObject()
+                                (headersField?.get(request) as? Iterable<*>)?.filterNotNull()?.forEach { header ->
+                                    val name = runCatching {
+                                        header.javaClass.getMethod("getName").invoke(header) as? String
+                                    }.getOrNull()?.takeIf { it.isNotBlank() } ?: return@forEach
+                                    val value = runCatching {
+                                        header.javaClass.getMethod("getValue").invoke(header) as? String
+                                    }.getOrNull() ?: return@forEach
+                                    headers.put(name, value)
+                                }
+                                observe(loader, url, headers, bodyField?.get(request), "H5")
+                            }
+                        }.onFailure { error ->
+                            Log.error("OfficialRequestObserver", "官方请求解析失败: ${type.name}.${method.name}\n" +
+                                generateSequence(error) { it.cause?.takeUnless { cause -> cause === it } }.take(8)
+                                    .joinToString("\nCaused by: ") { "${it.javaClass.name}\n${it.stackTrace.joinToString("\n")}" })
+                        }
+                        chain.proceed()
+                    }
+                    Log.runtime("OfficialRequestObserver", "官方请求观察入口已安装: ${type.name}.${method.name}")
+                }.onFailure {
+                    hooked.remove(method)
+                    Log.printStackTrace("OfficialRequestObserver", "官方请求入口安装失败: $method", it)
+                }
+            }
+            if (methods.isNotEmpty() && methods.all { it in hooked }) classInstallations[type] = true
+        } finally {
+            classInstallations.remove(type, false)
         }
     }
 
