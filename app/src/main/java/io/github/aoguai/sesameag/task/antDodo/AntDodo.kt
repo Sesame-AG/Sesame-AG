@@ -15,6 +15,7 @@ import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
 import io.github.aoguai.sesameag.hook.ApplicationHook
+import io.github.aoguai.sesameag.hook.ApplicationHookConstants
 import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleDefaults
 import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleKind
 import io.github.aoguai.sesameag.hook.keepalive.PersistentScheduleRegistry
@@ -30,6 +31,7 @@ import io.github.aoguai.sesameag.model.modelFieldExt.FriendSelectionModelField
 import io.github.aoguai.sesameag.task.ModelTask
 import io.github.aoguai.sesameag.task.TaskCommon
 import io.github.aoguai.sesameag.task.TaskExecutionOutcome
+import io.github.aoguai.sesameag.task.TaskExecutionReport
 import io.github.aoguai.sesameag.task.TaskStatus
 import io.github.aoguai.sesameag.task.common.DeferredReason
 import io.github.aoguai.sesameag.task.common.TaskFlowAction
@@ -51,6 +53,7 @@ import io.github.aoguai.sesameag.util.FriendGuard
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.maps.UserMap
 import io.github.aoguai.sesameag.util.ResChecker
+import io.github.aoguai.sesameag.util.TaskBlacklist
 import io.github.aoguai.sesameag.util.UserDataStoreManager
 import io.github.aoguai.sesameag.util.SerialTaskQueue
 import io.github.aoguai.sesameag.util.friend.FriendCapabilityRecorder
@@ -201,6 +204,7 @@ class AntDodo : ModelTask() {
             if (autoGenerateBook?.value == true) {
                 autoGenerateBook()
             }
+            // 成功互动后仅刷新任务，不用刷新标记反复执行道具与合成业务。
             if (taskListRefreshNeeded) receiveTaskAward(executionState)
         } catch (t: Throwable) {
             Log.runtime(TAG, "start.run err:")
@@ -211,6 +215,7 @@ class AntDodo : ModelTask() {
     }
 
     private fun collect() {
+        if (TaskBlacklist.isTaskInBlacklist(TASK_BLACKLIST_MODULE, "dailyCollect")) return
         if (Status.hasFlagToday(StatusFlags.FLAG_ANTDODO_DAILY_COLLECT_DONE)) {
             Log.dodo("神奇物种卡片今日已收集，跳过重复查询")
             return
@@ -236,6 +241,12 @@ class AntDodo : ModelTask() {
                 Log.runtime(TAG, jo.getString("resultDesc"))
             }
         } catch (t: Throwable) {
+            if (t is CancellationException || t is InterruptedException) throw t
+            if (!ApplicationHookConstants.isOffline()) {
+                TaskExecutionReport.current()?.ensureCurrent()
+                TaskBlacklist.addToBlacklist(TASK_BLACKLIST_MODULE, "dailyCollect", "每日抽卡")
+                TaskExecutionReport.current()?.recordException()
+            }
             Log.runtime(TAG, "AntDodo Collect err:")
             Log.printStackTrace(TAG, t)
         }
@@ -245,22 +256,31 @@ class AntDodo : ModelTask() {
         val response = AntDodoRpcCall.queryAnimalStatus()
         if (response.isNullOrEmpty()) {
             Log.runtime(TAG, "神奇物种卡片收集后queryAnimalStatus返回空")
+            TaskBlacklist.addToBlacklist(TASK_BLACKLIST_MODULE, "dailyCollect", "每日抽卡")
+            TaskExecutionReport.current()?.recordException()
             return
         }
         val result = JSONObject(response)
         if (!ResChecker.checkRes(TAG, result)) {
             Log.runtime(TAG, "神奇物种卡片收集后状态确认失败:${result.optString("resultDesc")}")
+            TaskBlacklist.addToBlacklist(TASK_BLACKLIST_MODULE, "dailyCollect", "每日抽卡")
+            TaskExecutionReport.current()?.recordException()
             return
         }
         val data = result.optJSONObject("data")
         if (data?.optBoolean("collect") == true) {
             Status.setFlagToday(StatusFlags.FLAG_ANTDODO_DAILY_COLLECT_DONE)
             Log.dodo("神奇物种卡片今日收集完成！")
+        } else {
+            Log.error(TAG, "每日抽卡未确认完成，本次失败，不再回查或重抽 raw=$result")
+            TaskBlacklist.addToBlacklist(TASK_BLACKLIST_MODULE, "dailyCollect", "每日抽卡")
+            TaskExecutionReport.current()?.recordException()
         }
     }
 
     private fun scratchAnimalCards(collection: JSONObject): Boolean {
         if (scratchCard?.value != true) return true
+        val attemptedKeys = linkedSetOf<String>()
         return try {
             val cards = collection.optJSONObject("collectDetail")?.optJSONArray("cardList") ?: JSONArray()
             val animal = collection.optJSONObject("animal") ?: return cards.length() == 0
@@ -270,12 +290,13 @@ class AntDodo : ModelTask() {
                 Log.error(TAG, "神奇物种刮卡缺少动物或图鉴标识")
                 return false
             }
-            // 刮卡待确认属于账号私有消费状态，跨轮次保留，不随配置导出或日标重置。
+            // 警告：原消费记录仅用于防重放，不能触发跨轮回查或恢复刮卡。
             val store = UserDataStoreManager.getCurrentInstance() ?: return false
             val pendingKey = "antDodoScratchPending"
             val rewards = store.getOrCreate<MutableMap<String, Int>>(pendingKey)
             val prefix = "$animalId:"
             var currentCards = (0 until cards.length()).mapNotNull { cards.optJSONObject(it) }
+                .filter { !rewards.containsKey(prefix + it.optString("cardInstanceId")) }
             if (currentCards.any { !it.has("scratchable") || (it.optBoolean("scratchable") && !it.has("scratched")) }) {
                 val instanceIds = currentCards.map { it.optString("cardInstanceId") }.toSet()
                 val refreshed = JSONObject(AntDodoRpcCall.homePage())
@@ -295,8 +316,11 @@ class AntDodo : ModelTask() {
                 collection.put("collectDetail", detail)
                 currentCards = resolved
             }
-            val pending = currentCards.filter { it.optBoolean("scratchable") && !it.optBoolean("scratched") }
-            if (pending.isEmpty() && rewards.keys.none { it.startsWith(prefix) }) return true
+            val pending = currentCards.filter {
+                it.optBoolean("scratchable") && !it.optBoolean("scratched") &&
+                    !rewards.containsKey(prefix + it.optString("cardInstanceId"))
+            }
+            if (pending.isEmpty()) return rewards.keys.none { it.startsWith(prefix) }
             for (card in pending) {
                 if (Thread.currentThread().isInterrupted) return false
                 val instanceId = card.optString("cardInstanceId")
@@ -305,11 +329,16 @@ class AntDodo : ModelTask() {
                     return false
                 }
                 val key = prefix + instanceId
-                if (rewards.containsKey(key)) continue
+                if (TaskBlacklist.isTaskInBlacklist(TASK_BLACKLIST_MODULE, "scratch:$key")) continue
+                attemptedKeys.add(key)
                 rewards[key] = -1
                 store.put(pendingKey, rewards, requirePersistence = true)
                 val result = JSONObject(AntDodoRpcCall.scratchCard(animalId, bookId, instanceId))
                 if (!ResChecker.checkRes(TAG, "神奇物种刮卡失败：", result)) {
+                    if (!ApplicationHookConstants.isOffline()) {
+                        TaskBlacklist.addToBlacklist(TASK_BLACKLIST_MODULE, "scratch:$key", "神奇物种刮卡")
+                        TaskExecutionReport.current()?.recordException()
+                    }
                     if (result.opt("success") == false) {
                         rewards.remove(key)
                         store.put(pendingKey, rewards)
@@ -319,8 +348,15 @@ class AntDodo : ModelTask() {
                 rewards[key] = (result.optJSONObject("data")?.opt("energyGram") as? Number)?.toInt() ?: -1
                 store.put(pendingKey, rewards)
             }
+            if (attemptedKeys.isEmpty()) return false
             val refreshed = JSONObject(AntDodoRpcCall.homePage())
-            if (!ResChecker.checkRes(TAG, "神奇物种刮卡状态查询失败：", refreshed)) return false
+            if (!ResChecker.checkRes(TAG, "神奇物种刮卡状态查询失败：", refreshed)) {
+                if (!ApplicationHookConstants.isOffline()) {
+                    attemptedKeys.forEach { TaskBlacklist.addToBlacklist(TASK_BLACKLIST_MODULE, "scratch:$it", "神奇物种刮卡") }
+                    TaskExecutionReport.current()?.recordException()
+                }
+                return false
+            }
             val animals = refreshed.getJSONObject("data").getJSONArray("curCollection")
             val detail = (0 until animals.length()).mapNotNull { animals.optJSONObject(it) }
                 .firstOrNull { it.optJSONObject("animal")?.optString("animalId") == animalId }
@@ -330,7 +366,7 @@ class AntDodo : ModelTask() {
                 .mapNotNull { refreshedCards?.optJSONObject(it) }
                 .filter { it.optBoolean("scratched") }
                 .map { it.optString("cardInstanceId") }.toSet()
-            val confirmed = scratchedIds.map { prefix + it }.filter { rewards.containsKey(it) }
+            val confirmed = scratchedIds.map { prefix + it }.filter { it in attemptedKeys && rewards.containsKey(it) }
             if (confirmed.isNotEmpty()) {
                 val energy = confirmed.map { rewards.getValue(it) }
                 val rewardText = if (energy.all { it >= 0 }) "，获得${energy.sum()}g能量" else ""
@@ -339,12 +375,22 @@ class AntDodo : ModelTask() {
                 store.put(pendingKey, rewards)
             }
             if (detail == null || rewards.keys.any { it.startsWith(prefix) }) {
-                Log.error(TAG, "神奇物种刮卡状态尚未确认，保留卡片：$animalId")
+                Log.error(TAG, "神奇物种刮卡未确认成功，保留原记录防重放，不再回查：$animalId")
+                attemptedKeys.filter { rewards.containsKey(it) }.forEach {
+                    TaskBlacklist.addToBlacklist(TASK_BLACKLIST_MODULE, "scratch:$it", "神奇物种刮卡")
+                }
+                if (attemptedKeys.any { rewards.containsKey(it) }) TaskExecutionReport.current()?.recordException()
                 return false
             }
             collection.put("collectDetail", detail)
             true
         } catch (t: Throwable) {
+            if (t is CancellationException || t is InterruptedException) throw t
+            if (!ApplicationHookConstants.isOffline()) {
+                TaskExecutionReport.current()?.ensureCurrent()
+                attemptedKeys.forEach { TaskBlacklist.addToBlacklist(TASK_BLACKLIST_MODULE, "scratch:$it", "神奇物种刮卡") }
+                TaskExecutionReport.current()?.recordException()
+            }
             Log.printStackTrace(TAG, "神奇物种刮卡失败：", t)
             false
         }
@@ -390,6 +436,7 @@ class AntDodo : ModelTask() {
     }
 
     private fun collectAnimalCard(): Boolean {
+        if (TaskBlacklist.isTaskInBlacklist(TASK_BLACKLIST_MODULE, "dailyCollect")) return false
         return try {
             val homeResponse = AntDodoRpcCall.homePage()
             if (homeResponse.isNullOrEmpty()) {
@@ -433,19 +480,23 @@ class AntDodo : ModelTask() {
                     }
                     for (j in 0 until leftFreeQuota) {
                         val collectResponse = AntDodoRpcCall.collect()
-                        attempted = true
                         if (collectResponse.isNullOrEmpty()) {
-                            Log.runtime(TAG, "collect返回空")
-                            continue
+                            Log.runtime(TAG, "collect返回空，本次失败，停止抽卡")
+                            TaskBlacklist.addToBlacklist(TASK_BLACKLIST_MODULE, "dailyCollect", "每日抽卡")
+                            TaskExecutionReport.current()?.recordException()
+                            return false
                         }
                         jo = JSONObject(collectResponse)
                         if (ResChecker.checkRes(TAG, jo)) {
-                            taskListRefreshNeeded = true
                             data = jo.optJSONObject("data")
                             if (data == null) {
-                                Log.error(TAG, "神奇物种抽卡响应缺少data，保留后续回查 raw=$jo")
-                                break
+                                Log.error(TAG, "神奇物种抽卡失败：响应缺少data raw=$jo")
+                                TaskBlacklist.addToBlacklist(TASK_BLACKLIST_MODULE, "dailyCollect", "每日抽卡")
+                                TaskExecutionReport.current()?.recordException()
+                                return false
                             }
+                            attempted = true
+                            taskListRefreshNeeded = true
                             val animal = data.optJSONObject("animal")
                             val ecosystem = animal?.optString("ecosystem", "未知生态") ?: "未知生态"
                             val name = animal?.optString("name", "未知物种") ?: "未知物种"
@@ -453,6 +504,9 @@ class AntDodo : ModelTask() {
                             scratchAnimalCards(data)
                         } else {
                             Log.runtime(TAG, jo.getString("resultDesc"))
+                            TaskBlacklist.addToBlacklist(TASK_BLACKLIST_MODULE, "dailyCollect", "每日抽卡")
+                            TaskExecutionReport.current()?.recordException()
+                            return false
                         }
                     }
                 }
@@ -461,6 +515,12 @@ class AntDodo : ModelTask() {
             }
             attempted
         } catch (t: Throwable) {
+            if (t is CancellationException || t is InterruptedException) throw t
+            if (!ApplicationHookConstants.isOffline()) {
+                TaskExecutionReport.current()?.ensureCurrent()
+                TaskBlacklist.addToBlacklist(TASK_BLACKLIST_MODULE, "dailyCollect", "每日抽卡")
+                TaskExecutionReport.current()?.recordException()
+            }
             Log.runtime(TAG, "AntDodo CollectAnimalCard err:")
             Log.printStackTrace(TAG, t)
             false
@@ -626,32 +686,6 @@ class AntDodo : ModelTask() {
             val decision = GameCenterPlayRpcCall.resolveTaskAction(
                 taskBaseInfo, raw.optJSONObject("bizInfo"), directFinishSupported = true,
             )
-            if (decision.action == GameCenterPlayRpcCall.TaskAction.DIRECT_FINISH &&
-                shouldMaterializeManualTask(raw, taskBaseInfo)
-            ) {
-                val groupId = raw.optString("taskGroupId").trim()
-                if (groupId.isBlank()) {
-                    return missingRawResult(item, "reDecisionTaskOpenGreen")
-                }
-                val response = AntDodoRpcCall.reDecisionTaskOpenGreen(groupId, item.type)
-                if (response.isNullOrEmpty()) {
-                    return emptyActionResponse(
-                        "AntDodoRpcCall.reDecisionTaskOpenGreen",
-                        item,
-                        "reDecisionTaskOpenGreen"
-                    )
-                }
-                val result = JSONObject(response)
-                if (isDodoTaskRpcSuccess(result)) {
-                    Log.dodo("物种任务显化🧾️[${item.title}]")
-                    return TaskFlowActionResult.success(refreshAfterAction = true, progressChanged = false)
-                }
-                return dodoActionFailureResult(
-                    response = result,
-                    rpc = "AntDodoRpcCall.reDecisionTaskOpenGreen",
-                    detail = dodoActionDetail(item, "reDecisionTaskOpenGreen")
-                )
-            }
             when (decision.action) {
                 GameCenterPlayRpcCall.TaskAction.DURATION_ONLY -> {
                     val contract = decision.contract ?: return missingRawResult(item, "playDuration")
@@ -687,11 +721,7 @@ class AntDodo : ModelTask() {
                 rpc = "AntDodoRpcCall.finishTask",
                 detail = dodoActionDetail(item, "finishTask")
             )
-            return if (failure.code == "400000040" && item.sceneCode.isNotBlank()) {
-                AntFarmRpcCall.doSceneTask(item.type, item.sceneCode, failure, sceneCode = item.sceneCode, source = "af-biodiversity") { fallback ->
-                    dodoActionFailureResult(fallback, "AntFarmRpcCall.doFarmTask", dodoActionDetail(item, "finishTask"))
-                }
-            } else failure
+            return failure
         }
 
         override fun actionKey(item: TaskFlowItem, action: TaskFlowAction): String {
@@ -839,36 +869,6 @@ class AntDodo : ModelTask() {
         if (loggedTaskProgressHints.add(message)) {
             Log.dodo(message)
         }
-    }
-
-    private fun shouldMaterializeManualTask(raw: JSONObject, taskBaseInfo: JSONObject): Boolean {
-        if (!taskBaseInfo.optBoolean("reDecision")) {
-            return false
-        }
-        if (!parseStringSet(taskBaseInfo.optJSONArray("reDecisionModeList")).contains("MANUAL")) {
-            return false
-        }
-        if (taskBaseInfo.optLong("entityGenerateTime", 0L) > 0L ||
-            taskBaseInfo.optLong("entityExpireTime", 0L) > 0L ||
-            taskBaseInfo.optString("taskMode").isNotBlank()
-        ) {
-            return false
-        }
-        return raw.optString("taskGroupId").isNotBlank()
-    }
-
-    private fun parseStringSet(values: JSONArray?): Set<String> {
-        if (values == null || values.length() == 0) {
-            return emptySet()
-        }
-        val result = LinkedHashSet<String>()
-        for (i in 0 until values.length()) {
-            val value = values.optString(i).trim()
-            if (value.isNotBlank()) {
-                result.add(value)
-            }
-        }
-        return result
     }
 
     private fun propList(allowReplenish: Boolean = true) {

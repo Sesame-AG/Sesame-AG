@@ -2179,11 +2179,7 @@ class AntStall : ModelTask() {
                 rpc = "AntStallRpcCall.finishTask",
                 detail = stallTaskActionDetail(item, "finishTask"),
             )
-            if (failure.code == "400000040") {
-                AntFarmRpcCall.doSceneTask(item.type, "ANTSTALL_TASK", failure, sceneCode = "ANTSTALL_TASK", source = "AST") { fallback ->
-                    stallTaskActionFailureResult(fallback, "AntFarmRpcCall.doFarmTask", stallTaskActionDetail(item, "finishTask"))
-                }
-            } else failure
+            failure
         }
     }
 

@@ -1260,11 +1260,7 @@ class AntOcean : ModelTask() {
                     continueCurrentRoundOnFailure = true,
                 )
             }
-            return if (failure.code == "400000040") {
-                AntFarmRpcCall.doSceneTask(item.type, item.sceneCode, failure, sceneCode = item.sceneCode, source = AI_FISH_SCENE_CODE) { fallback ->
-                    aiFishTaskActionFailureResult(item, fallback, "AntFarmRpcCall.doFarmTask", aiFishTaskActionDetail(item, "finishTask"))
-                }
-            } else failure
+            return failure
         }
 
         override fun hasProgress(previous: TaskFlowItem, current: TaskFlowItem): Boolean {
@@ -2990,11 +2986,7 @@ class AntOcean : ModelTask() {
             rpc = rpc,
             detail = oceanTaskActionDetail(item, "finishTask"),
         )
-        return if (failure.code == "400000040" && item.sceneCode.isNotBlank()) {
-            AntFarmRpcCall.doSceneTask(item.type, item.sceneCode, failure, sceneCode = item.sceneCode, source = "ANTFOCEAN") { fallback ->
-                oceanTaskActionFailureResult(item, fallback, "AntFarmRpcCall.doFarmTask", oceanTaskActionDetail(item, "finishTask"))
-            }
-        } else failure
+        return failure
     }
 
     private fun oceanTaskActionFailureResult(

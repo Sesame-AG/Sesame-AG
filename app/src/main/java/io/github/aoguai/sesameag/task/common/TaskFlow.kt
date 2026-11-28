@@ -84,7 +84,7 @@ data class TaskFlowActionResult(
     val stopCurrentRound: Boolean = false,
     // 单个任务的可重试失败不一定要停止同一快照里的其他独立任务。
     val continueCurrentRoundOnFailure: Boolean = false,
-    // 延后或失败动作按需请求回查；成功动作由引擎在当前动作批次结束后统一回查服务端状态。
+    // 警告：只有成功提交才能刷新后续状态。失败禁止回查、补提或转成下轮恢复。
     val refreshAfterAction: Boolean = false,
     // RPC 成功不一定代表服务端任务状态已经推进；用于控制进展统计和重复动作保护。
     val progressChanged: Boolean = true,
@@ -465,7 +465,18 @@ class TaskFlowEngine(
                 val details = JSONObject().put("submissionStarted", result.submissionStarted ?: JSONObject.NULL)
                     .put("rpc", result.rpc).put("code", result.code).put("raw", result.raw)
                     .put("detail", result.detail).put("message", result.message)
-                val resolved = adapter.isPendingActionResolved(previous, action, response, items, details)
+                val resolved = try {
+                    adapter.isPendingActionResolved(previous, action, response, items, details)
+                } catch (t: Throwable) {
+                    if (t is CancellationException || t is InterruptedException) throw t
+                    if (ApplicationHookConstants.isOffline()) return finish(interrupted = true)
+                    fail(previous, action, result.copy(
+                        success = false, failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
+                        message = "提交后的业务查询异常：${t.message}", progressChanged = false,
+                        deferredReason = null, deferredUntil = null, refreshAfterAction = false,
+                    ))
+                    continue
+                }
                 val phase = refreshed?.let(adapter::mapPhase)
                 val phaseConfirmed = when (action) {
                     TaskFlowAction.RECEIVE -> phase == TaskFlowPhase.TERMINAL
@@ -477,12 +488,10 @@ class TaskFlowEngine(
                         phase == TaskFlowPhase.BUSINESS_ACTION && adapter.mapPhase(previous) != TaskFlowPhase.BUSINESS_ACTION
                 }
                 val progressConfirmed = refreshed != null && adapter.hasProgress(previous, refreshed)
-                if (result.progressChanged || (resolved ?: (phaseConfirmed || progressConfirmed))) {
+                // 必须以本次查询的业务进度为准，不能用提交时的标记撤销去重后反复提交。
+                if (resolved ?: (phaseConfirmed || progressConfirmed)) {
                     progressed = true
                     adapter.logInfo("${adapter.flowName}[回查确认${action.logName}进展：${previous.title}]")
-                    if (result.progressChanged && resolved != true && !phaseConfirmed && action != TaskFlowAction.RECEIVE) {
-                        executed.remove(actionSnapshotKey(previous, action))
-                    }
                 } else {
                     fail(previous, action, result.copy(
                         success = false, failureType = TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW,
@@ -531,8 +540,8 @@ class TaskFlowEngine(
                 ) return finish(interrupted = true)
                 val reason = result.deferredReason
                 val resumeAt = result.deferredUntil
-                refresh = refresh || result.refreshAfterAction
-                if (result.failureType == null && resumeAt != null && reason != null && resumeAt > 0L &&
+                // 只有尚未到期的真实计时业务可以等待；失败和过期时间不得重新登记子任务。
+                if (result.failureType == null && resumeAt != null && reason != null && resumeAt > System.currentTimeMillis() &&
                     reason in setOf(DeferredReason.TIME_WINDOW, DeferredReason.CHILD_TASK_PENDING)
                 ) {
                     executionState.deferredActionKeys[waitKey] = resumeAt
@@ -551,7 +560,8 @@ class TaskFlowEngine(
                     (reason == DeferredReason.STATE_CONFIRMATION ||
                         result.success && !result.progressChanged && result.submissionStarted != false)
                 val skipped = result.failureType == null && !result.success && !terminal && !confirmation &&
-                    reason != null && result.submissionStarted != true
+                    reason != null && reason !in setOf(DeferredReason.TIME_WINDOW, DeferredReason.CHILD_TASK_PENDING) &&
+                    result.submissionStarted != true
                 if (!skipped && result.submissionStarted != false) actionAttempted = true
                 when {
                     terminal -> {
@@ -563,7 +573,7 @@ class TaskFlowEngine(
                     }
                     confirmation -> {
                         if (result.success) adapter.afterSuccess(item, action, result)
-                        if (reason == DeferredReason.STATE_CONFIRMATION) adapter.afterDeferred(item, action, result)
+                        // 成功提交后的确认仅限本轮，不调用延后钩子登记恢复任务。
                         pending[key] = Triple(item, action, result)
                         refresh = true
                         roundActions += TaskFlowRoundAction("${action.logName}本轮回查", item.title)
@@ -585,8 +595,8 @@ class TaskFlowEngine(
                         if (result.stopCurrentRound || !result.continueCurrentRoundOnFailure &&
                             result.failureType in setOf(TaskRpcFailureType.BUSINESS_LIMIT, TaskRpcFailureType.RETRYABLE_RPC)
                         ) {
+                            // 警告：失败当场结束该动作，不为它发起列表回查。
                             stopActions = true
-                            refresh = true
                             break
                         }
                     }

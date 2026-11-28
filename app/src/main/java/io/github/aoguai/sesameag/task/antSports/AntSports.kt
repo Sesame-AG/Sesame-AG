@@ -2616,27 +2616,7 @@ class AntSports : ModelTask() {
             } else {
                 val errorCode = extractSportsRpcErrorCode(result)
                 val errorMsg = extractSportsRpcErrorMessage(result)
-                val sceneCode = taskDetail.optString("sceneCode")
-                if (errorCode == "400000040" && sceneCode.isNotBlank()) {
-                    val failure = TaskFlowActionResult.failure(
-                        failureType = classifySportsTaskFailure(result),
-                        code = errorCode,
-                        message = errorMsg,
-                        rpc = if (useAdTaskFinishRpc) "AntSportsRpcCall.finishAdTask" else "AntSportsRpcCall.completeTask",
-                        raw = result.toString(),
-                        detail = "progress=$progressText",
-                    )
-                    return AntFarmRpcCall.doSceneTask(taskId, sceneCode, failure, sceneCode = sceneCode, source = taskDetail.optString("source").ifBlank { "H5" }) { fallback ->
-                        TaskFlowActionResult.failure(
-                            failureType = classifySportsTaskFailure(fallback),
-                            code = extractSportsRpcErrorCode(fallback),
-                            message = extractSportsRpcErrorMessage(fallback),
-                            rpc = "AntFarmRpcCall.doFarmTask",
-                            raw = fallback.toString(),
-                            stopCurrentRound = shouldTemporarilyStopSportsTask(extractSportsRpcErrorCode(fallback)),
-                        )
-                    }
-                }
+                // 原 RPC 失败即按失败收尾，不能换场景接口重新提交。
                 val completeSource = when {
                     useVerifiedNewCompleteRpc -> "AntSportsRpcCall.completeTask"
                     useAdTaskFinishRpc -> "AntSportsRpcCall.finishAdTask"
@@ -3810,6 +3790,19 @@ class AntSports : ModelTask() {
                 if (!joinPath(decision.candidate.pathId)) {
                     return
                 }
+                val joinedPathData = fetchRoutePathData(decision.candidate.pathId) ?: return
+                if (joinedPathData.optJSONObject("userPathStep")?.optString("pathId") != decision.candidate.pathId) {
+                    Log.error(TAG, "加入后返回不同路线[pathId=${decision.candidate.pathId}] raw=$joinedPathData")
+                    return
+                }
+                when (executeCurrentRouteWalk(joinedPathData)) {
+                    RouteWalkOutcome.MOVED, RouteWalkOutcome.COMPLETED -> {
+                        repeatedTerminalJoinCount = 0
+                        lastTerminalJoinRouteKey = null
+                    }
+                    RouteWalkOutcome.NO_STEPS -> if (!tryReviveRouteSteps(config, joinedPathData)) return
+                    RouteWalkOutcome.STOP -> return
+                }
             }
         } catch (t: Throwable) {
             Log.printStackTrace(TAG, "walk err:", t)
@@ -3830,19 +3823,24 @@ class AntSports : ModelTask() {
             @SuppressLint("SimpleDateFormat") val sdf = SimpleDateFormat("yyyy-MM-dd")
             val jo = JSONObject(AntSportsRpcCall.walkGo(sdf.format(date), pathId, useStepCount))
             if (isSportsRpcSuccess(jo)) {
-                Log.sports("行走路线🚶🏻‍♂️路线[$pathName]#前进了${useStepCount}步")
                 val latestPath = fetchRoutePathData(pathId) ?: return RouteWalkOutcome.STOP
                 val latestStep = latestPath.optJSONObject("userPathStep") ?: return RouteWalkOutcome.STOP
                 if (latestStep.optString("pathId", "").trim() != pathId) {
                     Log.error(TAG, "walkGo刷新返回不同路线[pathId=$pathId, refreshed=${latestStep.optString("pathId", "")}]")
                     return RouteWalkOutcome.STOP
                 }
-                if (latestStep.optString("pathCompleteStatus", "") == "COMPLETED") {
-                    RouteWalkOutcome.COMPLETED
-                } else if (hasRouteWalkProgress(beforePathData, latestPath)) {
-                    RouteWalkOutcome.MOVED
+                if (hasRouteWalkProgress(beforePathData, latestPath) ||
+                    latestStep.optString("pathCompleteStatus") == "COMPLETED" &&
+                    beforePathData.optJSONObject("userPathStep")?.optString("pathCompleteStatus") != "COMPLETED"
+                ) {
+                    Log.sports("行走路线🚶🏻‍♂️路线[$pathName]#前进了${useStepCount}步")
+                    if (latestStep.optString("pathCompleteStatus") == "COMPLETED") {
+                        RouteWalkOutcome.COMPLETED
+                    } else {
+                        RouteWalkOutcome.MOVED
+                    }
                 } else {
-                    Log.sports("行走路线🚶🏻‍♂️前进动作已返回，但同对象刷新未确认进展[pathId=$pathId]，等待下轮查询")
+                    Log.error(TAG, "行走路线前进后未确认步数消耗或路线进展[pathId=$pathId] raw=$jo")
                     RouteWalkOutcome.STOP
                 }
             } else {
@@ -4040,12 +4038,6 @@ class AntSports : ModelTask() {
 
         val pathId = userPathStep.optString("pathId", pathObj.optString("pathId", ""))
         val pathName = userPathStep.optString("pathName", pathObj.optString("name", pathId))
-        val status = userPathStep.optString("pathCompleteStatus", "")
-        if (isRouteCompleted(status)) {
-            Log.sports("行走路线🚶🏻‍♂️路线[$pathName]已完成")
-            return RouteWalkOutcome.COMPLETED
-        }
-
         val minGoStepCount = pathObj.optInt("minGoStepCount", 1).coerceAtLeast(1)
         val remainStepCount = userPathStep.optInt("remainStepCount", 0)
         if (userPathStep.optBoolean("dayLimit", false) || remainStepCount < minGoStepCount) {
@@ -5136,14 +5128,8 @@ class AntSports : ModelTask() {
         try {
             val jo = JSONObject(AntSportsRpcCall.joinPath(pathId))
             if (isSportsRpcSuccess(jo)) {
-                val path = fetchRoutePathData(pathId) ?: return false
-                val candidate = buildRouteCandidateFromPathData(path)
-                if (candidate?.pathId == pathId && isActiveRouteStatus(candidate.status)) {
-                    Log.sports("行走路线🚶🏻‍♂️路线[${candidate.name.ifBlank { pathId }}]已由刷新确认加入")
-                    return true
-                }
-                Log.sports("行走路线🚶🏻‍♂️加入动作已返回，但同对象刷新未确认[pathId=$pathId]")
-                return false
+                Log.sports("行走路线🚶🏻‍♂️加入路线请求成功[pathId=$pathId]，继续提交可用步数并确认进展")
+                return true
             } else {
                 val errorCode = extractSportsRpcErrorCode(jo)
                 val errorMsg = extractSportsRpcErrorMessage(jo)
