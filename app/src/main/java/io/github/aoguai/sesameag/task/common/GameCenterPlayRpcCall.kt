@@ -296,6 +296,17 @@ object GameCenterPlayRpcCall {
         )
     }
 
+    fun receiveLadderTaskPrize(task: JSONObject, mainActivityId: String, prizeId: String): FloatingBallAck =
+        requestAck(
+            "com.alipay.gamecenteruprod.biz.rpc.receiveLadderTaskPrize",
+            JSONObject().put("activityId", task.getString("activityId"))
+                .put("appId", task.getString("appId"))
+                .put("mainActivityId", mainActivityId)
+                .put("prizeId", prizeId)
+                .put("taskIndex", task.getInt("taskIndex"))
+                .put("taskModuleType", task.getString("taskModuleType")),
+        )
+
     fun directFinishDecision(reason: String): TaskActionDecision =
         TaskActionDecision(TaskAction.DIRECT_FINISH, reason = reason)
 

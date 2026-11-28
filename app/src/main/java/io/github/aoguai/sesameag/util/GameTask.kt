@@ -695,7 +695,7 @@ class GameTask private constructor(
     ): GameTaskReportResult {
         val emitLog = logger ?: ::logTask
         val loginOnly = sdk == "tuyoo" || sdk == "yxmys"
-        // 未知次数仅执行一步，不把单步预算当作任务需求；后续由业务回查推进。
+        // 未知次数只提交一次，由所属业务在本轮确认结果。
         val reportLimit = (reportCount ?: 1).let { if (loginOnly) minOf(it, 1) else it }
         if (reportLimit <= 0) return GameTaskReportResult(0, 0, 0)
         if (actionFinishChannel.isBlank() || actionCode.isBlank()) {

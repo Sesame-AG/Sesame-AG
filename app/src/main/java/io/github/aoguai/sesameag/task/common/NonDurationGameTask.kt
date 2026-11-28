@@ -1,11 +1,15 @@
 package io.github.aoguai.sesameag.task.common
 
 import io.github.aoguai.sesameag.hook.AccountSessionCoordinator
+import io.github.aoguai.sesameag.hook.AccountSessionIdentity
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
+import io.github.aoguai.sesameag.task.antFarm.AntFarm
 import io.github.aoguai.sesameag.util.GameTask
 import io.github.aoguai.sesameag.util.Log
 import io.github.aoguai.sesameag.util.MiniGameVendorReporter
 import io.github.aoguai.sesameag.util.RpcOfflineRisk
+import io.github.aoguai.sesameag.util.TaskBlacklist
+import io.github.aoguai.sesameag.task.TaskExecutionReport
 import org.json.JSONObject
 
 /** 游戏协议由 GameTask 定义，完成与领奖仍由所属模块回查。 */
@@ -129,6 +133,7 @@ object NonDurationGameTask {
                 rpc = "GameTask.reportDetailed", detail = detail, stopCurrentRound = true,
             )
         }
+        val identity = AccountSessionIdentity(session.userId, session.sessionEpoch)
         val contract = resolve(game, *roots, channel = channel, detail = detail)
         contract.failure?.let { return it.copy(submissionStarted = false) }
         val descriptor = contract.descriptor
@@ -143,28 +148,24 @@ object NonDurationGameTask {
             return TaskFlowActionResult.failure(TaskRpcFailureType.BUSINESS_LIMIT,
                 message = "账号会话已变化或已离线", detail = detail, stopCurrentRound = true)
         }
-        if (actions.values.all { it == 0 }) {
-            return TaskFlowActionResult.defer(DeferredReason.PREREQUISITE_PENDING,
-                message = "对应游戏组件已无剩余动作，刷新原场景任务与奖励；本轮未发起上报",
-                rpc = "queryGameComponent", raw = contract.raw, detail = detail, refreshAfterAction = true)
-                .copy(submissionStarted = false)
-        }
+        var reportsAttempted = 0
+        // 警告：上报失败立即返回，禁止在 finally 中回查或尝试领奖恢复。
         var businessConfirmed = false
         var contractProgressed = false
         var remainingContract = false
         var reportsAccepted = 0
-        var reportsAttempted = 0
         for ((action, count) in actions) {
             if (count == 0) continue
             var actionRemaining = count
             val report = game.reportDetailed(
                 actionFinishChannel = actionChannel, logger = logger,
                 actionCode = action, reportCount = count.takeIf { it >= 0 },
-                confirmProgress = {
+                confirmProgress = progress@{
                     if (ApplicationHookConstants.isOffline() ||
                         !AccountSessionCoordinator.isCurrentSession(session.userId, session.sessionEpoch)) null
                     else {
                         val confirmed = confirmProgress?.invoke()
+                        if (confirmProgress != null && confirmed == null) return@progress null
                         if (confirmed == true) businessConfirmed = true
                         val actionComplete = if (action in componentTasks && confirmed != true) {
                             val refreshed = GameCenterPlayRpcCall.queryNonDurationTasks(descriptor, actionChannel)
@@ -221,11 +222,118 @@ object NonDurationGameTask {
                     rpc = "GameTask.reportDetailed", detail = actionDetail,
                     stopCurrentRound = report.stopCurrentRound,
                     continueCurrentRoundOnFailure = !report.stopCurrentRound,
-                ).copy(refreshAfterAction = reportsAttempted > 0 || reportsAccepted > 0, progressChanged = false,
+                ).copy(refreshAfterAction = false, progressChanged = false,
                     submissionStarted = reportsAttempted > 0)
             }
             remainingContract = remainingContract || action in componentTasks && actionRemaining != 0
             if (businessConfirmed || game.sdk == "tuyoo" || game.sdk == "yxmys") break
+        }
+        if (!ApplicationHookConstants.isOffline() &&
+            AccountSessionCoordinator.isCurrentSession(session.userId, session.sessionEpoch)) {
+            try {
+                val response = if (reportsAttempted > 0) {
+                    val refreshed = GameCenterPlayRpcCall.queryNonDurationTasks(descriptor, actionChannel)
+                    if (!refreshed.accepted) return TaskFlowActionResult.failure(
+                        refreshed.failureType, message = "游戏组件查询失败，不再继续回查",
+                        rpc = "queryGameComponent", raw = refreshed.raw, detail = detail,
+                    )
+                    refreshed.response
+                } else runCatching { JSONObject(contract.raw) }.getOrNull()
+                val ladder = response?.optJSONObject("data")?.optJSONObject("ladderTaskComponentVO")
+                val mainActivityId = ladder?.optString("mainActivityId").orEmpty()
+                val mainTasks = ladder?.optJSONArray("mainTaskList")
+                val tasks = (0 until (mainTasks?.length() ?: 0)).mapNotNull { mainTasks?.optJSONObject(it) } +
+                    listOfNotNull(ladder?.optJSONObject("subTask"))
+                for (task in tasks) {
+                    if (task.optString("taskStatus") != "COMPLETED" || task.optString("appId") != game.appId) continue
+                    val prizes = task.optJSONArray("fixedPrizeList") ?: continue
+                    for (i in 0 until prizes.length()) {
+                        if (ApplicationHookConstants.isOffline() ||
+                            !AccountSessionCoordinator.isCurrentSession(session.userId, session.sessionEpoch)) break
+                        val prize = prizes.optJSONObject(i) ?: continue
+                        if (!prize.has("receivedPrize") || prize.optBoolean("receivedPrize")) continue
+                        val prizeId = prize.optString("prizeId")
+                        if (mainActivityId.isBlank() || prizeId.isBlank() || task.optString("activityId").isBlank() ||
+                            task.optString("taskModuleType").isBlank() || !task.has("taskIndex")) {
+                            Log.error("NonDurationGameTask", "游戏好礼缺少领奖参数 task=$task prize=$prize")
+                            continue
+                        }
+                        val prizeKey = "$mainActivityId:${task.optString("activityId")}:${game.appId}:" +
+                            "${task.optString("taskModuleType")}:${task.optInt("taskIndex")}:$prizeId"
+                        if (TaskBlacklist.isTaskInBlacklist("NonDurationGameTask", prizeKey)) continue
+                        try {
+                            if (prize.optString("prizeName") == "饲料") {
+                                val grams = prize.optString("prizeAmount").toIntOrNull()
+                                if (grams == null || grams <= 0 || AntFarm.instance?.prepareFarmAwardCapacity(grams) != true) {
+                                    logger("游戏好礼[未提交饲料领取] 奖励数量或可用容量不足以确认 prizeId=$prizeId")
+                                    continue
+                                }
+                                if (ApplicationHookConstants.isOffline() ||
+                                    !AccountSessionCoordinator.isCurrentSession(session.userId, session.sessionEpoch)) break
+                            }
+                            val receipt = GameCenterPlayRpcCall.receiveLadderTaskPrize(task, mainActivityId, prizeId)
+                            if (ApplicationHookConstants.isOffline() ||
+                                !AccountSessionCoordinator.isCurrentSession(session.userId, session.sessionEpoch)) break
+                            if (!receipt.accepted) {
+                                Log.error("NonDurationGameTask", "游戏好礼领取失败 prizeId=$prizeId raw=${receipt.raw}")
+                                AccountSessionCoordinator.withCurrentSession(identity) {
+                                    TaskBlacklist.addToBlacklist("NonDurationGameTask", prizeKey, "游戏好礼")
+                                }
+                                TaskExecutionReport.current()?.recordException()
+                                continue
+                            }
+                            val refreshed = GameCenterPlayRpcCall.queryNonDurationTasks(descriptor, actionChannel)
+                            val current = refreshed.response?.optJSONObject("data")?.optJSONObject("ladderTaskComponentVO")
+                            val currentMainTasks = current?.optJSONArray("mainTaskList")
+                            val currentTasks = (0 until (currentMainTasks?.length() ?: 0))
+                                .mapNotNull { currentMainTasks?.optJSONObject(it) } + listOfNotNull(current?.optJSONObject("subTask"))
+                            val currentPrizes = currentTasks.firstOrNull {
+                                it.optString("activityId") == task.optString("activityId") &&
+                                    it.optString("appId") == game.appId &&
+                                    it.optInt("taskIndex", -1) == task.optInt("taskIndex", -2) &&
+                                    it.optString("taskModuleType") == task.optString("taskModuleType")
+                            }?.optJSONArray("fixedPrizeList")
+                            val received = refreshed.accepted && (0 until (currentPrizes?.length() ?: 0)).any {
+                                val item = currentPrizes?.optJSONObject(it)
+                                item?.optString("prizeId") == prizeId && item.optBoolean("receivedPrize")
+                            }
+                            if (received) logger("游戏任务好礼🎁[${task.optString("taskName")}]#${prize.optString("prizeName")}${prize.optString("prizeAmount")}")
+                            else {
+                                Log.error("NonDurationGameTask", "游戏好礼未确认领取 prizeId=$prizeId taskIndex=${task.optInt("taskIndex")} receipt=${receipt.raw} query=${refreshed.raw}")
+                                if (!ApplicationHookConstants.isOffline()) {
+                                    AccountSessionCoordinator.withCurrentSession(identity) {
+                                        TaskBlacklist.addToBlacklist("NonDurationGameTask", prizeKey, "游戏好礼")
+                                    }
+                                    TaskExecutionReport.current()?.recordException()
+                                }
+                            }
+                        } catch (t: Throwable) {
+                            if (t is kotlinx.coroutines.CancellationException || t is InterruptedException) throw t
+                            if (!ApplicationHookConstants.isOffline()) {
+                                TaskExecutionReport.current()?.ensureCurrent()
+                                AccountSessionCoordinator.withCurrentSession(identity) {
+                                    TaskBlacklist.addToBlacklist("NonDurationGameTask", prizeKey, "游戏好礼")
+                                }
+                                TaskExecutionReport.current()?.recordException()
+                            }
+                            Log.printStackTrace("NonDurationGameTask", "游戏好礼领取异常 prizeId=$prizeId", t)
+                        }
+                    }
+                }
+            } catch (t: Throwable) {
+                if (t is kotlinx.coroutines.CancellationException || t is InterruptedException) throw t
+                Log.printStackTrace("NonDurationGameTask", "游戏好礼回查异常", t)
+                return TaskFlowActionResult.failure(
+                    TaskRpcFailureType.UNKNOWN_NEEDS_REVIEW, message = "游戏好礼查询异常：${t.message}",
+                    rpc = "queryGameComponent", detail = detail,
+                )
+            }
+        }
+        if (actions.values.all { it == 0 }) {
+            return TaskFlowActionResult.defer(DeferredReason.PREREQUISITE_PENDING,
+                message = "对应游戏组件已无剩余动作，本轮未发起上报",
+                rpc = "queryGameComponent", raw = contract.raw, detail = detail,
+            ).copy(submissionStarted = false)
         }
         val needsAccumulation = !businessConfirmed && contractProgressed && remainingContract
         if (businessConfirmed) return TaskFlowActionResult.success(refreshAfterAction = true)

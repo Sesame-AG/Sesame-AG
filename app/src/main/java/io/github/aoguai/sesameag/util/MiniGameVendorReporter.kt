@@ -1017,6 +1017,8 @@ object MiniGameVendorReporter {
         if (umid.isNotEmpty()) query.append("&umid=").append(URLEncoder.encode(umid, "UTF-8"))
         val platformHeaders = LinkedHashMap(headers)
         platformHeaders["platform"] = "0"
+        platformHeaders["channel"] = "zhifubao"
+        if (umid.isNotEmpty()) platformHeaders["umid"] = umid
         val loginResp = request("GET", loginUrl + query, "", platformHeaders)
         val openId = findString(loginResp, "openId", "openid", "open_id", "data")
         if (openId.isEmpty()) return false
@@ -1035,7 +1037,7 @@ object MiniGameVendorReporter {
         return JSONObject(resp).optString("code") == "0" || JSONObject(resp).optBoolean("success")
     }
 
-    /** soulgame（超元火柴人）：ThreeLogin 换 userId → alipay_qg_report_game_action。 */
+    /** soulgame（超元火柴人）：ThreeLogin 取 data.mid，沿现有 userId 参数上报动作。 */
     private fun reportSoulgame(meta: Meta, appId: String, action: String, authCode: String, headers: Map<String, String>): Boolean {
         val loginUrl = tableUrl(appId, "login", 0, "")
         val submitUrl = tableUrl(appId, "submit", 0, "")
@@ -1050,7 +1052,8 @@ object MiniGameVendorReporter {
         )
         login["sig"] = soulgameSig(login)
         val loginResp = postForm(loginUrl, login, formHeaders)
-        val userId = findString(loginResp, "userId", "user_id", "uid")
+        val userId = findString(JSONObject(loginResp).optJSONObject("data"), "mid")
+            .ifEmpty { findString(loginResp, "userId", "user_id", "uid") }
         if (userId.isEmpty()) return false
         val report = linkedMapOf(
             "userId" to userId, "openId" to "", "action_code" to action, "action_finish_channel" to meta.channel,
@@ -1084,7 +1087,8 @@ object MiniGameVendorReporter {
         jsonHeaders["content-type"] = "application/json; charset=utf-8"
         val login = JSONObject().put("code", authCode)
         val loginResp = post("$base${gameId}GetUserId.php", login.toString(), jsonHeaders)
-        val userId = findString(loginResp, "userId", "uid", "user_id", "uuid", "openid", "open_id", "data")
+        val userId = loginResp.trim().toLongOrNull()?.takeIf { it > 0L }?.toString()
+            ?: findString(loginResp, "userId", "uid", "user_id", "uuid", "openid", "open_id", "data")
         if (userId.isEmpty()) return false
         REQUEST.get()!!.requireCurrent()
         val alipayUserId = AccountSessionCoordinator.currentSession()!!.userId
@@ -1093,7 +1097,14 @@ object MiniGameVendorReporter {
             .put("uuid", userId).put("alipay_user_id", alipayUserId).put("action_code", action).put("channel", meta.channel)
         REQUEST.get()!!.reporting = true
         val resp = post("$submitBase${gameId}UpTask.php", report.toString(), jsonHeaders)
-        return JSONObject(resp).optString("code") == "0" || JSONObject(resp).optBoolean("success")
+        val result = if (resp.trimStart().startsWith("{")) JSONObject(resp) else {
+            val status = resp.substringAfterLast("HTTP response code:", "").substringBefore("^_^").trim()
+            if (status != "200") return false
+            val body = resp.substringAfterLast("HTTP response body:", "")
+            org.json.JSONTokener(body).nextValue() as? JSONObject ?: return false
+        }
+        return result.optString("code") == "0" || result.optBoolean("success") ||
+            result.length() == 0 && resp.contains("HTTP response code:200^_^HTTP response body:")
     }
 
     /** mihuangame：user/login 取 authentication → alipay/submit，上报 token 放 authentication 头。 */
