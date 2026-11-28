@@ -224,15 +224,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
 
     private var selfId: String? = null
 
-    @Volatile
-    private var rebornWeeklyCompleted: Boolean = false
-
-    @Volatile
-    private var rebornConfigSignature: String = ""
-
-    private val rebornScanFoundProtectable = AtomicBoolean(false)
     private val rebornScanLimitReached = AtomicBoolean(false)
-    private val rebornScanCheckedAnyCandidate = AtomicBoolean(false)
     private var tryCountInt: Int? = null
     private var retryIntervalInt: Int? = null
     private var collectIntervalEntity: IntervalLimit? = null
@@ -529,7 +521,8 @@ class AntForest : ModelTask(), EnergyCollectCallback {
     }
 
     internal fun hasFriendRankingWorkEnabled(): Boolean {
-        return isCollectEnergyEnabled()
+        return isCollectEnergyEnabled() ||
+            (helpFriendCollectType?.value ?: HelpFriendCollectType.NONE) != HelpFriendCollectType.NONE
     }
 
     override fun getFields(): ModelFields {
@@ -1090,82 +1083,10 @@ class AntForest : ModelTask(), EnergyCollectCallback {
         EnergyWaitingManager.setEnergyCollectCallback(this)
     }
 
-    private fun computeRebornConfigSignature(): String {
-        val type = helpFriendCollectType?.value ?: HelpFriendCollectType.NONE
-        val limit = helpFriendCollectListLimit?.value ?: 0
-        val ids = helpFriendCollectList?.resolvedIds()?.sorted() ?: emptyList()
-        var hash = 1
-        for (id in ids) {
-            hash = 31 * hash + id.hashCode()
-        }
-        return "t=$type,l=$limit,s=${ids.size},h=$hash"
-    }
-
-    private fun initRebornWeeklyState() {
-        if (selfId.isNullOrEmpty()) {
-            rebornWeeklyCompleted = false
-            rebornConfigSignature = ""
-            return
-        }
-        val type = helpFriendCollectType?.value ?: HelpFriendCollectType.NONE
-        if (type == HelpFriendCollectType.NONE) {
-            rebornWeeklyCompleted = false
-            rebornConfigSignature = ""
-            return
-        }
-
-        rebornConfigSignature = computeRebornConfigSignature()
-        var state = RebornEnergyWeeklyPersistence.loadOrInit(rebornConfigSignature)
-        if (state.completed && !state.lastScanFoundProtectable && !state.lastScanLimitReached) {
-            state = RebornEnergyWeeklyPersistence.updateAfterScan(
-                configSignature = rebornConfigSignature,
-                scanAt = state.lastScanAt.takeIf { it > 0 } ?: System.currentTimeMillis(),
-                foundProtectable = state.lastScanFoundProtectable,
-                limitReached = state.lastScanLimitReached,
-                completed = false
-            )
-            Log.forest("复活能量：已清理旧版周轮封存状态，恢复本周复活检查")
-        }
-        rebornWeeklyCompleted = state.completed
-        if (rebornWeeklyCompleted) {
-            Log.forest("⏭️ 复活能量：本周周轮已完成，跳过复活检查")
-        }
-    }
-
     private fun resetRebornScanStateForFriendRanking() {
-        rebornScanFoundProtectable.set(false)
-        rebornScanCheckedAnyCandidate.set(false)
-
         val uid = selfId
         val alreadyLimitReached = uid.isNullOrEmpty() || !Status.canProtectBubbleToday(uid)
         rebornScanLimitReached.set(alreadyLimitReached)
-    }
-
-    private fun finalizeRebornWeeklyStateAfterFriendRanking() {
-        val type = helpFriendCollectType?.value ?: HelpFriendCollectType.NONE
-        if (type == HelpFriendCollectType.NONE) return
-        if (rebornWeeklyCompleted) return
-        if (selfId.isNullOrEmpty()) return
-
-        if (rebornConfigSignature.isBlank()) {
-            rebornConfigSignature = computeRebornConfigSignature()
-        }
-
-        val scanAt = System.currentTimeMillis()
-        val foundProtectable = rebornScanFoundProtectable.get()
-        val limitReached = rebornScanLimitReached.get()
-        val checkedAnyCandidate = rebornScanCheckedAnyCandidate.get()
-        val state = RebornEnergyWeeklyPersistence.updateAfterScan(
-            configSignature = rebornConfigSignature,
-            scanAt = scanAt,
-            foundProtectable = foundProtectable,
-            limitReached = limitReached,
-            completed = false
-        )
-        rebornWeeklyCompleted = state.completed
-        if (checkedAnyCandidate && !limitReached && !foundProtectable) {
-            Log.forest("复活能量：本次未发现可复活好友，保留后续重试机会")
-        }
     }
 
     private fun markRebornLimitReachedToday() {
@@ -1178,10 +1099,8 @@ class AntForest : ModelTask(), EnergyCollectCallback {
     private fun canTryRebornProtectNow(userId: String?): Boolean {
         val uid = selfId
         if (uid.isNullOrEmpty()) return false
-        if (rebornWeeklyCompleted) return false
         if (rebornScanLimitReached.get() || !Status.canProtectBubbleToday(uid)) return false
         if (!isIsProtected(userId)) return false
-        rebornScanCheckedAnyCandidate.set(true)
         return true
     }
 
@@ -1203,7 +1122,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             invalidatePropBagCache()
             forestGameCenterRecentAppRecords.set(emptyMap())
             GreenLife.resetForestMarketRound()
-            initRebornWeeklyState()
+            resetRebornScanStateForFriendRanking()
             wateringExecutedThisRound = false
             // 加载“今日统计”（按账号维度持久化），用于跨重启/多次运行累计
             selfId?.takeIf { it.isNotBlank() }?.let { uid ->
@@ -3340,27 +3259,16 @@ class AntForest : ModelTask(), EnergyCollectCallback {
      */
     internal suspend fun collectFriendEnergyCoroutine() {
         if (!hasFriendRankingWorkEnabled()) {
-            Log.forest("收能量未开启，跳过好友主页扫描；好友礼盒/复活能量仅随已获取好友主页处理")
+            Log.forest("收能量和复活能量均未开启，跳过好友主页扫描")
             return
         }
-        resetRebornScanStateForFriendRanking()
-        var cancelled = false
-        try {
-            collectRankingsCoroutine(
-                "好友排行榜",
-                { AntForestRpcCall.queryFriendsEnergyRanking() },
-                "totalDatas",
-                "普通好友",
-                null
-            )
-        } catch (e: CancellationException) {
-            cancelled = true
-            throw e
-        } finally {
-            if (!cancelled) {
-                finalizeRebornWeeklyStateAfterFriendRanking()
-            }
-        }
+        collectRankingsCoroutine(
+            "好友排行榜",
+            { AntForestRpcCall.queryFriendsEnergyRanking() },
+            "totalDatas",
+            "普通好友",
+            null
+        )
     }
 
     /**
@@ -3504,7 +3412,8 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             return  // 跳过处理
         }
         var userName = obj.optString("displayName", UserMap.getMaskName(userId) ?: userId)
-        if (emptyForestCache.containsKey(userId)) { //本轮已知为空的树林
+        val shouldQueryForProtect = !handledProtectUsers.contains(userId) && canTryRebornProtectNow(userId)
+        if (emptyForestCache.containsKey(userId) && !shouldQueryForProtect) {
             return
         }
 
@@ -3524,24 +3433,28 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             }
             Log.forest("  正在查询PK好友 [$userName$userId] 的主页...")
             val userHomeObj = collectEnergy(userId, queryFriendHome(userId, "PKContest"), "pk")
-            // 普通好友流程会跳过本轮已收能量的用户，在此复用主页补领礼盒。
-            if (userHomeObj != null &&
-                !jsonCollectMap.contains(userId) &&
-                shouldCollectGiftBoxFromHome(userHomeObj) &&
-                !FriendGuard.shouldSkipFriend(userId, TAG, "PK好友礼盒")
-            ) {
-                collectGiftBox(userHomeObj)
+            if (userHomeObj != null && !FriendGuard.shouldSkipFriend(userId, TAG, "PK好友权益")) {
+                if (!jsonCollectMap.contains(userId) && shouldCollectGiftBoxFromHome(userHomeObj)) {
+                    collectGiftBox(userHomeObj)
+                }
+                if (shouldProtectFriendEnergyFromHome(userId, userHomeObj) && handledProtectUsers.add(userId)) {
+                    protectFriendEnergy(userHomeObj)
+                }
             }
         } else { // 普通好友
             val needCollectEnergy = collectEnergy?.value == true && !jsonCollectMap.contains(userId)
             val energyAlreadyProcessed = processedUsersCache.contains(userId)
             val shouldQueryForEnergy = needCollectEnergy && !energyAlreadyProcessed
-            if (!shouldQueryForEnergy) {
-                //   Log.forest("    普通好友: [$userName$userId], 所有条件不满足，跳过")
-                return
+            if (!shouldQueryForEnergy && !shouldQueryForProtect) return
+            val cachedHome = friendHomeCache.values.firstOrNull {
+                it.optJSONObject("userEnergy")?.optString("userId") == userId ||
+                    it.optJSONObject("userBaseInfo")?.optString("userId") == userId
             }
-            Log.forest("  正在查询好友 [$userName$userId] 的主页...")
-            val userHomeObj = collectEnergy(userId, queryFriendHome(userId, null), "friend")
+            val userHomeObj = if (shouldQueryForEnergy) {
+                collectEnergy(userId, cachedHome ?: queryFriendHome(userId, null), "friend")
+            } else {
+                cachedHome ?: queryFriendHome(userId, null)
+            }
             handleFriendExtraBenefits(userId, userHomeObj)
         }
     }
@@ -3627,7 +3540,7 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                         if ("fuhuo" != wateringBubble.getString("bizType")) {
                             continue
                         }
-                        if (wateringBubble.getJSONObject("extInfo").optInt("restTimes", 0) == 0) {
+                        if (wateringBubble.optJSONObject("extInfo")?.optInt("restTimes", -1) == 0) {
                             markRebornLimitReachedToday()
                             break
                         }
@@ -3637,7 +3550,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                         val fullEnergy = wateringBubble.optInt("fullEnergy", 0)
                         val limit = helpFriendCollectListLimit?.value ?: 0
                         if (fullEnergy < limit) continue
-                        rebornScanFoundProtectable.set(true)
                         val joProtect = JSONObject(AntForestRpcCall.protectBubble(safeUserId))
                         val protectResultCode = joProtect.optString("resultCode")
                         val protectResultDesc = joProtect.optString("resultDesc")
@@ -3709,7 +3621,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             val fullEnergy = wateringBubble.optInt("fullEnergy", 0)
             if (fullEnergy < limit) continue
 
-            rebornScanFoundProtectable.set(true)
             return true
         }
         return false
@@ -4774,16 +4685,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 ),
             )
             when {
-                extractForestTaskFailureCode(finishTaskResponse) == "400000040" -> {
-                    val failure = forestTaskActionFailureResult(
-                        finishTaskResponse, "AntForestRpcCall.finishTask", "taskType=$childTaskType sceneCode=$childSceneCode",
-                    )
-                    val result = AntFarmRpcCall.doSceneTask(childTaskType, childSceneCode, failure, childSceneCode, "ANTFOREST") { fallback ->
-                        forestTaskActionFailureResult(fallback, "AntFarmRpcCall.doFarmTask", "taskType=$childTaskType sceneCode=$childSceneCode")
-                    }
-                    Log.error(TAG, "绿色践行子任务完成未确认[$childTaskTitle] rpc=${result.rpc} code=${result.code} msg=${result.message} raw=${result.raw} detail=${result.detail}")
-                    if (result.refreshAfterAction) changed = true
-                }
                 isForestTaskAlreadyHandled(finishTaskResponse) -> {
                     forestTaskTryCount.remove(bizKey)
                     Log.forest("绿色践行子任务已完结: $childTaskTitle")
@@ -5107,14 +5008,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             return emptyForestTaskActionResponse("AntForestRpcCall.finishTask", item, "finishLegacyGameTask")
         }
         val finishTaskResponse = JSONObject(response)
-        if (extractForestTaskFailureCode(finishTaskResponse) == "400000040" && item.sceneCode.isNotBlank()) {
-            val failure = forestTaskActionFailureResult(
-                finishTaskResponse, "AntForestRpcCall.finishTask", forestTaskActionDetail(item, "finishLegacyGameTask"),
-            )
-            return AntFarmRpcCall.doSceneTask(item.type, item.sceneCode, failure, item.sceneCode, "ANTFOREST") { fallback ->
-                forestTaskActionFailureResult(fallback, "AntFarmRpcCall.doFarmTask", forestTaskActionDetail(item, "complete"))
-            }
-        }
         return if (ResChecker.checkRes(TAG, "完成游戏任务失败:", finishTaskResponse)) {
             val awardSuffix = if (awardCount > 0) "，奖励数量# $awardCount" else ""
             Log.forest("游戏任务完成 🎮️[${item.title}]$awardSuffix")
@@ -5144,14 +5037,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             return emptyForestTaskActionResponse("AntForestRpcCall.finishTask", item, "finishTask")
         }
         val finishTaskResponse = JSONObject(response)
-        if (extractForestTaskFailureCode(finishTaskResponse) == "400000040" && item.sceneCode.isNotBlank()) {
-            val failure = forestTaskActionFailureResult(
-                finishTaskResponse, "AntForestRpcCall.finishTask", forestTaskActionDetail(item, "finishTask"),
-            )
-            return AntFarmRpcCall.doSceneTask(item.type, item.sceneCode, failure, item.sceneCode, "ANTFOREST") { fallback ->
-                forestTaskActionFailureResult(fallback, "AntFarmRpcCall.doFarmTask", forestTaskActionDetail(item, "complete"))
-            }
-        }
         return when {
             isForestTaskAlreadyHandled(finishTaskResponse) -> TaskFlowActionResult.failure(
                 failureType = TaskRpcFailureType.TERMINAL_DONE,
@@ -5301,14 +5186,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
             return emptyForestTaskActionResponse("AntForestRpcCall.finishTask", item, "oneClickWateringFinishTask")
         }
         val finishTaskResponse = JSONObject(response)
-        if (extractForestTaskFailureCode(finishTaskResponse) == "400000040" && item.sceneCode.isNotBlank()) {
-            val failure = forestTaskActionFailureResult(
-                finishTaskResponse, "AntForestRpcCall.finishTask", forestTaskActionDetail(item, "oneClickWateringFinishTask"),
-            )
-            return AntFarmRpcCall.doSceneTask(item.type, item.sceneCode, failure, item.sceneCode, "ANTFOREST") { fallback ->
-                forestTaskActionFailureResult(fallback, "AntFarmRpcCall.doFarmTask", forestTaskActionDetail(item, "complete"))
-            }
-        }
         return when {
             isForestTaskAlreadyHandled(finishTaskResponse) -> TaskFlowActionResult.failure(
                 failureType = TaskRpcFailureType.TERMINAL_DONE,
@@ -8632,6 +8509,8 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                 candidate.rawTask,
                 candidate.rawBenefit,
                 candidate.rawGame,
+                clickBeforeDuration = candidate.sourceName == "queryOptionalPlay",
+                directFinishSupported = candidate.sourceName == "queryOptionalPlay",
             )
         return if (candidate.rawTask?.optString("sceneCode") == "ANTFOREST_ENERGY_RAIN_TASK" ||
             candidate.taskType == "GAME_DONE_SLJYD") {
@@ -8718,15 +8597,21 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     )
                 }
 
+                GameCenterPlayRpcCall.TaskAction.DIRECT_FINISH,
+                GameCenterPlayRpcCall.TaskAction.CLICK_THEN_DURATION,
                 GameCenterPlayRpcCall.TaskAction.DURATION_ONLY -> run {
-                    val acknowledgement = GameCenterPlayRpcCall.submitForAck(requireNotNull(decision.contract))
-                    if (!acknowledgement.accepted) {
-                        Log.error(TAG, "森林乐园时长上报失败 raw=${acknowledgement.raw}")
-                        return@run TaskFlowActionResult.failure(
-                            acknowledgement.failureType, message = "森林乐园时长上报失败",
-                            raw = acknowledgement.raw, stopCurrentRound = ApplicationHookConstants.isOffline(),
+                    if (decision.action == GameCenterPlayRpcCall.TaskAction.CLICK_THEN_DURATION) {
+                        val entered = GameCenterPlayRpcCall.enterGame(requireNotNull(decision.contract).gameAppId)
+                        if (!entered.accepted) return@run TaskFlowActionResult.failure(
+                            entered.failureType, message = "森林乐园进入游戏失败", raw = entered.raw,
                             continueCurrentRoundOnFailure = true,
                         )
+                    }
+                    if (decision.action != GameCenterPlayRpcCall.TaskAction.DIRECT_FINISH) {
+                        val duration = GameCenterPlayRpcCall.advanceDuration(
+                            "forestLeyuanDuration:${candidate.key}", requireNotNull(decision.contract),
+                        )
+                        if (!duration.success || duration.deferredReason != null) return@run duration
                     }
                     if (candidate.sourceName != "queryOptionalPlay" || sceneCode.isBlank()) {
                         return@run TaskFlowActionResult.defer(DeferredReason.STATE_CONFIRMATION, refreshAfterAction = true)
@@ -8754,8 +8639,6 @@ class AntForest : ModelTask(), EnergyCollectCallback {
                     }
                 }
 
-                GameCenterPlayRpcCall.TaskAction.DIRECT_FINISH,
-                GameCenterPlayRpcCall.TaskAction.CLICK_THEN_DURATION,
                 GameCenterPlayRpcCall.TaskAction.OWNER_BUSINESS,
                 GameCenterPlayRpcCall.TaskAction.DEFERRED -> TaskFlowActionResult.defer(DeferredReason.PREREQUISITE_PENDING, decision.reason)
             }

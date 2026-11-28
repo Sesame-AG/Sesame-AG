@@ -700,12 +700,7 @@ class ForestChouChouLe(private val charityWaterEnabled: Boolean = false) {
                         "AntForestRpcCall.finishTaskopengreen"
                     },
             )
-            val completedAction = if (!exchangeDrawTask && actionResult.code == "400000040" && item.sceneCode.isNotBlank()) {
-                AntFarmRpcCall.doSceneTask(item.type, item.sceneCode, actionResult, sceneCode = item.sceneCode, source = "ADBASICLIB") { fallback ->
-                    handleActionResponse(item, fallback, TaskFlowAction.COMPLETE, "AntFarmRpcCall.doFarmTask")
-                }
-            } else actionResult
-            return completedAction
+            return actionResult
         }
 
         override fun receive(item: TaskFlowItem): TaskFlowActionResult {
