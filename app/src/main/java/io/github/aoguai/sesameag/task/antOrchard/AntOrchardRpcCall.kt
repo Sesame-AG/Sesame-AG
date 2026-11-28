@@ -21,6 +21,29 @@ object AntOrchardRpcCall {
     private const val YEB_SOURCE = "yaoqianshu_qiehuan"
     private const val ANIMAL_SHOW_SOURCE = "ANTORCHARD"
 
+    fun querySupportAgriActivity(periodId: String): String = RequestManager.requestString(
+        "com.alipay.antorchard.querySupportAgriActivity",
+        JSONArray().put(JSONObject().put("periodId", periodId).put("requestType", "NORMAL")
+            .put("sceneCode", "ORCHARD").put("source", ENTRY_SOURCE).put("version", VERSION)).toString(),
+    )
+
+    fun drawSupportAgriCard(activityId: String, sceneCode: String, times: Int): String {
+        val args = JSONObject().put("activityId", activityId).put("requestType", "NORMAL")
+            .put("sceneCode", sceneCode).put("source", "antorchard").put("version", VERSION)
+        if (times == 5) args.put("times", times)
+        return RequestManager.requestString(
+            if (times == 5) "com.alipay.antiepdrawprod.batchDrawantorchard" else "com.alipay.antiepdrawprod.drawantorchard",
+            JSONArray().put(args).toString(),
+        )
+    }
+
+    fun claimSupportAgriReward(periodId: String, stageId: String): String = RequestManager.requestString(
+        "com.alipay.antorchard.claimSupportAgriReward",
+        JSONArray().put(JSONObject().put("periodId", periodId).put("stageId", stageId)
+            .put("requestType", "NORMAL").put("sceneCode", "ORCHARD")
+            .put("source", ENTRY_SOURCE).put("version", VERSION)).toString(),
+    )
+
     fun orchardIndex(
         source: String = ENTRY_SOURCE,
         wua: String = "",

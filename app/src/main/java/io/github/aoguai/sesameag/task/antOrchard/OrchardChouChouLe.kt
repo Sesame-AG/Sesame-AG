@@ -3,6 +3,9 @@ package io.github.aoguai.sesameag.task.antOrchard
 import io.github.aoguai.sesameag.data.Status
 import io.github.aoguai.sesameag.data.StatusFlags
 import io.github.aoguai.sesameag.hook.ApplicationHookConstants
+import io.github.aoguai.sesameag.task.common.GameCenterPlayRpcCall
+import io.github.aoguai.sesameag.task.common.NonDurationGameTask
+import io.github.aoguai.sesameag.task.TaskExecutionReport
 import io.github.aoguai.sesameag.task.common.TaskFlowAction
 import io.github.aoguai.sesameag.task.common.TaskFlowActionResult
 import io.github.aoguai.sesameag.task.common.TaskFlowAdapter
@@ -16,6 +19,8 @@ import io.github.aoguai.sesameag.util.ResChecker
 import io.github.aoguai.sesameag.util.UserDataStore
 import io.github.aoguai.sesameag.util.UserDataStoreManager
 import org.json.JSONObject
+import kotlinx.coroutines.runBlocking
+import kotlin.coroutines.EmptyCoroutineContext
 
 private const val TAG = "OrchardChouChouLe"
 private const val ACTIVITY_STATE_KEY = "orchard_draw_activity"
@@ -180,7 +185,8 @@ private class OrchardDrawTaskFlowAdapter(
                     status = base.getString("taskStatus"),
                     type = taskType,
                     sceneCode = sceneCode,
-                    actionType = base.optString("taskProdPlayType"),
+                    actionType = if (bizInfo?.optJSONObject("xlightLogExtMap") != null) "XLIGHT"
+                        else base.optString("taskProdPlayType"),
                     raw = task,
                     progress = "task=$taskProgress/$taskRequire rights=$rightsTimes/$rightsLimit " +
                         "received=${rights?.optInt("alreadyReceiveAwardCount") ?: 0}",
@@ -196,7 +202,9 @@ private class OrchardDrawTaskFlowAdapter(
         when (item.status) {
             "FINISHED" -> TaskFlowPhase.REWARD_READY
             "TODO" -> when {
-                item.actionType == "VISIT_FLOAT_BALL" ||
+                item.actionType in setOf("VISIT_FLOAT_BALL", "XLIGHT") ||
+                    GameCenterPlayRpcCall.resolveTaskAction(item.raw).action ==
+                    GameCenterPlayRpcCall.TaskAction.LEGACY_EXTERNAL_REPORT ||
                     (item.actionType == "CALL_APP_OUT_TASK" &&
                         item.raw?.optJSONObject("taskBaseInfo")?.optString("taskMode") == "NORMAL") ->
                     TaskFlowPhase.READY_TO_COMPLETE
@@ -205,7 +213,10 @@ private class OrchardDrawTaskFlowAdapter(
 
                 else -> TaskFlowPhase.READY_TO_COMPLETE
             }
-            "RECEIVED" -> TaskFlowPhase.TERMINAL
+            "RECEIVED" -> if (item.raw?.optJSONObject("taskRights")?.let {
+                    it.optInt("rightsTimesLimit") > it.optInt("rightsTimes")
+                } == true && item.actionType == "XLIGHT"
+            ) TaskFlowPhase.READY_TO_COMPLETE else TaskFlowPhase.TERMINAL
             else -> TaskFlowPhase.UNKNOWN
         }
 
@@ -214,6 +225,35 @@ private class OrchardDrawTaskFlowAdapter(
             failureType = TaskRpcFailureType.NON_RETRYABLE_INVALID,
             message = "农场抽抽乐活动已停止",
         )
+        if (item.actionType == "XLIGHT") {
+            val task = requireNotNull(item.raw)
+            val base = task.getJSONObject("taskBaseInfo")
+            val rights = task.getJSONObject("taskRights")
+            return orchard.executeXLightTask(JSONObject(base.toString())
+                .put("taskDisplayConfig", JSONObject(base.getString("bizInfo")))
+                .put("taskId", item.id).put("actionType", "XLIGHT")
+                .put("rightsTimes", rights.getInt("rightsTimes"))
+                .put("rightsTimesLimit", rights.getInt("rightsTimesLimit")), item)
+        }
+        if (item.actionType != "VISIT_FLOAT_BALL") {
+            val decision = GameCenterPlayRpcCall.resolveTaskAction(item.raw)
+            if (decision.action == GameCenterPlayRpcCall.TaskAction.LEGACY_EXTERNAL_REPORT) {
+                return runBlocking(TaskExecutionReport.current()?.let {
+                    it.context + (it.executionJob ?: EmptyCoroutineContext)
+                } ?: EmptyCoroutineContext) {
+                    NonDurationGameTask.advance(requireNotNull(decision.mappedTask), item.raw,
+                        detail = "taskId=${item.id} sceneCode=${item.sceneCode}", logger = Log::orchard,
+                        confirmProgress = {
+                            val refreshed = query()
+                            if (!isQuerySuccess(refreshed)) null else {
+                                val after = extractItems(refreshed).firstOrNull { it.id == item.id }
+                                after != null && (after.status == "FINISHED" ||
+                                    (after.current ?: 0) > (item.current ?: 0))
+                            }
+                        })
+                }
+            }
+        }
         val response = JSONObject(AntOrchardRpcCall.finishDrawTask(item.sceneCode, item.type))
         recordActivityResponse(response)
         if (orchard.isOrchardRpcSuccessResponse(response)) {

@@ -1204,7 +1204,7 @@ class AntOrchard : ModelTask() {
             val source = resolveTaskActionSource(task) ?: ACTION_SOURCE
             val response = JSONObject(AntOrchardRpcCall.triggerTbTask(taskId, taskPlantType, source))
             if (isOrchardRpcSuccessResponse(response)) {
-                val awardCount = task.optInt("awardCount", task.optInt("confAwardCount", 0))
+                val awardCount = response.optInt("incAwardCount", task.optInt("awardCount", task.optInt("confAwardCount", 0)))
                 val awardSuffix = if (awardCount > 0) "#${awardCount}g肥料" else ""
                 Log.orchard("领取奖励🎖️[${item.title}]$awardSuffix")
                 return TaskFlowActionResult.success()
@@ -1630,7 +1630,7 @@ class AntOrchard : ModelTask() {
         }
     }
 
-    private fun executeXLightTask(
+    internal fun executeXLightTask(
         task: JSONObject,
         item: TaskFlowItem,
     ): TaskFlowActionResult {
@@ -1735,7 +1735,7 @@ class AntOrchard : ModelTask() {
         val finishResponse = JSONObject(responseText)
         if (isOrchardRpcSuccessResponse(finishResponse)) {
             Log.orchard("农场任务完成请求已接受[$title]")
-            return TaskFlowActionResult.success()
+            return TaskFlowActionResult.success(progressChanged = false)
         }
         val failure = buildOrchardTaskFailureResult(
             response = finishResponse,
@@ -1745,11 +1745,7 @@ class AntOrchard : ModelTask() {
             rpc = "AntOrchardRpcCall.finishTask",
             task = task,
         )
-        return if (failure.code == "400000040") {
-            AntFarmRpcCall.doSceneTask(taskId, sceneCode, failure, sceneCode = "ORCHARD", source = "ANTFARM_ORCHARD") { fallback ->
-                buildOrchardTaskFailureResult(fallback, taskId, title, action, "AntFarmRpcCall.doFarmTask", task = task)
-            }
-        } else failure
+        return failure
     }
 
     internal fun isOrchardRpcSuccessResponse(response: JSONObject): Boolean {
@@ -2003,7 +1999,7 @@ class AntOrchard : ModelTask() {
         }
 
     private fun isTaobaoVisitTask(task: JSONObject): Boolean =
-        task.optString("taskPlantType") == "TAOBAO" &&
+        (task.optString("taskPlantType") == "TAOBAO" || task.optJSONObject("taobaoTaskParams") != null) &&
             task.optString("actionType") in setOf("VISIT", "SYSTEM_SWITCH")
 
     private fun resolveTaskActionSource(task: JSONObject): String? {
@@ -2533,8 +2529,8 @@ class AntOrchard : ModelTask() {
         return false
     }
 
-    internal fun smashedGoldenEgg(count: Int) {
-        try {
+    internal fun smashedGoldenEgg(count: Int): Boolean {
+        return try {
             var remaining = count.coerceAtLeast(0)
             while (remaining > 0) {
                 val batchCount = remaining.coerceAtMost(10)
@@ -2551,13 +2547,13 @@ class AntOrchard : ModelTask() {
                     }
                 } else {
                     Log.orchard(jo.optString("resultDesc", "未知错误"))
-                    return
+                    return false
                 }
 
-                val confirmedRemaining = queryUnsmashedGoldenEggs() ?: return
+                val confirmedRemaining = queryUnsmashedGoldenEggs() ?: return false
                 if (confirmedRemaining >= remaining) {
                     Log.orchard("金蛋砸取后首页状态未推进，停止当前链路")
-                    return
+                    return false
                 }
                 remaining = confirmedRemaining
                 if (remaining > 0) {
@@ -2565,8 +2561,11 @@ class AntOrchard : ModelTask() {
                     CoroutineUtils.sleepCompat(executeIntervalInt.toLong())
                 }
             }
+            true
         } catch (t: Throwable) {
+            if (t is kotlinx.coroutines.CancellationException || t is InterruptedException) throw t
             Log.printStackTrace(TAG, "smashedGoldenEgg err:", t)
+            false
         }
     }
 
